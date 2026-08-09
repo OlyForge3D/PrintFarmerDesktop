@@ -449,6 +449,35 @@ const { safeThing: st } = someObj;
 st(['not', 'a', 'gh', 'call', '--label']);
 `;
 
+// Ralph session 22644699 (round 13), Hicks: a direct \`gh\` call's array-
+// literal argv can mix quoted string elements with ONE bare-identifier
+// element whose VALUE is built from a separately-declared string/template
+// variable -- the array literal itself is never variable-valued as a
+// WHOLE (so the existing whole-array resolution never applies), but its
+// one non-literal element is exactly the shape that carries the
+// interesting \`label:\` text.
+const GH_ARRAY_ELEMENT_LABEL_VARIABLE_SNIPPET = `
+const label = 'hold:sequenced';
+const query = \`label:\${label}\`;
+execFileSync('gh', ['search', 'issues', query]);
+`;
+
+// Negative control: the same mixed-array shape, but the bare-identifier
+// element resolves to a variable that does NOT contain \`label:\` text --
+// must not be flagged.
+const GH_ARRAY_ELEMENT_UNRELATED_VARIABLE_SNIPPET = `
+const unrelated = 'not-a-label-thing';
+execFileSync('gh', ['search', 'issues', unrelated]);
+`;
+
+// Negative control: the bare-identifier array element has NO preceding
+// assignment at all (unresolvable) -- must not be flagged (no value to
+// synthesize, and this file's existing conservative-omission convention
+// applies rather than guessing).
+const GH_ARRAY_ELEMENT_UNDECLARED_VARIABLE_SNIPPET = `
+execFileSync('gh', ['search', 'issues', undeclaredQuery]);
+`;
+
 describe('scanLabelIndexUsage', () => {
   it('flags gh pr list --label as an unlisted violation', () => {
     const { violations, allowlisted } = scanLabelIndexUsage({
@@ -1246,6 +1275,54 @@ execFileSync('gh', [
         {
           path: 'scripts/example.mjs',
           contents: NON_WRAPPER_DESTRUCTURED_RENAME_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  // Ralph session 22644699 (round 13), Hicks: a direct `gh` array-literal
+  // argv mixing quoted elements with a bare-identifier element that
+  // resolves to a preceding `label:`-bearing string/template variable
+  // must be flagged -- the array literal is fully static in SHAPE, but
+  // one of its elements carries the interesting text indirectly.
+  it('flags a gh array-literal argv element that resolves to a label-bearing variable', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_ARRAY_ELEMENT_LABEL_VARIABLE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh search issues/prs --label');
+  });
+
+  // Negative control: the same mixed-array shape, but the resolved
+  // variable's value does not contain `label:` text -- must not be
+  // flagged.
+  it('does not flag a gh array-literal argv element resolving to an unrelated variable', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_ARRAY_ELEMENT_UNRELATED_VARIABLE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  // Negative control: the bare-identifier array element has no preceding
+  // assignment at all -- unresolvable, so nothing is synthesized and no
+  // violation is (falsely) produced.
+  it('does not flag a gh array-literal argv element with no preceding assignment', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_ARRAY_ELEMENT_UNDECLARED_VARIABLE_SNIPPET,
         },
       ],
     });

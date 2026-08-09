@@ -399,6 +399,69 @@ function splitTopLevelArguments(argsText) {
   return args;
 }
 
+// Resolves a SCALAR (non-array) variable to its most recent string/
+// template-literal assignment (`NAME = 'x'`/`NAME = \`x\``) BEFORE
+// `beforeIndex` -- the same reassignment-aware, most-recent-before-the-
+// reference logic `resolveVariableArrayBefore` uses for an array-valued
+// variable, applied here to a single scalar value instead. Returns the
+// literal's inner text (delimiters stripped) or `null` if no such
+// assignment precedes `beforeIndex`.
+function resolveScalarVariableBefore(contents, varName, beforeIndex) {
+  const assignmentPattern = new RegExp(
+    `\\b${varName}\\s*=\\s*(\`[^\`]*\`|'[^']*'|"[^"]*")`,
+    'g',
+  );
+  let assignment;
+  let mostRecentBefore = null;
+  while ((assignment = assignmentPattern.exec(contents)) !== null) {
+    if (assignment.index >= beforeIndex) break;
+    mostRecentBefore = assignment;
+  }
+  return mostRecentBefore ? mostRecentBefore[1].slice(1, -1) : null;
+}
+
+// Resolves an array LITERAL's own top-level elements into tokens: a
+// quoted string/template element resolves to its own inner text (same as
+// `tokensFromArrayBody`), but a BARE IDENTIFIER element additionally
+// resolves against a preceding SCALAR variable assignment via
+// `resolveScalarVariableBefore`. Hicks (round 9/13): the array literal
+// argument to a direct `gh` call (or a wrapper call) can be fully static
+// in SHAPE while mixing quoted elements with one bare-identifier element
+// whose VALUE is built from a separately-declared variable --
+// `const query = \`label:\${label}\`; execFileSync('gh', ['search',
+// 'issues', query]);` -- the array literal itself is never variable-
+// valued as a WHOLE (so `resolveVariableArrayBefore` never applies to
+// it), but its one non-literal element is exactly the shape that carries
+// the interesting `label:` text. Reproduced locally: this shape scanned
+// clean before this resolver existed. An element that resolves to
+// neither is simply omitted from the returned tokens (not guessed),
+// matching this file's existing conservative-omission convention for any
+// value it cannot statically pin down.
+function resolveArrayLiteralElementTokens(arrayBody, contents, beforeIndex) {
+  const tokens = [];
+  for (const rawElement of splitTopLevelArguments(arrayBody)) {
+    const element = rawElement.trim();
+    if (element === '') continue;
+
+    const stringLiteralMatch = /^['"`]([^'"`]*)['"`]$/.exec(element);
+    if (stringLiteralMatch) {
+      tokens.push(stringLiteralMatch[1]);
+      continue;
+    }
+
+    const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(element);
+    if (identifierMatch) {
+      const resolved = resolveScalarVariableBefore(
+        contents,
+        identifierMatch[1],
+        beforeIndex,
+      );
+      if (resolved !== null) tokens.push(resolved);
+    }
+  }
+  return tokens;
+}
+
 export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
   const flattened = [];
   const contents = stripCommentsForWrapperBodyScan(rawContents);
@@ -420,7 +483,13 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
       if (assignment.index >= beforeIndex) break;
       mostRecentBefore = assignment;
     }
-    return mostRecentBefore ? tokensFromArrayBody(mostRecentBefore[1]) : null;
+    return mostRecentBefore
+      ? resolveArrayLiteralElementTokens(
+          mostRecentBefore[1],
+          contents,
+          mostRecentBefore.index,
+        )
+      : null;
   };
 
   // Resolves an array-literal argv passed either directly at a call site
@@ -434,7 +503,11 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
     const directPattern = new RegExp(`${prefix}\\s*\\[([\\s\\S]*?)]`, 'g');
     let directCall;
     while ((directCall = directPattern.exec(contents)) !== null) {
-      const tokens = tokensFromArrayBody(directCall[1]);
+      const tokens = resolveArrayLiteralElementTokens(
+        directCall[1],
+        contents,
+        directCall.index,
+      );
       if (tokens.length > 0) {
         flattened.push(`gh ${tokens.join(' ')}`);
       }
@@ -533,7 +606,11 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
 
           const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
           if (arrayLiteralMatch) {
-            const tokens = tokensFromArrayBody(arrayLiteralMatch[1]);
+            const tokens = resolveArrayLiteralElementTokens(
+              arrayLiteralMatch[1],
+              contents,
+              callIndex,
+            );
             if (tokens.length > 0) flattened.push(`gh ${tokens.join(' ')}`);
             continue;
           }
@@ -604,7 +681,13 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
 
         const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
         if (arrayLiteralMatch) {
-          tokens.push(...tokensFromArrayBody(arrayLiteralMatch[1]));
+          tokens.push(
+            ...resolveArrayLiteralElementTokens(
+              arrayLiteralMatch[1],
+              contents,
+              callIndex,
+            ),
+          );
           continue;
         }
 
