@@ -72,12 +72,38 @@
 // tree to demonstrate a real narrowing (see
 // tests/checkTestNarrowing.test.ts).
 //
-// NOT WIRED AS A REQUIRED CI CONTEXT. Per the issue's explicit acceptance
-// criterion: a step beside `Closing-reference declaration` lands inside
-// `Desktop (matrix)`, two of the seven required contexts -- a false positive
-// there blocks every queued PR entry, reproducing #122's deadlock shape. This
-// gate's false-positive rate has not been measured, so it ships as a
-// standalone script with its own test suite and is not added to any workflow.
+// NOT WIRED AS A REQUIRED CI CONTEXT, AND DELIBERATELY NOT ADDED TO ci.yml AT
+// ALL (round 10, Ripley's reachability finding). Per the issue's explicit
+// acceptance criterion: a step beside `Closing-reference declaration` lands
+// inside `Desktop (matrix)`, two of the seven required contexts -- a false
+// positive there blocks every queued PR entry, reproducing #122's deadlock
+// shape. This gate's false-positive rate has not been measured, so it ships
+// as a standalone script with its own test suite.
+//
+// Ripley (round 10) found the standalone script was not merely non-required
+// but wholly UNREACHABLE: no npm script named it and no workflow invoked it.
+// `"check:test-narrowing"` in package.json now gives it the same stable,
+// discoverable entrypoint every other `check:*` script in this repo has
+// (`npm run check:test-narrowing`). Wiring that entrypoint into `ci.yml`
+// itself was considered and deliberately rejected, not skipped: this repo's
+// own tests (`ciWorkflowTriggers.test.ts`'s byte-identical rendered-context
+// pin, `.squad/skills/testing/SKILL.md`'s CI-gate transcription, and
+// `mergeQueueReadiness.test.ts`) treat "a job ci.yml renders" and "a
+// required, branch-protection-checked context" as the same thing for EVERY
+// job ci.yml currently has -- there is no existing example in this workflow
+// of a job that renders a check run without also being required. Adding one
+// would mean the first check run this repo has ever rendered from ci.yml
+// without requiring it, entangling far more than this script (SKILL.md's
+// documented list, three separate pinning tests, and the merge-queue
+// classification machinery) for a change the issue's own acceptance
+// criterion 3 already says must not be required. `check:test-narrowing` is
+// therefore recorded in `UNENFORCED_CHECKS`
+// (scripts/check-script-reachability.mjs) instead: its judgement is fully
+// exercised under `npm run test` (tests/checkTestNarrowing.test.ts), and its
+// main() is a deliberate, documented, tested absence rather than a silent
+// one -- exactly the shape `check:review-coverage` and `check:behind-base`
+// already use in that same allowlist for their own, differently-reasoned
+// unwired mains.
 //
 // THREE REVIEW ROUNDS FOUND HOLES IN THE FIRST TWO VERSIONS, ALL FIXED HERE:
 //
@@ -328,6 +354,62 @@
 // `vitest.mjs` (now `VITEST_LITERAL_NAMES`, a small named set instead of
 // two inline string comparisons, since it grew a member) -- same
 // mechanism, right list.
+//
+// A NINTH REVIEW ROUND split again -- Vasquez approved (confirmed the `.ps1`
+// fix, now living in `VITEST_LITERAL_NAMES`, closes round 8's false
+// positive and the `node.ps1` basename collision, without regressing any
+// prior Vasquez-reviewed case). Ripley rejected: the `.ps1` fix narrowed the
+// false-positive surface but did not eliminate it -- see
+// `VITEST_LITERAL_NAMES` below and `hasNodeModulesPathContext`, which was
+// added this round precisely because Ripley generalised the finding beyond
+// `.ps1`: literal-name matching by basename alone, with no path context,
+// was ALREADY wrong for `vitest.mjs` too, and this round closes it for both
+// uniformly rather than patching `.ps1` again in isolation.
+//
+// A TENTH REVIEW ROUND found two detection gaps (both Vasquez) and one
+// structural gap (Ripley) that is not about detection at all:
+//
+//   Vasquez (round 10): `checkPackageJsonScripts({ test: 'npm --silent run
+//   ci', ci: 'vitest run -t "only this arm"' })` returned no violation --
+//   the alias-chain resolver required the package-manager token and the
+//   `run` keyword to be textually ADJACENT, so any flag between them
+//   (`--silent`, `--quiet`, ...) broke the match and the chain was never
+//   followed into `ci`, silently treating a resolvable alias as an opaque,
+//   harmless string. `resolveScriptAliasTarget` replaces that regex with a
+//   tokenising resolver that explicitly skips flag tokens both before and
+//   after the `run`/`run-script` keyword -- the same "skip flag tokens"
+//   idiom this file already used for `env`'s own flags in
+//   `resolveInvokedProgramBasename`, applied here for the third time rather
+//   than invented a third way.
+//
+//   Vasquez (round 10): `npm exec vitest run -t "only this arm"` and `npx
+//   --yes vitest run -t "only this arm"` both passed `checkWorkflowText`
+//   silently. Two compounding gaps: `npm` was entirely absent from
+//   `VITEST_LAUNCHERS`, and even for launchers already recognised,
+//   `isDirectVitestInvocation` read the token IMMEDIATELY after the
+//   launcher as "the launched program", so a subcommand marker (`exec`) or
+//   a leading flag (`--yes`) in between meant the real target token was
+//   never reached. `findLauncherTargetToken` now skips both `-`-prefixed
+//   flags and a small `LAUNCHER_SUBCOMMAND_MARKERS` set (`exec`, `--`)
+//   before reading the target -- and `npm` joins `VITEST_LAUNCHERS`. A
+//   negative control (`npm run test` must still read as an ORDINARY script
+//   reference, not a direct invocation, now that `npm` is a launcher) pins
+//   that this widening does not reopen a false positive on the single most
+//   common command line in the whole repo.
+//
+//   Ripley (round 10): the gate was not reachable from any real execution
+//   path at all -- no npm script named it, and no workflow ran it, so nine
+//   rounds of hardening the DETECTION logic sat behind an entrypoint that
+//   nothing ever called. `"check:test-narrowing"` now exists in
+//   package.json, following this repo's own `check:*` naming convention.
+//   Wiring that script into `ci.yml` was considered and declined -- see the
+//   "NOT WIRED AS A REQUIRED CI CONTEXT" note above for the full reasoning
+//   -- and `check:test-narrowing` is instead recorded in
+//   `UNENFORCED_CHECKS` (scripts/check-script-reachability.mjs), the exact
+//   allowlist this repo already uses for every other check whose judgement
+//   is enforced under `npm run test` but whose CLI entrypoint is not yet
+//   wired to a live trigger, so the absence is documented and tested rather
+//   than silent.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -442,14 +524,45 @@ export function isDirectVitestInvocation(tokens) {
   const { index, basename } = resolveInvokedProgramBasename(tokens);
   if (isVitestBasename(basename, tokens[index])) return true;
   if (basename !== undefined && VITEST_LAUNCHERS.has(basename)) {
-    return isVitestProgramToken(tokens[index + 1]);
+    return isVitestProgramToken(findLauncherTargetToken(tokens, index + 1));
   }
   return false;
 }
 
-const VITEST_LAUNCHERS = new Set(['npx', 'node', 'pnpm', 'yarn']);
+const VITEST_LAUNCHERS = new Set(['npx', 'npm', 'node', 'pnpm', 'yarn']);
 const ENV_LAUNCHER = 'env';
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Vasquez (review of this PR, round 10): the launcher branch above only
+// recognised the launched program when it was the IMMEDIATE next token --
+// `npx vitest ...` matched, but `npx --yes vitest ...` and
+// `npm exec vitest ...` (both ordinary, common launcher spellings: `--yes`
+// suppresses npx's interactive install-confirmation prompt, and `exec` is
+// how npm/pnpm/yarn run a binary directly without it being a package.json
+// script) did not, because the token in between (`--yes`, `exec`) was
+// never skipped. `npm` itself was also missing from `VITEST_LAUNCHERS`
+// entirely -- only `npx`/`node`/`pnpm`/`yarn` were recognised as launchers,
+// so `npm exec vitest ...` failed at the very first step regardless.
+//
+// Fixed by (a) adding `npm` to `VITEST_LAUNCHERS`, and (b) skipping past
+// the launcher's own flags (`--yes`/`-y`/`--silent`/`-s`/etc., recognised
+// generically by a leading `-`, exactly as `env`'s own flags are already
+// skipped above) and the `exec`/`--` subcommand markers before reading the
+// actually-launched program token, rather than assuming it is always the
+// very next one.
+const LAUNCHER_SUBCOMMAND_MARKERS = new Set(['exec', '--']);
+
+function findLauncherTargetToken(tokens, startIndex) {
+  let i = startIndex;
+  while (
+    i < tokens.length &&
+    typeof tokens[i] === 'string' &&
+    (tokens[i].startsWith('-') || LAUNCHER_SUBCOMMAND_MARKERS.has(tokens[i]))
+  ) {
+    i += 1;
+  }
+  return tokens[i];
+}
 
 // Windows resolves a bare command name against `PATHEXT` by trying these
 // suffixes in turn -- `vitest`, `vitest.cmd`, and `.\node_modules\.bin\
@@ -639,8 +752,127 @@ function isVitestProgramToken(token) {
 
 const TEST_SCRIPT_NAME = /^test(:.*)?$/;
 
-const NPM_SCRIPT_REFERENCE =
-  /^(?:npm(?:\s+run(?:-script)?)?|yarn(?:\s+run)?|pnpm(?:\s+run)?)\s+(\S+)/;
+const NPM_SCRIPT_MANAGERS = new Set(['npm', 'yarn', 'pnpm']);
+const RUN_KEYWORDS = new Set(['run', 'run-script']);
+
+// npm's own, small, closed set of lifecycle scripts it will run bare, with
+// no `run`/`run-script` keyword at all -- `npm test`, `npm start`, `npm
+// stop`, `npm restart` are documented npm CLI shorthands for their
+// same-named package.json script. Every OTHER bare `npm <token>` (`ci`,
+// `install`, `publish`, `audit`, `config`, ...) names one of npm's OWN
+// built-in subcommands, which npm always resolves before ever considering
+// a package.json script of the same name -- there is no bare-shorthand
+// fallback to a script for any name outside this set.
+const NPM_BARE_LIFECYCLE_SCRIPTS = new Set([
+  'test',
+  'start',
+  'stop',
+  'restart',
+]);
+
+/**
+ * Skip past any run of flag tokens (anything starting with `-`) starting at
+ * `startIndex`, returning the index of the first non-flag token. Shared by
+ * both the launcher-target resolution above and the script-alias
+ * resolution below, since both need to see past a package manager's own
+ * options (`--yes`, `--silent`, `-s`, ...) to find the token that actually
+ * names a program or script.
+ *
+ * Vasquez (review of PR #647, round 15): a bare `--` is not just another
+ * flag to skip past -- in npm (and getopt-style CLIs generally) it is the
+ * canonical "end of options" marker, after which EVERY remaining token is
+ * positional, even one that itself starts with `-`. `npm run -- -ci` names
+ * a script literally called `-ci` (dash-prefixed script names are unusual
+ * but valid npm script keys), but skipping flags with no `--` boundary
+ * consumed `-ci` as if it were another option, leaving no target token at
+ * all. Stopping at `--` and returning the index immediately after it --
+ * rather than continuing to skip whatever comes next -- means a `--`-
+ * delimited positional target is read as-is, dash-prefixed or not, exactly
+ * as a real shell/npm argument parser would.
+ */
+function skipFlagTokens(tokens, startIndex) {
+  let i = startIndex;
+  while (
+    i < tokens.length &&
+    typeof tokens[i] === 'string' &&
+    tokens[i].startsWith('-')
+  ) {
+    if (tokens[i] === '--') return i + 1;
+    i += 1;
+  }
+  return i;
+}
+
+/**
+ * Resolve the script name an `npm`/`yarn`/`pnpm` command line refers to, if
+ * it is one of the "run another package.json script" forms this alias
+ * chain follows -- `npm run <name>`, `npm run-script <name>`,
+ * `yarn run <name>`, `pnpm run <name>`, or npm's OWN bare lifecycle
+ * shorthand (`npm test`/`start`/`stop`/`restart`, see
+ * `NPM_BARE_LIFECYCLE_SCRIPTS` above). Returns `null` for anything else,
+ * including `npm exec`/`npx` (a DIRECT invocation, handled by
+ * `isDirectVitestInvocation`/`VITEST_LAUNCHERS` instead), any other bare
+ * `npm <token>` (one of npm's own built-in subcommands, not a script
+ * alias), and a bare `yarn`/`pnpm <token>` with no `run` keyword (this file
+ * does not follow that shorthand at all -- see the false-positive note
+ * below).
+ *
+ * Vasquez (review of this PR, round 10): the previous regex-based version
+ * of this (`NPM_SCRIPT_REFERENCE`) required the package manager name and
+ * the `run` keyword to be adjacent, so `npm --silent run ci` -- an
+ * entirely ordinary way to quiet npm's own output while still running the
+ * `ci` script -- was not recognised as a reference to `ci` at all, letting
+ * a narrowing hide behind an alias exactly one option away from the
+ * already-handled `npm run ci` shape. Tokenising the command and skipping
+ * flag tokens (the same `-`-prefixed recognition already used for other
+ * launcher options in this file) before AND after the `run` keyword closes
+ * this the same way skipping flags before the actual program in
+ * `findLauncherTargetToken` does for direct invocations.
+ *
+ * Vasquez (review of PR #647, round 11): that same fix, read too broadly,
+ * treated ANY bare `npm <token>` (with no `run` keyword at all) as a
+ * script-alias reference -- `checkPackageJsonScripts({ test: 'npm ci', ci:
+ * 'vitest run -t "only this arm"' })` flagged a violation even though `npm
+ * ci` runs npm's OWN built-in `ci` subcommand (a clean-install command),
+ * never `scripts.ci`, regardless of whether a script by that name exists.
+ * npm resolves its fixed set of built-in subcommands FIRST, always -- a
+ * same-named script is never reached bare, only through `npm run ci`.  The
+ * only bare exception npm itself documents is a small, closed set of
+ * lifecycle shorthands (`test`, `start`, `stop`, `restart`); everything
+ * else bare is a built-in, not a fallback to a script. Rather than grow an
+ * ever-longer blocklist of npm's own built-ins (`ci`, `install`, `i`,
+ * `publish`, `audit`, `config`, `dedupe`, `exec`, `init`, `link`, ... --
+ * the same "one more shape" pattern that cost this file ten review rounds
+ * elsewhere), this narrows to an ALLOWLIST of the four names npm itself
+ * treats as bare script shorthand, which is provably complete rather than
+ * provably incomplete: npm defines no others. `yarn`/`pnpm` bare shorthand
+ * (`yarn foo` without `run`) is a real fallback those tools DO perform, but
+ * only after checking their own considerably larger built-in command sets
+ * first (`yarn install`, `yarn add`, `pnpm install`, ...) -- the identical
+ * false-positive shape this fix closes for npm. No review round has
+ * reproduced it for yarn/pnpm yet, and this file would rather state that
+ * plainly than patch it speculatively: bare `yarn`/`pnpm <token>` is
+ * therefore not followed as an alias at all (a real, intentional gap --
+ * `yarn <script>`/`pnpm <script>` without the `run` keyword still requires
+ * `yarn run <script>`/`pnpm run <script>` to be resolved by this file).
+ */
+function resolveScriptAliasTarget(command) {
+  const tokens = tokenizeCommand(command.trim());
+  if (tokens.length === 0) return null;
+  const manager = basenameOf(tokens[0]);
+  if (!NPM_SCRIPT_MANAGERS.has(manager)) return null;
+  const afterManager = skipFlagTokens(tokens, 1);
+  if (afterManager < tokens.length && RUN_KEYWORDS.has(tokens[afterManager])) {
+    const target = tokens[skipFlagTokens(tokens, afterManager + 1)];
+    return typeof target === 'string' ? target : null;
+  }
+  if (manager !== 'npm') return null;
+  const bareTarget = tokens[afterManager];
+  return typeof bareTarget === 'string' &&
+    NPM_BARE_LIFECYCLE_SCRIPTS.has(bareTarget)
+    ? bareTarget
+    : null;
+}
 
 /**
  * Vasquez (review of this PR, round 2): a narrowing does not have to live in
@@ -652,21 +884,242 @@ const NPM_SCRIPT_REFERENCE =
  *
  * `npm run test` -- what CI actually invokes -- reaches the narrowing exactly
  * as surely as if it were written inline, but a check that reads only the
- * `test` script's own text never sees it. This follows the reference --
- * repeatedly, since the chain can be more than one hop deep -- into whichever
- * script it names, with a `visited` set so a cycle (`test` -> `a` -> `test`)
- * reports no narrowing rather than looping forever.
+ * `test` script's own text never sees it.
+ *
+ * Rounds 11-12 (Vasquez, review of PR #647) each closed one more shape of
+ * npm's own script-resolution semantics that a purely alias-chasing model
+ * missed -- npm's closed bare-lifecycle set (round 11), then `restart`'s
+ * stop/start fallback (round 12) -- and each fix, read narrowly, missed the
+ * next: `restart`'s fallback still didn't account for npm's pre/post hook
+ * convention (`pretest`/`posttest`, `prestart`/`poststart`, ...), which
+ * apply to EVERY npm-run script, not just the ones this file happened to
+ * special-case already. Both reviewers independently flagged this as the
+ * same pattern as the earlier interpreter/extension "one more shape"
+ * saga (#640) and asked for the underlying model to be made systematic
+ * rather than patched once more.
+ *
+ * `resolveNarrowingForScript` is that systematic model: given ANY script
+ * name npm would run (the `test`/`test:*` scripts directly, or any name
+ * reached through an alias chain), it evaluates npm's own real execution
+ * order for that name --
+ *
+ *   pre<name> (if defined) -> <name>'s own resolution -> post<name> (if defined)
+ *
+ * -- where "<name>'s own resolution" is either `scripts[name]` itself, or,
+ * for the one name npm documents an irregular fallback for (`restart` with
+ * no `scripts.restart` defined), the same pre/post-wrapped resolution of
+ * `stop` followed by `start`. Because this is name-based rather than
+ * command-text-based, following an alias into another script name (`npm
+ * run ci` -> `ci`) recurses through this same function, so THAT script's
+ * own pre/post hooks are checked too -- a narrowing hiding behind
+ * `preci`/`postci` is reached exactly as a narrowing hiding behind
+ * `pretest`/`posttest` on the entry script is. `visited` is threaded
+ * through the whole graph (entry script, its hooks, every aliased target,
+ * and THEIR hooks) so any cycle reports no narrowing rather than looping
+ * forever, rather than resetting per hop.
+ *
+ * Ripley (review of PR #647, round 12): left a non-blocking note that if
+ * npm's lifecycle handling grows further, a small data table would be
+ * preferable to more special-cases. `restart`'s stop/start fallback is
+ * npm's only documented irregular lifecycle chain -- everything else
+ * (arbitrary custom scripts, the plain bare-lifecycle names) follows the
+ * uniform pre/name/post shape -- so it remains a single explicit branch
+ * here rather than a table with one row, but the shape is intentionally
+ * factored so a genuine second irregular chain could be added as a
+ * sibling branch without restructuring the pre/post wrapping itself.
+ *
+ * Vasquez (review of PR #647, round 17): a script can be "missing" not
+ * just directly (no `scripts[name]` at all, round 14's finding) but
+ * transitively -- `restart: "npm run ci"` with no `ci` script aliases to
+ * something that doesn't exist, so real npm errors partway through
+ * `restart` itself and `postrestart` never fires, even though
+ * `scripts.restart` IS a string. The previous model only distinguished
+ * "narrowing found" from "no narrowing found", collapsing "ran clean" and
+ * "never actually ran because what it aliased to doesn't exist" into the
+ * same `null`. That made it impossible for a caller (the restart fallback
+ * checking whether `start` completed before consulting `postrestart`) to
+ * tell those apart. `SCRIPT_UNREACHABLE` is the third outcome threaded
+ * through the whole resolution graph -- returned whenever a script name or
+ * an alias target turns out not to exist -- so any caller gating a
+ * subsequent pre/post hook on "did the thing it hooks actually complete"
+ * can check for it explicitly, at every layer (a script's own missing
+ * name, an aliased-to name that's missing, and a hook whose own alias
+ * target is missing), rather than re-deriving that answer ad hoc per call
+ * site as each new shape of this was found across rounds 14/16/17.
+ * Ripley (review of PR #647, round 19): a cycle in the alias/lifecycle
+ * graph (e.g. `start: "npm restart"` while resolving `restart`'s own
+ * fallback, which tries `start` again) is not "ran clean" either -- real
+ * npm has no cycle-safe re-entrancy for this, it would recurse until it
+ * errors out (call-stack exhaustion or an equivalent internal guard), the
+ * same "never actually completes" territory as a missing script. The
+ * `visited` guard existed purely to keep THIS CHECKER from recursing
+ * forever, but returning `null` for it told callers "this path resolved
+ * with no narrowing," which let a `post<name>`/`postrestart` hook wrongly
+ * fire as if the cyclic path had completed. Both `visited` guards below
+ * now return `SCRIPT_UNREACHABLE` instead, so a cycle propagates as
+ * "never completes" exactly like the missing-script and unreachable-alias
+ * cases above.
  */
-function resolveNarrowingThroughAliasChain(scripts, command, visited) {
+const SCRIPT_UNREACHABLE = Symbol('script-unreachable');
+
+function resolveNarrowingForScript(scripts, name, visited) {
+  if (visited.has(name)) return SCRIPT_UNREACHABLE;
+  visited.add(name);
+  try {
+    return resolveNarrowingForScriptBody(scripts, name, visited);
+  } finally {
+    // Vasquez and Ripley (review of PR #647, round 20): `visited` must
+    // track only the names on the CURRENTLY ACTIVE resolution path (a
+    // recursion stack), not every name ever seen across the whole
+    // resolution -- a monotonically-growing set conflates "this script is
+    // an ancestor of itself on this very path" (a genuine cycle) with
+    // "this script was already resolved and finished on a different,
+    // now-completed branch" (legitimate DAG-style reuse of the same
+    // shared alias target from two independent places, e.g. both `stop`
+    // and `start` aliasing to the same `shared` script -- not a cycle at
+    // all). Removing `name` here, once its own resolution has fully
+    // returned, restores that distinction: a real self-reference while
+    // `name` is still an ancestor on the stack is still caught (nothing
+    // between `add` and this `delete` removes it early), but a sibling
+    // branch that reaches the same name AFTER this one has finished sees
+    // a name that is no longer marked visited, and resolves it fresh.
+    visited.delete(name);
+  }
+}
+
+function resolveNarrowingForScriptBody(scripts, name, visited) {
+  const isRestartFallback =
+    name === 'restart' && typeof scripts.restart !== 'string';
+
+  // Vasquez and Ripley (review of PR #647, round 14): the round-13
+  // pre/post model checked `pre<name>`/`post<name>` even when `<name>`
+  // itself has no script at all -- a false-positive regression, since
+  // real npm errors ("missing script: ...") and never runs pre/post
+  // hooks for a script that does not exist. `test: 'npm run ci'` with no
+  // `ci` script but a `preci` that narrows was flagged here even though
+  // real `npm run ci` never reaches `preci` at all -- it fails before any
+  // hook runs. Requiring the base script to exist BEFORE consulting its
+  // hooks (rather than checking hooks unconditionally, then the base
+  // script) restores that ordering. `restart` is the one exception: npm
+  // always runs `prerestart` before attempting whatever `restart`
+  // resolves to -- ITS OWN script if defined, or the stop/start fallback
+  // if not -- so a missing `scripts.restart` does not mean "nothing runs
+  // here" the way a missing `scripts.ci` does.
+  if (!isRestartFallback && typeof scripts[name] !== 'string') {
+    return SCRIPT_UNREACHABLE;
+  }
+
+  const preResult = checkLifecycleHook(scripts, `pre${name}`, visited);
+  if (preResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
+  if (preResult !== null) return preResult;
+
+  if (isRestartFallback) {
+    // Ripley (review of PR #647, round 15): the fallback branch used to
+    // sit entirely before the pre/post checks, skipping `prerestart`/
+    // `postrestart` outright for a synthesized restart. Moving it here
+    // (below `prerestart`, handled specially below rather than falling
+    // through to the generic `post<name>` check at the bottom) restores
+    // `prerestart` always firing -- but `postrestart` is NOT symmetric:
+    //
+    // Ripley (review of PR #647, round 16): `postrestart` was then
+    // flagged even when the fallback chain never actually completes.
+    // `stop` is optional in npm's fallback (silently skipped if absent),
+    // but `start` is not -- if neither `restart` nor `start` is defined,
+    // npm aborts ("missing script: start") before `postrestart` ever
+    // fires. `stop`'s own narrowing is still real if `stop` DOES run (it
+    // executes before the abort), so it must still be checked first; only
+    // the subsequent `postrestart` check is conditioned on `start`
+    // actually existing.
+    //
+    // Vasquez (review of PR #647, round 18): `stop` itself needs the same
+    // absent-vs-unreachable distinction that `start` already gets, not
+    // just the "no narrowing found" collapse. npm's `--if-present`
+    // leniency for `stop` only covers `stop` being ABSENT -- if `stop` IS
+    // defined but its own command aliases to a script that doesn't exist
+    // (e.g. `stop: "npm run missing-alias"`), real npm attempts `stop`,
+    // that attempt fails, and the whole `restart` aborts right there --
+    // `start`/`postrestart` never run, same as when `start` itself is
+    // unreachable. So the presence check has to happen at THIS call site
+    // (on `scripts.stop` directly) rather than trusting
+    // `resolveNarrowingForScript`'s return value alone, because that
+    // return value can't distinguish "stop absent" from "stop present but
+    // its alias target is missing" -- both currently surface as
+    // `SCRIPT_UNREACHABLE`.
+    if (typeof scripts.stop === 'string') {
+      const stopResult = resolveNarrowingForScript(scripts, 'stop', visited);
+      if (stopResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
+      if (stopResult !== null) return stopResult;
+    }
+    if (typeof scripts.start !== 'string') return SCRIPT_UNREACHABLE;
+    const startResult = resolveNarrowingForScript(scripts, 'start', visited);
+    if (startResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
+    if (startResult !== null) return startResult;
+    return checkLifecycleHook(scripts, 'postrestart', visited);
+  }
+
+  const mainResult = checkScriptCommandForNarrowing(
+    scripts,
+    scripts[name],
+    visited,
+  );
+  // Vasquez (review of PR #647, round 17): `mainResult` being
+  // `SCRIPT_UNREACHABLE` means `<name>`'s own command aliased to a script
+  // that doesn't exist -- npm errors partway through `<name>` and never
+  // reaches `post<name>`, so that must propagate rather than falling
+  // through to the post-hook check below.
+  if (mainResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
+  if (mainResult !== null) return mainResult;
+
+  return checkLifecycleHook(scripts, `post${name}`, visited);
+}
+
+/**
+ * Check one pre/post lifecycle hook script (`pre<name>`/`post<name>`) for a
+ * narrowing, including through its own alias chain. Unlike the script it
+ * hooks, a hook itself gets no further pre/post wrapping of its own (npm
+ * has no `prepretest`) -- it is just another command line that may
+ * directly narrow or alias elsewhere.
+ *
+ * A hook that is simply absent is not `SCRIPT_UNREACHABLE` -- npm silently
+ * skips a `pre*`/`post*` hook that was never defined, that is not an
+ * error. `SCRIPT_UNREACHABLE` is returned when the hook IS defined but
+ * its own command aliases to something that does not exist (so the hook
+ * itself would fail to run), or when re-entering this same hook name
+ * indicates a cycle (round 19, Ripley) -- both cases mean callers must
+ * distinguish this from "ran clean" the same way they do for a main
+ * script. Same round-20 stack-scoping applies here as in
+ * `resolveNarrowingForScript`: `hookName` is removed from `visited` once
+ * this call returns, so a later, independent reuse of the same hook name
+ * (which cannot happen for `hookName` itself within one call, but matters
+ * for names it goes on to alias into) is not mistaken for a cycle.
+ */
+function checkLifecycleHook(scripts, hookName, visited) {
+  if (visited.has(hookName)) return SCRIPT_UNREACHABLE;
+  if (typeof scripts[hookName] !== 'string') return null;
+  visited.add(hookName);
+  try {
+    return checkScriptCommandForNarrowing(scripts, scripts[hookName], visited);
+  } finally {
+    visited.delete(hookName);
+  }
+}
+
+/**
+ * Check a single command line for a narrowing -- either directly in the
+ * command itself, or one hop further through whatever script it aliases to
+ * (which is then checked with its own full pre/main/post resolution via
+ * `resolveNarrowingForScript`, so a narrowing behind an aliased script's
+ * OWN lifecycle hooks is still reached, and so an alias target that turns
+ * out not to exist propagates as `SCRIPT_UNREACHABLE` rather than being
+ * silently treated as "ran clean, no narrowing").
+ */
+function checkScriptCommandForNarrowing(scripts, command, visited) {
   if (typeof command !== 'string') return null;
   const direct = detectNarrowing(command, { requireDirectInvocation: false });
   if (direct !== null) return { narrowing: direct, command };
-  const match = NPM_SCRIPT_REFERENCE.exec(command.trim());
-  if (match === null) return null;
-  const target = match[1];
-  if (visited.has(target)) return null;
-  visited.add(target);
-  return resolveNarrowingThroughAliasChain(scripts, scripts[target], visited);
+  const target = resolveScriptAliasTarget(command);
+  if (target === null) return null;
+  return resolveNarrowingForScript(scripts, target, visited);
 }
 
 /**
@@ -679,15 +1132,11 @@ function resolveNarrowingThroughAliasChain(scripts, command, visited) {
 export function checkPackageJsonScripts(scripts) {
   if (scripts === null || typeof scripts !== 'object') return [];
   const violations = [];
-  for (const [name, command] of Object.entries(scripts)) {
+  for (const name of Object.keys(scripts)) {
     if (!TEST_SCRIPT_NAME.test(name)) continue;
-    if (typeof command !== 'string') continue;
-    const result = resolveNarrowingThroughAliasChain(
-      scripts,
-      command,
-      new Set(),
-    );
-    if (result !== null) {
+    if (typeof scripts[name] !== 'string') continue;
+    const result = resolveNarrowingForScript(scripts, name, new Set());
+    if (result !== null && result !== SCRIPT_UNREACHABLE) {
       violations.push({
         home: 'package.json',
         location: `scripts.${name}`,
