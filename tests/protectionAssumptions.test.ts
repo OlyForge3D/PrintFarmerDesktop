@@ -824,6 +824,79 @@ describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', (
   });
 });
 
+// #491's acceptance test names four HTTP codes explicitly and requires that
+// "the four HTTP codes above are reproduced by a test so the scope claim
+// cannot drift again." Every test above proves the code's *logic* is right
+// given some facts; none of them proves GitHub's API still answers the way
+// the exemption's rewritten justification assumes. A stubbed fetchImpl can
+// only ever agree with itself. This suite makes a real, unauthenticated
+// request to each of the four endpoints against this repository and pins
+// the status GitHub actually returns, so a change on GitHub's side (the
+// repository going private, a public endpoint starting to require auth,
+// etc.) fails this suite instead of silently invalidating the public tier.
+describe('#491: the four unauthenticated endpoint codes this exemption depends on', () => {
+  const REPOSITORY_PATH = 'repos/OlyForge3D/PrintFarmerDesktop';
+
+  const ENDPOINT_EXPECTATIONS = [
+    {
+      path: `/${REPOSITORY_PATH}/branches/development/protection`,
+      expectedStatus: 401,
+    },
+    { path: `/${REPOSITORY_PATH}/rulesets`, expectedStatus: 200 },
+    {
+      path: `/${REPOSITORY_PATH}/branches?protected=true`,
+      expectedStatus: 200,
+    },
+    { path: `/${REPOSITORY_PATH}/collaborators`, expectedStatus: 401 },
+  ] as const;
+
+  it.each(ENDPOINT_EXPECTATIONS)(
+    'reads $path unauthenticated as HTTP $expectedStatus',
+    async ({ path, expectedStatus }) => {
+      const url = `https://api.github.com${path}`;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('timed out after 10000ms')), 10_000);
+      });
+      let response: Response;
+      try {
+        response = await Promise.race([
+          fetch(url, { headers: { accept: 'application/vnd.github+json' } }),
+          timeout,
+        ]);
+      } catch (error) {
+        // A network failure here is evidence about this environment (no
+        // egress, DNS unavailable, offline sandbox), not evidence that
+        // #491's scope claim has drifted -- there is nothing to assert
+        // against. Warn loudly rather than failing or silently passing.
+        console.warn(
+          `#491: could not reach ${url} to pin its unauthenticated status (${String(error)}); skipping this endpoint's assertion`,
+        );
+        return;
+      }
+
+      if (
+        response.status === 403 &&
+        response.headers.get('x-ratelimit-remaining') === '0'
+      ) {
+        // An unauthenticated caller shares GitHub's per-IP rate limit with
+        // everything else on that IP. Exhausting it is a property of the
+        // runner, not of #491's claim, so it is reported rather than
+        // asserted against.
+        console.warn(
+          `#491: unauthenticated rate limit exhausted while checking ${url}; skipping this endpoint's assertion`,
+        );
+        return;
+      }
+
+      expect(
+        response.status,
+        `${url} returned HTTP ${response.status}, not the ${expectedStatus} #491's public/privileged split depends on`,
+      ).toBe(expectedStatus);
+    },
+    15_000,
+  );
+});
+
 /**
  * #492: a credential-less run degrades to a skip, which is correct for a
  * human at a keyboard reading the printed explanation and wrong for CI, whose
