@@ -177,7 +177,7 @@ direction is a confident wrong answer, which is worse than an inconclusive one.
   your content is present at the tip. Scope it to the paths you actually touched — an
   unscoped diff picks up unrelated churn elsewhere in the tree and answers a different
   question.
-- **Ancestry against the pre-merge head** (works only if you diff the right pair): the
+- **Ancestry against the merge commit** (works only if you diff the right pair): the
   merge **commit** GitHub produced (`gh pr view --json mergeCommit`) — not the branch's own
   pre-merge tip — genuinely is an ancestor of the target once merged, because it _is_ the
   commit that landed on it. `git merge-base --is-ancestor <mergeCommit.oid> origin/development`

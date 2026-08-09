@@ -16,7 +16,7 @@ had fetched earlier in their own session and never re-checked:
 | author (publish) | `14304447` | held for publication, reporting local green and awaiting a push                |
 
 Every one of the three was accurate about the SHA it named. None of them re-fetched
-before acting. Ralph's claim that the remote sat at `31d` was falsified by a single live
+before acting. Ralph's claim that the remote sat at `e3953ead` was falsified by a single live
 `ls-remote`; the author's held branch was byte-identical to what had already shipped. The
 cost: two follow-up scopes drafted for work already merged, one review verdict issued
 against a superseded head, and a publication very nearly performed on a branch whose
