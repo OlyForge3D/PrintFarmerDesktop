@@ -734,9 +734,15 @@ describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
     // is safe here.
     const fetchImpl: typeof fetch = (input, init) => {
       const url = input as string;
-      calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
+      calls.push({
+        url,
+        headers: (init?.headers ?? {}) as Record<string, string>,
+      });
       const body = url.includes('/rulesets') ? [] : [{ name: 'development' }];
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as Response);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(body),
+      } as Response);
     };
 
     const facts = await fetchPublicRepositoryFacts({
@@ -751,7 +757,9 @@ describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
     expect(urls.some((u) => u.endsWith('/branches?protected=true'))).toBe(true);
     for (const call of calls) {
       expect(
-        Object.keys(call.headers).some((h) => h.toLowerCase() === 'authorization'),
+        Object.keys(call.headers).some(
+          (h) => h.toLowerCase() === 'authorization',
+        ),
         'a public-tier request must carry no authorization header at all',
       ).toBe(false);
     }
@@ -759,7 +767,11 @@ describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
 
   it('surfaces a non-ok response as a thrown error', async () => {
     const fetchImpl = () =>
-      Promise.resolve({ ok: false, status: 404, statusText: 'Not Found' } as Response);
+      Promise.resolve({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+      } as Response);
 
     await expect(
       fetchPublicRepositoryFacts({
@@ -777,11 +789,17 @@ describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', (
     // string URL here, so a direct cast avoids no-base-to-string.
     const fetchImpl: typeof fetch = (input, init) => {
       const url = input as string;
-      calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
+      calls.push({
+        url,
+        headers: (init?.headers ?? {}) as Record<string, string>,
+      });
       const body = url.includes('/collaborators')
         ? [{ login: 'jpapiez', role_name: 'admin' }]
         : { enforce_admins: { enabled: false } };
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as Response);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(body),
+      } as Response);
     };
 
     const facts = await fetchPrivilegedRepositoryFacts({
@@ -797,7 +815,10 @@ describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', (
       const authHeader = Object.entries(call.headers).find(
         ([key]) => key.toLowerCase() === 'authorization',
       );
-      expect(authHeader, 'a privileged-tier request must carry the given token').toBeTruthy();
+      expect(
+        authHeader,
+        'a privileged-tier request must carry the given token',
+      ).toBeTruthy();
       expect(authHeader?.[1]).toContain('a-token');
     }
   });

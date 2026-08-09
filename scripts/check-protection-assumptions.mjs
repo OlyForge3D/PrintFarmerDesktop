@@ -311,10 +311,12 @@ export function evaluateProtectionAssumptions({
     );
   }
 
-  violations.push(...evaluatePublicProtectionAssumptions({
-    rulesets,
-    protectedBranches,
-  }));
+  violations.push(
+    ...evaluatePublicProtectionAssumptions({
+      rulesets,
+      protectedBranches,
+    }),
+  );
 
   return violations;
 }
