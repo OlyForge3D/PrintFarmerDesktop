@@ -418,30 +418,29 @@ function parseCheckRun(checkRun, index) {
  * field, though -- it requires the same thing the round-8 finding asked
  * for: a score that is a pure function of one run, not a rule that
  * depends on which states the two runs being compared happen to be in.
- * That score is a `(primary, secondary)` pair:
+ * That score is `started_at` (may be `null` for a run that has not
+ * started yet -- queued/waiting/requested). A rerun is, definitionally,
+ * triggered no earlier than the attempt it supersedes, so which run
+ * *started* later is the one true signal for "which attempt is newer"
+ * that holds regardless of completion state -- unlike `completed_at`,
+ * which does not: a slow completed run that started earlier can finish
+ * later than a fast completed rerun that started after it, and comparing
+ * by `completed_at` alone picked the wrong (older, slower) run as
+ * "latest" in exactly that case (Ripley, round 10, reproduced against
+ * live data).
  *
- *   primary   = `started_at` (may be `null` for a run that has not
- *               started yet -- queued/waiting/requested). A rerun is,
- *               definitionally, triggered no earlier than the attempt it
- *               supersedes, so which run *started* later is the one true
- *               signal for "which attempt is newer" that holds regardless
- *               of completion state -- unlike `completed_at`, which does
- *               not: a slow completed run that started earlier can finish
- *               later than a fast completed rerun that started after it,
- *               and comparing by `completed_at` alone picked the wrong
- *               (older, slower) run as "latest" in exactly that case
- *               (Ripley, round 10, reproduced against live data).
- *   secondary = `completed_at`, used only to break an exact tie on
- *               `primary` between two completed runs. `started_at` is
- *               only second-resolution, so two reruns triggered in quick
- *               succession can genuinely start in the same reported
- *               second; `completed_at` is an independent signal in that
- *               rare case. It is not used to break a tie between an open
- *               run and a completed run (or between two open runs),
- *               since an open run's `completed_at` is always `null` and a
- *               tie at the `primary` level there has no other real
- *               timestamp evidence to fall back on -- see
- *               `secondaryRecencyTime` below.
+ * An earlier version of this function fell back to comparing
+ * `completed_at` as a tiebreaker whenever two completed runs' `started_at`
+ * values tied to the second, reasoning that the API's second-resolution
+ * `started_at` could hide a genuine sub-second start-order difference.
+ * That tiebreaker was itself unsound, for exactly the same reason
+ * `completed_at` is not trustworthy as a primary signal: which run
+ * *finished* later does not prove which one *started* later within that
+ * shared second (Ripley + Hicks, round 11, reproduced independently).
+ * There is no field the Checks API provides that reliably breaks a
+ * same-second `started_at` tie, so this now does the only honest thing
+ * with a tie it cannot resolve: reports it as ambiguous (`0`), the same
+ * as it already does for a run that has not started at all.
  *
  * Comparing runs by this per-run score directly -- rather than by a rule
  * that depends on which states the pair being compared are in -- is what
@@ -449,15 +448,15 @@ function parseCheckRun(checkRun, index) {
  * values that are each a pure function of one run alone, so it can never
  * form a cycle no matter what order the runs are folded in.
  *
- * When `primary` is `null` on either side (a run that is still
+ * When the score is `null` on either side (a run that is still
  * queued/waiting/requested and has not started yet, so the API gives it
- * no timestamp at all), this returns `0` rather than guessing. There is
- * no bound left to check such a run against, so treating it as either
- * newer or older than another run would be an unfounded assumption.
- * `latestCheckRunsByName` already fails closed (throws "cannot
- * determine") on an unresolved `0` that survives to the end, which is the
- * correct outcome here: confidently picking a side for a run the API
- * gives no timestamp evidence for would be exactly the kind of
+ * no timestamp at all) or the two scores tie exactly, this returns `0`
+ * rather than guessing. There is no bound left to check such a pair
+ * against, so treating either as newer or older than the other would be
+ * an unfounded assumption. `latestCheckRunsByName` already fails closed
+ * (throws "cannot determine") on an unresolved `0` that survives to the
+ * end, which is the correct outcome here: confidently picking a side
+ * without real evidence for it would be exactly the kind of
  * "plausible-looking but wrong" misreporting this file exists to prevent.
  *
  * @param {ReturnType<typeof parseCheckRun>} run
@@ -465,21 +464,6 @@ function parseCheckRun(checkRun, index) {
  */
 function primaryRecencyTime(run) {
   return run.startedAt === null ? null : Date.parse(run.startedAt);
-}
-
-/**
- * @param {ReturnType<typeof parseCheckRun>} run
- * @returns {number | null}
- */
-function secondaryRecencyTime(run) {
-  // Only meaningful as a tiebreaker between two completed runs whose
-  // started_at ties to the second (see compareCheckRunRecency's doc
-  // comment): a run that is not completed has no completed_at at all, so
-  // returning null here (rather than e.g. reusing started_at) correctly
-  // leaves a primary-level tie between an open run and anything else
-  // unresolved instead of inventing a signal that does not exist.
-  if (run.status !== 'completed' || run.completedAt === null) return null;
-  return Date.parse(run.completedAt);
 }
 
 /**
@@ -492,10 +476,6 @@ function compareCheckRunRecency(a, b) {
   const bPrimary = primaryRecencyTime(b);
   if (aPrimary === null || bPrimary === null) return 0;
   if (aPrimary !== bPrimary) return aPrimary > bPrimary ? 1 : -1;
-  const aSecondary = secondaryRecencyTime(a);
-  const bSecondary = secondaryRecencyTime(b);
-  if (aSecondary === null || bSecondary === null) return 0;
-  if (aSecondary !== bSecondary) return aSecondary > bSecondary ? 1 : -1;
   return 0;
 }
 

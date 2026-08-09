@@ -843,6 +843,47 @@ describe('latestCheckRunsByName', () => {
     }
   });
 
+  it('REGRESSION: two completed runs that started in the same reported second are ambiguous even if their completed_at values differ -- finishing later does not prove starting later (Ripley + Hicks, round 11)', () => {
+    // The round-10 fix demoted completed_at to a tiebreaker for exactly
+    // this case (two completed runs whose started_at ties to the
+    // second), reasoning that completed_at was an "independent signal"
+    // in that rare case. That reasoning was itself unsound: which run
+    // *finished* later does not prove which one *started* later within
+    // the shared second -- the API's started_at is only second-resolution,
+    // so a run that appears to start in the same second as another could
+    // genuinely have started a fraction later (or earlier) than it, and
+    // completed_at carries no information about that sub-second order.
+    // Concrete repro: two completed runs reporting the identical
+    // started_at, one of which took much longer to run than the other --
+    // there is no honest signal here that says which one is "the newer
+    // attempt", so this must be ambiguous (throw), not resolved via
+    // completed_at.
+    const shortRun = checkRun({
+      id: 1,
+      name: 'Desktop',
+      status: 'completed',
+      conclusion: 'failure',
+      started_at: '2026-08-06T12:00:00Z',
+      completed_at: '2026-08-06T12:01:00Z',
+    });
+    const longRun = checkRun({
+      id: 2,
+      name: 'Desktop',
+      status: 'completed',
+      conclusion: 'success',
+      started_at: '2026-08-06T12:00:00Z',
+      completed_at: '2026-08-06T12:10:00Z',
+    });
+    for (const checkRuns of [
+      [shortRun, longRun],
+      [longRun, shortRun],
+    ]) {
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+        /cannot determine the latest attempt/,
+      );
+    }
+  });
+
   it('REGRESSION: two runs created in the exact same second -- a completed failure and a queued rerun -- cannot be safely ordered, and must not silently mask the failure behind a false pending (Ralph round-8 repro, restated for the created_at-only design)', () => {
     // Vasquez (round 8): under the pre-rewrite design, a still-queued run's
     // `created_at` was bounded against the completed run's `completed_at`
