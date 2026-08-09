@@ -43,6 +43,7 @@ export interface CensusCitation {
   readonly missing: string[];
   readonly missingFields?: string[];
   readonly invalidFields?: string[];
+  readonly duplicateFields?: string[];
 }
 
 export function normalizeInstant(value: unknown): number | null;

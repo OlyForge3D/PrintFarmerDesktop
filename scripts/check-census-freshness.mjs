@@ -286,15 +286,29 @@ const REQUIRED_FIELDS = [
 const NUMERIC_FIELDS = ['worktrees', 'true', 'false', 'accused'];
 
 /**
+ * A count field's raw text must be a plain non-negative base-10 integer --
+ * one or more ASCII digits and nothing else. This deliberately rejects
+ * forms that `Number(...)` would otherwise coerce into something
+ * `Number.isFinite` accepts: a leading `-` (negative counts are not a
+ * meaningful claim about how many worktrees exist), a decimal point (a
+ * fractional worktree count is not a count), and alternate-base or
+ * exponential notation such as `0x10` or `1e3` (a count field is a
+ * transcription of a whole number, not an arbitrary numeric expression).
+ */
+const NON_NEGATIVE_INTEGER_PATTERN = /^\d+$/;
+
+/**
  * Parses `census-measured` fenced citation blocks out of a report or issue
  * body -- the same shape and parsing strategy as
  * check-dated-measurement.mjs's `parseMeasurementCitations`, deliberately,
  * so a reader who knows one convention already knows the other. A block
- * missing a required key, or one where a numeric key's value does not parse
- * to a finite number (e.g. `worktrees: twenty-four`, `worktrees: NaN`, or an
- * empty value), is returned with `incomplete: true` and the offending keys
- * named in `missing` -- never silently coerced to `NaN` and passed through
- * as if it were a real, if merely absent, count.
+ * missing a required key, one where a numeric key's value is not a plain
+ * non-negative base-10 integer (e.g. `worktrees: twenty-four`, `worktrees:
+ * -1`, `worktrees: 24.5`, `worktrees: 0x10`, or an empty value), or one
+ * where any key is repeated (e.g. two `measured_at:` lines), is returned
+ * with `incomplete: true` and the offending keys named -- never silently
+ * coerced to `NaN`, silently accepted as a non-integer count, or silently
+ * resolved by letting the last occurrence of a duplicated key win.
  */
 export function parseCensusCitations(text) {
   if (typeof text !== 'string') {
@@ -305,6 +319,7 @@ export function parseCensusCitations(text) {
   let match;
   while ((match = blockPattern.exec(text)) !== null) {
     const fields = {};
+    const keyCounts = new Map();
     for (const rawLine of match[1].split(/\r?\n/)) {
       const line = rawLine.trim();
       if (line === '') continue;
@@ -312,15 +327,27 @@ export function parseCensusCitations(text) {
       if (separator === -1) continue;
       const key = line.slice(0, separator).trim();
       const value = line.slice(separator + 1).trim();
-      if (key) fields[key] = value;
+      if (!key) continue;
+      keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+      fields[key] = value;
     }
+    // A key repeated within one block names two different values for the
+    // same field with no rule for which wins. Silently keeping only the
+    // last occurrence would hide the same class of ambiguity already
+    // refused for repeated CLI flags -- treat it as an incomplete citation
+    // rather than an arbitrary tiebreak.
+    const duplicateFields = [...keyCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([key]) => key);
     const missingFields = REQUIRED_FIELDS.filter((key) => !(key in fields));
     const invalidNumericFields = NUMERIC_FIELDS.filter(
-      (key) =>
-        key in fields &&
-        (fields[key] === '' || !Number.isFinite(Number(fields[key]))),
+      (key) => key in fields && !NON_NEGATIVE_INTEGER_PATTERN.test(fields[key]),
     );
-    const missing = [...missingFields, ...invalidNumericFields];
+    const missing = [
+      ...missingFields,
+      ...invalidNumericFields,
+      ...duplicateFields,
+    ];
     citations.push({
       worktrees:
         fields.worktrees !== undefined ? Number(fields.worktrees) : undefined,
@@ -334,6 +361,7 @@ export function parseCensusCitations(text) {
       missing,
       missingFields,
       invalidFields: invalidNumericFields,
+      duplicateFields,
     });
   }
   return citations;
@@ -444,6 +472,7 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     if (citation.incomplete) {
       const missingFields = citation.missingFields ?? citation.missing;
       const invalidFields = citation.invalidFields ?? [];
+      const duplicateFields = citation.duplicateFields ?? [];
       const parts = [];
       if (missingFields.length > 0) {
         parts.push(`missing required field(s): ${missingFields.join(', ')}`);
@@ -451,6 +480,11 @@ async function main(argv = process.argv.slice(2), deps = {}) {
       if (invalidFields.length > 0) {
         parts.push(
           `non-numeric or unparseable field(s): ${invalidFields.join(', ')}`,
+        );
+      }
+      if (duplicateFields.length > 0) {
+        parts.push(
+          `duplicated field(s) within one citation block: ${duplicateFields.join(', ')}`,
         );
       }
       console.error(

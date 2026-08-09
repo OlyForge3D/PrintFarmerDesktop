@@ -346,6 +346,130 @@ describe('parsing ```census-measured citations out of a report', () => {
     const text = ['```measured', 'repo: x/y', 'number: 1', '```'].join('\n');
     expect(parseCensusCitations(text)).toEqual([]);
   });
+
+  it('rejects a negative count as an invalid numeric field rather than accepting it as a real count', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: -1',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.invalidFields).toContain('worktrees');
+  });
+
+  it('rejects a fractional count as an invalid numeric field', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24.5',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.invalidFields).toContain('worktrees');
+  });
+
+  it('rejects a hex-notation count as an invalid numeric field, even though Number() would parse it', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 0x10',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.invalidFields).toContain('worktrees');
+  });
+
+  it('rejects an exponential-notation count as an invalid numeric field, even though Number() would parse it', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 1e3',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.invalidFields).toContain('worktrees');
+  });
+
+  it('accepts a zero count as a valid, complete field', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 0',
+      'true: 0',
+      'false: 0',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(false);
+    expect(citations[0]?.invalidFields).toEqual([]);
+  });
+
+  it('reports a duplicated measured_at key as incomplete rather than silently keeping the last value', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2020-01-01T00:00:00Z',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations).toHaveLength(1);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.duplicateFields).toContain('measured_at');
+    expect(citations[0]?.missing).toContain('measured_at');
+  });
+
+  it('reports a duplicated numeric count key as incomplete rather than silently keeping the last value', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'worktrees: 3',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations).toHaveLength(1);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.duplicateFields).toContain('worktrees');
+  });
+
+  it('reports no duplicate fields for a well-formed citation', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.duplicateFields).toEqual([]);
+  });
 });
 
 describe('main — end-to-end verdicts driven through the CLI surface', () => {
@@ -479,6 +603,33 @@ describe('main — end-to-end verdicts driven through the CLI surface', () => {
     expect(rendered).toContain('accused');
     expect(rendered).toContain('non-numeric or unparseable field');
     expect(rendered).toContain('true');
+  });
+
+  it('exits EXIT_UNVERIFIABLE and reports a duplicated field when a --file citation repeats a key', async () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2020-01-01T00:00:00Z',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(['--file', 'fake-report.md'], {
+        readFile: () => text,
+      });
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    const rendered = errors.join('\n');
+    expect(rendered).toContain('duplicated field');
+    expect(rendered).toContain('measured_at');
   });
 });
 
