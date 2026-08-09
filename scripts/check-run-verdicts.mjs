@@ -220,11 +220,17 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${sanitizedName}) has status ${JSON.stringify(status)} but a non-null conclusion ${JSON.stringify(conclusion)} -- only a completed run should carry one`,
     );
   }
-  // A queued or in-progress run legitimately has not started yet, so GitHub
-  // reports `started_at: null` for it -- that is not malformed input, it is
-  // the normal shape of "pending". Only a completed run is required to carry
-  // a valid timestamp; a completed run with none is the actually-malformed
-  // case. `completed_at` follows the identical rule.
+  // A run still `queued` (or one of the deployment-protection-rule states
+  // `waiting`/`requested`/`pending`) legitimately has not started yet, so
+  // GitHub reports `started_at: null` for it -- that is not malformed
+  // input, it is the normal shape of "not yet begun". `in_progress`,
+  // though, definitionally means work has begun, so GitHub always sets a
+  // real `started_at` once a run reaches that status -- `in_progress` with
+  // `started_at: null` is the same class of impossible combination as
+  // `completed` with no timestamp, just one status earlier, and silently
+  // accepting it would let such a run's null `started_at` feed
+  // `isNewerCheckRun`'s "still open, no timestamp to bound against" branch
+  // and let it outrank a completed run it may not actually be newer than.
   let startedAt = null;
   if (startedAtRaw !== null && startedAtRaw !== undefined) {
     if (
@@ -237,9 +243,9 @@ function parseCheckRun(checkRun, index) {
       );
     }
     startedAt = startedAtRaw;
-  } else if (status === 'completed') {
+  } else if (status === 'completed' || status === 'in_progress') {
     throw new Error(
-      `check run ${index + 1} (${sanitizedName}) is completed but has no started_at`,
+      `check run ${index + 1} (${sanitizedName}) has status ${JSON.stringify(status)} but no started_at`,
     );
   }
   let completedAt = null;

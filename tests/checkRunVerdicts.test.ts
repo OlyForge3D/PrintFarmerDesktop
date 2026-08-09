@@ -242,7 +242,20 @@ describe('latestCheckRunsByName', () => {
       }),
     ];
     expect(() => latestCheckRunsByName(checkRuns)).toThrow(
-      /completed but has no started_at/,
+      /"completed" but no started_at/,
+    );
+  });
+
+  it('refuses an in_progress run that carries no started_at, since in_progress means work has begun', () => {
+    const checkRuns = [
+      checkRun({
+        status: 'in_progress',
+        conclusion: null,
+        started_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /"in_progress" but no started_at/,
     );
   });
 
