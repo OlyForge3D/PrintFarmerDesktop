@@ -77,7 +77,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import path from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 
@@ -124,41 +124,54 @@ function run(command, args, options = {}) {
 }
 
 /**
- * Appends the trailer via `git interpret-trailers --in-place`, so the exact
- * same tool that classifies trailers for `check-copilot-session-trailers.mjs`
- * and `check-copilot-session-collisions.mjs` is the one deciding where this
- * line lands. Measured idempotent: invoking this twice with the same
- * `sessionId` against the same file adds the line once, not twice -- which
- * matters because `git commit --amend` re-runs this hook against a message
- * that may already carry this exact trailer from the commit being amended.
+ * Appends the trailer via `git interpret-trailers`, so the exact same tool
+ * that classifies trailers for `check-copilot-session-trailers.mjs` and
+ * `check-copilot-session-collisions.mjs` is the one deciding where this line
+ * lands. Measured idempotent: invoking this twice with the same `sessionId`
+ * against the same file adds the line once, not twice -- which matters
+ * because `git commit --amend` re-runs this hook against a message that may
+ * already carry this exact trailer from the commit being amended.
  *
- * `cwd` is pinned to the message file's own directory rather than left at
- * the caller's cwd. Measured on Windows: `--in-place` writes its swap file
- * relative to the process's current directory and then renames it onto the
- * target, and a rename across two different drive letters fails outright
- * (`Improper link` / `Permission denied` depending which side is invalid).
- * The real hook invocation's cwd is always the repository root, which is
- * ordinarily on the same drive as `COMMIT_EDITMSG` (inside `.git/`) and would
- * not hit this; pinning `cwd` here removes the dependency on that coincidence
- * and is what let this be tested at all with a message file under a
- * different temp root than the repository being tested from.
+ * Deliberately NOT `--in-place`: that flag has git write its own swap file
+ * next to a FILE PATH it is given and then rename that swap file onto the
+ * target, and that path is resolved two different, mutually-incompatible
+ * ways depending on how it is spelled. A full path handed to `--in-place`
+ * writes and renames the swap file relative to the CALLER's cwd (not the
+ * target's directory) -- which fails outright on Windows the moment the
+ * caller's cwd and the target file are on different drive letters, because
+ * an OS-level rename cannot cross drives (`Improper link` /
+ * `Permission denied`). The fix attempted before this one -- passing a bare
+ * basename with `cwd` pinned to the file's own directory -- traded that
+ * failure for a different one: Hicks (#675 QA review) measured Windows
+ * `git interpret-trailers --in-place` itself failing to resolve that
+ * basename back into an input file (`fatal: could not read input file
+ * 'COMMIT_EDITMSG'`) once cwd was reassigned this way, which meant the hook
+ * silently no-opped there (a caught error is swallowed by `main`'s
+ * catch-all, by design -- see the module header). Both variants asked git to
+ * resolve a FILE PATH under some cwd; the difference between them was only
+ * which cwd, and neither one is correct in every context this hook actually
+ * runs under (a real hook invocation's cwd, vs. a test harness's temp
+ * directory on its own drive).
+ *
+ * Piping the message through stdin/stdout instead removes the file path --
+ * and therefore the cwd -- from git's side of this call entirely. Git only
+ * ever sees bytes on a pipe; this function alone still touches
+ * `messageFilePath`, via ordinary Node `fs` calls that resolve it against
+ * the process's real cwd the same way on every OS, with no OS-level rename
+ * involved on either end.
  *
  * @param {string} messageFilePath
  * @param {string} sessionId
  * @param {typeof run} [exec]
  */
 export function appendSessionTrailer(messageFilePath, sessionId, exec = run) {
-  exec(
+  const original = readFileSync(messageFilePath, 'utf8');
+  const updated = exec(
     'git',
-    [
-      'interpret-trailers',
-      '--in-place',
-      '--trailer',
-      `Copilot-Session=${sessionId}`,
-      path.basename(messageFilePath),
-    ],
-    { cwd: path.dirname(messageFilePath) },
+    ['interpret-trailers', '--trailer', `Copilot-Session=${sessionId}`],
+    { input: original },
   );
+  writeFileSync(messageFilePath, updated);
 }
 
 /**

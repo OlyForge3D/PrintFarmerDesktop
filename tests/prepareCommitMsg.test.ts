@@ -15,6 +15,16 @@ import {
 const VALID_V4 = 'a361e68b-8ced-488c-8d6c-9f43d2b3207a';
 const VALID_V7 = '01890f4e-7cc2-7d00-93e0-3d70a36a33d5';
 
+const tempDirs: string[] = [];
+
+function tempMessageFile(contents: string) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'prepare-commit-msg-'));
+  tempDirs.push(dir);
+  const file = path.join(dir, 'COMMIT_EDITMSG');
+  writeFileSync(file, contents);
+  return file;
+}
+
 describe('resolveSessionId', () => {
   it('reads a well-formed UUID from the CLI runtime env var', () => {
     expect(resolveSessionId({ [SESSION_ENV_VAR]: VALID_V4 })).toBe(VALID_V4);
@@ -42,11 +52,15 @@ describe('resolveSessionId', () => {
 describe('main', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    while (tempDirs.length) {
+      rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+    }
   });
 
   it('appends the trailer via git interpret-trailers when the env var is present', () => {
-    const exec = vi.fn();
-    const result = main(['/tmp/COMMIT_EDITMSG', undefined, undefined], {
+    const file = tempMessageFile('feat: something\n\nWhy this change.\n');
+    const exec = vi.fn().mockReturnValue('rewritten message');
+    const result = main([file, undefined, undefined], {
       environment: { [SESSION_ENV_VAR]: VALID_V4 },
       exec,
     });
@@ -54,15 +68,10 @@ describe('main', () => {
     expect(result).toEqual({ applied: true, sessionId: VALID_V4 });
     expect(exec).toHaveBeenCalledWith(
       'git',
-      [
-        'interpret-trailers',
-        '--in-place',
-        '--trailer',
-        `Copilot-Session=${VALID_V4}`,
-        'COMMIT_EDITMSG',
-      ],
-      { cwd: path.dirname('/tmp/COMMIT_EDITMSG') },
+      ['interpret-trailers', '--trailer', `Copilot-Session=${VALID_V4}`],
+      { input: 'feat: something\n\nWhy this change.\n' },
     );
+    expect(readFileSync(file, 'utf8')).toBe('rewritten message');
   });
 
   it('skips merge commits without touching the message', () => {
@@ -82,8 +91,9 @@ describe('main', () => {
   it('does not skip squash sources', () => {
     expect(SKIPPED_SOURCES.has('squash')).toBe(false);
 
-    const exec = vi.fn();
-    const result = main(['/tmp/COMMIT_EDITMSG', 'squash', undefined], {
+    const file = tempMessageFile('squash msg\n');
+    const exec = vi.fn().mockReturnValue('squash msg\n');
+    const result = main([file, 'squash', undefined], {
       environment: { [SESSION_ENV_VAR]: VALID_V4 },
       exec,
     });
@@ -114,20 +124,11 @@ describe('main', () => {
 });
 
 describe('appendSessionTrailer end-to-end, against real git interpret-trailers', () => {
-  const dirs: string[] = [];
   afterEach(() => {
-    while (dirs.length) {
-      rmSync(dirs.pop() as string, { recursive: true, force: true });
+    while (tempDirs.length) {
+      rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
-
-  function tempMessageFile(contents: string) {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'prepare-commit-msg-'));
-    dirs.push(dir);
-    const file = path.join(dir, 'COMMIT_EDITMSG');
-    writeFileSync(file, contents);
-    return file;
-  }
 
   it('adds a well-formed trailer to a plain commit message', () => {
     const file = tempMessageFile('feat: something\n\nWhy this change.\n');
