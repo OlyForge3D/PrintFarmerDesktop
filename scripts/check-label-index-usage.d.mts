@@ -50,9 +50,15 @@ export function scanLabelIndexUsage(input?: {
 
 export function formatViolation(violation: LabelIndexViolation): string;
 
+export interface CollectScannedFilesResult {
+  files: ScannedFile[];
+  refusedSymlinks: string[];
+}
+
 export function collectScannedFiles(deps?: {
   readFile?: (path: string) => string;
   listFiles?: (directory: string) => string[];
-}): ScannedFile[];
+  lstat?: (path: string) => { isSymbolicLink(): boolean };
+}): CollectScannedFilesResult;
 
 export function main(): Promise<void>;

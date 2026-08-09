@@ -36,7 +36,7 @@
 // script that wants to use one of these patterns must say, in the diff, why
 // its shape does not repeat #299.
 
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -155,30 +155,75 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
  * `gh` into the same plain-text command shape `LABEL_INDEX_PATTERNS` already
  * matches, so `execFileSync('gh', ['pr', 'list', '--label', name])` is not
  * invisible just because its tokens are array elements instead of one
- * contiguous string. Vasquez: a scan that only read contiguous text missed
- * this shape entirely -- a script that builds argv as an array (the safer
- * pattern for shell-injection reasons, and the one this repo's own scripts
- * already use for `gh`/`git` calls) would pass through undetected.
+ * contiguous string. Vasquez (round 1): a scan that only read contiguous
+ * text missed this shape entirely -- a script that builds argv as an array
+ * (the safer pattern for shell-injection reasons, and the one this repo's
+ * own scripts already use for `gh`/`git` calls) would pass through
+ * undetected.
  *
- * Deliberately narrow: it only reconstructs calls that name `'gh'` as a
- * plain string literal immediately followed by an array literal of string
- * literals. An argv built from variables (`execFileSync('gh', ghArgs)`)
- * cannot be resolved by a text scan without executing the program, so it
- * remains unmatched here -- the same limit `LABEL_INDEX_PATTERNS` already
- * has for any interpolated value, stated in this file's own header comment.
+ * Handles two shapes:
+ *   1. The array literal written directly at the call site:
+ *      `execFileSync('gh', ['pr', 'list', '--label', name])`.
+ *   2. The array literal assigned to a variable first, then passed by name:
+ *      `const args = ['pr', 'list', '--label', name]; execFileSync('gh',
+ *      args);`. Vasquez (round 2): shape 1 alone is bypassable by the
+ *      single-step refactor of naming the array before passing it -- an
+ *      argument-injection-shaped evasion of the intended check, not a
+ *      different feature. Resolved by finding the identifier passed as the
+ *      second argument to a `'gh'` call, then locating that identifier's
+ *      most recent array-literal assignment (`NAME = [...]`, with or
+ *      without a `const`/`let`/`var` declarator) anywhere in the file and
+ *      flattening THAT array's tokens instead.
+ *
+ * Deliberately narrow beyond these two shapes: an argv assembled through
+ * `.push()`, `.concat()`, spread from another variable, or any interpolated
+ * (non-literal) token cannot be resolved by a text scan without executing
+ * the program, so it remains unmatched -- the same limit
+ * `LABEL_INDEX_PATTERNS` already has for any interpolated value, stated in
+ * this file's own header comment. Widening indefinitely would turn this
+ * lint into a JavaScript interpreter; the two shapes handled here are the
+ * ones actually observed to matter -- the literal-at-call-site shape this
+ * repo's own scripts use, and the one-step variable-indirection evasion of
+ * it a reviewer demonstrated.
  */
 export function flattenGhArgvInvocations(contents) {
-  const callPattern = /['"]gh['"]\s*,\s*\[([\s\S]*?)]/g;
   const flattened = [];
-  let call;
-  while ((call = callPattern.exec(contents)) !== null) {
-    const tokens = [...call[1].matchAll(/['"`]([^'"`]*)['"`]/g)].map(
+
+  const tokensFromArrayBody = (arrayBody) =>
+    [...arrayBody.matchAll(/['"`]([^'"`]*)['"`]/g)].map(
       (tokenMatch) => tokenMatch[1],
     );
+
+  // Shape 1: the array literal written directly at the call site.
+  const directCallPattern = /['"]gh['"]\s*,\s*\[([\s\S]*?)]/g;
+  let directCall;
+  while ((directCall = directCallPattern.exec(contents)) !== null) {
+    const tokens = tokensFromArrayBody(directCall[1]);
     if (tokens.length > 0) {
       flattened.push(`gh ${tokens.join(' ')}`);
     }
   }
+
+  // Shape 2: an identifier passed as the second argument, resolved back to
+  // its own array-literal assignment. `[),]` after the identifier requires
+  // it to end an argument (a bare call `execFileSync('gh', args)`) or be
+  // followed by another argument (an options object), not merely appear as
+  // a substring of a longer expression.
+  const variableCallPattern = /['"]gh['"]\s*,\s*([A-Za-z_$][\w$]*)\s*[),]/g;
+  let variableCall;
+  while ((variableCall = variableCallPattern.exec(contents)) !== null) {
+    const varName = variableCall[1];
+    const assignmentPattern = new RegExp(
+      `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+    );
+    const assignment = assignmentPattern.exec(contents);
+    if (!assignment) continue;
+    const tokens = tokensFromArrayBody(assignment[1]);
+    if (tokens.length > 0) {
+      flattened.push(`gh ${tokens.join(' ')}`);
+    }
+  }
+
   return flattened.join('\n');
 }
 
@@ -303,10 +348,24 @@ function gitLsFiles(directory) {
  * hazard for a string literal; here the constants are regular expressions, so
  * the risk is naming the CLI shape in prose (this file's own header), not
  * matching it — kept out of the scan by directory scope alone.
+ *
+ * Vasquez: `readFileSync` follows a symbolic link to wherever it points --
+ * including outside this repository -- so a tracked symlink under a scanned
+ * directory could smuggle an arbitrary file's content into this scan without
+ * that content ever having been reviewed as part of `scripts/` or
+ * `.github/workflows/`. Every candidate is `lstat`-ed (which reports the
+ * link itself, not its target) BEFORE it is read; a symlink is refused --
+ * never followed -- and reported in `refusedSymlinks` instead of being
+ * silently skipped or silently read. Same shape `check-calibration-
+ * provenance.mjs`'s `listFiles`/`collectMarkedFiles` already use: detect via
+ * `lstatSync(...).isSymbolicLink()`, refuse, report -- not resolve-and-
+ * contain, which would still open and read a file this scan has no business
+ * reading.
  */
 export function collectScannedFiles({
   readFile = (path) => readFileSync(path, 'utf8'),
   listFiles = gitLsFiles,
+  lstat = lstatSync,
 } = {}) {
   const selfPaths = new Set([
     'scripts/check-label-index-usage.mjs',
@@ -314,25 +373,45 @@ export function collectScannedFiles({
   ]);
 
   const files = [];
+  const refusedSymlinks = [];
   const seen = new Set();
   for (const directory of SCANNED_DIRECTORIES) {
     for (const relativePath of listFiles(directory)) {
       if (seen.has(relativePath) || selfPaths.has(relativePath)) continue;
       seen.add(relativePath);
+
+      if (lstat(relativePath).isSymbolicLink()) {
+        refusedSymlinks.push(relativePath);
+        continue;
+      }
+
       files.push({ path: relativePath, contents: readFile(relativePath) });
     }
   }
-  return files;
+  return { files, refusedSymlinks };
 }
 
 async function main() {
-  const files = collectScannedFiles();
+  const { files, refusedSymlinks } = collectScannedFiles();
   const { violations, allowlisted } = scanLabelIndexUsage({ files });
 
   for (const entry of allowlisted) {
     console.log(
       `[label-index-usage] allowlisted: ${entry.path} (${entry.matches.join(', ')})`,
     );
+  }
+
+  if (refusedSymlinks.length > 0) {
+    console.error(
+      `[label-index-usage] ${refusedSymlinks.length} tracked symbolic link(s) ` +
+        'under a scanned directory were refused, not read (a symlink can ' +
+        "point outside this repository, and following it isn't reviewable " +
+        'as part of this scan):\n',
+    );
+    for (const symlinkPath of refusedSymlinks) {
+      console.error(`  ${symlinkPath}`);
+    }
+    process.exitCode = 1;
   }
 
   if (violations.length > 0) {
@@ -344,6 +423,9 @@ async function main() {
       console.error(formatViolation(violation));
     }
     process.exitCode = 1;
+  }
+
+  if (refusedSymlinks.length > 0 || violations.length > 0) {
     return;
   }
 

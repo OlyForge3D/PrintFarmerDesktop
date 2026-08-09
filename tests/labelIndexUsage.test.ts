@@ -43,10 +43,10 @@ const GH_PR_LIST_SEARCH_LABEL_SNIPPET =
 const GH_ISSUE_LIST_SEARCH_LABEL_SNIPPET =
   'gh issue list --repo owner/repo --search "label:hold:sequenced"';
 
-// Vasquez: the same `gh pr list --label` shape, but built as an argv array
-// (execFileSync-style) rather than one contiguous string -- the pattern this
-// repo's own scripts actually use to call `gh`/`git` to avoid shell
-// injection. A scan that only read contiguous text would miss it.
+// Vasquez (round 1): the same `gh pr list --label` shape, but built as an
+// argv array (execFileSync-style) rather than one contiguous string -- the
+// pattern this repo's own scripts actually use to call `gh`/`git` to avoid
+// shell injection. A scan that only read contiguous text would miss it.
 const GH_PR_LIST_ARGV_ARRAY_SNIPPET = `
 execFileSync('gh', [
   'pr',
@@ -58,6 +58,27 @@ execFileSync('gh', [
   '--state',
   'all',
 ]);
+`;
+
+// Vasquez (round 2): naming the array before passing it -- a one-step
+// refactor of the shape above -- must not evade detection. This is the
+// argument-injection-shaped bypass the reviewer demonstrated: shape 1 alone
+// only reconstructed the array literal written directly at the call site.
+const GH_PR_LIST_ARGV_VARIABLE_SNIPPET = `
+const ghArgs = [
+  'pr',
+  'list',
+  '--repo',
+  'owner/repo',
+  '--label',
+  'hold:sequenced',
+];
+execFileSync('gh', ghArgs);
+`;
+
+const GH_ISSUE_LIST_ARGV_VARIABLE_SNIPPET = `
+const args = ['issue', 'list', '--repo', 'owner/repo', '-l', 'hold:sequenced'];
+execFileSync('gh', args, { encoding: 'utf8' });
 `;
 
 // The safe instrument: a per-object read. Must never be flagged, or every
@@ -174,6 +195,51 @@ describe('scanLabelIndexUsage', () => {
     });
     expect(violations).toHaveLength(1);
     expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Vasquez (round 2): the one-step evasion of the direct-array-literal
+  // shape above -- name the array, then pass the identifier. Must be caught
+  // exactly like the direct-literal shape, or the "fix" for round 1 would
+  // be defeated by the most obvious refactor of the code it was meant to
+  // catch.
+  it('flags gh pr list --label built via a named argv variable (the direct-literal bypass)', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_PR_LIST_ARGV_VARIABLE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  it('flags gh issue list -l built via a named argv variable, with an options object after it', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_ISSUE_LIST_ARGV_VARIABLE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh issue list --label');
+  });
+
+  // Negative control for the variable-indirection path: an argv variable
+  // that holds a SAFE per-object gh call must not be flagged.
+  it('does not flag a named argv variable holding a safe per-object gh call', () => {
+    const safeVariableSnippet = `
+const args = ['api', 'repos/owner/repo/issues/175/labels'];
+execFileSync('gh', args);
+`;
+    const { violations, allowlisted } = scanLabelIndexUsage({
+      files: [{ path: 'scripts/example.mjs', contents: safeVariableSnippet }],
+    });
+    expect(violations).toEqual([]);
+    expect(allowlisted).toEqual([]);
   });
 
   // Negative control for the argv-array flatten path itself: an execFileSync
@@ -339,9 +405,30 @@ describe('flattenGhArgvInvocations', () => {
     expect(flattenGhArgvInvocations('console.log("hi");')).toBe('');
   });
 
-  it('does not resolve an argv built from a variable, not a literal array', () => {
-    // Documented limit: a text scan cannot resolve `execFileSync('gh',
-    // someVariable)` without executing the program, so it stays unmatched --
+  // Vasquez (round 2): the bypass was resolving a named argv variable back
+  // to its array-literal assignment, not giving up on it.
+  it('resolves a named argv variable back to its own array-literal assignment', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_PR_LIST_ARGV_VARIABLE_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('resolves a named argv variable even when the call has a trailing options object', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_ISSUE_LIST_ARGV_VARIABLE_SNIPPET,
+    );
+    expect(flattened).toContain('gh issue list');
+    expect(flattened).toContain('-l');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('does not resolve an argv variable with no matching array-literal assignment in the file', () => {
+    // Documented limit: an argv assembled through .push()/.concat()/spread
+    // from another variable, or declared in a file this scan cannot see,
+    // cannot be resolved by a text scan without executing the program --
     // the same interpolated-value limit LABEL_INDEX_PATTERNS already has.
     const variableArgvSnippet = "execFileSync('gh', ghArgs);";
     expect(flattenGhArgvInvocations(variableArgvSnippet)).toBe('');
@@ -417,6 +504,52 @@ describe('ALLOWED_LABEL_INDEX_USAGE', () => {
   });
 });
 
+// Vasquez: `collectScannedFiles` must never follow a tracked symbolic link
+// -- it could point outside this repository entirely, smuggling an
+// unreviewed file's content into the scan under a `scripts/`-looking path.
+describe('collectScannedFiles', () => {
+  it('refuses a tracked symbolic link instead of reading through it', () => {
+    const { files, refusedSymlinks } = collectScannedFiles({
+      listFiles: () => ['scripts/real-file.mjs', 'scripts/escape-hatch.mjs'],
+      lstat: (path) => ({
+        isSymbolicLink: () => path === 'scripts/escape-hatch.mjs',
+      }),
+      readFile: (path) => {
+        // The symlink path must never reach readFile at all -- if it does,
+        // the guard ran too late to matter.
+        if (path === 'scripts/escape-hatch.mjs') {
+          throw new Error('readFile must not be called for a symbolic link');
+        }
+        return `contents of ${path}`;
+      },
+    });
+
+    expect(refusedSymlinks).toEqual(['scripts/escape-hatch.mjs']);
+    expect(files).toEqual([
+      {
+        path: 'scripts/real-file.mjs',
+        contents: 'contents of scripts/real-file.mjs',
+      },
+    ]);
+  });
+
+  it('does not refuse a regular tracked file', () => {
+    const { files, refusedSymlinks } = collectScannedFiles({
+      listFiles: () => ['scripts/real-file.mjs'],
+      lstat: () => ({ isSymbolicLink: () => false }),
+      readFile: (path) => `contents of ${path}`,
+    });
+
+    expect(refusedSymlinks).toEqual([]);
+    expect(files).toEqual([
+      {
+        path: 'scripts/real-file.mjs',
+        contents: 'contents of scripts/real-file.mjs',
+      },
+    ]);
+  });
+});
+
 // Real-repo scan: the tracked tree, right now, must be clean except for the
 // one allowlisted file. This is the assertion that actually enforces #299's
 // remedy going forward -- a future script that copies the `gh pr list
@@ -428,7 +561,12 @@ describe('the tracked tree has no unlisted use of the label search/list index', 
     // runs from the repository root) rather than reading a specific commit --
     // this test must see files as they are in the working tree, including
     // this change's own new/uncommitted files, not a stale HEAD.
-    const files = collectScannedFiles();
+    const { files, refusedSymlinks } = collectScannedFiles();
+
+    // The real tree must contain no tracked symlinks under the scanned
+    // directories; if it ever does, that is itself something to review, not
+    // something this test should silently pass through.
+    expect(refusedSymlinks).toEqual([]);
 
     // Controls, so a scan that read zero files is not indistinguishable from
     // a clean tree.
