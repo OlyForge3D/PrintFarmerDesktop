@@ -398,9 +398,10 @@ describe('<App />', () => {
       'Connect to PrintFarmer: No server selected yet, Status: Disconnected',
     );
     manage.focus();
+    await waitFor(() => expect(manage).toBeEnabled());
     fireEvent.click(manage);
     expect(
-      screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
+      await screen.findByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toBeVisible();
     const workspace = container.querySelector('.workspace');
     expect(workspace).toHaveAttribute('inert');
@@ -940,7 +941,7 @@ describe('<App />', () => {
     fireEvent.click(manage);
     fireEvent.click(preview);
     expect(
-      screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
+      await screen.findByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toBeVisible();
     expect(loadScene).not.toHaveBeenCalled();
     fireEvent.click(
