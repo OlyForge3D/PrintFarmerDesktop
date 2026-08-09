@@ -246,6 +246,12 @@ export function resolveRepo(requested, env, run) {
 
 const PAGE_SIZE = 100;
 
+// A sane upper bound on how many pages a single commit's check-runs could
+// legitimately span. No real commit needs 100,000 check runs; this exists
+// only to fail closed instead of looping forever against a pathological or
+// hostile API response.
+const MAX_PAGES = 1000;
+
 /**
  * Fetch a single page of `commits/<sha>/check-runs`.
  *
@@ -317,6 +323,21 @@ function fetchCheckRunsPage(repo, sha, page, env, run) {
  * would be invisible to `latestCheckRunsByName` even though it may be the
  * most recent attempt for its name.
  *
+ * The only trustworthy signal that pagination has reached the end is a
+ * *short* page (fewer rows returned than were requested). `total_count` is
+ * reported by the API up front and is not re-verified against what
+ * pagination can actually reach -- a response that under-reports
+ * `total_count` while still holding a full page of rows must not be
+ * accepted as complete just because `collected.length` happens to reach
+ * that (possibly wrong) number. Doing so would silently truncate results in
+ * exactly the scenario this fix exists to close: a later, still-unseen
+ * check-run (e.g. a genuine failure) would never be requested. So this
+ * always requests one page past the last full page, and only accepts the
+ * result once a short page confirms there is nothing left -- and even then
+ * only if the rows actually collected match the reported total_count
+ * exactly. Any other combination is reported undetermined (fail closed)
+ * rather than risking a possibly-incomplete verdict.
+ *
  * @param {string} repo
  * @param {string} sha
  * @param {NodeJS.ProcessEnv} env
@@ -328,6 +349,12 @@ export function fetchCheckRuns(repo, sha, env, run) {
   const seenIds = new Set();
   let expectedTotal;
   for (let page = 1; ; page += 1) {
+    if (page > MAX_PAGES) {
+      return {
+        ok: false,
+        reason: `the check-runs response did not terminate within ${MAX_PAGES} pages (safety cap reached) -- refusing to report a possibly-incomplete verdict`,
+      };
+    }
     const result = fetchCheckRunsPage(repo, sha, page, env, run);
     if (!result.ok) return result;
     expectedTotal ??= result.totalCount;
@@ -350,12 +377,17 @@ export function fetchCheckRuns(repo, sha, env, run) {
       }
       collected.push(row);
     }
-    if (collected.length >= expectedTotal) break;
-    if (result.rows.length === 0) {
-      return {
-        ok: false,
-        reason: `the check-runs response ended after ${collected.length} of ${expectedTotal} rows`,
-      };
+    if (result.rows.length < PAGE_SIZE) {
+      // A short (or empty) page is the only reliable end-of-pagination
+      // signal. Do not treat reaching `expectedTotal` on a *full* page as
+      // done -- that trusts a number the API hasn't yet proven true.
+      if (collected.length !== expectedTotal) {
+        return {
+          ok: false,
+          reason: `the check-runs response reported total_count=${expectedTotal} but pagination actually reached ${collected.length} rows before the pages ran out`,
+        };
+      }
+      break;
     }
   }
   if (collected.length === 0) {

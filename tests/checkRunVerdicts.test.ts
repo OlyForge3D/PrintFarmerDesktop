@@ -346,6 +346,57 @@ describe('fetchCheckRuns', () => {
     expect(requestedPages).toEqual([1, 2]);
   });
 
+  it('REGRESSION: fails closed when a full first page hides a real check-run behind an under-reported total_count', () => {
+    // The API reports total_count=100 and page 1 delivers exactly 100 rows
+    // -- collected.length reaching total_count on a *full* page must not be
+    // trusted as "done". Here a second, later check-run genuinely exists
+    // (e.g. a still-running or newly failed check) but total_count never
+    // accounted for it. Silently stopping after page 1 would hide it from
+    // buildVerdicts entirely -- exactly the failure mode this fix exists to
+    // close -- so this must report undetermined instead of a (possibly
+    // clean) verdict.
+    const requestedPages: number[] = [];
+    const result = fetchCheckRuns(
+      'o/r',
+      'abc123',
+      {},
+      stub((_command, argv) => {
+        const match = /[&?]page=(\d+)/.exec(String(argv[1]));
+        const page = Number(match?.[1]);
+        requestedPages.push(page);
+        if (page === 1) {
+          const rows = Array.from({ length: 100 }, (_, i) =>
+            checkRun({ id: i + 1 }),
+          );
+          return { status: 0, stdout: pagePayload(rows, 100) };
+        }
+        // The hidden, previously-unseen check-run: reported total_count is
+        // unchanged (still 100), yet a real row exists past the "total".
+        return {
+          status: 0,
+          stdout: pagePayload(
+            [
+              checkRun({
+                id: 101,
+                name: 'late failure',
+                conclusion: 'failure',
+              }),
+            ],
+            100,
+          ),
+        };
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain(
+      'reported total_count=100 but pagination actually reached',
+    );
+    // Must have actually requested the second page rather than stopping
+    // at page 1 just because collected.length reached total_count.
+    expect(requestedPages).toEqual([1, 2]);
+  });
+
   it('reports undetermined when total_count changes mid-page rather than trusting a moving target', () => {
     let call = 0;
     const result = fetchCheckRuns(
