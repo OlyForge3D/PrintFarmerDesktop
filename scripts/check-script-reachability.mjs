@@ -196,6 +196,22 @@ export const UNENFORCED_CHECKS = {
     'about to be published, and re-invoke it against the object again after the ' +
     'write-up lands, since the write-up is itself a measurement subject to the ' +
     'same staleness (#462 repair 6).',
+  'check:census-freshness':
+    'Its judgement IS enforced in CI: tests/censusFreshness.test.ts drives ' +
+    'classifyCensusFreshness, resolveNow, normalizeInstant, evaluateControls, ' +
+    'parseCensusCitations, formatResult and main over plain objects and ' +
+    'injected deps, including both control arms, under `npm run test`. Its ' +
+    'main() answers "is THIS published ownership-census citation still within ' +
+    'the reflog decay window it depends on, right now" (#336) — the same shape ' +
+    'check:dated-measurement is unenforced for immediately above, and for the ' +
+    'identical reason: the population the census describes lives on every ' +
+    'developer worktree across this clone, not inside any single commit a ' +
+    'pull_request-triggered CI run could assert about itself, and a scheduled ' +
+    'GitHub Actions run would only ever see its own fresh, single-worktree ' +
+    'checkout rather than the drifting population #336 is about. Discharge ' +
+    'path: invoke it by hand whenever a census citation (census-ownership-' +
+    "evidence.mjs's own `census-measured` block) is about to be published or " +
+    "relied upon, per the issue's own re-measurement cadence.",
   'check:closed-head-dispatch':
     'Its judgement IS enforced in CI: tests/closedHeadDispatch.test.ts drives ' +
     'normalizeSha, classifyDispatch, evaluateControls and formatResult over ' +
