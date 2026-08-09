@@ -122,12 +122,14 @@ describe('measuring a single worktree', () => {
   });
 
   it('reads ownershipEvidence=null for a worktree whose reflog cannot rule out decay (#315)', () => {
-    // A worktree that only ever checked out history (never created a
-    // commit) AND whose reflog's own coverage window is older than
-    // `gc.reflogExpireUnreachable` (30 days) cannot tell "never authored
-    // anything" apart from "authored something whose entry has since
-    // expired". `measureWorktree` must surface that as `null`, not fold it
-    // into the ordinary `false` a fresher, otherwise-identical worktree gets.
+    // A linked worktree whose reflog shows only recent, non-creation
+    // activity cannot always be trusted as a genuine "never authored
+    // anything" — if an OLDER creation entry was pruned by
+    // `gc.reflogExpireUnreachable` while a NEWER, unrelated entry survived
+    // right after it, every entry still visible looks fresh even though the
+    // one that would have proven authorship is already gone. `measureWorktree`
+    // must surface that as `null`, not fold it into the ordinary `false` a
+    // worktree whose reflog is PROVABLY complete back to genesis gets.
     tempRoot = mkdtempSync(path.join(os.tmpdir(), 'census-fixture-'));
     const repoPath = path.join(tempRoot, 'repo');
     git(['init', '--quiet', '--initial-branch=trunk', repoPath], tempRoot);
@@ -137,9 +139,9 @@ describe('measuring a single worktree', () => {
     const linkedPath = path.join(tempRoot, 'linked');
     git(['worktree', 'add', '--quiet', linkedPath, '-b', 'linked'], repoPath);
 
-    // Age the linked worktree's own HEAD reflog entry (the `worktree add`
-    // checkout, never a `commit:` line) to 40 days old, the same technique
-    // `pushGuard.test.ts` uses for the equivalent `authoredHere()` fixture.
+    // A genuine creation entry, here — this is the one made unreachable and
+    // then erased from the raw reflog below, standing in for whatever
+    // `commit:` entry `gc.reflogExpireUnreachable` would eventually prune.
     // A linked worktree's `.git` is a FILE naming its real git-dir under the
     // main worktree's `.git/worktrees/<name>/`, not a directory of its own —
     // resolved here via `git rev-parse --git-dir` rather than assumed.
@@ -147,14 +149,23 @@ describe('measuring a single worktree', () => {
     const reflogPath = path.isAbsolute(gitDir)
       ? path.join(gitDir, 'logs', 'HEAD')
       : path.join(linkedPath, gitDir, 'logs', 'HEAD');
+
+    commit(linkedPath, 'b.txt', 'created here, later orphaned');
+
+    // Orphan it and, in the same motion, write the RECENT non-creation entry
+    // that survives the erasure below and masks the gap: `reset:`'s own OLD
+    // sha is the orphaned commit's sha, the very value the removed
+    // `commit:` line's NEW sha would have supplied. Once that line is gone,
+    // nothing visible supplies it any more.
+    git(['reset', '--hard', 'HEAD~1'], linkedPath);
+
     const original = readFileSync(reflogPath, 'utf8');
-    const fortyDaysAgo = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
-    const rewritten = original.replace(
-      /^(\S+ \S+ .+ <[^>]*>) \d+ ([+-]\d{4})(\t.*)$/m,
-      `$1 ${fortyDaysAgo} $2$3`,
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const withoutCreation = lines.filter(
+      (line) => !line.includes('\tcommit: created here, later orphaned'),
     );
-    expect(rewritten).not.toBe(original);
-    writeFileSync(reflogPath, rewritten);
+    expect(withoutCreation.length).toBe(lines.length - 1);
+    writeFileSync(reflogPath, withoutCreation.join('\n') + '\n');
 
     const result = measureWorktree(linkedPath);
 

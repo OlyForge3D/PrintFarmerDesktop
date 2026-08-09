@@ -481,6 +481,52 @@ stale-directory sweeping, and cleanup retry. But **no test in the repository ass
 mode at all** — `0o700` and `0o600` appear in no test file. The modes are the control, and they
 are the part nothing pins. → PR C, alongside the same gap on retarget artifacts.
 
+### T1.8 — Orca profile install/restore: residual ancestor-directory TOCTOU (A4)
+
+`src/main/orcaProfileInstall.ts` durably backs up and restores OrcaSlicer calibration profiles
+under a per-user install root (`getWindowsOrcaInstallRoot()`), and defends every read and write
+under that root against A4 racing the filesystem: `ensureInstallRootSafeCanonical` walks from a
+trusted ancestor down to the install root component-by-component, rejecting any segment that is a
+symlink or reparse point; `verifyAncestorMatchesInstallRoot` re-derives that canonical root fresh
+and compares it, by device+inode identity rather than path-string equality, against the specific
+file being touched; and `readFileWithIdentityPin`/`revalidateWriteRootOrThrow` re-run these checks
+immediately before every remaining read or write in the restore path (metadata read, backup read,
+symlink check, temp-file write, rename) rather than trusting one validation performed earlier in
+the same call. This closed eight successive rounds of TOCTOU findings (backup-metadata directory
+rename races, ancestor-directory swaps between locate-and-restore, the metadata-read leg, and the
+write sequence's own multi-step temp-write/rename) — each is pinned by a dedicated regression test
+in `tests/orcaProfileInstall.test.ts` that swaps a real Windows junction in at the exact race
+window and is confirmed to fail when the corresponding check is removed.
+
+**Residual, accepted.** One narrow window remains, inside `readFileWithRootPin`: it validates the
+target's parent directory's identity, then calls `readFileWithIdentityPin` to open and pin the
+leaf file — but Node's public, portable `fs` API has no `openat`-equivalent (opening a file
+relative to an already-held directory handle), so there is no way to hold the ancestor's identity
+across the leaf's own `lstat`. The two calls are issued back-to-back with no other `await` in
+between, unlike every other window this file has closed (which each spanned one or more real,
+awaited I/O operations — genuine scheduling points a swap could land in). Closing this
+specifically would require Windows-native code (e.g. an addon calling `NtCreateFile` against a
+held directory handle), which is out of scope for this pull request.
+
+**Precondition.** Exploiting this window requires A4's full capability set as scoped in section
+4: a local process running as the same user, with the ability to create reparse points/junctions
+(no elevated privilege beyond normal user rights on Windows) and to win a race timed to land
+between two specific back-to-back `await`s inside a single function call — a window on the order
+of a single Node event-loop turn.
+
+**Blast radius.** Bounded to this module's own install-root-adjacent files: a successful race lets
+a forged metadata record (attacker-chosen `safeFilename`, genuine `backupFileName`) be read as if
+genuine, which can redirect a subsequent hash-verified restore write to an attacker-chosen filename
+under the same install root. It does not grant read/write outside that root, does not defeat the
+SHA-256 content verification (the bytes written are still exactly what the caller's hash names),
+and does not survive a swap that is left in place rather than timed precisely (a persistent swap
+is caught by the next fresh ancestor walk, which is what rounds 1-9 all close).
+
+**Coverage.** `tests/orcaProfileInstall.test.ts` has a dedicated regression test for every closed
+round of this class, each shown to fail when its specific check is removed. No test exercises the
+residual window itself, because doing so requires a native-code timing probe outside what portable
+Node/vitest can express — the doc comment on `readFileWithRootPin` explains why in more detail.
+
 ## 6. Threats at B3 and B2 — hostile model files and the sidecar
 
 The parsers are the deepest exposure to A1. They are written in safe Rust, so the realistic
@@ -947,20 +993,21 @@ gate, is a separate administrative change tracked in #111.
 
 ## 9. Open work derived from this model
 
-| Threat     | Gap                                                                            | Where       |
-| ---------- | ------------------------------------------------------------------------------ | ----------- |
-| T4.1       | Licence policy, advisory gates and enumerated third-party notices              | PR B2 (#21) |
-| T4.2       | Deterministic vs live-database gate split; branch protection                   | PR B2 (#21) |
-| T1.2       | Owner teardown on `webContents` destroy (`ipc.ts:338-344`) still unproven      | PR C2 (#21) |
-| T1.3, T3.3 | Credential non-egress asserted nowhere                                         | PR C2 (#21) |
-| T1.5       | Packaged fuses (`forge.config.ts:92-100`) unasserted                           | PR C2 (#21) |
-| T2.2       | No fuzzing; parser coverage is example-based                                   | PR D (#21)  |
-| T1.7       | Five persisted JSON stores; malformed-input handling untested                  | PR C2 (#21) |
-| T1.1       | E2E dialog seeding: nothing asserts the branch is absent from a release bundle | PR C2 (#21) |
-| T1.7       | `0o700`/`0o600` modes are a control no test asserts, on any store              | PR C2 (#21) |
-| T2.5       | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded | PR D (#21)  |
-| T2.6       | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested      | PR D (#21)  |
-| T1.4       | Full sender validation — ruled: residual accepted, default now pinned by CI    | closed      |
+| Threat     | Gap                                                                                                                    | Where                  |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| T4.1       | Licence policy, advisory gates and enumerated third-party notices                                                      | PR B2 (#21)            |
+| T4.2       | Deterministic vs live-database gate split; branch protection                                                           | PR B2 (#21)            |
+| T1.2       | Owner teardown on `webContents` destroy (`ipc.ts:338-344`) still unproven                                              | PR C2 (#21)            |
+| T1.3, T3.3 | Credential non-egress asserted nowhere                                                                                 | PR C2 (#21)            |
+| T1.5       | Packaged fuses (`forge.config.ts:92-100`) unasserted                                                                   | PR C2 (#21)            |
+| T2.2       | No fuzzing; parser coverage is example-based                                                                           | PR D (#21)             |
+| T1.7       | Five persisted JSON stores; malformed-input handling untested                                                          | PR C2 (#21)            |
+| T1.1       | E2E dialog seeding: nothing asserts the branch is absent from a release bundle                                         | PR C2 (#21)            |
+| T1.7       | `0o700`/`0o600` modes are a control no test asserts, on any store                                                      | PR C2 (#21)            |
+| T2.5       | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded                                         | PR D (#21)             |
+| T2.6       | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested                                              | PR D (#21)             |
+| T1.4       | Full sender validation — ruled: residual accepted, default now pinned by CI                                            | closed                 |
+| T1.8       | `readFileWithRootPin` ancestor-to-leaf gap — ruled: residual accepted, needs native `openat`-equivalent to close fully | closed (#208, PR #644) |
 
 Discharged by slice 2 (`tests/ipc.authz.test.ts`, `tests/security.test.ts`,
 `tests/mainWindow.security.test.ts`, and the identity case added to
