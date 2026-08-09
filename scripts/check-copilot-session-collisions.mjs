@@ -249,7 +249,12 @@ export function findSessionLifetimeViolations(
   return violations.sort((a, b) => b.spanHours - a.spanHours);
 }
 
-export function formatReport({ missing, malformed, violations, maxSessionHours }) {
+export function formatReport({
+  missing,
+  malformed,
+  violations,
+  maxSessionHours,
+}) {
   const lines = [];
   if (missing.length > 0) {
     lines.push(
@@ -331,9 +336,7 @@ export function main(argv, deps = {}) {
     missing.length === 0 && malformed.length === 0 && violations.length === 0;
 
   if (!ok) {
-    error(
-      formatReport({ missing, malformed, violations, maxSessionHours }),
-    );
+    error(formatReport({ missing, malformed, violations, maxSessionHours }));
     process.exitCode = 1;
   } else {
     log(

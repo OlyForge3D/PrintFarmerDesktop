@@ -107,9 +107,9 @@ describe('main', () => {
   });
 
   it('throws when invoked with no commit-message file, the one argument git always supplies', () => {
-    expect(() => main([], { environment: { [SESSION_ENV_VAR]: VALID_V4 } })).toThrow(
-      /usage: prepare-commit-msg/,
-    );
+    expect(() =>
+      main([], { environment: { [SESSION_ENV_VAR]: VALID_V4 } }),
+    ).toThrow(/usage: prepare-commit-msg/);
   });
 });
 
@@ -142,9 +142,9 @@ describe('appendSessionTrailer end-to-end, against real git interpret-trailers',
     appendSessionTrailer(file, VALID_V4);
     appendSessionTrailer(file, VALID_V4);
 
-    const occurrences = readFileSync(file, 'utf8').split(
-      `Copilot-Session: ${VALID_V4}`,
-    ).length - 1;
+    const occurrences =
+      readFileSync(file, 'utf8').split(`Copilot-Session: ${VALID_V4}`).length -
+      1;
     expect(occurrences).toBe(1);
   });
 

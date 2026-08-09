@@ -81,17 +81,37 @@ describe('findFormednessFindings', () => {
 describe('findSessionLifetimeViolations', () => {
   it('does not flag a value confined to a short, plausible session window', () => {
     const commits = [
-      commit(SHA_A, '2026-01-01T00:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
-      commit(SHA_B, '2026-01-01T02:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
+      commit(
+        SHA_A,
+        '2026-01-01T00:00:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
+      commit(
+        SHA_B,
+        '2026-01-01T02:00:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
     ];
     expect(findSessionLifetimeViolations(commits, 24)).toEqual([]);
   });
 
   it('flags a value spanning past the bound -- the measured 74-commit/39h33m shape', () => {
     const commits = [
-      commit(SHA_A, '2026-07-21T21:06:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
-      commit(SHA_B, '2026-07-22T10:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
-      commit(SHA_C, '2026-07-23T10:54:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
+      commit(
+        SHA_A,
+        '2026-07-21T21:06:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
+      commit(
+        SHA_B,
+        '2026-07-22T10:00:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
+      commit(
+        SHA_C,
+        '2026-07-23T10:54:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
     ];
     const violations = findSessionLifetimeViolations(commits, 24);
 
@@ -115,9 +135,21 @@ describe('findSessionLifetimeViolations', () => {
 
   it('groups distinct values independently', () => {
     const commits = [
-      commit(SHA_A, '2026-01-01T00:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
-      commit(SHA_B, '2026-01-01T01:00:00Z', `s\n\nCopilot-Session: ${VALID_V7}`),
-      commit(SHA_C, '2026-01-01T02:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
+      commit(
+        SHA_A,
+        '2026-01-01T00:00:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
+      commit(
+        SHA_B,
+        '2026-01-01T01:00:00Z',
+        `s\n\nCopilot-Session: ${VALID_V7}`,
+      ),
+      commit(
+        SHA_C,
+        '2026-01-01T02:00:00Z',
+        `s\n\nCopilot-Session: ${VALID_V4}`,
+      ),
     ];
     expect(findSessionLifetimeViolations(commits, 24)).toEqual([]);
   });
@@ -170,15 +202,25 @@ describe('main', () => {
 
     expect(result.ok).toBe(false);
     expect(process.exitCode).toBe(1);
-    expect(error).toHaveBeenCalledWith(expect.stringContaining(SHA_A.slice(0, 12)));
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(SHA_A.slice(0, 12)),
+    );
   });
 
   it('fails when a value collides across a span past the bound', () => {
     const error = vi.fn();
     const result = main(['--max-hours', '24'], {
       readCommits: () => [
-        commit(SHA_A, '2026-07-21T21:06:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
-        commit(SHA_B, '2026-07-23T10:54:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
+        commit(
+          SHA_A,
+          '2026-07-21T21:06:00Z',
+          `s\n\nCopilot-Session: ${VALID_V4}`,
+        ),
+        commit(
+          SHA_B,
+          '2026-07-23T10:54:00Z',
+          `s\n\nCopilot-Session: ${VALID_V4}`,
+        ),
       ],
       error,
       log: vi.fn(),
@@ -193,8 +235,16 @@ describe('main', () => {
     const log = vi.fn();
     const result = main([], {
       readCommits: () => [
-        commit(SHA_A, '2026-01-01T00:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
-        commit(SHA_B, '2026-01-01T02:00:00Z', `s\n\nCopilot-Session: ${VALID_V4}`),
+        commit(
+          SHA_A,
+          '2026-01-01T00:00:00Z',
+          `s\n\nCopilot-Session: ${VALID_V4}`,
+        ),
+        commit(
+          SHA_B,
+          '2026-01-01T02:00:00Z',
+          `s\n\nCopilot-Session: ${VALID_V4}`,
+        ),
       ],
       log,
       error: vi.fn(),
@@ -213,7 +263,11 @@ describe('main', () => {
 
   it('rejects an unknown CLI argument', () => {
     expect(() =>
-      main(['--bogus'], { readCommits: () => [], log: vi.fn(), error: vi.fn() }),
+      main(['--bogus'], {
+        readCommits: () => [],
+        log: vi.fn(),
+        error: vi.fn(),
+      }),
     ).toThrow(/unknown argument/);
   });
 });
