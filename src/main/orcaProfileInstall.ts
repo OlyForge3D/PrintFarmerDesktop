@@ -855,6 +855,45 @@ export function __setRestoreWriteRevalidateHookForTests(
 }
 
 /**
+ * Test-only hook fired inside `restoreOrcaProfileWindows`, immediately
+ * after the temp-file write and readback-verify succeed but before the
+ * pre-rename re-validation runs. Lets a regression test swap `installRoot`
+ * for a junction at exactly the point round-9's finding (Vasquez) described:
+ * a real, awaited I/O operation (the temp-file write) had already occurred
+ * since the last check, so a swap landing here previously reached `rename`
+ * unchecked. No-op in production; never set outside tests.
+ */
+let restoreWritePreRenameHookForTests: (() => Promise<void> | void) | null =
+  null;
+
+export function __setRestoreWritePreRenameHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  restoreWritePreRenameHookForTests = hook;
+}
+
+/**
+ * Test-only hook fired inside `restoreOrcaProfileWindows`, immediately
+ * after the *first* write-side re-validation succeeds but before the
+ * symlink `lstat` on `destPath` runs. Lets a regression test simulate a
+ * *persistent* install-root swap (left in place, not swapped back) at the
+ * earliest point in the write sequence — round-9's fix depends on the
+ * later per-operation re-validations (before the temp-file write, before
+ * the rename) to catch a swap that survives this long; without them, only
+ * the one upfront check existed and a persistent swap here would go
+ * completely undetected through the rest of the sequence. No-op in
+ * production; never set outside tests.
+ */
+let restoreWritePostFirstRevalidateHookForTests:
+  (() => Promise<void> | void) | null = null;
+
+export function __setRestoreWritePostFirstRevalidateHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  restoreWritePostFirstRevalidateHookForTests = hook;
+}
+
+/**
  * Read `filePath`'s bytes in a way that cannot be defeated by a symlink
  * swapped in and back out again around the read (a "swap-in/swap-back"
  * TOCTOU).
@@ -1259,6 +1298,19 @@ export async function findBackupByOperationId(
  * `readFileWithRootPin` uses) immediately before the write sequence,
  * rather than trusting the read-side validation performed a genuine
  * scheduling opportunity earlier.
+ *
+ * Round-9 reviewer finding (Vasquez): the round-8 fix above only
+ * re-validated *once*, before the whole write sequence — but that
+ * sequence still contains several real, awaited I/O operations after that
+ * single check (the symlink `lstat` on `destPath`, the temp-file
+ * `writeFile`, the readback `readFile`, and the final `rename`), each a
+ * genuine scheduling point, unlike `readFileWithRootPin`'s accepted
+ * back-to-back residual. A swap landing after the one round-8 check but
+ * before any of those later operations went uncaught. This now
+ * re-validates immediately before *each* remaining operation that touches
+ * an `installRoot`-derived path (`revalidateWriteRootOrThrow`), matching
+ * this module's own rule that any real awaited operation between a check
+ * and a use must get its own fresh check, not a shared one from earlier.
  */
 export async function restoreOrcaProfileWindows(
   backupPath: string,
@@ -1306,35 +1358,49 @@ export async function restoreOrcaProfileWindows(
     await restoreWriteRevalidateHookForTests();
   }
 
-  // Re-validate installRoot immediately before the write sequence below.
-  // The read-side validation above (`canonicalInstallRoot`, used for
-  // `readFileWithRootPin`) is now several `await`s stale — that read
-  // itself was real, awaited I/O, a genuine scheduling point at which
-  // installRoot could have been swapped for a junction since. Reusing
-  // that earlier validation for the write, as before, is exactly the
-  // validate-then-reuse-across-an-await shape every prior TOCTOU finding
-  // in this file has had; it now gets the same immediately-before-use
-  // treatment already applied to every read in this module.
-  let writeCanonicalInstallRoot: string;
-  try {
-    writeCanonicalInstallRoot =
-      await ensureInstallRootSafeCanonical(installRoot);
-  } catch {
-    throw makeError(
-      'pathRestricted',
-      'Install root became unsafe before restore could write.',
-    );
-  }
-  if (
-    !(await verifyAncestorMatchesInstallRoot(
-      writeCanonicalInstallRoot,
-      destPath,
-    ))
-  ) {
-    throw makeError(
-      'pathRestricted',
-      'Install root was swapped before restore could write; refused.',
-    );
+  // Round-9 reviewer finding (Vasquez): a single revalidation performed
+  // once before this whole write sequence is not enough — unlike
+  // `readFileWithRootPin`'s ancestor-lstat-to-leaf-lstat gap (which is
+  // back-to-back with no other `await` in between, and therefore an
+  // accepted, documented residual), the sequence below has *several* real,
+  // awaited I/O operations after any single check (the symlink `lstat` on
+  // `destPath`, the temp-file `writeFile`, the readback `readFile`, and the
+  // final `rename`), each a genuine scheduling point a swap can land in.
+  // Per this module's own established rule ("every closed TOCTOU window
+  // spanned one or more real awaited operations; validate immediately
+  // before use, not once for all of them"), this needs the same treatment:
+  // re-validate fresh immediately before *each* remaining operation that
+  // touches `installRoot`-derived paths, not just once up front.
+  const revalidateWriteRootOrThrow = async (
+    targetPath: string,
+  ): Promise<void> => {
+    let freshCanonicalInstallRoot: string;
+    try {
+      freshCanonicalInstallRoot =
+        await ensureInstallRootSafeCanonical(installRoot);
+    } catch {
+      throw makeError(
+        'pathRestricted',
+        'Install root became unsafe during restore; refused.',
+      );
+    }
+    if (
+      !(await verifyAncestorMatchesInstallRoot(
+        freshCanonicalInstallRoot,
+        targetPath,
+      ))
+    ) {
+      throw makeError(
+        'pathRestricted',
+        'Install root was swapped during restore; refused.',
+      );
+    }
+  };
+
+  await revalidateWriteRootOrThrow(destPath);
+
+  if (restoreWritePostFirstRevalidateHookForTests) {
+    await restoreWritePostFirstRevalidateHookForTests();
   }
 
   // Reject if destination is a symlink.
@@ -1362,6 +1428,7 @@ export async function restoreOrcaProfileWindows(
   // Write via temp + rename for atomicity.
   const tempPath = path.join(installRoot, `.pfd-restore-${randomUUID()}.json`);
   try {
+    await revalidateWriteRootOrThrow(tempPath);
     await writeFile(tempPath, backupBytes, { flag: 'wx' });
     const readBack = await readFile(tempPath);
     if (sha256(readBack) !== expectedBackupHash) {
@@ -1370,6 +1437,10 @@ export async function restoreOrcaProfileWindows(
         'Restore write verification failed; backup bytes corrupted in transit.',
       );
     }
+    if (restoreWritePreRenameHookForTests) {
+      await restoreWritePreRenameHookForTests();
+    }
+    await revalidateWriteRootOrThrow(destPath);
     await rename(tempPath, destPath);
   } catch (writeErr) {
     try {

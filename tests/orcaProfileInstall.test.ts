@@ -337,6 +337,8 @@ import {
   __setFindBackupByOperationIdPreRevalidateHookForTests,
   __setReadFileWithRootPinRaceHookForTests,
   __setRestoreWriteRevalidateHookForTests,
+  __setRestoreWritePreRenameHookForTests,
+  __setRestoreWritePostFirstRevalidateHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -1346,6 +1348,163 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         ).toEqual([]);
       } finally {
         __setRestoreWriteRevalidateHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to write through an install root swapped mid-write-sequence and left in place (round-9 write-sequence TOCTOU)',
+    async () => {
+      // Reviewer finding (Vasquez, round 9): the round-8 fix only
+      // re-validated installRoot *once*, before the whole write sequence
+      // began — but that sequence still has several real, awaited I/O
+      // operations after that single check (the symlink lstat on
+      // destPath, the temp-file writeFile, the readback readFile, and the
+      // final rename), each a genuine scheduling point. A swap landing
+      // right after that one check, and left in place through the rest
+      // of the sequence, would previously go completely undetected: every
+      // later operation would resolve the *raw* installRoot/destPath/
+      // tempPath strings straight through the swapped junction, silently
+      // writing genuine, hash-verified backup bytes into the escape
+      // directory while restoreOrcaProfileWindows reported success. This
+      // test injects the swap immediately after the first write-side
+      // check succeeds (before the destPath symlink lstat) and does NOT
+      // swap back, proving the later per-operation re-validations (before
+      // the temp-file write, before the rename) — not the one upfront
+      // check — are what catch a swap that survives that long.
+      const safeFilename = 'toctou_write_sequence_revalidate_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-write-sequence-revalidate"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `write-sequence-revalidate-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-write-sequence-revalidate-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      __setRestoreWritePostFirstRevalidateHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+        // Deliberately does NOT swap back: this simulates a swap that
+        // survives for the rest of the write sequence, the scenario
+        // round-9's per-operation re-validations must catch on their own.
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote through an install root swapped mid-write-sequence and left swapped',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWritePostFirstRevalidateHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true }).catch(() => {});
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to rename through an install root swapped after the temp-file write succeeded but before the pre-rename re-validation (round-9 write-sequence TOCTOU)',
+    async () => {
+      // Reviewer finding (Vasquez, round 9): the round-8 fix above only
+      // re-validated installRoot *once*, immediately before the write
+      // sequence began — but that sequence still has several real,
+      // awaited I/O operations after that single check (the symlink
+      // lstat on destPath, the temp-file writeFile, the readback
+      // readFile, and the final rename). A swap landing after the one
+      // round-8 check but before any of those later operations went
+      // uncaught, because nothing re-validated again before actually
+      // touching installRoot-derived paths a second time. This test
+      // injects the swap via a dedicated hook that fires exactly after
+      // the temp-file write and readback-verify succeed (i.e. after a
+      // genuine, awaited I/O operation has already occurred since the
+      // last check) but before the new pre-rename re-validation runs,
+      // proving that check — not the earlier write-sequence-start one —
+      // is what catches this.
+      const safeFilename = 'toctou_prerename_revalidate_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-prerename-revalidate"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `prerename-revalidate-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-prerename-revalidate-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      __setRestoreWritePreRenameHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore renamed through an install root swapped after the temp write but before the pre-rename re-validation',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWritePreRenameHookForTests(null);
         await rm(installRoot, { recursive: true, force: true });
         await mkdir(installRoot, { recursive: true });
         await writeFile(backupPath, realBackupBytes, { flag: 'w' });
