@@ -678,6 +678,28 @@ Any of those sources removes the dialog-derived-path premise and requires reject
 
 **Scope.** Documentation and protocol only — no production code, no test changes. Full instance write-up: `.squad/decisions/inbox/bishop-199-unmerged-file-citation.md`.
 
+## 2026-08-09 — #420: `session_files` is not an authorship control — neither sound nor complete, and both failures point the same way
+
+**By:** Fact Checker, filed as #420; recorded here so a sibling session does not adopt it.
+
+**What was proposed.** A sibling session was about to use the Copilot session store's `session_files` table (`session_id, file_path, tool_name, turn_index, first_seen_at`) as evidence for _who changed a file_. Measured `2026-08-05T03:41Z` against the local session store (the default cloud/local union arm drops the local member silently on this query shape, a separate problem).
+
+**It is not sound.** Three `create` rows in one session name throwaway probe files (`tests/zzProbe*.test.ts`) that were written, read once, and deleted — never reached a branch, never existed on disk at measurement time, zero matching commits across all refs. An audit keyed on this table reports authorship of files that do not exist.
+
+**It is not complete, and the miss is the substantive change.** The one case where the table names a real, still-tracked file (`tests/ciWorkflowTriggers.test.ts`, one `edit` row at turn 138) is right about the wrong event: the change actually worth attributing there is a 117-insertion commit made **19h18m after** the row's `first_seen_at`, because the column fires once per `(session, path)` on first touch and does not fire again on the edit that mattered.
+
+**`first_seen_at` fires once and cannot indicate volume.** A witness that fires once is indistinguishable from a witness that fires never, for any n ≥ 1: presence of a row says nothing about how many edits followed, and absence of a second row is not evidence a second edit didn't happen. A concrete instance: a Python mutation-testing harness rewrote one file **ten times** in one session (five fixtures × two code states) via `Set-Content`; `session_files` holds exactly **one** row for that path, from hours earlier.
+
+**It logs tool invocations, not writes.** `edit`/`create` calls from this agent's own tools populate the table. `Set-Content`, raw `python`/PowerShell scripts, `git checkout`, and every other ordinary way to write a file are invisible to it — not an evasion path, the _normal_ case for a scripted mutation battery.
+
+**The key is a worktree-absolute path, so one tracked file is many rows.** `.squad/skills/testing/SKILL.md` — a single file in this repo — appeared under six distinct worktree-prefixed paths in the local store. A per-file audit under-reports by however many worktrees touched the file, and "who has edited `<repo-relative path>`?" cannot be expressed against this table at all.
+
+**Net effect: `session_files` answers "which paths did the edit/create tools touch first, per session, per worktree" — not "who changed this file."** Both are tables of file paths, which is what makes the substitution easy to miss. The two failure modes are not symmetric noise: a session that rewrote a policy file ten times can clear, and a session that wrote a 90-second scratch file can be implicated. The errors run in the exculpatory direction, which is the direction nobody audits.
+
+**What to use instead, with the caveat already on record.** Commit identity is the better-bounded alternative — but not the `Copilot-Session` trailer alone. The 2026-08-07 amendment above and #471 already establish that the trailer is a real, resolvable session id (50/54 sampled trailers resolved live against the cloud session store), yet a single literal value can span many hours and many commits from different work because it is copied from a shared prompt, not minted per-commit — measured at 74 commits under one value across 39h33m. Divergent trailers remain durable positive evidence of a second writer; identical trailers are not positive evidence of one. Prefer `%cn != 'GitHub'` (discriminates 31 of 60 sampled commits at trunk `43d2a67`, vs. 27 of 60 for the trailer alone, with 0/60 on a bogus-key control) as a corroborating signal alongside the trailer and `ownCommits`/reflog-derived ownership (2026-08-07 amendment above), not the trailer in isolation — and carry its own bound forward: commit identity (author, committer, or trailer) identifies the writer of the git object, never the actor who pushed, merged, or clicked merge.
+
+**Scope.** Documentation only — no change to the session store, its schema, or any query tooling. Full instance write-up, including the raw row/commit tables: issue #420 itself.
+
 ## 2026-08-09 — #186: AC1 strengthened — a half-cited dispatch constraint is worse than an uncited one; AC2/AC3 unchanged
 
 **By:** Ripley.
