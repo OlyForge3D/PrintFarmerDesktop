@@ -682,6 +682,33 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     expect(violations).toEqual([]);
   });
 
+  it("NEGATIVE CONTROL (Vasquez and Ripley, review of PR #647, round 14): a hook's narrowing is not reached when the base script it hooks does not exist", () => {
+    // Real `npm run ci` errors ("Missing script: \"ci\"") and never runs
+    // `preci` at all when `ci` itself has no script -- round 13 checked
+    // `preci` unconditionally, flagging this even though the aliased `ci`
+    // is never actually reached. The hook must only be consulted once its
+    // base script is confirmed to exist.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run ci',
+      preci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Vasquez and Ripley, review of PR #647, round 14): the restart fallback does not reach a missing target's hooks either", () => {
+    // Real `npm restart` with no `restart` script substitutes `stop` then
+    // `start` -- but only for scripts that actually exist. Here `stop`
+    // itself has no script, so real npm never runs `stop` at all, and
+    // therefore never runs `prestop`/`poststop` either; only `start`
+    // (which does exist) is actually reached.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prestop: 'vitest run -t "only this arm"',
+      start: 'echo actual-start-here',
+    });
+    expect(violations).toEqual([]);
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
     // Round 2 added the single-string exec() shape (`'...'`/`"..."`); round
     // 3 found the identical call shape written as a template literal

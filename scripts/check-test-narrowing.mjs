@@ -919,21 +919,41 @@ function resolveNarrowingForScript(scripts, name, visited) {
   if (visited.has(name)) return null;
   visited.add(name);
 
+  if (name === 'restart' && typeof scripts.restart !== 'string') {
+    // npm's restart fallback substitutes `stop` then `start` for the
+    // missing `restart` script -- but each of THOSE only actually runs
+    // (and only actually triggers ITS OWN pre/post hooks) if that script
+    // itself exists. Recursing here, rather than unconditionally checking
+    // `prestop`/`poststop`/`prestart`/`poststart`, means an absent `stop`
+    // contributes nothing (npm never invokes `stop`'s hooks around a
+    // script that isn't there), exactly matching the base-script-must-
+    // exist rule enforced below for the ordinary (non-restart) case.
+    return (
+      resolveNarrowingForScript(scripts, 'stop', visited) ??
+      resolveNarrowingForScript(scripts, 'start', visited)
+    );
+  }
+
+  // Vasquez and Ripley (review of PR #647, round 14): the round-13
+  // pre/post model checked `pre<name>`/`post<name>` even when `<name>`
+  // itself has no script at all -- a false-positive regression, since
+  // real npm errors ("missing script: ...") and never runs pre/post
+  // hooks (or the restart fallback above) for a script that does not
+  // exist. `test: 'npm run ci'` with no `ci` script but a `preci` that
+  // narrows was flagged here even though real `npm run ci` never reaches
+  // `preci` at all -- it fails before any hook runs. Requiring the base
+  // script to exist BEFORE consulting its hooks (rather than checking
+  // hooks unconditionally, then the base script) restores that ordering.
+  if (typeof scripts[name] !== 'string') return null;
+
   const preResult = checkLifecycleHook(scripts, `pre${name}`, visited);
   if (preResult !== null) return preResult;
 
-  let mainResult = null;
-  if (name === 'restart' && typeof scripts.restart !== 'string') {
-    mainResult =
-      resolveNarrowingForScript(scripts, 'stop', visited) ??
-      resolveNarrowingForScript(scripts, 'start', visited);
-  } else if (typeof scripts[name] === 'string') {
-    mainResult = checkScriptCommandForNarrowing(
-      scripts,
-      scripts[name],
-      visited,
-    );
-  }
+  const mainResult = checkScriptCommandForNarrowing(
+    scripts,
+    scripts[name],
+    visited,
+  );
   if (mainResult !== null) return mainResult;
 
   return checkLifecycleHook(scripts, `post${name}`, visited);
