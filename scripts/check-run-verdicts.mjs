@@ -420,17 +420,28 @@ function parseCheckRun(checkRun, index) {
  * depends on which states the two runs being compared happen to be in.
  * That score is a `(primary, secondary)` pair:
  *
- *   primary   = `completed_at` if the run is completed, otherwise
- *               `started_at` (which may be `null` for a run that has not
- *               started yet).
- *   secondary = `started_at`, used only to break an exact tie on
- *               `primary` between two completed runs. `completed_at` is
- *               only second-resolution, so two reruns of a fast job can
- *               genuinely finish in the same reported second (this
- *               repo's own live data has shown exactly that); `started_at`
- *               is an independent signal not tied to that same-second
- *               collision, since a later rerun was, definitionally,
- *               started no earlier than the run it superseded.
+ *   primary   = `started_at` (may be `null` for a run that has not
+ *               started yet -- queued/waiting/requested). A rerun is,
+ *               definitionally, triggered no earlier than the attempt it
+ *               supersedes, so which run *started* later is the one true
+ *               signal for "which attempt is newer" that holds regardless
+ *               of completion state -- unlike `completed_at`, which does
+ *               not: a slow completed run that started earlier can finish
+ *               later than a fast completed rerun that started after it,
+ *               and comparing by `completed_at` alone picked the wrong
+ *               (older, slower) run as "latest" in exactly that case
+ *               (Ripley, round 10, reproduced against live data).
+ *   secondary = `completed_at`, used only to break an exact tie on
+ *               `primary` between two completed runs. `started_at` is
+ *               only second-resolution, so two reruns triggered in quick
+ *               succession can genuinely start in the same reported
+ *               second; `completed_at` is an independent signal in that
+ *               rare case. It is not used to break a tie between an open
+ *               run and a completed run (or between two open runs),
+ *               since an open run's `completed_at` is always `null` and a
+ *               tie at the `primary` level there has no other real
+ *               timestamp evidence to fall back on -- see
+ *               `secondaryRecencyTime` below.
  *
  * Comparing runs by this per-run score directly -- rather than by a rule
  * that depends on which states the pair being compared are in -- is what
@@ -453,8 +464,7 @@ function parseCheckRun(checkRun, index) {
  * @returns {number | null}
  */
 function primaryRecencyTime(run) {
-  const anchor = run.completedAt ?? run.startedAt;
-  return anchor === null ? null : Date.parse(anchor);
+  return run.startedAt === null ? null : Date.parse(run.startedAt);
 }
 
 /**
@@ -462,14 +472,14 @@ function primaryRecencyTime(run) {
  * @returns {number | null}
  */
 function secondaryRecencyTime(run) {
-  // Only meaningful as a tiebreaker between two completed runs (see
-  // compareCheckRunRecency's doc comment): for a run that is not
-  // completed, `startedAt` IS its `primary` score already (or null), so
-  // reusing it here would let a genuine primary-level tie between an open
-  // run and a completed run resolve via the open run's own started_at
-  // instead of correctly staying unresolved.
-  if (run.status !== 'completed' || run.startedAt === null) return null;
-  return Date.parse(run.startedAt);
+  // Only meaningful as a tiebreaker between two completed runs whose
+  // started_at ties to the second (see compareCheckRunRecency's doc
+  // comment): a run that is not completed has no completed_at at all, so
+  // returning null here (rather than e.g. reusing started_at) correctly
+  // leaves a primary-level tie between an open run and anything else
+  // unresolved instead of inventing a signal that does not exist.
+  if (run.status !== 'completed' || run.completedAt === null) return null;
+  return Date.parse(run.completedAt);
 }
 
 /**

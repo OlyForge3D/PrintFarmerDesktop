@@ -743,16 +743,15 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('REGRESSION: an in-progress run that started at the exact instant a completed run finished does not outrank it -- an exact-second tie on the recency signal is ambiguous, not a win for either side (fails closed rather than reporting a possibly-wrong pending)', () => {
-    // Vasquez (round 8, still valid after the round-8 architectural
-    // rewrite -- and after the follow-up correction reverting `created_at`,
-    // which is not a real field the Checks API returns, see
+  it('REGRESSION: an in-progress run that started in the same reported second as a completed run does not outrank it -- an exact-second tie on started_at is ambiguous, not a win for either side (fails closed rather than reporting a possibly-wrong pending)', () => {
+    // Vasquez (round 8, still valid after the round-10 fix that switched
+    // the primary recency signal from completed_at to started_at, see
     // compareCheckRunRecency's doc comment): the Checks API only reports
-    // second-resolution timestamps, so an open run's `started_at` and a
-    // completed run's `completed_at` -- the two fields compareCheckRunRecency
-    // actually compares -- can genuinely tie to the second. An exact tie
-    // does not prove either run is newer, so this must fail closed
-    // (throw), not silently pick a side.
+    // second-resolution timestamps, so two runs for the same name --
+    // whether or not either has completed -- can genuinely report the
+    // same started_at to the second. An exact tie on the one signal this
+    // comparator trusts does not prove either run is newer, so this must
+    // fail closed (throw), not silently pick a side.
     const checkRuns = [
       checkRun({
         id: 9,
@@ -767,7 +766,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
-        started_at: '2026-08-06T16:05:00Z',
+        started_at: '2026-08-06T16:00:00Z',
         completed_at: null,
       }),
     ];
@@ -776,7 +775,7 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('REGRESSION: main() exits undetermined (not a clean pass) when an in-progress run ties a completed run to the second', () => {
+  it('REGRESSION: main() exits undetermined (not a clean pass) when an in-progress run ties a completed run to the second on started_at', () => {
     const checkRuns = [
       checkRun({
         id: 9,
@@ -791,7 +790,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
-        started_at: '2026-08-06T16:05:00Z',
+        started_at: '2026-08-06T16:00:00Z',
         completed_at: null,
       }),
     ];
@@ -805,6 +804,43 @@ describe('latestCheckRunsByName', () => {
       () => {},
     );
     expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: a completed run that started earlier but took longer to finish does not outrank a completed rerun that started later but finished faster (Ripley, round 10)', () => {
+    // Comparing by completed_at alone (the prior design) let a slow job
+    // that started FIRST but ran long finish AFTER a fast rerun that
+    // started SECOND -- so the older attempt "won" purely because it took
+    // longer, even though the newer attempt (by started_at, the one true
+    // signal for "which attempt is newer" regardless of how long each
+    // took) had already superseded it. Concrete repro (Ripley): a
+    // completed failure that started at 12:00 and ran 10 minutes vs a
+    // completed success rerun that started at 12:05 (definitely the
+    // later attempt) but finished in 1 minute. The later-started run must
+    // win regardless of which one completed later in wall-clock time.
+    const olderSlower = checkRun({
+      id: 1,
+      name: 'Desktop',
+      status: 'completed',
+      conclusion: 'failure',
+      started_at: '2026-08-06T12:00:00Z',
+      completed_at: '2026-08-06T12:10:00Z',
+    });
+    const newerFaster = checkRun({
+      id: 2,
+      name: 'Desktop',
+      status: 'completed',
+      conclusion: 'success',
+      started_at: '2026-08-06T12:05:00Z',
+      completed_at: '2026-08-06T12:06:00Z',
+    });
+    for (const checkRuns of [
+      [olderSlower, newerFaster],
+      [newerFaster, olderSlower],
+    ]) {
+      const latest = latestCheckRunsByName(checkRuns);
+      expect(latest.get('Desktop')?.id).toBe(2);
+      expect(latest.get('Desktop')?.conclusion).toBe('success');
+    }
   });
 
   it('REGRESSION: two runs created in the exact same second -- a completed failure and a queued rerun -- cannot be safely ordered, and must not silently mask the failure behind a false pending (Ralph round-8 repro, restated for the created_at-only design)', () => {
