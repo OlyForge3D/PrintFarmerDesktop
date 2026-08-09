@@ -334,6 +334,7 @@ import {
   __setBackupMetaWriteRaceHookForTests,
   __setIdentityPinPreOpenHookForTests,
   __setIdentityPinPostOpenHookForTests,
+  __setFindBackupByOperationIdPreRevalidateHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -1223,6 +1224,124 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         ),
       ).rejects.toMatchObject({ code: 'pathRestricted' });
     },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a safeFilename colliding with the reserved prefix by case alone (NTFS is case-insensitive)',
+    async () => {
+      // Reviewer finding (Ripley, round 5): the reserved-prefix guard used
+      // to compare with a case-sensitive `startsWith`, but NTFS — the only
+      // filesystem this module ever targets — is case-insensitive but
+      // case-preserving, so `.PFD-op-<uuid>.json` and `.pfd-op-<uuid>.json`
+      // name the exact same file on disk despite differing as strings. A
+      // profile named with upper-case (or mixed-case) letters in the
+      // reserved prefix would have passed the old case-sensitive check yet
+      // still collided with real bookkeeping files at the filesystem level.
+      const original = '{"name":"v1-reserved-prefix-case"}';
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.PFD-op-not-a-real-uuid.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.Pfd-Tmp-Anything.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'findBackupByOperationId refuses to trust a backup reached through installRoot swapped mid-lookup (validate-then-reuse window narrowed to its own last use)',
+    async () => {
+      // Reviewer finding (Vasquez, round 5): findBackupByOperationId used
+      // to validate installRoot once, at the very top (via
+      // resolveBackupMetaPath), and then reuse that same
+      // canonicalInstallRoot string to build/lstat backupPath several
+      // `await`s later (after reading and parsing the metadata file) — a
+      // materially wider validate-then-reuse window than the tight,
+      // back-to-back pattern used elsewhere in this file. This simulates a
+      // swap that happens after the metadata record has already been read
+      // (i.e. inside that wider window, not before the function starts),
+      // and confirms the fresh re-validation immediately before
+      // backupPath's construction still catches it.
+      const safeFilename = 'toctou_locate_root_swap_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-locate-root-swap"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `locate-root-swap-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-locate-root-swap-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+      void installResult;
+
+      // Find the metadata record's expected backup filename by reading it
+      // directly (bypassing findBackupByOperationId, which is under test),
+      // so the decoy under escapeDir can share the exact same basename.
+      const metaFileName = `.pfd-op-${operationId}.json`;
+      const metaPath = path.join(installRoot, metaFileName);
+      const rawRecord = JSON.parse(await readFile(metaPath, 'utf8')) as {
+        backupFileName: string;
+      };
+      const realBackupPath = path.join(installRoot, rawRecord.backupFileName);
+      const realBackupBytes = await readFile(realBackupPath);
+      await writeFile(
+        path.join(escapeDir, rawRecord.backupFileName),
+        realBackupBytes,
+      );
+
+      // Simulate the swap happening genuinely mid-execution: use the
+      // pre-revalidate test hook to swap installRoot for a junction at the
+      // exact point findBackupByOperationId has already read and parsed
+      // the metadata record but has not yet performed its final,
+      // immediately-before-use re-validation. Swapping any earlier than
+      // this (e.g. before calling the function at all) would only prove
+      // the top-of-function validation already caught it — which the old,
+      // insufficient code also did — so this must land inside the
+      // function's own window to be a meaningful regression test.
+      __setFindBackupByOperationIdPreRevalidateHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        expect(
+          located,
+          'located a backup reached through an install root swapped mid-lookup',
+        ).toBeNull();
+      } finally {
+        __setFindBackupByOperationIdPreRevalidateHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(metaPath, JSON.stringify(rawRecord));
+        await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
   );
 });
 

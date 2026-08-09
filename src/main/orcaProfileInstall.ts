@@ -341,8 +341,15 @@ export function computeInstallPath(
   // real profile filename must never be able to collide with one of those
   // — see `RESERVED_FILE_PREFIX`'s doc comment for why no legitimately
   // generated name can reach this in practice; this rejects it outright
-  // regardless.
-  if (safeFilename.startsWith(RESERVED_FILE_PREFIX)) {
+  // regardless. Compared case-insensitively: NTFS (the only filesystem this
+  // path ever targets) is case-insensitive-but-preserving, so `.PFD-op-...`
+  // and `.pfd-op-...` name the same file on disk even though they differ as
+  // strings — a case-sensitive comparison here would let a profile named
+  // `.PFD-op-<uuid>.json` collide with real bookkeeping despite passing this
+  // check.
+  if (
+    safeFilename.toLowerCase().startsWith(RESERVED_FILE_PREFIX.toLowerCase())
+  ) {
     throw makeError(
       'pathRestricted',
       'Install filename collides with a reserved internal prefix.',
@@ -617,6 +624,33 @@ function validateOperationId(operationId: string): void {
 }
 
 /**
+ * Validate `installRoot` (via `ensureInstallRootSafe`) and return its
+ * canonical, realpath'd form.
+ *
+ * Round-5 reviewer finding (Vasquez): a single validate-then-reuse-the-path
+ * pattern is only as tight as the gap between the validation and the last
+ * use of its result. `installOrcaProfileWindows` and
+ * `restoreOrcaProfileWindows` each validate once and use the result
+ * immediately (no further `await`s in between) — but `findBackupByOperationId`
+ * used to validate once via `resolveBackupMetaPath` and then reuse that same
+ * `canonicalInstallRoot` string *after* several further `await`s (reading and
+ * parsing the metadata file), which is a materially wider window for
+ * `installRoot` to be swapped in. Every caller of this function now
+ * re-validates immediately before its own last use of the canonical root,
+ * rather than trusting a validation an arbitrary number of `await`s earlier.
+ */
+async function ensureInstallRootSafeCanonical(
+  installRoot: string,
+): Promise<string> {
+  await ensureInstallRootSafe(installRoot);
+  try {
+    return await realpath(installRoot);
+  } catch {
+    throw makeError('pathRestricted', 'Install root is inaccessible.');
+  }
+}
+
+/**
  * Validate `installRoot` (via `ensureInstallRootSafe`, the same check every
  * real profile write and restore already goes through) and return its
  * canonical path plus the path the metadata record for `operationId` lives
@@ -626,13 +660,8 @@ async function resolveBackupMetaPath(
   installRoot: string,
   operationId: string,
 ): Promise<{ canonicalInstallRoot: string; metaPath: string }> {
-  await ensureInstallRootSafe(installRoot);
-  let canonicalInstallRoot: string;
-  try {
-    canonicalInstallRoot = await realpath(installRoot);
-  } catch {
-    throw makeError('pathRestricted', 'Install root is inaccessible.');
-  }
+  const canonicalInstallRoot =
+    await ensureInstallRootSafeCanonical(installRoot);
   return {
     canonicalInstallRoot,
     metaPath: path.join(
@@ -765,6 +794,29 @@ export function __setIdentityPinPostOpenHookForTests(
 }
 
 /**
+ * Test-only hook invoked by `findBackupByOperationId` immediately after it
+ * has read and parsed the durable metadata record, but before its final,
+ * fresh `ensureInstallRootSafeCanonical` re-check. Lets a regression test
+ * swap `installRoot` for a junction at exactly the point in the middle of
+ * this function's own execution that a real attacker would need to hit —
+ * proving the re-validation this function performs right before its last
+ * use of the canonical root (see its doc comment, round-5 finding) closes
+ * the window even for a swap that happens *during* this call, not merely
+ * one already in place before it starts (which the old top-of-function-only
+ * validation would have caught anyway, making that scenario an insufficient
+ * regression test on its own). No-op in production; never set outside
+ * tests.
+ */
+let findBackupByOperationIdPreRevalidateHookForTests:
+  (() => Promise<void> | void) | null = null;
+
+export function __setFindBackupByOperationIdPreRevalidateHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  findBackupByOperationIdPreRevalidateHookForTests = hook;
+}
+
+/**
  * Read `filePath`'s bytes in a way that cannot be defeated by a symlink
  * swapped in and back out again around the read (a "swap-in/swap-back"
  * TOCTOU).
@@ -886,6 +938,17 @@ async function readBackupMetaFileSafely(
  * if there is no record, the record is malformed, the install root is
  * unsafe (e.g. a symlink/junction), or the backup file it points to no
  * longer exists.
+ *
+ * Round-5 reviewer finding (Vasquez): this used to reuse the
+ * `canonicalInstallRoot` `resolveBackupMetaPath` validated at the very top,
+ * several `await`s before this function's last use of it (reading and
+ * parsing the metadata file happens in between) — a materially wider
+ * validate-then-reuse window than the tight, back-to-back pattern
+ * `installOrcaProfileWindows`/`restoreOrcaProfileWindows` use. This now
+ * re-validates `installRoot` via `ensureInstallRootSafeCanonical`
+ * immediately before its own last use of the canonical root (building and
+ * `lstat`-ing `backupPath`), so a swap that happens anywhere in this
+ * function's execution — not just before it starts — is still caught.
  */
 export async function findBackupByOperationId(
   installRoot: string,
@@ -895,12 +958,8 @@ export async function findBackupByOperationId(
     return null;
   }
   let metaPath: string;
-  let canonicalInstallRoot: string;
   try {
-    ({ metaPath, canonicalInstallRoot } = await resolveBackupMetaPath(
-      installRoot,
-      operationId,
-    ));
+    ({ metaPath } = await resolveBackupMetaPath(installRoot, operationId));
   } catch {
     return null; // Install root is unsafe or missing.
   }
@@ -930,6 +989,19 @@ export async function findBackupByOperationId(
     record.backupFileName.includes('\\') ||
     record.backupFileName.includes('\0')
   ) {
+    return null;
+  }
+  if (findBackupByOperationIdPreRevalidateHookForTests) {
+    await findBackupByOperationIdPreRevalidateHookForTests();
+  }
+  // Re-validate installRoot fresh, immediately before this function's last
+  // use of it — see this function's doc comment for why reusing the
+  // validation from the top (an arbitrary number of `await`s ago) is not
+  // tight enough.
+  let canonicalInstallRoot: string;
+  try {
+    canonicalInstallRoot = await ensureInstallRootSafeCanonical(installRoot);
+  } catch {
     return null;
   }
   const backupPath = path.join(canonicalInstallRoot, record.backupFileName);
@@ -994,13 +1066,8 @@ export async function restoreOrcaProfileWindows(
   // backupPath was computed by an earlier, separate call
   // (findBackupByOperationId), so the install root could have been
   // swapped for a junction in the gap since that call returned.
-  await ensureInstallRootSafe(installRoot);
-  let canonicalInstallRoot: string;
-  try {
-    canonicalInstallRoot = await realpath(installRoot);
-  } catch {
-    throw makeError('pathRestricted', 'Install root is inaccessible.');
-  }
+  const canonicalInstallRoot =
+    await ensureInstallRootSafeCanonical(installRoot);
   // Compare canonicalized forms on both sides, not raw path strings: a
   // legitimate installRoot and backupPath can differ as strings (e.g. an
   // 8.3 short name or drive-letter normalization a Windows filesystem
