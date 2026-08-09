@@ -871,47 +871,102 @@ function resolveScriptAliasTarget(command) {
  *
  * `npm run test` -- what CI actually invokes -- reaches the narrowing exactly
  * as surely as if it were written inline, but a check that reads only the
- * `test` script's own text never sees it. This follows the reference --
- * repeatedly, since the chain can be more than one hop deep -- into whichever
- * script it names, with a `visited` set so a cycle (`test` -> `a` -> `test`)
- * reports no narrowing rather than looping forever.
+ * `test` script's own text never sees it.
  *
- * Vasquez (review of PR #647, round 12): `restart` is not just another name
- * in `NPM_BARE_LIFECYCLE_SCRIPTS` -- npm documents that when a package.json
- * has no `restart` script of its own, `npm restart` does not simply no-op,
- * it runs the `stop` script followed by the `start` script instead. Treating
- * `restart` exactly like `test`/`start`/`stop` (resolve to `scripts.restart`
- * or nothing) missed that real fallback:
- * `checkPackageJsonScripts({ test: 'npm restart', start: 'vitest run -t
- * "only this arm"' })` reached no narrowing, even though `npm restart` here
- * genuinely executes the narrowed `start` script per npm's own documented
- * behaviour. When the resolved target is `restart` and `scripts.restart`
- * itself is not a string (i.e. no explicit `restart` script exists to take
- * priority), this follows npm's fallback chain -- `stop` first, then
- * `start` -- exactly as npm itself would run them, rather than stopping at
- * an unresolved `restart` reference.
+ * Rounds 11-12 (Vasquez, review of PR #647) each closed one more shape of
+ * npm's own script-resolution semantics that a purely alias-chasing model
+ * missed -- npm's closed bare-lifecycle set (round 11), then `restart`'s
+ * stop/start fallback (round 12) -- and each fix, read narrowly, missed the
+ * next: `restart`'s fallback still didn't account for npm's pre/post hook
+ * convention (`pretest`/`posttest`, `prestart`/`poststart`, ...), which
+ * apply to EVERY npm-run script, not just the ones this file happened to
+ * special-case already. Both reviewers independently flagged this as the
+ * same pattern as the earlier interpreter/extension "one more shape"
+ * saga (#640) and asked for the underlying model to be made systematic
+ * rather than patched once more.
+ *
+ * `resolveNarrowingForScript` is that systematic model: given ANY script
+ * name npm would run (the `test`/`test:*` scripts directly, or any name
+ * reached through an alias chain), it evaluates npm's own real execution
+ * order for that name --
+ *
+ *   pre<name> (if defined) -> <name>'s own resolution -> post<name> (if defined)
+ *
+ * -- where "<name>'s own resolution" is either `scripts[name]` itself, or,
+ * for the one name npm documents an irregular fallback for (`restart` with
+ * no `scripts.restart` defined), the same pre/post-wrapped resolution of
+ * `stop` followed by `start`. Because this is name-based rather than
+ * command-text-based, following an alias into another script name (`npm
+ * run ci` -> `ci`) recurses through this same function, so THAT script's
+ * own pre/post hooks are checked too -- a narrowing hiding behind
+ * `preci`/`postci` is reached exactly as a narrowing hiding behind
+ * `pretest`/`posttest` on the entry script is. `visited` is threaded
+ * through the whole graph (entry script, its hooks, every aliased target,
+ * and THEIR hooks) so any cycle reports no narrowing rather than looping
+ * forever, rather than resetting per hop.
+ *
+ * Ripley (review of PR #647, round 12): left a non-blocking note that if
+ * npm's lifecycle handling grows further, a small data table would be
+ * preferable to more special-cases. `restart`'s stop/start fallback is
+ * npm's only documented irregular lifecycle chain -- everything else
+ * (arbitrary custom scripts, the plain bare-lifecycle names) follows the
+ * uniform pre/name/post shape -- so it remains a single explicit branch
+ * here rather than a table with one row, but the shape is intentionally
+ * factored so a genuine second irregular chain could be added as a
+ * sibling branch without restructuring the pre/post wrapping itself.
  */
-function resolveNarrowingThroughAliasChain(scripts, command, visited) {
+function resolveNarrowingForScript(scripts, name, visited) {
+  if (visited.has(name)) return null;
+  visited.add(name);
+
+  const preResult = checkLifecycleHook(scripts, `pre${name}`, visited);
+  if (preResult !== null) return preResult;
+
+  let mainResult = null;
+  if (name === 'restart' && typeof scripts.restart !== 'string') {
+    mainResult =
+      resolveNarrowingForScript(scripts, 'stop', visited) ??
+      resolveNarrowingForScript(scripts, 'start', visited);
+  } else if (typeof scripts[name] === 'string') {
+    mainResult = checkScriptCommandForNarrowing(
+      scripts,
+      scripts[name],
+      visited,
+    );
+  }
+  if (mainResult !== null) return mainResult;
+
+  return checkLifecycleHook(scripts, `post${name}`, visited);
+}
+
+/**
+ * Check one pre/post lifecycle hook script (`pre<name>`/`post<name>`) for a
+ * narrowing, including through its own alias chain. Unlike the script it
+ * hooks, a hook itself gets no further pre/post wrapping of its own (npm
+ * has no `prepretest`) -- it is just another command line that may
+ * directly narrow or alias elsewhere.
+ */
+function checkLifecycleHook(scripts, hookName, visited) {
+  if (visited.has(hookName)) return null;
+  if (typeof scripts[hookName] !== 'string') return null;
+  visited.add(hookName);
+  return checkScriptCommandForNarrowing(scripts, scripts[hookName], visited);
+}
+
+/**
+ * Check a single command line for a narrowing -- either directly in the
+ * command itself, or one hop further through whatever script it aliases to
+ * (which is then checked with its own full pre/main/post resolution via
+ * `resolveNarrowingForScript`, so a narrowing behind an aliased script's
+ * OWN lifecycle hooks is still reached).
+ */
+function checkScriptCommandForNarrowing(scripts, command, visited) {
   if (typeof command !== 'string') return null;
   const direct = detectNarrowing(command, { requireDirectInvocation: false });
   if (direct !== null) return { narrowing: direct, command };
   const target = resolveScriptAliasTarget(command);
-  if (target === null || visited.has(target)) return null;
-  visited.add(target);
-  if (target === 'restart' && typeof scripts.restart !== 'string') {
-    for (const fallbackTarget of ['stop', 'start']) {
-      if (visited.has(fallbackTarget)) continue;
-      visited.add(fallbackTarget);
-      const result = resolveNarrowingThroughAliasChain(
-        scripts,
-        scripts[fallbackTarget],
-        visited,
-      );
-      if (result !== null) return result;
-    }
-    return null;
-  }
-  return resolveNarrowingThroughAliasChain(scripts, scripts[target], visited);
+  if (target === null) return null;
+  return resolveNarrowingForScript(scripts, target, visited);
 }
 
 /**
@@ -924,14 +979,10 @@ function resolveNarrowingThroughAliasChain(scripts, command, visited) {
 export function checkPackageJsonScripts(scripts) {
   if (scripts === null || typeof scripts !== 'object') return [];
   const violations = [];
-  for (const [name, command] of Object.entries(scripts)) {
+  for (const name of Object.keys(scripts)) {
     if (!TEST_SCRIPT_NAME.test(name)) continue;
-    if (typeof command !== 'string') continue;
-    const result = resolveNarrowingThroughAliasChain(
-      scripts,
-      command,
-      new Set(),
-    );
+    if (typeof scripts[name] !== 'string') continue;
+    const result = resolveNarrowingForScript(scripts, name, new Set());
     if (result !== null) {
       violations.push({
         home: 'package.json',

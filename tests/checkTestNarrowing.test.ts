@@ -599,6 +599,89 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     expect(violations).toEqual([]);
   });
 
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in `pretest` runs before `test` and is reached', () => {
+    // npm runs `pretest` before `test` for every `npm test`/`npm run test`
+    // invocation, whether or not `test` itself narrows. A narrowing that
+    // lives only in `pretest` is just as real a narrowing of what CI
+    // actually runs as one in `test` itself.
+    const violations = checkPackageJsonScripts({
+      pretest: 'vitest run -t "only this arm"',
+      test: 'echo actual-tests-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in `posttest` is reached', () => {
+    // Symmetric with `pretest` -- `posttest` runs after `test` and is just
+    // as reachable a home for a narrowing.
+    const violations = checkPackageJsonScripts({
+      test: 'echo actual-tests-here',
+      posttest: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in an ALIASED script's own pre-hook is reached, not just the entry script's", () => {
+    // `test` aliases to `ci` via `npm run ci`; `ci` itself has a `preci`
+    // hook. Because alias resolution recurses through the same
+    // name-based resolver, `preci`'s narrowing must be reached exactly as
+    // `pretest`'s would be for the entry script.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run ci',
+      preci: 'vitest run -t "only this arm"',
+      ci: 'echo actual-tests-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in `prestart`/`poststart` is reached through npm restart's stop/start fallback", () => {
+    // The restart fallback (round 12) resolves to `stop` then `start` --
+    // each of THOSE also carries its own pre/post hooks that must be
+    // checked too, not just their own bare command text.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prestart: 'vitest run -t "only this arm"',
+      start: 'echo actual-start-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 13): an unrelated `pre`/`post`-prefixed script that is not actually a lifecycle hook is not treated as one', () => {
+    // `prepublish` is a REAL npm lifecycle hook name (fires around `npm
+    // publish`), but a script like `prebuild` or `pretestdata` that merely
+    // happens to start with `pre`/`post` and is not `pre`+the exact entry
+    // script name must not be mistaken for that entry script's hook.
+    const violations = checkPackageJsonScripts({
+      test: 'echo actual-tests-here',
+      pretestdata: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
     // Round 2 added the single-string exec() shape (`'...'`/`"..."`); round
     // 3 found the identical call shape written as a template literal
