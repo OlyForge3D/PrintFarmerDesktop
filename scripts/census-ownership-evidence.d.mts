@@ -27,7 +27,15 @@ export function summarizeCensus(
   measurements: WorktreeMeasurement[],
 ): CensusSummary;
 
-export function formatReport(summary: CensusSummary): string;
+export function formatCensusCitation(
+  summary: CensusSummary,
+  options?: { measuredAt?: string },
+): string;
+
+export function formatReport(
+  summary: CensusSummary,
+  options?: { measuredAt?: string },
+): string;
 
 export interface CensusResult {
   readonly summary: CensusSummary;
@@ -35,4 +43,7 @@ export interface CensusResult {
   readonly report: string;
 }
 
-export function runCensus(cwd?: string): CensusResult;
+export function runCensus(
+  cwd?: string,
+  options?: { measuredAt?: string },
+): CensusResult;
