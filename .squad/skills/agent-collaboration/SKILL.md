@@ -213,7 +213,8 @@ git merge-base --is-ancestor 9991065e origin/development
 # exit 0  <-- correct: the squash commit itself is on development
 
 # 4. Negative control: same content-diff predicate against a path with no relation to #561
-git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 origin/development -- scripts/safe-worktree-remove.mjs
+# (scripts/check-merge-landed.mjs is not in `gh pr diff 561 --name-only`'s file list)
+git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 origin/development -- scripts/check-merge-landed.mjs
 # nonzero output <-- correctly reports "not shipped" for content that was never merged,
 # confirming the predicate in step 2 has real discriminating power rather than always
 # reporting "shipped"
