@@ -126,6 +126,16 @@ The agent emoji/name marker on a cross-session message (e.g. `🏗️` for Riple
 
 Stamping origin in the envelope and preserving attribution across compaction are known, unresolved remedies (#372) — they need a platform-level change this repo does not control. Do not build a marker-based attribution detector as a substitute; `ripley-attribution-carries-no-bits.md` already showed that a field which is occasionally right (like `%an`) is trusted and therefore worse than one that is never right.
 
+## `session_files` is not an authorship control
+
+Do not use the Copilot session store's `session_files` table (`session_id, file_path, tool_name, turn_index, first_seen_at`) as evidence for *who changed a file* — #420 measured it against a case with a known answer and it failed in both directions at once. It answers **"which paths did the edit/create tools touch first, per session, per worktree"**, which reads deceptively like the real question because both are tables of file paths.
+
+- **Not sound:** it produced `create` rows for throwaway probe files that were written, read once, deleted, and never reached a branch — zero matching commits, zero on disk.
+- **Not complete, and the miss lands on the substantive event:** `first_seen_at` fires once per `(session, path)` and never again, so a later, larger edit to an already-seen file produces no row at all. It also only logs this agent's own edit/create tool calls — `Set-Content`, raw `python`/PowerShell scripts, and `git checkout` are invisible, which is the *normal* way a scripted mutation battery rewrites a file, not an edge case. And the key is a worktree-absolute path, so one repo-relative file fragments into one row per worktree that touched it, undercounting per-file activity by construction.
+- **The two failure modes point the same way:** a session that rewrote a file ten times from a script can show zero or one stale row (cleared), while a session that wrote a 90-second scratch file shows a `create` row (implicated). The errors run in the exculpatory direction, which is the direction nobody audits.
+
+**Use commit identity instead, bounded correctly.** The `Copilot-Session` trailer is a real, resolvable session id (#471), but a single trailer value can span many hours and commits copied from one shared prompt (2026-08-07 amendment above measured one value across 74 commits, 39h33m) — divergent trailers are durable positive evidence of a second writer, identical trailers are not positive evidence of one. Corroborate the trailer with `%cn != 'GitHub'` and `ownCommits`/reflog-derived ownership rather than trusting the trailer alone, and remember commit identity in any form identifies the writer of the git object, never the actor who pushed, merged, or clicked merge. Full write-up: #420.
+
 ## Freeze the branch during review
 
 Once a review is dispatched, the branch is frozen. Any push invalidates the verdict, because the reviewer's conclusions no longer describe the commit that would be merged. Push your fix, report the new SHA, then stop until released.
