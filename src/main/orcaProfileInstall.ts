@@ -88,6 +88,74 @@ function isUnderRoot(candidate: string, root: string): boolean {
  * #158 asks about and which the destination-file symlink check does not cover,
  * because the destination file itself was never a link.
  */
+/**
+ * Walk from `baseRoot` down through each path segment of `relativeSubdir`,
+ * refusing any segment that is a symlink/junction, refusing any segment
+ * that is not a directory, and refusing any segment whose canonical
+ * (symlink-resolved) path escapes `canonicalBaseRoot`. Creates directories
+ * that do not yet exist (never through a symlink). Returns the canonical
+ * path of the final directory.
+ *
+ * Shared by `ensureInstallRootSafe` (APPDATA -> installRoot) and
+ * `ensureBackupMetaDirSafe` (installRoot -> installRoot/.pfd-backup-meta),
+ * so a reparse point anywhere in either chain is rejected identically. The
+ * durable backup-metadata sidecar (#208) originally reused only the
+ * destination-file symlink check, not this per-segment root walk — so a
+ * junction at `.pfd-backup-meta` itself (or a segment under it) could
+ * redirect metadata reads/writes outside the canonical OrcaSlicer
+ * directory, exactly the escape this walk exists to prevent for the
+ * install root.
+ */
+async function walkDirSafe(
+  baseRoot: string,
+  canonicalBaseRoot: string,
+  relativeSubdir: string,
+): Promise<string> {
+  let current = baseRoot;
+  for (const segment of relativeSubdir.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        throw makeError(
+          'pathRestricted',
+          'Path contains a symlink or junction.',
+        );
+      }
+      if (!info.isDirectory()) {
+        throw makeError(
+          'pathRestricted',
+          'Path contains a non-directory component.',
+        );
+      }
+    } catch (error) {
+      if (!isErrno(error, 'ENOENT')) throw error;
+      await mkdir(current);
+      const created = await lstat(current);
+      if (created.isSymbolicLink() || !created.isDirectory()) {
+        throw makeError('pathRestricted', 'Directory creation was redirected.');
+      }
+    }
+
+    if (!isUnderRoot(await realpath(current), canonicalBaseRoot)) {
+      throw makeError('pathRestricted', 'Path escapes canonical root.');
+    }
+  }
+  return realpath(current);
+}
+
+/**
+ * Create the install root one segment at a time, refusing any component that
+ * is a reparse point or that canonicalizes outside APPDATA.
+ *
+ * This replaces `mkdir(installRoot, { recursive: true })`, which follows an
+ * existing junction silently. Measured against the pre-fix code: with
+ * `%APPDATA%\OrcaSlicer\user\default\filament` made a junction to an unrelated
+ * directory, install reported success and the profile landed in that
+ * directory — a write outside the install root, which is exactly the escape
+ * #158 asks about and which the destination-file symlink check does not cover,
+ * because the destination file itself was never a link.
+ */
 async function ensureInstallRootSafe(installRoot: string): Promise<void> {
   const appData = process.env['APPDATA'];
   if (!appData || !isUnderRoot(installRoot, appData)) {
@@ -101,45 +169,11 @@ async function ensureInstallRootSafe(installRoot: string): Promise<void> {
     throw makeError('pathRestricted', 'APPDATA is inaccessible.');
   }
 
-  let current = appData;
-  for (const segment of path
-    .relative(appData, installRoot)
-    .split(path.sep)
-    .filter(Boolean)) {
-    current = path.join(current, segment);
-    try {
-      const info = await lstat(current);
-      if (info.isSymbolicLink()) {
-        throw makeError(
-          'pathRestricted',
-          'Install root contains a symlink or junction.',
-        );
-      }
-      if (!info.isDirectory()) {
-        throw makeError(
-          'pathRestricted',
-          'Install root contains a non-directory component.',
-        );
-      }
-    } catch (error) {
-      if (!isErrno(error, 'ENOENT')) throw error;
-      await mkdir(current);
-      const created = await lstat(current);
-      if (created.isSymbolicLink() || !created.isDirectory()) {
-        throw makeError(
-          'pathRestricted',
-          'Install directory creation was redirected.',
-        );
-      }
-    }
-
-    if (!isUnderRoot(await realpath(current), canonicalAppData)) {
-      throw makeError(
-        'pathRestricted',
-        'Install root escapes canonical APPDATA.',
-      );
-    }
-  }
+  await walkDirSafe(
+    appData,
+    canonicalAppData,
+    path.relative(appData, installRoot),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -523,11 +557,33 @@ interface BackupMetaRecord {
   readonly createdAt: number;
 }
 
-function backupMetaPath(installRoot: string, operationId: string): string {
+function validateOperationId(operationId: string): void {
   if (!OPERATION_ID_PATTERN.test(operationId)) {
     throw makeError('pathRestricted', 'Invalid operationId; expected a UUID.');
   }
-  return path.join(installRoot, BACKUP_META_DIR, `${operationId}.json`);
+}
+
+/**
+ * Ensure `installRoot/.pfd-backup-meta` exists, is not itself (nor any
+ * segment leading to it) a symlink/junction, and canonicalizes to somewhere
+ * under the install root. Returns the canonical metadata directory path.
+ *
+ * `installRoot` is independently re-validated here (via
+ * `ensureInstallRootSafe`) rather than assumed safe from a prior call: this
+ * is called both from the install path (after `ensureInstallRootSafe` has
+ * already run) and from `findBackupByOperationId` on the restore path,
+ * which has no other opportunity to check the install root before reading
+ * metadata off disk.
+ */
+async function ensureBackupMetaDirSafe(installRoot: string): Promise<string> {
+  await ensureInstallRootSafe(installRoot);
+  let canonicalInstallRoot: string;
+  try {
+    canonicalInstallRoot = await realpath(installRoot);
+  } catch {
+    throw makeError('pathRestricted', 'Install root is inaccessible.');
+  }
+  return walkDirSafe(installRoot, canonicalInstallRoot, BACKUP_META_DIR);
 }
 
 /**
@@ -541,32 +597,59 @@ async function writeBackupMeta(
   operationId: string,
   record: BackupMetaRecord,
 ): Promise<void> {
-  const metaPath = backupMetaPath(installRoot, operationId);
-  await mkdir(path.dirname(metaPath), { recursive: true });
+  validateOperationId(operationId);
+  const metaDir = await ensureBackupMetaDirSafe(installRoot);
+  const metaPath = path.join(metaDir, `${operationId}.json`);
+  // Refuse to write through an existing symlink at the metadata file itself
+  // (the directory chain above is already verified reparse-point-free by
+  // ensureBackupMetaDirSafe, but the leaf file could still have been
+  // replaced by a link between checks).
+  try {
+    const info = await lstat(metaPath);
+    if (info.isSymbolicLink()) {
+      throw makeError(
+        'pathRestricted',
+        'Backup metadata file is a symlink; refused.',
+      );
+    }
+  } catch (error) {
+    if (!isErrno(error, 'ENOENT')) throw error;
+  }
   await writeFile(metaPath, JSON.stringify(record), 'utf8');
 }
 
 /**
  * Resolve the backup that a specific install operation produced, purely
  * from the durable on-disk metadata record for `operationId`. Returns null
- * if there is no record, the record is malformed, or the backup file it
- * points to no longer exists.
+ * if there is no record, the record is malformed, the metadata directory
+ * chain is unsafe (e.g. a symlink/junction), or the backup file it points
+ * to no longer exists.
  */
 export async function findBackupByOperationId(
   installRoot: string,
   operationId: string,
 ): Promise<LocatedBackup | null> {
-  let metaPath: string;
-  try {
-    metaPath = backupMetaPath(installRoot, operationId);
-  } catch {
+  if (!OPERATION_ID_PATTERN.test(operationId)) {
     return null;
+  }
+  let metaDir: string;
+  try {
+    metaDir = await ensureBackupMetaDirSafe(installRoot);
+  } catch {
+    return null; // Install root or metadata dir chain is unsafe or missing.
+  }
+  const metaPath = path.join(metaDir, `${operationId}.json`);
+  try {
+    const info = await lstat(metaPath);
+    if (info.isSymbolicLink()) return null; // Never read through a symlink.
+  } catch {
+    return null; // No record for this operationId (never installed, or pre-#208-fix backup).
   }
   let raw: string;
   try {
     raw = await readFile(metaPath, 'utf8');
   } catch {
-    return null; // No record for this operationId (never installed, or pre-#208-fix backup).
+    return null;
   }
   let parsed: unknown;
   try {
@@ -592,7 +675,12 @@ export async function findBackupByOperationId(
   ) {
     return null;
   }
-  const backupPath = path.join(installRoot, record.backupFileName);
+  // metaDir is canonical (installRoot resolved through walkDirSafe) and
+  // BACKUP_META_DIR has no path separators, so its parent is the canonical
+  // install root — use that rather than the raw, possibly-unresolved
+  // installRoot argument to join the backup filename.
+  const canonicalInstallRoot = path.dirname(metaDir);
+  const backupPath = path.join(canonicalInstallRoot, record.backupFileName);
   try {
     const info = await lstat(backupPath);
     if (info.isSymbolicLink()) return null; // Never follow a symlink here.

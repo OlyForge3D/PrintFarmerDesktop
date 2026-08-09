@@ -12,7 +12,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import {
+  writeFile,
+  mkdtemp,
+  rm,
+  symlink,
+  readdir,
+  mkdir,
+} from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   computeInstallPath,
@@ -34,6 +41,27 @@ function sha256(content: string | Buffer): string {
 
 async function makeTempDir(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'pfd-install-test-'));
+}
+
+/**
+ * Create a reparse point at `link` pointing at directory `targetDir`.
+ *
+ * Windows junctions are directory-only and need no elevated privilege,
+ * which a CI runner may not grant for file symlinks. Mirrors the same
+ * helper in tests/calibrationMaliciousInputCorpus.test.ts so the
+ * backup-metadata directory hardening is exercised with the identical
+ * reparse-point fixture technique used for the existing install-path
+ * hardening (#158 / #208 follow-up).
+ */
+async function makeDirReparsePoint(
+  targetDir: string,
+  link: string,
+): Promise<void> {
+  if (process.platform === 'win32') {
+    await symlink(targetDir, link, 'junction');
+    return;
+  }
+  await symlink(targetDir, link, 'dir');
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +590,10 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   it.runIf(process.platform === 'win32')(
     'resolves the correct profile by operationId even when two profiles share a backupHash (hash collision)',
     async () => {
+      // This exercises 4 installs + 2 lookups + 2 restores, each now doing
+      // an extra per-segment reparse-point walk for the backup-metadata
+      // directory (#208 follow-up hardening); comfortably fast locally, but
+      // the default 5s test timeout is tight under CI I/O contention.
       // Two different profiles whose *prior* on-disk content happens to be
       // byte-identical — so their backups share the same SHA-256 hash. A
       // hash-only lookup cannot distinguish which backup belongs to which
@@ -636,6 +668,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       expect(await readFile(destA, 'utf8')).toBe(sharedPriorContent);
       expect(await readFile(destB, 'utf8')).toBe(sharedPriorContent);
     },
+    15_000,
   );
 
   it.runIf(process.platform === 'win32')(
@@ -679,6 +712,67 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         located!.safeFilename,
       );
       expect(restoreResult.restoredHash).toBe(installResult.backupHash);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to write/read backup metadata through a junctioned .pfd-backup-meta directory',
+    async () => {
+      // Reviewer finding (Vasquez, reproduced concretely on Windows): the
+      // durable backup-metadata sidecar directory reused only the
+      // destination-file symlink check, not the same per-segment
+      // reparse-point walk that guards the install root itself. If
+      // `.pfd-backup-meta` (or a segment leading to it) is a symlink or
+      // junction, writeBackupMeta/findBackupByOperationId could write to or
+      // read from outside the canonical OrcaSlicer directory — the same
+      // escape class #158 already covers for the profile install path.
+      const safeFilename = 'junction_meta_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-junction-meta"}';
+      const updated = '{"name":"v2-junction-meta"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(sandboxAppData, '..', 'meta-escape');
+      await mkdir(escapeDir, { recursive: true });
+
+      // Seed a backup to write metadata for.
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+
+      // Replace .pfd-backup-meta (not yet created, since no operation has
+      // written metadata under this safeFilename/root combination yet) with
+      // a junction pointing outside the sandbox, before the install that
+      // would create a metadata record for it.
+      const metaDir = path.join(installRoot, '.pfd-backup-meta');
+      await rm(metaDir, { recursive: true, force: true });
+      await makeDirReparsePoint(escapeDir, metaDir);
+
+      // The install that would write a backup-metadata record must refuse,
+      // rather than writing through the junction into escapeDir.
+      await expect(
+        installOrcaProfileWindows(
+          updated,
+          sha256(updated),
+          safeFilename,
+          operationId,
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      expect(
+        await readdir(escapeDir),
+        'metadata was written through a junctioned .pfd-backup-meta directory',
+      ).toEqual([]);
+
+      // A lookup against the same junctioned directory must also refuse,
+      // rather than reading whatever happens to be under escapeDir.
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).toBeNull();
+
+      await rm(metaDir, { recursive: true, force: true });
+      await rm(escapeDir, { recursive: true, force: true });
     },
   );
 });
