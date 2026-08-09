@@ -275,9 +275,7 @@ describe('summarizing a census', () => {
     expect(report).toContain('worktrees total          3');
     expect(report).toContain('ownershipEvidence = true  1');
     expect(report).toContain('ownershipEvidence = false 1');
-    expect(report).toContain(
-      'ownershipEvidence = null (indeterminate) 1',
-    );
+    expect(report).toContain('ownershipEvidence = null (indeterminate) 1');
     expect(report).toContain('wrongly ACCUSED           0');
   });
 });

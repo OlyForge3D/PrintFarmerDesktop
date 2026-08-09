@@ -1813,9 +1813,7 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
     expect(entries).not.toMatch(/^commit(?: \(initial\))?:/);
     const [, selector] = entries.split('|');
     expect(selector).toBeDefined();
-    const writeTime = new Date(
-      selector!.match(/@\{(.+)\}$/)![1]!,
-    ).getTime();
+    const writeTime = new Date(selector!.match(/@\{(.+)\}$/)![1]!).getTime();
     const ageDays = (Date.now() - writeTime) / (24 * 60 * 60 * 1000);
     expect(ageDays).toBeGreaterThanOrEqual(30);
   });

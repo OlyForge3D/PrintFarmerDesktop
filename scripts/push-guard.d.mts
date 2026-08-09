@@ -166,9 +166,7 @@ export function originLabel(
   owned: Set<string>,
   attributable: boolean,
 ): string;
-export function readReflogEntries(
-  ref: string,
-): {
+export function readReflogEntries(ref: string): {
   sha: string;
   reflogSubject: string;
   date: Date | null;

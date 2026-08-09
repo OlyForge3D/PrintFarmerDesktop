@@ -368,7 +368,13 @@ export function formatResult(result, citation = {}) {
           ? 'STALE'
           : 'UNVERIFIABLE';
   const lines = [`[census-freshness] ${label} (${result.verdict})`];
-  const counts = ['worktrees', 'trueCount', 'falseCount', 'accused', 'indeterminate']
+  const counts = [
+    'worktrees',
+    'trueCount',
+    'falseCount',
+    'accused',
+    'indeterminate',
+  ]
     .filter((key) => citation[key] !== undefined)
     .map(
       (key) =>
@@ -410,7 +416,13 @@ const REQUIRED_FIELDS = [
  * "zero worktrees had indeterminate evidence" either, so callers see
  * `undefined` rather than a fabricated 0 when the field is missing.
  */
-const NUMERIC_FIELDS = ['worktrees', 'true', 'false', 'accused', 'indeterminate'];
+const NUMERIC_FIELDS = [
+  'worktrees',
+  'true',
+  'false',
+  'accused',
+  'indeterminate',
+];
 
 /**
  * A count field's raw text must be a plain non-negative base-10 integer --

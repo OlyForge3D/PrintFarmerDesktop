@@ -833,7 +833,10 @@ function oldestReflogEntryAgeDays(entries) {
   let oldest = null;
   for (const entry of entries) {
     if (entry.date instanceof Date && !oldest) oldest = entry.date;
-    else if (entry.date instanceof Date && entry.date.getTime() < oldest.getTime())
+    else if (
+      entry.date instanceof Date &&
+      entry.date.getTime() < oldest.getTime()
+    )
       oldest = entry.date;
   }
   if (!oldest) return null;
