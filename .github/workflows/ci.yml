@@ -19,11 +19,30 @@ name: CI
 # a pull_request/merge_group event that checkout is PR-authored content, and
 # handing it a repo-admin secret would let a PR redefine the very npm script
 # being invoked to exfiltrate that secret (Vasquez + Ripley, PR #661 review
-# round 4). See the step's own comment for the full reasoning.
+# round 4). See the step's own comment for the full reasoning. It also only
+# ever runs on a push to `development` specifically — `main` is not a real
+# branch in this repo and was removed from the push trigger below (line 26,
+# PR #661 review round 5) for the same reason; the step also carries its own
+# `github.ref == 'refs/heads/development'` guard as redundant defense in
+# depth. See the trigger's and the step's own comments for the full
+# reasoning.
 
 on:
   push:
-    branches: [development, main]
+    # `main` was dropped from this list (Vasquez, PR #661 review round 5,
+    # Ralph independently confirmed via `gh api .../branches/main` -> 404):
+    # this repo's live default/protected branch is `development`; `main` is
+    # not a real branch yet, just a name. Listing it here meant anyone with
+    # push access could create a branch literally named `main` and push
+    # attacker-controlled content straight to it, bypassing PR review, and
+    # this workflow — including the privileged merge-queue-contexts step —
+    # would still run over that push. The step already carries its own
+    # `github.ref == 'refs/heads/development'` guard (added for the same
+    # finding, see that step's comment) as defense in depth; narrowing the
+    # trigger itself removes the exposure at its source instead of relying
+    # solely on the step-level check. Re-add `main` here only once it exists
+    # as a real branch with its own protection rules.
+    branches: [development]
   pull_request:
   # GitHub dispatches `merge_group` only when a merge queue is enabled. That has
   # happened: two entries were dispatched on 2026-08-04 against base db03fbf1,
@@ -52,9 +71,16 @@ concurrency:
   # failure mode tests/ciWorkflowTriggers.test.ts bans the unkeyed form for.
   #
   # `github.event_name` is now also part of the key (#555). It was not before:
-  # `ci-${{ github.ref }}` keys purely on the ref, and for EVERY push to
-  # `development` or `main` that ref is the same (`refs/heads/development`,
-  # `refs/heads/main`), so all trunk-push runs shared one group.
+  # `ci-${{ github.ref }}` keys purely on the ref, and at the time #555 was
+  # fixed the push trigger below (line 26) still listed both `development`
+  # and `main`, so for every push to either one that ref was the same
+  # (`refs/heads/development`, `refs/heads/main`), and all trunk-push runs
+  # shared one group. `main` has since been dropped from the push trigger
+  # (PR #661 review round 5 — see that trigger's own comment), so this
+  # collision is now moot for the branch list as currently configured, but
+  # `github.sha` staying in the key is still correct: it is what keeps any
+  # future re-addition of a second push branch, or any other same-ref
+  # collision, from silently reintroducing the eviction bug #555 fixed.
   # `cancel-in-progress: false` only protects the run that is *in progress*; it
   # does not protect a run that is *pending*. GitHub cancels a previously
   # pending run in a group outright when a third run queues behind it,
@@ -472,38 +498,39 @@ jobs:
       # checkout, so a PR could redefine either to exfiltrate the token
       # (Vasquez + Ripley, PR #661 review round 4: same finding,
       # independently). Restricting to `push` means this step only ever runs
-      # over already-merged, already-reviewed content on `development`/`main`
-      # — the same trust boundary `pull_request_target` vs `pull_request`
-      # exists to draw, achieved here by gating on event name instead of
-      # switching triggers for the whole job. The practical effect: this
-      # check no longer runs as a per-PR gate, only after merge — which
-      # matches how it is written (`continue-on-error: true`, a report, not a
-      # block) and is the same discharge path already named for
-      # check:protection-assumptions in check-script-reachability.mjs
-      # ("wire it into a scheduled workflow the moment a privileged token
-      # exists"); this is that token's job arriving with it, on push instead
-      # of a schedule, since one already had to exist for this job to run at
-      # all. Until MERGE_QUEUE_CONTEXTS_TOKEN is provisioned, the guard below
-      # still reports the precondition rather than silently succeeding.
-      # `continue-on-error` keeps either outcome from taking the required
-      # "Dependency advisories" context down with it.
+      # over already-merged, already-reviewed content on `development` — the
+      # same trust boundary `pull_request_target` vs `pull_request` exists to
+      # draw, achieved here by gating on event name instead of switching
+      # triggers for the whole job. The practical effect: this check no
+      # longer runs as a per-PR gate, only after merge — which matches how it
+      # is written (`continue-on-error: true`, a report, not a block) and is
+      # the same discharge path already named for check:protection-assumptions
+      # in check-script-reachability.mjs ("wire it into a scheduled workflow
+      # the moment a privileged token exists"); this is that token's job
+      # arriving with it, on push instead of a schedule, since one already had
+      # to exist for this job to run at all. Until MERGE_QUEUE_CONTEXTS_TOKEN
+      # is provisioned, the guard below still reports the precondition rather
+      # than silently succeeding. `continue-on-error` keeps either outcome
+      # from taking the required "Dependency advisories" context down with it.
       #
       # `github.ref == 'refs/heads/development'` is a second, independent gate
       # on top of `event_name == 'push'` (Vasquez, PR #661 review round 5):
-      # the top-level `on.push.branches` trigger above (line 26) lists both
-      # `development` and `main`, but `main` does not currently exist in this
-      # repo (`gh api repos/OlyForge3D/PrintFarmerDesktop/branches/main` ->
-      # 404, confirmed live). Any actor with push access could create a
-      # `main` branch and push attacker-controlled content directly to it,
-      # bypassing PR review entirely — that push still satisfies
-      # `event_name == 'push'`, and `actions/checkout@v4` would check out
-      # exactly that unreviewed content, handing it the token. Pinning this
-      # step to `development` specifically closes that path: even if `main`
-      # is created later (with or without its own branch protection), this
-      # step will not run over a push to it until this condition is
-      # deliberately revisited. This is defense-in-depth, not a workaround —
-      # `development` is where this repo's actual review gate (this PR's own
-      # merge queue) lives.
+      # the top-level `on.push.branches` trigger (line 26) used to list both
+      # `development` and `main`, but `main` did not exist in this repo at the
+      # time (`gh api repos/OlyForge3D/PrintFarmerDesktop/branches/main` ->
+      # 404, confirmed live). Any actor with push access could have created a
+      # `main` branch and pushed attacker-controlled content directly to it,
+      # bypassing PR review entirely — that push would still have satisfied
+      # `event_name == 'push'`, and `actions/checkout@v4` would have checked
+      # out exactly that unreviewed content, handing it the token. Two things
+      # closed this, deliberately redundant with each other: `main` was
+      # dropped from the `on.push.branches` list itself (line 26, this same
+      # round), removing the exposure at its source; this step's own
+      # `github.ref` check is kept as well, so even if `main` (or any other
+      # branch) is later re-added to the trigger, this specific step still
+      # will not run over a push to it until this condition is deliberately
+      # revisited. `development` is where this repo's actual review gate
+      # (this PR's own merge queue) lives.
       - name: Check merge-queue required contexts against live branch protection
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/development'
         continue-on-error: true
