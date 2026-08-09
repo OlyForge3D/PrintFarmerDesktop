@@ -556,7 +556,6 @@ events regardless of what `MAX_XML_EVENTS` is set to, so it keeps testing wiring
 cheap to store and expensive to walk; that direction is out of scope here and pinned by
 `the_shipped_event_budget_stays_reachable_within_the_model_byte_ceiling`.
 
-
 **Scope of these controls, which is narrower than it looks.** Every limit above is enforced by
 `ParseGuard` on the `threemf::open_package` path. The retarget archive reader does not use
 `ParseGuard` and does not read `limits.rs` at all; it enforces a separate, independently
