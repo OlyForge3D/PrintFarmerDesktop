@@ -192,9 +192,7 @@ scoped to a path from a genuinely different, unrelated change — and confirm it
 "not shipped." If it doesn't, the check itself is broken and its "shipped" answer is not
 trustworthy either.
 
-### Worked example: PR #561 (squash-merged, `docs/CONTRIBUTING.md` and
-
-`scripts/safe-worktree-remove.*`)
+### Worked example: PR #561 (squash-merged, `docs/CONTRIBUTING.md` and `scripts/safe-worktree-remove.*`)
 
 PR #561 merged `2026-08-06T19:04:41Z` as squash commit `9991065e`; its pre-merge branch
 tip was `14304447`.
