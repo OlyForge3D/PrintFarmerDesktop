@@ -289,6 +289,40 @@ describe('latestCheckRunsByName', () => {
     },
   );
 
+  it.each(['\x1b', '\x00\x1b', '\x7f\x07'])(
+    'REGRESSION: refuses a check name %j that is entirely control characters once sanitized',
+    (name) => {
+      // A name made up only of control characters (no printable content)
+      // passes the raw non-whitespace check -- control bytes are not
+      // whitespace per String.prototype.trim -- but becomes an empty
+      // string once the ANSI/control-character sanitization strips them.
+      // That must still be rejected as an empty name, not silently
+      // reported as a check with no visible label.
+      const checkRuns = [checkRun({ name })];
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+        /has no non-empty name once control characters are stripped/,
+      );
+    },
+  );
+
+  it('REGRESSION: strips ANSI escape sequences and other control characters from an attacker-controlled check name', () => {
+    // A check-run `name` is not a trusted string -- anyone who can create a
+    // check run against a commit (e.g. a workflow triggered from a fork PR)
+    // controls it, and it is interpolated straight into terminal report
+    // output. A name containing an ANSI escape sequence (ESC + CSI, here
+    // "move cursor" / "clear screen" bytes) must have its control bytes
+    // stripped before it is ever surfaced, so it cannot rewrite or corrupt
+    // the terminal output a human or agent is reading.
+    const maliciousName = '\x1b[31mDANGER\x1b[0m\x07 Desktop';
+    const checkRuns = [checkRun({ name: maliciousName })];
+    const latest = latestCheckRunsByName(checkRuns);
+    const parsed = latest.get('[31mDANGER[0m Desktop');
+    expect(parsed).toBeDefined();
+    expect(parsed?.name).toBe('[31mDANGER[0m Desktop');
+    // eslint-disable-next-line no-control-regex -- asserting the absence of control characters is the point of this regression test.
+    expect(parsed?.name).not.toMatch(/[\x00-\x1f\x7f]/);
+  });
+
   it('REGRESSION: refuses a completed run whose completed_at is earlier than its started_at', () => {
     // A completed run's own two timestamps are internally contradictory --
     // it claims to have finished before it started, a negative duration
@@ -423,6 +457,68 @@ describe('latestCheckRunsByName', () => {
     const latest = latestCheckRunsByName(checkRuns);
     expect(latest.get('Desktop')?.id).toBe(2);
     expect(latest.get('Desktop')?.conclusion).toBeNull();
+    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
+      VERDICT_PENDING,
+    );
+  });
+
+  it("REGRESSION: a stale in-progress run that started before a newer completed rerun does not mask that rerun's real verdict", () => {
+    // The "open always wins" heuristic must be bounded: a genuinely stale
+    // in_progress run -- e.g. a hung runner that never reported back --
+    // that started BEFORE some later rerun both started and finished must
+    // not be reported as the latest attempt just because it is still open.
+    // If it were, latestCheckRunsByName would report this check `pending`
+    // forever, hiding the completed rerun's real (possibly failing)
+    // verdict behind a run that will never resolve.
+    const checkRuns = [
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T15:00:00Z',
+        completed_at: null,
+      }),
+      checkRun({
+        id: 9,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'failure',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:05:00Z',
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Desktop')?.id).toBe(9);
+    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
+      VERDICT_FAILED,
+    );
+  });
+
+  it('REGRESSION: an in-progress run that started at the same instant as a completed run still outranks it (boundary, not strictly-before)', () => {
+    // The bound is "at or after", not "strictly after" -- an open run whose
+    // started_at exactly matches the completed run's started_at is not
+    // provably stale, so it still wins as the live state of the check.
+    const checkRuns = [
+      checkRun({
+        id: 9,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:05:00Z',
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: null,
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Desktop')?.id).toBe(2);
     expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
       VERDICT_PENDING,
     );
@@ -976,5 +1072,65 @@ describe('main', () => {
       () => undefined,
     );
     expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: end-to-end, a stale in-progress run does not mask a newer completed failure behind a pending exit', () => {
+    // End-to-end version of the isNewerCheckRun bound: without it, this
+    // scenario would exit EXIT_CLEAN (the stale in_progress run reads as
+    // "pending", never as the genuine failure that actually happened),
+    // exactly the false-negative "everything's fine" misreporting this
+    // file exists to prevent.
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 2,
+            name: 'Desktop',
+            status: 'in_progress',
+            conclusion: null,
+            started_at: '2026-08-06T15:00:00Z',
+            completed_at: null,
+          }),
+          checkRun({
+            id: 9,
+            name: 'Desktop',
+            status: 'completed',
+            conclusion: 'failure',
+            started_at: '2026-08-06T16:00:00Z',
+            completed_at: '2026-08-06T16:05:00Z',
+          }),
+        ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_FAILED);
+  });
+
+  it('REGRESSION: end-to-end, an ANSI-escape-laden check name is sanitized before it reaches the report', () => {
+    const written: string[] = [];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({ id: 1, name: '\x1b[31mDANGER\x1b[0m Desktop' }),
+        ]),
+      })),
+      (text) => {
+        written.push(text);
+      },
+    );
+    expect(result).toBe(EXIT_CLEAN);
+    const report = written.join('\n');
+    // Exclude \n (0x0a) from the control-character check: formatReport
+    // legitimately emits multi-line output. The property under test is
+    // that no OTHER control byte (in particular ESC, 0x1b) survives.
+    // eslint-disable-next-line no-control-regex -- asserting the absence of control characters is the point of this regression test.
+    expect(report).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f]/);
+    expect(report).toContain('[31mDANGER[0m Desktop');
   });
 });

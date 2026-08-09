@@ -69,6 +69,20 @@ const FAILED_CONCLUSIONS = new Set([
   'startup_failure',
 ]);
 const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
+// A check-run `name` is not a trusted string: anyone who can create a check
+// run against a commit -- for instance via a workflow triggered from a fork
+// PR -- controls this field, yet it is interpolated straight into terminal
+// output and error messages below (`formatReport`, the thrown-error messages
+// in this function and in `isNewerCheckRun`). C0 control characters (0x00-
+// 0x1F) and DEL (0x7F) include the ESC byte that begins every ANSI escape
+// sequence; leaving them in place would let an attacker-controlled name
+// rewrite terminal output (cursor moves, color changes, even overwriting
+// prior lines) or otherwise corrupt the report a human or agent is reading.
+// Stripping every control byte removes the trigger for any such sequence
+// regardless of what follows it, without having to enumerate escape-sequence
+// grammars.
+// eslint-disable-next-line no-control-regex -- matching control characters is the point: strip every C0/DEL byte (including ESC, which begins ANSI escape sequences) out of an attacker-controlled check-run name before it is ever printed.
+const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f]/g;
 // GitHub's documented Checks API status enum (create/get a check run):
 // https://docs.github.com/en/rest/checks/runs -- queued, in_progress, and
 // completed are the states this file's logic actually branches on; waiting,
@@ -124,8 +138,23 @@ function parseCheckRun(checkRun, index) {
   if (typeof name !== 'string' || name.trim() === '') {
     throw new Error(`check run ${index + 1} has no non-empty name`);
   }
+  // Sanitize before this name is ever printed or embedded in an error
+  // message (see CONTROL_CHARS_PATTERN above) -- every downstream use of
+  // `name`, in this function's own error messages and beyond, reads the
+  // sanitized value from here on.
+  const sanitizedName = name.replace(CONTROL_CHARS_PATTERN, '');
+  if (sanitizedName.trim() === '') {
+    // A name made up entirely of control characters (no printable content
+    // at all) passes the raw non-empty check above -- control bytes are not
+    // whitespace as far as `String.prototype.trim` is concerned -- but
+    // becomes empty once sanitized. Treat that the same as the raw-empty
+    // case rather than reporting a check with no visible name.
+    throw new Error(
+      `check run ${index + 1} has no non-empty name once control characters are stripped`,
+    );
+  }
   if (typeof status !== 'string' || status === '') {
-    throw new Error(`check run ${index + 1} (${name}) has no status`);
+    throw new Error(`check run ${index + 1} (${sanitizedName}) has no status`);
   }
   if (!KNOWN_STATUSES.has(status)) {
     // A garbage/unrecognized status (typo, API-version drift, a malformed
@@ -135,17 +164,17 @@ function parseCheckRun(checkRun, index) {
     // let `main` exit clean, the same failure mode the two invariant
     // checks above already close for known-but-contradictory pairings.
     throw new Error(
-      `check run ${index + 1} (${name}) has an unrecognized status ${JSON.stringify(status)}`,
+      `check run ${index + 1} (${sanitizedName}) has an unrecognized status ${JSON.stringify(status)}`,
     );
   }
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new Error(
-      `check run ${index + 1} (${name}) has no positive integer id`,
+      `check run ${index + 1} (${sanitizedName}) has no positive integer id`,
     );
   }
   if (conclusion !== null && typeof conclusion !== 'string') {
     throw new Error(
-      `check run ${index + 1} (${name}) has a non-string conclusion`,
+      `check run ${index + 1} (${sanitizedName}) has a non-string conclusion`,
     );
   }
   // `conclusion: null` is the normal, expected shape for a run that has not
@@ -159,7 +188,7 @@ function parseCheckRun(checkRun, index) {
   // misreporting this file exists to prevent. Fail closed instead.
   if (status === 'completed' && conclusion === null) {
     throw new Error(
-      `check run ${index + 1} (${name}) is completed but has no conclusion`,
+      `check run ${index + 1} (${sanitizedName}) is completed but has no conclusion`,
     );
   }
   // The inverse contract violation: GitHub only sets `conclusion` once a
@@ -174,7 +203,7 @@ function parseCheckRun(checkRun, index) {
   // documented contract.
   if (status !== 'completed' && conclusion !== null) {
     throw new Error(
-      `check run ${index + 1} (${name}) has status ${JSON.stringify(status)} but a non-null conclusion ${JSON.stringify(conclusion)} -- only a completed run should carry one`,
+      `check run ${index + 1} (${sanitizedName}) has status ${JSON.stringify(status)} but a non-null conclusion ${JSON.stringify(conclusion)} -- only a completed run should carry one`,
     );
   }
   // A queued or in-progress run legitimately has not started yet, so GitHub
@@ -189,13 +218,13 @@ function parseCheckRun(checkRun, index) {
       Number.isNaN(Date.parse(startedAtRaw))
     ) {
       throw new Error(
-        `check run ${index + 1} (${name}) has an invalid started_at`,
+        `check run ${index + 1} (${sanitizedName}) has an invalid started_at`,
       );
     }
     startedAt = startedAtRaw;
   } else if (status === 'completed') {
     throw new Error(
-      `check run ${index + 1} (${name}) is completed but has no started_at`,
+      `check run ${index + 1} (${sanitizedName}) is completed but has no started_at`,
     );
   }
   let completedAt = null;
@@ -205,7 +234,7 @@ function parseCheckRun(checkRun, index) {
       Number.isNaN(Date.parse(completedAtRaw))
     ) {
       throw new Error(
-        `check run ${index + 1} (${name}) has an invalid completed_at`,
+        `check run ${index + 1} (${sanitizedName}) has an invalid completed_at`,
       );
     }
     if (status !== 'completed') {
@@ -217,13 +246,13 @@ function parseCheckRun(checkRun, index) {
       // caller inferring the run has finished when `status` says
       // otherwise -- fail closed instead of trusting either field alone.
       throw new Error(
-        `check run ${index + 1} (${name}) has status ${JSON.stringify(status)} but a non-null completed_at -- only a completed run should carry one`,
+        `check run ${index + 1} (${sanitizedName}) has status ${JSON.stringify(status)} but a non-null completed_at -- only a completed run should carry one`,
       );
     }
     completedAt = completedAtRaw;
   } else if (status === 'completed') {
     throw new Error(
-      `check run ${index + 1} (${name}) is completed but has no completed_at`,
+      `check run ${index + 1} (${sanitizedName}) is completed but has no completed_at`,
     );
   }
   if (
@@ -242,7 +271,7 @@ function parseCheckRun(checkRun, index) {
     // the wrong run for a name entirely. Fail closed instead of trusting
     // either timestamp on its own.
     throw new Error(
-      `check run ${index + 1} (${name}) has completed_at (${completedAt}) earlier than started_at (${startedAt})`,
+      `check run ${index + 1} (${sanitizedName}) has completed_at (${completedAt}) earlier than started_at (${startedAt})`,
     );
   }
   // A run whose status is not yet 'completed' has not settled on a
@@ -250,7 +279,7 @@ function parseCheckRun(checkRun, index) {
   // null here rather than trusted -- the same "don't trust a field the API
   // hasn't committed to yet" discipline as elsewhere in this repo's checks.
   return {
-    name,
+    name: sanitizedName,
     conclusion: status === 'completed' ? conclusion : null,
     status,
     startedAt,
@@ -274,15 +303,26 @@ function parseCheckRun(checkRun, index) {
  *   ordering replaced it) breaks on a run that legitimately has not started
  *   yet (`started_at: null` while queued).
  *
- * Instead: a run that is still open (`status !== 'completed'`) is always
+ * Instead: a run that is still open (`status !== 'completed'`) is ordinarily
  * treated as more current than one that has already completed for the same
- * name -- an in-flight attempt is definitionally the live state of that
- * check, regardless of when either run was created. Between two runs in the
- * same state (both completed, or both still open), compare the timestamp
- * that state guarantees is present: `completed_at` for two completed runs
- * (always non-null once completed), `started_at` for two still-open runs
- * (may still be null on both if neither has started; that case falls back
- * to id, the least-bad signal available when nothing has run yet).
+ * name -- an in-flight attempt is usually the live state of that check.
+ * But that preference is *bounded*, not unconditional: an open run that has
+ * actually started (`started_at` non-null) only wins if it started at or
+ * after the completed run's own `started_at`. Without that bound, a genuinely
+ * stale `in_progress` run -- a runner that hung or never reported back,
+ * started well before some later completed rerun -- would permanently mask
+ * that completed run's real verdict behind a `pending` reading forever,
+ * which is exactly the kind of "signal reads as something other than what
+ * actually happened" defect this file exists to close. A still-`queued` run
+ * with no `started_at` yet carries no timestamp to bound against, so it is
+ * still treated as the newer attempt (the same "not yet started is still
+ * more current" reasoning as before) -- the malformed/adversarial case this
+ * file cannot yet observe is a hung `in_progress` run, not a queued one.
+ * Between two runs in the same state (both completed, or both still open),
+ * compare the timestamp that state guarantees is present: `completed_at` for
+ * two completed runs (always non-null once completed), `started_at` for two
+ * still-open runs (may still be null on both if neither has started; that
+ * case throws below rather than guessing).
  *
  * `completed_at` is only second-resolution, so two reruns of a fast job can
  * genuinely tie on it -- live Checks API data on this repo showed exactly
@@ -315,9 +355,29 @@ function isNewerCheckRun(candidate, current) {
   const candidateOpen = candidate.status !== 'completed';
   const currentOpen = current.status !== 'completed';
   if (candidateOpen !== currentOpen) {
-    // Exactly one of the two is still open (in_progress/queued): the open
-    // one is the live state of this check, whichever id or timestamp it
-    // carries.
+    // Exactly one of the two is still open (in_progress/queued/etc). It is
+    // ordinarily the live state of this check -- but only if it is not
+    // provably stale relative to the completed run. If the open run has
+    // actually started, bound the preference by comparing its started_at to
+    // the completed run's started_at (completed runs always have a non-null
+    // started_at, enforced by parseCheckRun): the open run only wins if it
+    // began at or after the completed run did. An open run that started
+    // BEFORE the completed run's own started_at cannot be "the newer
+    // attempt" -- the completed run started later and has already finished,
+    // so it is the real latest state, and the open run is a stale/hung
+    // leftover that must not mask it. A still-queued open run with no
+    // started_at yet has no timestamp to bound against, so it keeps the
+    // prior "not yet started is still more current" treatment.
+    const open = candidateOpen ? candidate : current;
+    const completed = candidateOpen ? current : candidate;
+    if (open.startedAt !== null) {
+      const openStartedAtOrAfterCompleted =
+        Date.parse(open.startedAt) >=
+        Date.parse(/** @type {string} */ (completed.startedAt));
+      if (!openStartedAtOrAfterCompleted) {
+        return !candidateOpen;
+      }
+    }
     return candidateOpen;
   }
   if (!candidateOpen) {
