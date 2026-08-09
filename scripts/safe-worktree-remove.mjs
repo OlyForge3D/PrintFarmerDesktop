@@ -37,6 +37,39 @@ export const RECOVERY_FLAG = '--recover-stale';
 const RECOVERY_DIRECTORY = 'printfarmer-worktree-removal';
 const RECOVERY_VERSION = 1;
 
+// Stable, distinct identifiers for every refusal this module can throw. Codes
+// are API: they must not be renamed or reused for a different cause. Prose in
+// the accompanying Error message is free to change; the code is not.
+export const ERROR_CODES = Object.freeze({
+  IDENTITY_UNRESOLVED: 'EWT_IDENTITY_UNRESOLVED',
+  CALLER_INSIDE_TARGET: 'EWT_CALLER_INSIDE_TARGET',
+  RECOVERY_TARGET_NOT_DIRECTORY: 'EWT_RECOVERY_TARGET_NOT_DIRECTORY',
+  RECEIPT_CREATE_IDENTITY_MISMATCH: 'EWT_RECEIPT_CREATE_IDENTITY_MISMATCH',
+  RECEIPT_UNREADABLE: 'EWT_RECEIPT_UNREADABLE',
+  RECEIPT_IDENTITY_MISMATCH: 'EWT_RECEIPT_IDENTITY_MISMATCH',
+  STALE_REGISTRY_UNRESOLVED: 'EWT_STALE_REGISTRY_UNRESOLVED',
+  STALE_STILL_REGISTERED: 'EWT_STALE_STILL_REGISTERED',
+  WORKTREE_ROOT_NOT_DIRECTORY: 'EWT_WORKTREE_ROOT_NOT_DIRECTORY',
+  REPARSE_TARGET_UNRESOLVED: 'EWT_REPARSE_TARGET_UNRESOLVED',
+  TARGET_DISAPPEARED: 'EWT_TARGET_DISAPPEARED',
+  TARGET_IDENTITY_CHANGED: 'EWT_TARGET_IDENTITY_CHANGED',
+  REPARSE_POINTS_REMAIN: 'EWT_REPARSE_POINTS_REMAIN',
+  STALE_DIRECTORY_BECAME_REPARSE_POINT:
+    'EWT_STALE_DIRECTORY_BECAME_REPARSE_POINT',
+  STALE_REPARSE_POINT_REMAINED: 'EWT_STALE_REPARSE_POINT_REMAINED',
+  STALE_UNSUPPORTED_ENTRY: 'EWT_STALE_UNSUPPORTED_ENTRY',
+  REGISTRY_UNRESOLVED: 'EWT_REGISTRY_UNRESOLVED',
+  NOT_REGISTERED: 'EWT_NOT_REGISTERED',
+  AMBIGUOUS_IDENTITY: 'EWT_AMBIGUOUS_IDENTITY',
+  MAIN_WORKTREE: 'EWT_MAIN_WORKTREE',
+  RECOVERY_WINDOWS_ONLY: 'EWT_RECOVERY_WINDOWS_ONLY',
+});
+
+/** Throws an Error carrying a stable `code` alongside its prose message. */
+function refuse(code, message) {
+  throw Object.assign(new Error(message), { code });
+}
+
 function normalizedPath(value, platform = process.platform) {
   const normalized = path.resolve(value).replace(/[\\/]+$/, '');
   return platform === 'win32' ? normalized.toLowerCase() : normalized;
@@ -84,7 +117,8 @@ function resolveFilesystemPath(
   try {
     return realpathImpl(value);
   } catch (error) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.IDENTITY_UNRESOLVED,
       `${DIAGNOSTIC_PREFIX}: refusing because filesystem identity cannot be resolved for ${value}\n${String(error)}`,
     );
   }
@@ -156,7 +190,8 @@ export function validateCallerLocation(
       !identityEqual && isPathInsideByIdentity(resolvedCwd, targetIdentity);
   }
   if (lexicalEqual || lexicalInside || identityEqual || identityInside) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.CALLER_INSIDE_TARGET,
       `${DIAGNOSTIC_PREFIX}: refusing because the current directory is inside the worktree being removed: ${cwd}`,
     );
   }
@@ -197,7 +232,8 @@ export function createRecoveryReceipt(
   const resolvedTarget = resolveFilesystemPath(target, 'win32', realpathImpl);
   const targetStats = lstatSync(resolvedTarget, { bigint: true });
   if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.RECOVERY_TARGET_NOT_DIRECTORY,
       `${DIAGNOSTIC_PREFIX}: recovery target must be a real directory: ${target}`,
     );
   }
@@ -220,7 +256,8 @@ export function createRecoveryReceipt(
     ) {
       return receiptPath;
     }
-    throw new Error(
+    refuse(
+      ERROR_CODES.RECEIPT_CREATE_IDENTITY_MISMATCH,
       `${DIAGNOSTIC_PREFIX}: refusing because an existing recovery receipt has different filesystem identity: ${receiptPath}`,
     );
   }
@@ -247,7 +284,7 @@ export function removeRecoveryReceipt(receiptPath) {
   unlinkSync(receiptPath);
 }
 
-function readRecoveryReceipt(repository, target, realpathImpl) {
+export function readRecoveryReceipt(repository, target, realpathImpl) {
   const commonDirectory = resolveFilesystemPath(
     gitCommonDirectory(repository),
     'win32',
@@ -259,7 +296,8 @@ function readRecoveryReceipt(repository, target, realpathImpl) {
   try {
     receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
   } catch (error) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.RECEIPT_UNREADABLE,
       `${DIAGNOSTIC_PREFIX}: refusing ambiguous stale recovery; no readable identity receipt exists for ${target}\n${String(error)}`,
     );
   }
@@ -274,7 +312,8 @@ function readRecoveryReceipt(repository, target, realpathImpl) {
     receipt.targetDev !== targetStats.dev.toString() ||
     receipt.targetIno !== targetStats.ino.toString()
   ) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.RECEIPT_IDENTITY_MISMATCH,
       `${DIAGNOSTIC_PREFIX}: refusing ambiguous stale recovery because the identity receipt does not match ${target}`,
     );
   }
@@ -293,7 +332,8 @@ export function validateStaleRecoveryTarget(
       resolvedWorktree = realpathImpl(worktree);
     } catch (error) {
       if (error?.code === 'ENOENT') continue;
-      throw new Error(
+      refuse(
+        ERROR_CODES.STALE_REGISTRY_UNRESOLVED,
         `${DIAGNOSTIC_PREFIX}: refusing ambiguous stale recovery because registered worktree identity cannot be resolved for ${worktree}\n${String(error)}`,
       );
     }
@@ -301,7 +341,8 @@ export function validateStaleRecoveryTarget(
       normalizedPath(resolvedWorktree, 'win32') ===
       normalizedPath(resolvedTarget, 'win32')
     ) {
-      throw new Error(
+      refuse(
+        ERROR_CODES.STALE_STILL_REGISTERED,
         `${DIAGNOSTIC_PREFIX}: refusing stale recovery because the path is still a registered worktree: ${target}`,
       );
     }
@@ -332,7 +373,8 @@ function targetKind(stats) {
 export function findReparsePoints(worktreePath) {
   const rootStats = lstatSync(worktreePath);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.WORKTREE_ROOT_NOT_DIRECTORY,
       `${DIAGNOSTIC_PREFIX}: worktree root must be a real directory: ${worktreePath}`,
     );
   }
@@ -361,7 +403,8 @@ function describeReparsePoint(linkPath, worktreePath) {
     targetPath = realpathSync(linkPath);
     stats = lstatSync(targetPath, { bigint: true });
   } catch (error) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.REPARSE_TARGET_UNRESOLVED,
       `${DIAGNOSTIC_PREFIX}: refusing because reparse target cannot be resolved: ${linkPath}\n${String(error)}`,
     );
   }
@@ -381,7 +424,8 @@ function verifyTarget(point) {
   try {
     stats = lstatSync(point.targetPath, { bigint: true });
   } catch (error) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.TARGET_DISAPPEARED,
       `${DIAGNOSTIC_PREFIX}: target disappeared after unlinking ${point.linkPath}: ${point.targetPath}\n${String(error)}`,
     );
   }
@@ -391,7 +435,8 @@ function verifyTarget(point) {
     stats.ino !== point.targetIno ||
     targetKind(stats) !== point.targetKind
   ) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.TARGET_IDENTITY_CHANGED,
       `${DIAGNOSTIC_PREFIX}: target identity changed after unlinking ${point.linkPath}: ${point.targetPath}`,
     );
   }
@@ -413,7 +458,8 @@ export function prepareWindowsWorktreeForRemoval(worktreePath) {
 
   const remaining = findReparsePoints(worktreePath);
   if (remaining.length > 0) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.REPARSE_POINTS_REMAIN,
       `${DIAGNOSTIC_PREFIX}: refusing because reparse points remain:\n${remaining.join('\n')}`,
     );
   }
@@ -434,7 +480,8 @@ function planStaleDirectoryRemoval(root) {
     const directory = pending.pop();
     const directoryStats = lstatSync(directory);
     if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
-      throw new Error(
+      refuse(
+        ERROR_CODES.STALE_DIRECTORY_BECAME_REPARSE_POINT,
         `${DIAGNOSTIC_PREFIX}: refusing stale recovery because a directory became a reparse point or changed type: ${directory}`,
       );
     }
@@ -443,7 +490,8 @@ function planStaleDirectoryRemoval(root) {
       const entryPath = path.join(directory, entry.name);
       const stats = lstatSync(entryPath);
       if (stats.isSymbolicLink()) {
-        throw new Error(
+        refuse(
+          ERROR_CODES.STALE_REPARSE_POINT_REMAINED,
           `${DIAGNOSTIC_PREFIX}: refusing stale recovery because a reparse point remained: ${entryPath}`,
         );
       }
@@ -452,7 +500,8 @@ function planStaleDirectoryRemoval(root) {
       } else if (stats.isFile()) {
         files.push(entryPath);
       } else {
-        throw new Error(
+        refuse(
+          ERROR_CODES.STALE_UNSUPPORTED_ENTRY,
           `${DIAGNOSTIC_PREFIX}: refusing stale recovery because an unsupported filesystem entry remained: ${entryPath}`,
         );
       }
@@ -487,7 +536,8 @@ export function validateRemovalTarget(
       resolvedWorktree = realpathImpl(worktree);
     } catch (error) {
       if (error?.code === 'ENOENT') continue;
-      throw new Error(
+      refuse(
+        ERROR_CODES.REGISTRY_UNRESOLVED,
         `${DIAGNOSTIC_PREFIX}: refusing because registered worktree identity cannot be resolved for ${worktree}\n${String(error)}`,
       );
     }
@@ -499,12 +549,14 @@ export function validateRemovalTarget(
     }
   }
   if (matches.length === 0) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.NOT_REGISTERED,
       `${DIAGNOSTIC_PREFIX}: refusing because this is not a registered linked worktree: ${target}`,
     );
   }
   if (matches.length > 1) {
-    throw new Error(
+    refuse(
+      ERROR_CODES.AMBIGUOUS_IDENTITY,
       `${DIAGNOSTIC_PREFIX}: refusing because multiple registered worktrees resolve to the same filesystem identity: ${target}`,
     );
   }
@@ -512,7 +564,8 @@ export function validateRemovalTarget(
   if (match.index === 0) {
     // git-worktree(1) defines the main worktree as the first list entry, followed
     // by linked worktrees. The integration test pins that ordering against Git.
-    throw new Error(
+    refuse(
+      ERROR_CODES.MAIN_WORKTREE,
       `${DIAGNOSTIC_PREFIX}: refusing to remove the repository's main worktree: ${target}`,
     );
   }
@@ -571,7 +624,8 @@ export function main(
 
     if (options.mode === 'recover') {
       if (platform !== 'win32') {
-        throw new Error(
+        refuse(
+          ERROR_CODES.RECOVERY_WINDOWS_ONLY,
           `${DIAGNOSTIC_PREFIX}: ${RECOVERY_FLAG} is restricted to Windows`,
         );
       }
@@ -620,7 +674,10 @@ export function main(
     if (receiptPath && !gitStarted) {
       cleanupReceipt(receiptPath, removeReceipt, writeStderr, false);
     }
-    writeStderr(`${String(error)}\n`);
+    const code = error?.code;
+    const prefix =
+      typeof code === 'string' && code.startsWith('EWT_') ? `[${code}] ` : '';
+    writeStderr(`${prefix}${String(error)}\n`);
     return 1;
   }
 }

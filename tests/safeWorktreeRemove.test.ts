@@ -17,16 +17,18 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import {
   DIAGNOSTIC_PREFIX,
+  ERROR_CODES,
   RECOVERY_FLAG,
   createRecoveryReceipt,
   filesystemRealpath,
   listLinkedWorktrees,
   main,
   prepareWindowsWorktreeForRemoval,
+  readRecoveryReceipt,
   validateCallerLocation,
   validateRemovalTarget,
   validateStaleRecoveryTarget,
@@ -122,6 +124,30 @@ function pathIsAbsent(target: string) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw error;
   }
+}
+
+/**
+ * Invokes `fn`, expecting it to throw, and returns the `code` carried by the
+ * thrown error. Fails the test if `fn` does not throw, so an assertion using
+ * this helper cannot silently pass on an implementation that stopped
+ * refusing.
+ */
+function codeOfThrown(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code;
+  }
+  throw new Error('expected function to throw, but it did not');
+}
+
+/**
+ * Extracts the `[EWT_...]` code prefix `main()` writes to stderr ahead of the
+ * refusal's prose, per the `${prefix}${String(error)}` format in its catch
+ * handler. Returns undefined when stderr carries no such prefix.
+ */
+function extractStderrCode(stderr: string): string | undefined {
+  return /^\[(EWT_[A-Z_]+)\]/.exec(stderr)?.[1];
 }
 
 interface RawRemovalState {
@@ -325,25 +351,29 @@ describe('safe worktree removal validation', () => {
   });
 
   it('refuses a path absent from the linked-worktree registry', () => {
-    expect(() =>
-      validateRemovalTarget(
-        path.resolve('unit-outside'),
-        [unitRepository],
-        'win32',
-        (value) => value,
+    expect(
+      codeOfThrown(() =>
+        validateRemovalTarget(
+          path.resolve('unit-outside'),
+          [unitRepository],
+          'win32',
+          (value) => value,
+        ),
       ),
-    ).toThrow('not a registered linked worktree');
+    ).toBe(ERROR_CODES.NOT_REGISTERED);
   });
 
   it('refuses the main worktree instead of treating it as removable', () => {
-    expect(() =>
-      validateRemovalTarget(
-        unitRepository,
-        [unitRepository, unitLinkedWorktree],
-        'win32',
-        (value) => value,
+    expect(
+      codeOfThrown(() =>
+        validateRemovalTarget(
+          unitRepository,
+          [unitRepository, unitLinkedWorktree],
+          'win32',
+          (value) => value,
+        ),
       ),
-    ).toThrow("repository's main worktree");
+    ).toBe(ERROR_CODES.MAIN_WORKTREE);
   });
 
   it('matches registered and main worktrees by native identity and returns the canonical target', () => {
@@ -368,14 +398,16 @@ describe('safe worktree removal validation', () => {
         realpathImpl,
       ),
     ).toBe('C:\\Users\\runneradmin\\linked');
-    expect(() =>
-      validateRemovalTarget(
-        'C:\\SHORT\\main',
-        ['C:\\Users\\runneradmin\\main', 'C:\\Users\\runneradmin\\linked'],
-        'win32',
-        realpathImpl,
+    expect(
+      codeOfThrown(() =>
+        validateRemovalTarget(
+          'C:\\SHORT\\main',
+          ['C:\\Users\\runneradmin\\main', 'C:\\Users\\runneradmin\\linked'],
+          'win32',
+          realpathImpl,
+        ),
       ),
-    ).toThrow("repository's main worktree");
+    ).toBe(ERROR_CODES.MAIN_WORKTREE);
   });
 
   it('skips only missing unrelated registry entries and refuses ambiguous identities', () => {
@@ -392,33 +424,37 @@ describe('safe worktree removal validation', () => {
       ),
     ).toBe(unitLinkedWorktree);
 
-    expect(() =>
-      validateRemovalTarget(
-        unitLinkedWorktree,
-        [unitRepository, unitLinkedWorktree, path.resolve('alias-linked')],
-        'win32',
-        (value) =>
-          value.includes('alias-linked') ? unitLinkedWorktree : value,
-      ),
-    ).toThrow('multiple registered worktrees resolve to the same');
-
-    expect(() =>
-      validateRemovalTarget(
-        unitLinkedWorktree,
-        [
-          unitRepository,
-          path.resolve('unreadable-worktree'),
+    expect(
+      codeOfThrown(() =>
+        validateRemovalTarget(
           unitLinkedWorktree,
-        ],
-        'win32',
-        (value) => {
-          if (value.includes('unreadable-worktree')) {
-            throw Object.assign(new Error('denied'), { code: 'EACCES' });
-          }
-          return value;
-        },
+          [unitRepository, unitLinkedWorktree, path.resolve('alias-linked')],
+          'win32',
+          (value) =>
+            value.includes('alias-linked') ? unitLinkedWorktree : value,
+        ),
       ),
-    ).toThrow('registered worktree identity cannot be resolved');
+    ).toBe(ERROR_CODES.AMBIGUOUS_IDENTITY);
+
+    expect(
+      codeOfThrown(() =>
+        validateRemovalTarget(
+          unitLinkedWorktree,
+          [
+            unitRepository,
+            path.resolve('unreadable-worktree'),
+            unitLinkedWorktree,
+          ],
+          'win32',
+          (value) => {
+            if (value.includes('unreadable-worktree')) {
+              throw Object.assign(new Error('denied'), { code: 'EACCES' });
+            }
+            return value;
+          },
+        ),
+      ),
+    ).toBe(ERROR_CODES.REGISTRY_UNRESOLVED);
   });
 
   it('does not invoke git when Windows preflight refuses', () => {
@@ -468,8 +504,8 @@ describe('safe worktree removal validation', () => {
       expect(status).toBe(1);
       expect(prepareWindows).not.toHaveBeenCalled();
       expect(runGit).not.toHaveBeenCalled();
-      expect(stderr.join('')).toContain(
-        'current directory is inside the worktree being removed',
+      expect(extractStderrCode(stderr.join(''))).toBe(
+        ERROR_CODES.CALLER_INSIDE_TARGET,
       );
     },
   );
@@ -494,11 +530,13 @@ describe('safe worktree removal validation', () => {
   });
 
   it('fails closed when native identity resolution fails', () => {
-    expect(() =>
-      validateCallerLocation('C:\\alias', 'C:\\target', 'win32', () => {
-        throw new Error('identity unavailable');
-      }),
-    ).toThrow('filesystem identity cannot be resolved');
+    expect(
+      codeOfThrown(() =>
+        validateCallerLocation('C:\\alias', 'C:\\target', 'win32', () => {
+          throw new Error('identity unavailable');
+        }),
+      ),
+    ).toBe(ERROR_CODES.IDENTITY_UNRESOLVED);
   });
 
   it('ignores only missing unrelated registry entries during stale recovery', () => {
@@ -516,18 +554,20 @@ describe('safe worktree removal validation', () => {
       ),
     ).toBe('C:\\stale');
 
-    expect(() =>
-      validateStaleRecoveryTarget(
-        'C:\\stale',
-        ['C:\\repo', 'C:\\unreadable'],
-        (value) => {
-          if (value === 'C:\\unreadable') {
-            throw Object.assign(new Error('denied'), { code: 'EACCES' });
-          }
-          return value;
-        },
+    expect(
+      codeOfThrown(() =>
+        validateStaleRecoveryTarget(
+          'C:\\stale',
+          ['C:\\repo', 'C:\\unreadable'],
+          (value) => {
+            if (value === 'C:\\unreadable') {
+              throw Object.assign(new Error('denied'), { code: 'EACCES' });
+            }
+            return value;
+          },
+        ),
       ),
-    ).toThrow('registered worktree identity cannot be resolved');
+    ).toBe(ERROR_CODES.STALE_REGISTRY_UNRESOLVED);
   });
 
   it('keeps a successful removal status when receipt cleanup fails visibly', () => {
@@ -652,16 +692,20 @@ describe.skipIf(onWindows)('POSIX canonical worktree aliases', () => {
     mkdirSync(nested, { recursive: true });
     symlinkSync(target, alias, 'dir');
     try {
-      expect(() =>
-        validateCallerLocation(alias, target, process.platform),
-      ).toThrow('current directory is inside the worktree being removed');
-      expect(() =>
-        validateCallerLocation(
-          path.join(alias, 'nested'),
-          target,
-          process.platform,
+      expect(
+        codeOfThrown(() =>
+          validateCallerLocation(alias, target, process.platform),
         ),
-      ).toThrow('current directory is inside the worktree being removed');
+      ).toBe(ERROR_CODES.CALLER_INSIDE_TARGET);
+      expect(
+        codeOfThrown(() =>
+          validateCallerLocation(
+            path.join(alias, 'nested'),
+            target,
+            process.platform,
+          ),
+        ),
+      ).toBe(ERROR_CODES.CALLER_INSIDE_TARGET);
     } finally {
       unlinkSync(alias);
       rmSync(root, { recursive: true, force: true });
@@ -769,9 +813,11 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
         `\\\\?\\${target}`,
       ];
       for (const targetForm of targetForms) {
-        expect(() =>
-          validateCallerLocation(child, targetForm, 'win32'),
-        ).toThrow('current directory is inside');
+        expect(
+          codeOfThrown(() =>
+            validateCallerLocation(child, targetForm, 'win32'),
+          ),
+        ).toBe(ERROR_CODES.CALLER_INSIDE_TARGET);
       }
       expect(() =>
         validateCallerLocation(sibling, target, 'win32'),
@@ -813,9 +859,10 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
         // Positive: the caller cwd is the same physical directory as the
         // worktree being removed, spelled through the UNC admin share. The
         // guard must still refuse, matching the drive-letter-spelled case.
-        expect(() =>
+        const code = codeOfThrown(() =>
           validateCallerLocation(uncTarget, target, 'win32'),
-        ).toThrow('current directory is inside the worktree being removed');
+        );
+        expect(code).toBe(ERROR_CODES.CALLER_INSIDE_TARGET);
 
         // Negative control: a genuinely unrelated directory, reached through
         // the same UNC namespace, must still be allowed — the guard must not
@@ -859,8 +906,8 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
       });
 
       expect(removal.status).toBe(1);
-      expect(removal.stderr).toContain(
-        'refusing because reparse target cannot be resolved',
+      expect(extractStderrCode(removal.stderr)).toBe(
+        ERROR_CODES.REPARSE_TARGET_UNRESOLVED,
       );
       expect(existsSync(arm.worktree)).toBe(true);
       expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
@@ -885,8 +932,8 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
       });
 
       expect(removal.status).toBe(1);
-      expect(removal.stderr).toContain(
-        'current directory is inside the worktree being removed',
+      expect(extractStderrCode(removal.stderr)).toBe(
+        ERROR_CODES.CALLER_INSIDE_TARGET,
       );
       expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
       expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
@@ -922,8 +969,8 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
       });
 
       expect(removal.status).toBe(1);
-      expect(removal.stderr).toContain(
-        'current directory is inside the worktree being removed',
+      expect(extractStderrCode(removal.stderr)).toBe(
+        ERROR_CODES.CALLER_INSIDE_TARGET,
       );
       expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
       expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
@@ -957,8 +1004,8 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
       });
 
       expect(removal.status).toBe(1);
-      expect(removal.stderr).toContain(
-        'current directory is inside the worktree being removed',
+      expect(extractStderrCode(removal.stderr)).toBe(
+        ERROR_CODES.CALLER_INSIDE_TARGET,
       );
       expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
       expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
@@ -1096,8 +1143,8 @@ describe.skipIf(!onWindows)('Windows stale worktree recovery', () => {
       );
 
       expect(recovery.status).toBe(1);
-      expect(recovery.stderr).toContain(
-        'refusing ambiguous stale recovery; no readable identity receipt',
+      expect(extractStderrCode(recovery.stderr)).toBe(
+        ERROR_CODES.RECEIPT_UNREADABLE,
       );
       expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
       expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
@@ -1120,7 +1167,9 @@ describe.skipIf(!onWindows)('Windows stale worktree recovery', () => {
       );
 
       expect(recovery.status).toBe(1);
-      expect(recovery.stderr).toContain('path is still a registered worktree');
+      expect(extractStderrCode(recovery.stderr)).toBe(
+        ERROR_CODES.STALE_STILL_REGISTERED,
+      );
       expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
       expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
       expect(registeredWorktree(arm.repository, arm.worktree)).toBe(true);
@@ -1147,7 +1196,9 @@ describe.skipIf(!onWindows)('Windows stale worktree recovery', () => {
         { cwd: repository, encoding: 'utf8' },
       );
       expect(recovery.status).toBe(1);
-      expect(recovery.stderr).toContain('current directory is inside');
+      expect(extractStderrCode(recovery.stderr)).toBe(
+        ERROR_CODES.CALLER_INSIDE_TARGET,
+      );
       expect(existsSync(repository)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1184,3 +1235,160 @@ describe.skipIf(!onWindows)('Windows stale worktree recovery', () => {
     }
   });
 });
+
+describe('error code discoverability (#567)', () => {
+  const moduleSource = readFileSync(scriptPath, 'utf8');
+
+  it('carries a code on every throw site and none bypass it', () => {
+    // Every refusal in the module must go through refuse(), which attaches a
+    // code. A bare `throw new Error(` outside refuse()'s own definition would
+    // be a throw site with no code — this fails the moment one is added.
+    const bareThrows = moduleSource.match(/throw new Error\(/g) ?? [];
+    expect(bareThrows).toEqual([]);
+  });
+
+  it('enumerates every throw site with a distinct, non-empty code', () => {
+    // Statically enumerates every `refuse(ERROR_CODES.X, ...)` call site in
+    // the source. This is the guard against #561/#566-class silent growth:
+    // 19 throw sites became 21 without any test noticing, because none of
+    // them asserted anything about the *count* or *distinctness* of causes.
+    // A new throw site with no code, or one that reuses an existing code
+    // instead of defining its own, fails this test.
+    const siteMatches = [
+      ...moduleSource.matchAll(/refuse\(\s*ERROR_CODES\.(\w+)\s*,/g),
+    ];
+    const referencedCodeNames = siteMatches.map((match) => match[1]);
+
+    expect(referencedCodeNames.length).toBeGreaterThan(0);
+    expect(new Set(referencedCodeNames).size).toBe(referencedCodeNames.length);
+
+    const definedCodeNames = Object.keys(ERROR_CODES);
+    expect(new Set(referencedCodeNames)).toEqual(new Set(definedCodeNames));
+
+    const definedCodeValues = Object.values(ERROR_CODES);
+    expect(new Set(definedCodeValues).size).toBe(definedCodeValues.length);
+  });
+});
+
+describe('pairwise code discrimination (#567 acceptance)', () => {
+  // A shared fixture used by all four required pairs, so `not-registered`
+  // (and identity-unresolvable, which arises from the same call) only needs
+  // setting up once. Each `it` below asserts two codes from two arms that
+  // both exit 1 are actually different — the property `expect(status).toBe(1)`
+  // could never discriminate.
+  const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-pairwise-codes-'));
+  const repository = path.join(root, 'repo');
+  const worktree = path.join(root, 'worktree');
+  const unregistered = path.join(root, 'unregistered');
+  const missingTarget = path.join(root, 'does-not-exist');
+
+  mkdirSync(repository);
+  git(['init', '--initial-branch=development'], repository);
+  git(['config', 'user.name', 'Pairwise fixture'], repository);
+  git(['config', 'user.email', 'fixture@example.invalid'], repository);
+  writeFileSync(path.join(repository, 'tracked.txt'), 'fixture\n');
+  git(['add', 'tracked.txt'], repository);
+  git(['commit', '-m', 'fixture'], repository);
+  git(['worktree', 'add', '-b', 'pairwise', worktree], repository);
+  mkdirSync(unregistered);
+
+  const notRegisteredCode = codeOfThrown(() =>
+    validateRemovalTarget(unregistered, [repository, worktree]),
+  );
+
+  afterAll(() => {
+    if (registeredWorktree(repository, worktree)) {
+      git(['worktree', 'remove', '--force', worktree], repository);
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('distinguishes caller-inside-target from not-registered', () => {
+    const callerInsideCode = codeOfThrown(() =>
+      validateCallerLocation(worktree, worktree),
+    );
+
+    expect(callerInsideCode).toBe(ERROR_CODES.CALLER_INSIDE_TARGET);
+    expect(notRegisteredCode).toBe(ERROR_CODES.NOT_REGISTERED);
+    expect(callerInsideCode).not.toBe(notRegisteredCode);
+  });
+
+  it('distinguishes not-registered from identity-unresolvable', () => {
+    const identityUnresolvedCode = codeOfThrown(() =>
+      validateRemovalTarget(missingTarget, [repository, worktree]),
+    );
+
+    expect(identityUnresolvedCode).toBe(ERROR_CODES.IDENTITY_UNRESOLVED);
+    expect(notRegisteredCode).toBe(ERROR_CODES.NOT_REGISTERED);
+    expect(identityUnresolvedCode).not.toBe(notRegisteredCode);
+  });
+
+  it('distinguishes main-worktree from not-registered', () => {
+    const mainWorktreeCode = codeOfThrown(() =>
+      validateRemovalTarget(repository, [repository, worktree]),
+    );
+
+    expect(mainWorktreeCode).toBe(ERROR_CODES.MAIN_WORKTREE);
+    expect(notRegisteredCode).toBe(ERROR_CODES.NOT_REGISTERED);
+    expect(mainWorktreeCode).not.toBe(notRegisteredCode);
+  });
+
+  it('distinguishes receipt-identity-mismatch from not-registered', () => {
+    const receiptPath = createRecoveryReceipt(repository, worktree);
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as {
+      targetIno: string;
+    };
+    receipt.targetIno = `${BigInt(receipt.targetIno) + 1n}`;
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+
+    const receiptMismatchCode = codeOfThrown(() =>
+      readRecoveryReceipt(repository, worktree, filesystemRealpath()),
+    );
+
+    expect(receiptMismatchCode).toBe(ERROR_CODES.RECEIPT_IDENTITY_MISMATCH);
+    expect(notRegisteredCode).toBe(ERROR_CODES.NOT_REGISTERED);
+    expect(receiptMismatchCode).not.toBe(notRegisteredCode);
+  });
+});
+
+describe.skipIf(!onWindows)(
+  'mutation control: containment fires ahead of membership on an alias (#561 regression class)',
+  () => {
+    it('reports the containment code, not the membership code, when the requested path is a registered alias', () => {
+      // Pins the ordering fix from #561: `main()` calls validateRemovalTarget
+      // (membership) before validateCallerLocation (containment), but
+      // validateRemovalTarget resolves identity through realpathImpl before
+      // comparing, so an aliased spelling that is NOT a literal match for any
+      // registered worktree string still resolves to the registered
+      // worktree's canonical identity, and containment is then evaluated
+      // against that canonical target. If a future change reordered these
+      // checks to run containment before resolving membership by identity —
+      // or reverted to comparing raw, unresolved strings for membership as
+      // #561 did — the caller-inside-target arm below would instead observe
+      // EWT_NOT_REGISTERED, and this assertion would fail.
+      const canonical = 'C:\\Users\\runneradmin\\pairwise-linked';
+      const alias = 'C:\\PAIRW~1\\pairwise-linked';
+      const realpathImpl = (value: string) => {
+        if (value === alias || value === canonical) return canonical;
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      };
+      const stderr: string[] = [];
+
+      const status = main([alias], {
+        cwd: alias,
+        platform: 'win32',
+        listWorktrees: () => ['C:\\Users\\runneradmin\\main', canonical],
+        realpathImpl,
+        runGit: () => ({ stdout: '', stderr: '', status: 0 }),
+        writeStdout: () => undefined,
+        writeStderr: (message) => stderr.push(message),
+      });
+
+      expect(status).toBe(1);
+      expect(extractStderrCode(stderr.join(''))).toBe(
+        ERROR_CODES.CALLER_INSIDE_TARGET,
+      );
+      expect(stderr.join('')).not.toContain(ERROR_CODES.NOT_REGISTERED);
+    });
+  },
+);
