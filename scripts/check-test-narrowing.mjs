@@ -945,7 +945,7 @@ function resolveNarrowingForScript(scripts, name, visited) {
   // hook runs. Requiring the base script to exist BEFORE consulting its
   // hooks (rather than checking hooks unconditionally, then the base
   // script) restores that ordering. `restart` is the one exception: npm
-  // always runs `prerestart`/`postrestart` around whatever `restart`
+  // always runs `prerestart` before attempting whatever `restart`
   // resolves to -- ITS OWN script if defined, or the stop/start fallback
   // if not -- so a missing `scripts.restart` does not mean "nothing runs
   // here" the way a missing `scripts.ci` does.
@@ -954,21 +954,36 @@ function resolveNarrowingForScript(scripts, name, visited) {
   const preResult = checkLifecycleHook(scripts, `pre${name}`, visited);
   if (preResult !== null) return preResult;
 
-  // Ripley (review of PR #647, round 15): the round-14 fix moved the
-  // restart-fallback branch entirely before the pre/post hook checks,
-  // which meant a synthesized restart (no `scripts.restart` defined)
-  // skipped `prerestart`/`postrestart` outright -- but real npm still
-  // runs those hooks around the substituted stop/start chain; only the
-  // MAIN action (restart's own script vs. the fallback) changes, not
-  // whether restart's own hooks fire. Moving the fallback back into the
-  // "main resolution" step, now sandwiched between the same
-  // pre<name>/post<name> checks every other name gets, restores that:
-  // `prerestart`/`postrestart` are always consulted for `restart`,
-  // whether or not `scripts.restart` itself exists.
-  const mainResult = isRestartFallback
-    ? (resolveNarrowingForScript(scripts, 'stop', visited) ??
-      resolveNarrowingForScript(scripts, 'start', visited))
-    : checkScriptCommandForNarrowing(scripts, scripts[name], visited);
+  if (isRestartFallback) {
+    // Ripley (review of PR #647, round 15): the fallback branch used to
+    // sit entirely before the pre/post checks, skipping `prerestart`/
+    // `postrestart` outright for a synthesized restart. Moving it here
+    // (below `prerestart`, handled specially below rather than falling
+    // through to the generic `post<name>` check at the bottom) restores
+    // `prerestart` always firing -- but `postrestart` is NOT symmetric:
+    //
+    // Ripley (review of PR #647, round 16): `postrestart` was then
+    // flagged even when the fallback chain never actually completes.
+    // `stop` is optional in npm's fallback (silently skipped if absent),
+    // but `start` is not -- if neither `restart` nor `start` is defined,
+    // npm aborts ("missing script: start") before `postrestart` ever
+    // fires. `stop`'s own narrowing is still real if `stop` DOES run (it
+    // executes before the abort), so it must still be checked first; only
+    // the subsequent `postrestart` check is conditioned on `start`
+    // actually existing.
+    const stopResult = resolveNarrowingForScript(scripts, 'stop', visited);
+    if (stopResult !== null) return stopResult;
+    if (typeof scripts.start !== 'string') return null;
+    const startResult = resolveNarrowingForScript(scripts, 'start', visited);
+    if (startResult !== null) return startResult;
+    return checkLifecycleHook(scripts, 'postrestart', visited);
+  }
+
+  const mainResult = checkScriptCommandForNarrowing(
+    scripts,
+    scripts[name],
+    visited,
+  );
   if (mainResult !== null) return mainResult;
 
   return checkLifecycleHook(scripts, `post${name}`, visited);

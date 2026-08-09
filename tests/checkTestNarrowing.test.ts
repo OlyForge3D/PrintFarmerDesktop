@@ -742,6 +742,39 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
   });
 
+  it('NEGATIVE CONTROL (Ripley, review of PR #647, round 16): `postrestart` is not reached when the restart fallback chain never actually completes', () => {
+    // `stop` is optional in npm's fallback (silently skipped if absent),
+    // but `start` is not -- if neither `restart` nor `start` is defined,
+    // npm aborts ("missing script: start") before `postrestart` ever
+    // fires. Round 15's fix made `postrestart` reachable through the
+    // fallback unconditionally, which over-corrected: here, with no
+    // `restart`/`stop`/`start` script at all, real npm never gets far
+    // enough to run `postrestart`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Ripley, review of PR #647, round 16): `stop`'s own narrowing is still reached even though the overall restart later aborts on a missing `start`", () => {
+    // `stop` genuinely runs (and any narrowing in it is genuinely reached)
+    // before npm gets to the point of discovering `start` is missing and
+    // aborting -- this must still be flagged even though the chain as a
+    // whole never reaches `postrestart`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of PR #647, round 15): a `--` end-of-options marker before a dash-prefixed script alias name still resolves it', () => {
     // `--` is npm's (and getopt-style CLIs generally) canonical "end of
     // options" marker -- everything after it is positional, even a token
