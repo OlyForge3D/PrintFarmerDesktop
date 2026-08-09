@@ -395,6 +395,53 @@ describe('latestCheckRunsByName', () => {
     },
   );
 
+  it.each([
+    ['started_at', '2026-02-30T00:00:00Z'],
+    ['completed_at', '2026-02-30T00:00:00Z'],
+    ['started_at', '2026-08-06T24:00:00Z'],
+    ['completed_at', '2026-08-06T24:00:00Z'],
+  ] as const)(
+    'REGRESSION: refuses a %s of %s -- shape matches ISO 8601 but the calendar/time value is impossible',
+    (field, impossibleValue) => {
+      // Date.parse does not reject an out-of-range calendar date or time
+      // component -- it silently *normalizes* it into an adjacent valid
+      // one instead (Feb 30 becomes Mar 2, hour 24 becomes the next
+      // midnight). A regex checking only the shape (four digits, dash,
+      // two digits, ...) cannot catch this, and Date.parse itself cannot
+      // be used to catch it either, since it never throws for these
+      // inputs -- it just quietly returns a different, shifted date. Both
+      // must be rejected as the same class of malformed input as an
+      // unparseable timestamp.
+      const checkRuns = [checkRun({ [field]: impossibleValue })];
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+        new RegExp(`has an invalid ${field}`),
+      );
+    },
+  );
+
+  it('REGRESSION: accepts Feb 29 on a leap year but refuses it on a non-leap year', () => {
+    // Feb 29 is a real calendar date in a leap year (2024) but not in a
+    // non-leap year (2026) -- the impossible-date check must be sensitive
+    // to the year it is paired with, not just reject Feb 29 outright.
+    const leapYearRuns = [
+      checkRun({
+        started_at: '2024-02-29T00:00:00Z',
+        completed_at: '2024-02-29T01:00:00Z',
+      }),
+    ];
+    expect(() => latestCheckRunsByName(leapYearRuns)).not.toThrow();
+
+    const nonLeapYearRuns = [
+      checkRun({
+        started_at: '2026-02-29T00:00:00Z',
+        completed_at: '2026-02-29T01:00:00Z',
+      }),
+    ];
+    expect(() => latestCheckRunsByName(nonLeapYearRuns)).toThrow(
+      /has an invalid started_at/,
+    );
+  });
+
   it('REGRESSION: refuses a completed run with conclusion: null instead of silently reporting it pending', () => {
     // GitHub documents `conclusion` as always set once a run's `status` is
     // `completed` -- `completed` with `conclusion: null` is not a real API
@@ -1143,6 +1190,31 @@ describe('main', () => {
             name: 'Malformed timestamp-shape check',
             started_at: '2026-08-06T16:00:00Z',
             completed_at: 'Thu, 06 Aug 2026 16:05:00 GMT',
+          }),
+        ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a completed_at with an impossible calendar date (Feb 30)', () => {
+    // The ISO 8601 shape regex alone accepts this string -- "2026-02-30"
+    // matches \d{4}-\d{2}-\d{2} -- but Feb 30 is not a real date.
+    // Date.parse would silently normalize it to March 2nd instead of
+    // rejecting it, so this must be caught by explicit calendar
+    // validation, not by shape or Date.parse alone.
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Impossible calendar date check',
+            started_at: '2026-02-01T00:00:00Z',
+            completed_at: '2026-02-30T00:00:00Z',
           }),
         ]),
       })),

@@ -96,7 +96,46 @@ const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f-\x9f]/g;
 // the one shape GitHub is known to send, rather than accepting anything a
 // permissive parser can make sense of.
 const ISO_8601_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
+/**
+ * A shape match against ISO_8601_TIMESTAMP_PATTERN is not enough on its
+ * own: `Date.parse` -- which every downstream comparison in this file
+ * relies on -- does not reject an impossible calendar date or an
+ * out-of-range time component, it silently *normalizes* it into an
+ * adjacent valid one instead (e.g. "2026-02-30T00:00:00Z" parses as if it
+ * were March 2nd; "2026-08-06T24:00:00Z" parses as the following
+ * midnight). A malformed/drifted response carrying one of these would
+ * still match the regex and still produce a `Date.parse`-able value, so
+ * it would sail through undetected and silently shift when compared
+ * against other timestamps. Re-derive each component from the matched
+ * calendar/time fields via `Date.UTC` and require it to read back
+ * unchanged -- `Date.UTC` performs the exact same rollover `Date.parse`
+ * does, so a mismatch here means the input was never a real calendar
+ * date/time in the first place.
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isValidGitHubTimestamp(value) {
+  const match = ISO_8601_TIMESTAMP_PATTERN.exec(value);
+  if (!match) return false;
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  const second = Number(secondStr);
+  const asDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return (
+    asDate.getUTCFullYear() === year &&
+    asDate.getUTCMonth() === month - 1 &&
+    asDate.getUTCDate() === day &&
+    asDate.getUTCHours() === hour &&
+    asDate.getUTCMinutes() === minute &&
+    asDate.getUTCSeconds() === second
+  );
+}
 // GitHub's documented Checks API status enum (create/get a check run):
 // https://docs.github.com/en/rest/checks/runs -- queued, in_progress, and
 // completed are the states this file's logic actually branches on; waiting,
@@ -241,8 +280,7 @@ function parseCheckRun(checkRun, index) {
   if (startedAtRaw !== null && startedAtRaw !== undefined) {
     if (
       typeof startedAtRaw !== 'string' ||
-      !ISO_8601_TIMESTAMP_PATTERN.test(startedAtRaw) ||
-      Number.isNaN(Date.parse(startedAtRaw))
+      !isValidGitHubTimestamp(startedAtRaw)
     ) {
       throw new Error(
         `check run ${index + 1} (${sanitizedName}) has an invalid started_at`,
@@ -258,8 +296,7 @@ function parseCheckRun(checkRun, index) {
   if (completedAtRaw !== null && completedAtRaw !== undefined) {
     if (
       typeof completedAtRaw !== 'string' ||
-      !ISO_8601_TIMESTAMP_PATTERN.test(completedAtRaw) ||
-      Number.isNaN(Date.parse(completedAtRaw))
+      !isValidGitHubTimestamp(completedAtRaw)
     ) {
       throw new Error(
         `check run ${index + 1} (${sanitizedName}) has an invalid completed_at`,
