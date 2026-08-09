@@ -64,12 +64,30 @@ export const SCANNED_DIRECTORIES = ['scripts/', '.github/workflows/'];
  */
 export const LABEL_INDEX_PATTERNS = [
   {
+    // `-l` is documented by `gh pr list --help` as the short form of
+    // `--label` -- not a guess -- so a call written as `gh pr list -l
+    // hold:sequenced` reads the same lagged index under a shorter spelling.
+    // Excluding it would let #299 back in through an alias of the exact flag
+    // this pattern already names.
     name: 'gh pr list --label',
-    pattern: /\bgh\s+pr\s+list\b[^\n]*--label\b/,
+    pattern: /\bgh\s+pr\s+list\b[^\n]*(?:--label\b|-l\b)/,
   },
   {
+    // Same short form, documented by `gh issue list --help`.
     name: 'gh issue list --label',
-    pattern: /\bgh\s+issue\s+list\b[^\n]*--label\b/,
+    pattern: /\bgh\s+issue\s+list\b[^\n]*(?:--label\b|-l\b)/,
+  },
+  {
+    // `gh pr list --search "label:x"` and `gh issue list --search "label:x"`
+    // hand the label filter to the same search index `search/issues?q=...`
+    // reads directly (`--search` *is* the `q=` query, just spelled through
+    // the CLI instead of the REST URL) -- the exact bypass Hicks named:
+    // `--label`/`-l` were covered above, but `--search "label:..."` is a
+    // third spelling of "ask the index a label question" that neither of
+    // those two patterns, nor the REST/search-API patterns below (which
+    // anchor on a URL, not a CLI flag), would catch.
+    name: 'gh pr/issue list --search label:',
+    pattern: /\bgh\s+(?:pr|issue)\s+list\b[^\n]*--search\b[^\n]*label:/,
   },
   {
     name: 'REST issues collection filtered by label',
@@ -82,30 +100,87 @@ export const LABEL_INDEX_PATTERNS = [
 ];
 
 /**
- * Files permitted to contain a matched pattern, each with a mandatory,
- * non-empty reason. An allowlist entry without a reason is indistinguishable
- * from deleting the check for that file one line at a time — the same
- * requirement `check-script-reachability.mjs` states for `UNINVOKED_SCRIPTS`.
+ * Files permitted to contain a matched pattern. Each entry names the
+ * SPECIFIC pattern(s) it excuses (`patterns`) and a mandatory, non-empty
+ * `reason`.
+ *
+ * Scoping by pattern name, not blanket-by-file, matters because the file is
+ * the unit a human reviews but not the unit the hazard occurs at: a file
+ * allowlisted for one shape (say, the search API's `label:` qualifier,
+ * re-read before use) offers no evidence at all about a DIFFERENT shape
+ * (say, `gh pr list --label`) added to that same file next month. A
+ * blanket per-file allow would let that second, unreviewed shape ride in on
+ * the first shape's justification -- silently, since the file already
+ * "has an allowlist entry". Requiring the entry to name which matches it
+ * covers means a new match name appearing in an already-allowlisted file is
+ * still reported as a violation, with its own reason required, exactly as
+ * it would be in a file with no entry at all. (Line-level scoping would be
+ * tighter still, but this is a text scan, not a parser: a line number is
+ * only as stable as the next unrelated edit above it, so scoping on the
+ * pattern's stable name -- not a position that moves under it -- is what a
+ * mechanical check like this one can actually keep honest.)
  */
 export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
-  'scripts/lift-hold-on-close.mjs':
-    '#299: findMergedPullRequestsCarryingHolds() queries the search API for ' +
-    'CANDIDATES only. Every candidate is re-read at the object ' +
-    '(fetchPullRequest -> GET /repos/.../pulls/{n}) before evaluateHoldsToLift ' +
-    'decides anything, and a backfill that selects N candidates and lifts ' +
-    'zero is documented as the expected steady state, not a fault. The index ' +
-    'answer never authorizes the write by itself.',
-  'scripts/check-dated-measurement.mjs':
-    'A comment quotes `gh issue list --label squad --state open` as one of two ' +
-    'worked, dated examples of #462 (a stale claim composed between a read and ' +
-    "a send). It is prose describing a past incident's output, not a command " +
-    'this file executes -- fetchLiveUpdatedAt() reads `issues/{n}` per object, ' +
-    'never a label list. A scan that cannot tell "quoted as an example" from ' +
-    '"executed" would either need to parse comments out of every scanned ' +
-    'language, or exclude this file by name; the latter is cheaper and this is ' +
-    'the reason recorded, same as .squad/holds.md is out of scope entirely for ' +
-    'quoting the identical CLI shape at length.',
+  'scripts/lift-hold-on-close.mjs': Object.freeze({
+    patterns: Object.freeze(['search API label: qualifier']),
+    reason:
+      '#299: findMergedPullRequestsCarryingHolds() queries the search API for ' +
+      'CANDIDATES only. Every candidate is re-read at the object ' +
+      '(fetchPullRequest -> GET /repos/.../pulls/{n}) before evaluateHoldsToLift ' +
+      'decides anything, and a backfill that selects N candidates and lifts ' +
+      'zero is documented as the expected steady state, not a fault. The index ' +
+      'answer never authorizes the write by itself. This covers ONLY the ' +
+      'search-API shape measured here -- a `gh pr list --label` or `--search ' +
+      'label:` call added to this file later is a different, unreviewed shape ' +
+      'and must earn its own allowlist entry.',
+  }),
+  'scripts/check-dated-measurement.mjs': Object.freeze({
+    patterns: Object.freeze(['gh issue list --label']),
+    reason:
+      'A comment quotes `gh issue list --label squad --state open` as one of two ' +
+      'worked, dated examples of #462 (a stale claim composed between a read and ' +
+      "a send). It is prose describing a past incident's output, not a command " +
+      'this file executes -- fetchLiveUpdatedAt() reads `issues/{n}` per object, ' +
+      'never a label list. A scan that cannot tell "quoted as an example" from ' +
+      '"executed" would either need to parse comments out of every scanned ' +
+      'language, or exclude this file by name; the latter is cheaper and this is ' +
+      'the reason recorded, same as .squad/holds.md is out of scope entirely for ' +
+      'quoting the identical CLI shape at length. Covers only the one quoted ' +
+      'shape named above.',
+  }),
 });
+
+/**
+ * Normalizes `execFile(Sync)`/`spawn(Sync)`-style argv-array invocations of
+ * `gh` into the same plain-text command shape `LABEL_INDEX_PATTERNS` already
+ * matches, so `execFileSync('gh', ['pr', 'list', '--label', name])` is not
+ * invisible just because its tokens are array elements instead of one
+ * contiguous string. Vasquez: a scan that only read contiguous text missed
+ * this shape entirely -- a script that builds argv as an array (the safer
+ * pattern for shell-injection reasons, and the one this repo's own scripts
+ * already use for `gh`/`git` calls) would pass through undetected.
+ *
+ * Deliberately narrow: it only reconstructs calls that name `'gh'` as a
+ * plain string literal immediately followed by an array literal of string
+ * literals. An argv built from variables (`execFileSync('gh', ghArgs)`)
+ * cannot be resolved by a text scan without executing the program, so it
+ * remains unmatched here -- the same limit `LABEL_INDEX_PATTERNS` already
+ * has for any interpolated value, stated in this file's own header comment.
+ */
+export function flattenGhArgvInvocations(contents) {
+  const callPattern = /['"]gh['"]\s*,\s*\[([\s\S]*?)]/g;
+  const flattened = [];
+  let call;
+  while ((call = callPattern.exec(contents)) !== null) {
+    const tokens = [...call[1].matchAll(/['"`]([^'"`]*)['"`]/g)].map(
+      (tokenMatch) => tokenMatch[1],
+    );
+    if (tokens.length > 0) {
+      flattened.push(`gh ${tokens.join(' ')}`);
+    }
+  }
+  return flattened.join('\n');
+}
 
 /**
  * Scans a set of `{ path, contents }` records for the banned patterns.
@@ -120,16 +195,24 @@ export function scanLabelIndexUsage({ files, allowlist } = {}) {
   const allowlisted = [];
 
   for (const file of files ?? []) {
+    const searchText = [file.contents, flattenGhArgvInvocations(file.contents)]
+      .filter(Boolean)
+      .join('\n');
+
     const matches = [];
     for (const { name, pattern } of LABEL_INDEX_PATTERNS) {
-      if (pattern.test(file.contents)) {
+      if (pattern.test(searchText)) {
         matches.push(name);
       }
     }
     if (matches.length === 0) continue;
 
     if (Object.prototype.hasOwnProperty.call(known, file.path)) {
-      const reason = known[file.path];
+      const entry = known[file.path];
+      const reason = typeof entry === 'string' ? entry : entry?.reason;
+      const coveredPatterns =
+        typeof entry === 'string' ? null : entry?.patterns;
+
       if (typeof reason !== 'string' || reason.trim() === '') {
         violations.push({
           path: file.path,
@@ -140,6 +223,40 @@ export function scanLabelIndexUsage({ files, allowlist } = {}) {
         });
         continue;
       }
+
+      if (
+        coveredPatterns == null ||
+        !Array.isArray(coveredPatterns) ||
+        coveredPatterns.length === 0
+      ) {
+        violations.push({
+          path: file.path,
+          matches,
+          reason:
+            'allowlisted with no `patterns` list naming which specific ' +
+            'match(es) it covers, so it cannot be checked against future ' +
+            'matches in this file — an allowlist entry must name the exact ' +
+            'pattern(s) it excuses, not excuse the whole file',
+        });
+        continue;
+      }
+
+      const uncovered = matches.filter((m) => !coveredPatterns.includes(m));
+      if (uncovered.length > 0) {
+        violations.push({
+          path: file.path,
+          matches: uncovered,
+          reason:
+            `allowlisted for ${coveredPatterns.join(', ')} only, with the ` +
+            `reason: "${reason}". This match is a DIFFERENT pattern the ` +
+            'existing entry does not name and its reason does not address — ' +
+            'a file already excused for one label-index shape earns no ' +
+            'excuse for a new one added to it later. Add this pattern to the ' +
+            "file's `patterns` list with its own justification, or remove it.",
+        });
+        continue;
+      }
+
       allowlisted.push({ path: file.path, matches, reason });
       continue;
     }

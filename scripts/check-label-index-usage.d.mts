@@ -25,13 +25,27 @@ export interface ScanLabelIndexUsageResult {
   allowlisted: LabelIndexAllowlistedEntry[];
 }
 
+export interface LabelIndexAllowlistEntryConfig {
+  patterns?: readonly string[];
+  reason: string;
+}
+
+export type LabelIndexAllowlist = Record<
+  string,
+  LabelIndexAllowlistEntryConfig | string
+>;
+
 export const SCANNED_DIRECTORIES: string[];
 export const LABEL_INDEX_PATTERNS: LabelIndexPattern[];
-export const ALLOWED_LABEL_INDEX_USAGE: Readonly<Record<string, string>>;
+export const ALLOWED_LABEL_INDEX_USAGE: Readonly<
+  Record<string, Readonly<LabelIndexAllowlistEntryConfig>>
+>;
+
+export function flattenGhArgvInvocations(contents: string): string;
 
 export function scanLabelIndexUsage(input?: {
   files?: ScannedFile[];
-  allowlist?: Record<string, string>;
+  allowlist?: LabelIndexAllowlist;
 }): ScanLabelIndexUsageResult;
 
 export function formatViolation(violation: LabelIndexViolation): string;
