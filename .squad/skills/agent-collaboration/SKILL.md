@@ -213,7 +213,7 @@ git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-work
 # `package.json` is non-empty (adds one line, `probe:silent-success`) -- this is NOT
 # the squash failing to reproduce held content. PR #500 landed that entry on
 # development at 11:53 on merge day, after #561's branch tip (14304447, 11:24) was
-# last synced but hours before #561 itself was squash-merged (19:04). The squash
+# last synced but ~11 minutes before #561 itself was squash-merged (19:04). The squash
 # necessarily lands on top of development's *then-current* tip, so a file also
 # touched by an intervening, unrelated PR picks up that PR's change too -- this is
 # base drift at merge time, distinct from the moving-tip decay described below.
