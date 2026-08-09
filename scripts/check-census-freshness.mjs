@@ -276,12 +276,25 @@ const REQUIRED_FIELDS = [
 ];
 
 /**
+ * The four fields whose entire meaning is numeric. A citation is a claim
+ * about counts; a `worktrees` field that reads `"twenty-four"` or is missing
+ * entirely is the same failure from this check's point of view -- neither
+ * names a count -- so both must produce the same `incomplete` outcome
+ * rather than the malformed one silently becoming `NaN` and flowing through
+ * comparisons and rendering unflagged.
+ */
+const NUMERIC_FIELDS = ['worktrees', 'true', 'false', 'accused'];
+
+/**
  * Parses `census-measured` fenced citation blocks out of a report or issue
  * body -- the same shape and parsing strategy as
  * check-dated-measurement.mjs's `parseMeasurementCitations`, deliberately,
  * so a reader who knows one convention already knows the other. A block
- * missing a required key is returned with `incomplete: true` and the
- * missing keys named, rather than silently dropped.
+ * missing a required key, or one where a numeric key's value does not parse
+ * to a finite number (e.g. `worktrees: twenty-four`, `worktrees: NaN`, or an
+ * empty value), is returned with `incomplete: true` and the offending keys
+ * named in `missing` -- never silently coerced to `NaN` and passed through
+ * as if it were a real, if merely absent, count.
  */
 export function parseCensusCitations(text) {
   if (typeof text !== 'string') {
@@ -301,7 +314,13 @@ export function parseCensusCitations(text) {
       const value = line.slice(separator + 1).trim();
       if (key) fields[key] = value;
     }
-    const missing = REQUIRED_FIELDS.filter((key) => !(key in fields));
+    const missingFields = REQUIRED_FIELDS.filter((key) => !(key in fields));
+    const invalidNumericFields = NUMERIC_FIELDS.filter(
+      (key) =>
+        key in fields &&
+        (fields[key] === '' || !Number.isFinite(Number(fields[key]))),
+    );
+    const missing = [...missingFields, ...invalidNumericFields];
     citations.push({
       worktrees:
         fields.worktrees !== undefined ? Number(fields.worktrees) : undefined,
@@ -313,6 +332,8 @@ export function parseCensusCitations(text) {
       fields,
       incomplete: missing.length > 0,
       missing,
+      missingFields,
+      invalidFields: invalidNumericFields,
     });
   }
   return citations;
@@ -320,25 +341,43 @@ export function parseCensusCitations(text) {
 
 // --- effects -----------------------------------------------------------------
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
+  const FLAG_NAMES = new Set(['--measured-at', '--now', '--file']);
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--measured-at') {
-      args.measuredAt = argv[index + 1];
-      index += 1;
-    } else if (arg === '--now') {
-      args.now = argv[index + 1];
-      index += 1;
-    } else if (arg === '--file') {
-      args.file = argv[index + 1];
-      index += 1;
-    } else {
+    if (!FLAG_NAMES.has(arg)) {
       throw new Error(
         `unknown argument ${JSON.stringify(arg)}; usage: check-census-freshness.mjs ` +
           '(--measured-at <iso> | --file <path>) [--now <iso>]',
       );
     }
+    const value = argv[index + 1];
+    // A flag given with no following token, or immediately followed by
+    // another recognized flag, has no value. Treating that as "value
+    // omitted, use the default" is exactly how `--now` with no argument
+    // used to silently fall back to the real wall clock instead of
+    // erroring -- a false-green result no different from the check never
+    // having run. Refuse it instead: an explicitly-passed flag that names
+    // no value is the caller's mistake, not permission to guess.
+    if (value === undefined || FLAG_NAMES.has(value)) {
+      throw new Error(`${arg} requires a value`);
+    }
+    index += 1;
+    if (arg === '--measured-at') args.measuredAt = value;
+    else if (arg === '--now') args.now = value;
+    else args.file = value;
+  }
+  if (args.file !== undefined && args.measuredAt !== undefined) {
+    // The usage string documents `--measured-at` and `--file` as mutually
+    // exclusive alternatives (`--measured-at <iso> | --file <path>`), but
+    // silently letting one win over the other -- previously `--file` always
+    // won -- means a caller who passes both by mistake gets a result from
+    // whichever source they didn't intend, without any indication that
+    // happened. Fail instead of guessing.
+    throw new Error(
+      '--measured-at and --file are mutually exclusive; provide exactly one',
+    );
   }
   return args;
 }
@@ -358,7 +397,14 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     return;
   }
 
-  const args = parseArgs(argv);
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (error) {
+    console.error(`[census-freshness] ${error.message}`);
+    process.exitCode = EXIT_UNVERIFIABLE;
+    return;
+  }
 
   let citations;
   if (args.file) {
@@ -386,8 +432,19 @@ async function main(argv = process.argv.slice(2), deps = {}) {
   let worstExitCode = EXIT_OK;
   for (const citation of citations) {
     if (citation.incomplete) {
+      const missingFields = citation.missingFields ?? citation.missing;
+      const invalidFields = citation.invalidFields ?? [];
+      const parts = [];
+      if (missingFields.length > 0) {
+        parts.push(`missing required field(s): ${missingFields.join(', ')}`);
+      }
+      if (invalidFields.length > 0) {
+        parts.push(
+          `non-numeric or unparseable field(s): ${invalidFields.join(', ')}`,
+        );
+      }
       console.error(
-        `[census-freshness] citation is missing required field(s): ${citation.missing.join(', ')}`,
+        `[census-freshness] citation is incomplete -- ${parts.join('; ')}`,
       );
       worstExitCode = Math.max(worstExitCode, EXIT_UNVERIFIABLE);
       continue;

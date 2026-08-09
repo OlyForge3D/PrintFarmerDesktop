@@ -25,6 +25,7 @@ import {
   evaluateControls,
   formatResult,
   main,
+  parseArgs,
   parseCensusCitations,
   resolveNow,
 } from '../scripts/check-census-freshness.mjs';
@@ -264,6 +265,74 @@ describe('parsing ```census-measured citations out of a report', () => {
     );
   });
 
+  it('reports a non-numeric numeric field as incomplete rather than passing NaN through as if it were a real count', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: twenty-four',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations).toHaveLength(1);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.missing).toContain('worktrees');
+    expect(citations[0]?.invalidFields).toContain('worktrees');
+    expect(citations[0]?.missingFields).toEqual([]);
+  });
+
+  it('reports an empty numeric field value as incomplete, not as NaN passed through silently', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: ',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations).toHaveLength(1);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.invalidFields).toContain('worktrees');
+  });
+
+  it('reports multiple malformed numeric fields together', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: eighteen',
+      'false: six',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations).toHaveLength(1);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.invalidFields).toEqual(
+      expect.arrayContaining(['true', 'false']),
+    );
+  });
+
+  it('accepts a well-formed citation as complete, distinguishing it from the malformed cases above', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(false);
+    expect(citations[0]?.invalidFields).toEqual([]);
+    expect(citations[0]?.missingFields).toEqual([]);
+  });
+
   it('returns an empty array when no citation block is present', () => {
     expect(parseCensusCitations('no fenced block here')).toEqual([]);
   });
@@ -383,6 +452,123 @@ describe('main — end-to-end verdicts driven through the CLI surface', () => {
       console.error = originalError;
     }
     expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    process.exitCode = 0;
+  });
+
+  it('reports both missing and malformed fields distinctly when a --file citation has both', async () => {
+    const text = [
+      '```census-measured',
+      'true: not-a-number',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(['--file', 'fake-report.md'], {
+        readFile: () => text,
+      });
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    const rendered = errors.join('\n');
+    expect(rendered).toContain('missing required field');
+    expect(rendered).toContain('worktrees');
+    expect(rendered).toContain('accused');
+    expect(rendered).toContain('non-numeric or unparseable field');
+    expect(rendered).toContain('true');
+  });
+});
+
+describe('parseArgs — strict CLI argument validation', () => {
+  it('rejects --now given with no following value rather than silently defaulting to the wall clock', () => {
+    expect(() =>
+      parseArgs(['--measured-at', '2026-08-04T00:00:00Z', '--now']),
+    ).toThrow(/--now requires a value/);
+  });
+
+  it('rejects --now immediately followed by another flag rather than swallowing that flag as its value', () => {
+    expect(() => parseArgs(['--now', '--file', 'report.md'])).toThrow(
+      /--now requires a value/,
+    );
+  });
+
+  it('rejects --measured-at given with no following value', () => {
+    expect(() => parseArgs(['--measured-at'])).toThrow(
+      /--measured-at requires a value/,
+    );
+  });
+
+  it('rejects --file given with no following value', () => {
+    expect(() => parseArgs(['--file'])).toThrow(/--file requires a value/);
+  });
+
+  it('rejects --measured-at and --file given together rather than silently letting --file win', () => {
+    expect(() =>
+      parseArgs([
+        '--measured-at',
+        '2026-08-04T00:00:00Z',
+        '--file',
+        'report.md',
+      ]),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it('rejects --file and --measured-at given together in the other order too', () => {
+    expect(() =>
+      parseArgs([
+        '--file',
+        'report.md',
+        '--measured-at',
+        '2026-08-04T00:00:00Z',
+      ]),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it('accepts --measured-at with --now when both have real values', () => {
+    expect(
+      parseArgs([
+        '--measured-at',
+        '2026-08-04T00:00:00Z',
+        '--now',
+        '2026-08-05T00:00:00Z',
+      ]),
+    ).toEqual({
+      measuredAt: '2026-08-04T00:00:00Z',
+      now: '2026-08-05T00:00:00Z',
+    });
+  });
+
+  it('propagates the --now-with-no-value rejection through main() as EXIT_UNVERIFIABLE rather than a false-green wall-clock fallback', async () => {
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(['--measured-at', '2026-08-04T00:00:00Z', '--now'], {});
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    expect(errors.join('\n')).toContain('--now requires a value');
+    process.exitCode = 0;
+  });
+
+  it('propagates the mutual-exclusivity rejection through main() as EXIT_UNVERIFIABLE', async () => {
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(
+        ['--measured-at', '2026-08-04T00:00:00Z', '--file', 'fake-report.md'],
+        {},
+      );
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    expect(errors.join('\n')).toContain('mutually exclusive');
     process.exitCode = 0;
   });
 });

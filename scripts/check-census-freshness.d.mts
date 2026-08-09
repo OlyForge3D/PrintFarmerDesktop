@@ -41,6 +41,8 @@ export interface CensusCitation {
   readonly fields: Record<string, string>;
   readonly incomplete: boolean;
   readonly missing: string[];
+  readonly missingFields?: string[];
+  readonly invalidFields?: string[];
 }
 
 export function normalizeInstant(value: unknown): number | null;
@@ -65,6 +67,12 @@ export function formatResult(
 ): string;
 
 export function parseCensusCitations(text: unknown): CensusCitation[];
+
+export function parseArgs(argv: string[]): {
+  measuredAt?: string;
+  now?: string;
+  file?: string;
+};
 
 export function main(
   argv?: string[],
