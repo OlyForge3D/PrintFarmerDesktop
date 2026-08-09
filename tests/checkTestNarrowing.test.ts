@@ -862,6 +862,51 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
   });
 
+  it("NEGATIVE CONTROL (Ripley, review of PR #647, round 19): `postrestart` is not reached when the fallback's `start` cyclically aliases back to `restart` itself", () => {
+    // `visited` exists only to stop THIS CHECKER from recursing forever --
+    // it must not be read by callers as "this path resolved cleanly."
+    // Real npm has no cycle-safe re-entrancy here either: `start: "npm
+    // restart"` while already resolving `restart`'s own fallback would
+    // recurse until npm itself errors out, not complete successfully, so
+    // `postrestart` must not be treated as reached.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Ripley, review of PR #647, round 19): `postrestart` is not reached when the fallback's `stop` cyclically aliases back to `restart` itself", () => {
+    // Same cycle shape as above, one step earlier in the fallback chain.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Ripley, review of PR #647, round 19): `prerestart`'s own narrowing is still caught even though `start` goes on to cycle back to `restart`", () => {
+    // `prerestart` fires and is checked before the fallback (and its
+    // cyclic `start`) is even attempted, so a narrowing there is
+    // unaffected by the cycle-guard change -- sanity check that treating
+    // a cycle as unreachable didn't over-suppress an unrelated hook that
+    // genuinely runs first.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prerestart: 'vitest run -t "only this arm"',
+      start: 'npm restart',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of PR #647, round 15): a `--` end-of-options marker before a dash-prefixed script alias name still resolves it', () => {
     // `--` is npm's (and getopt-style CLIs generally) canonical "end of
     // options" marker -- everything after it is positional, even a token

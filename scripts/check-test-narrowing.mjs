@@ -946,11 +946,24 @@ function resolveScriptAliasTarget(command) {
  * name, an aliased-to name that's missing, and a hook whose own alias
  * target is missing), rather than re-deriving that answer ad hoc per call
  * site as each new shape of this was found across rounds 14/16/17.
+ * Ripley (review of PR #647, round 19): a cycle in the alias/lifecycle
+ * graph (e.g. `start: "npm restart"` while resolving `restart`'s own
+ * fallback, which tries `start` again) is not "ran clean" either -- real
+ * npm has no cycle-safe re-entrancy for this, it would recurse until it
+ * errors out (call-stack exhaustion or an equivalent internal guard), the
+ * same "never actually completes" territory as a missing script. The
+ * `visited` guard existed purely to keep THIS CHECKER from recursing
+ * forever, but returning `null` for it told callers "this path resolved
+ * with no narrowing," which let a `post<name>`/`postrestart` hook wrongly
+ * fire as if the cyclic path had completed. Both `visited` guards below
+ * now return `SCRIPT_UNREACHABLE` instead, so a cycle propagates as
+ * "never completes" exactly like the missing-script and unreachable-alias
+ * cases above.
  */
 const SCRIPT_UNREACHABLE = Symbol('script-unreachable');
 
 function resolveNarrowingForScript(scripts, name, visited) {
-  if (visited.has(name)) return null;
+  if (visited.has(name)) return SCRIPT_UNREACHABLE;
   visited.add(name);
 
   const isRestartFallback =
@@ -1047,13 +1060,15 @@ function resolveNarrowingForScript(scripts, name, visited) {
  *
  * A hook that is simply absent is not `SCRIPT_UNREACHABLE` -- npm silently
  * skips a `pre*`/`post*` hook that was never defined, that is not an
- * error. `SCRIPT_UNREACHABLE` is only returned when the hook IS defined
- * but its own command aliases to something that does not exist, so the
- * hook itself would fail to run -- which callers need to distinguish from
- * "ran clean" the same way they distinguish it for a main script.
+ * error. `SCRIPT_UNREACHABLE` is returned when the hook IS defined but
+ * its own command aliases to something that does not exist (so the hook
+ * itself would fail to run), or when re-entering this same hook name
+ * indicates a cycle (round 19, Ripley) -- both cases mean callers must
+ * distinguish this from "ran clean" the same way they do for a main
+ * script.
  */
 function checkLifecycleHook(scripts, hookName, visited) {
-  if (visited.has(hookName)) return null;
+  if (visited.has(hookName)) return SCRIPT_UNREACHABLE;
   if (typeof scripts[hookName] !== 'string') return null;
   visited.add(hookName);
   return checkScriptCommandForNarrowing(scripts, scripts[hookName], visited);
