@@ -48,6 +48,14 @@ jobs:
       - name: Verify body-edit trigger coverage
         run: npm run check:body-edit-triggers
 
+      # scripts/check-closing-references.mjs (#563): exit 0 = matches, exit 1
+      # = a genuine declared-vs-armed mismatch, exit 2 = no verdict (the
+      # script never got far enough to compare -- no PR/git context, an
+      # unresolvable PR number, an unreadable declaration file, or an
+      # unreadable API response). This is a bare `run:` step with no
+      # exit-code branching, so any nonzero exit already fails the job --
+      # exit 2 must stay that way; do not add logic here that treats it as a
+      # soft pass.
       - name: Compare declared and armed closing references
         env:
           GH_TOKEN: ${{ github.token }}
