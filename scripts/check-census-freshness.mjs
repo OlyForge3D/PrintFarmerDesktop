@@ -54,8 +54,21 @@
 //   true: 18
 //   false: 6
 //   accused: 0
+//   indeterminate: 0
 //   measured_at: 2026-08-04T00:00:00Z
 //   ```
+//
+// `indeterminate` (#315) counts worktrees whose `authoredHere()` reading was
+// tri-state's third value -- reflog unreadable, or its coverage window
+// cannot rule out a creation entry having already decayed under
+// `gc.reflogExpireUnreachable` -- rather than a genuine `false`. It is
+// OPTIONAL here on purpose: a citation taken before that change shipped has
+// no such count, and treating its absence as an incomplete citation would
+// retroactively invalidate every pre-existing report for a distinction that
+// did not exist yet when it was measured. `true`/`false`/`accused`/
+// `worktrees`/`measured_at` remain required; `indeterminate` is validated as
+// a non-negative integer when present, and simply omitted from output when
+// it is not.
 //
 // `census-ownership-evidence.mjs`'s own `formatReport` now appends exactly
 // this block to its report, so `npm run census:ownership-evidence` output can
@@ -355,7 +368,13 @@ export function formatResult(result, citation = {}) {
           ? 'STALE'
           : 'UNVERIFIABLE';
   const lines = [`[census-freshness] ${label} (${result.verdict})`];
-  const counts = ['worktrees', 'trueCount', 'falseCount', 'accused']
+  const counts = [
+    'worktrees',
+    'trueCount',
+    'falseCount',
+    'accused',
+    'indeterminate',
+  ]
     .filter((key) => citation[key] !== undefined)
     .map(
       (key) =>
@@ -383,14 +402,27 @@ const REQUIRED_FIELDS = [
 ];
 
 /**
- * The four fields whose entire meaning is numeric. A citation is a claim
+ * The fields whose entire meaning is numeric. A citation is a claim
  * about counts; a `worktrees` field that reads `"twenty-four"` or is missing
  * entirely is the same failure from this check's point of view -- neither
  * names a count -- so both must produce the same `incomplete` outcome
  * rather than the malformed one silently becoming `NaN` and flowing through
  * comparisons and rendering unflagged.
+ *
+ * `indeterminate` (#315) is validated the same way WHEN PRESENT but is not in
+ * `REQUIRED_FIELDS` below: a citation produced before `authoredHere()` became
+ * tri-state has no such count to report, and that is a fact about when the
+ * citation was taken, not a malformed citation. Its absence must not read as
+ * "zero worktrees had indeterminate evidence" either, so callers see
+ * `undefined` rather than a fabricated 0 when the field is missing.
  */
-const NUMERIC_FIELDS = ['worktrees', 'true', 'false', 'accused'];
+const NUMERIC_FIELDS = [
+  'worktrees',
+  'true',
+  'false',
+  'accused',
+  'indeterminate',
+];
 
 /**
  * A count field's raw text must be a plain non-negative base-10 integer --
@@ -462,6 +494,10 @@ export function parseCensusCitations(text) {
       falseCount: fields.false !== undefined ? Number(fields.false) : undefined,
       accused:
         fields.accused !== undefined ? Number(fields.accused) : undefined,
+      indeterminate:
+        fields.indeterminate !== undefined
+          ? Number(fields.indeterminate)
+          : undefined,
       measuredAt: fields.measured_at,
       fields,
       incomplete: missing.length > 0,

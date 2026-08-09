@@ -3,7 +3,7 @@ export function listWorktreePaths(cwd?: string): string[];
 export interface WorktreeMeasurement {
   readonly path: string;
   readonly ok: boolean;
-  readonly ownershipEvidence: boolean;
+  readonly ownershipEvidence: boolean | null;
   readonly ownCommits: string[];
   readonly error?: string;
 }
@@ -16,10 +16,12 @@ export interface CensusSummary {
   readonly unreadable: number;
   readonly ownershipEvidenceTrue: number;
   readonly ownershipEvidenceFalse: number;
+  readonly ownershipEvidenceIndeterminate: number;
   readonly wronglyAccused: number;
   readonly collisions: Array<[string, string[]]>;
   readonly trueEntries: WorktreeMeasurement[];
   readonly falseEntries: WorktreeMeasurement[];
+  readonly indeterminateEntries: WorktreeMeasurement[];
   readonly unreadableEntries: WorktreeMeasurement[];
 }
 

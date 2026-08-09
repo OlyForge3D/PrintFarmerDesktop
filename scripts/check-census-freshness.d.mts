@@ -37,6 +37,7 @@ export interface CensusCitation {
   readonly trueCount?: number;
   readonly falseCount?: number;
   readonly accused?: number;
+  readonly indeterminate?: number;
   readonly measuredAt?: string;
   readonly fields: Record<string, string>;
   readonly incomplete: boolean;
@@ -64,6 +65,7 @@ export function formatResult(
     trueCount?: number;
     falseCount?: number;
     accused?: number;
+    indeterminate?: number;
   },
 ): string;
 

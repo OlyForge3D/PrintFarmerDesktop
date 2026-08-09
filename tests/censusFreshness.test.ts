@@ -391,6 +391,28 @@ describe('formatting a result for a report', () => {
     expect(rendered).not.toContain('Re-run');
   });
 
+  it('includes indeterminate=N when the citation carries that count (#315)', () => {
+    const rendered = formatResult(
+      classifyCensusFreshness({ measuredAt: T0, now: T0 }),
+      {
+        worktrees: 24,
+        trueCount: 17,
+        falseCount: 6,
+        accused: 0,
+        indeterminate: 1,
+      },
+    );
+    expect(rendered).toContain('indeterminate=1');
+  });
+
+  it('omits indeterminate entirely for a citation taken before that field existed', () => {
+    const rendered = formatResult(
+      classifyCensusFreshness({ measuredAt: T0, now: T0 }),
+      { worktrees: 24, trueCount: 18, falseCount: 6, accused: 0 },
+    );
+    expect(rendered).not.toContain('indeterminate');
+  });
+
   it('labels a due result DUE and includes the re-measure instruction', () => {
     const now = T0 + (RECOMMENDED_REMEASUREMENT_DAYS + 1) * MS_PER_DAY;
     const rendered = formatResult(
@@ -444,6 +466,58 @@ describe('parsing ```census-measured citations out of a report', () => {
       incomplete: false,
       missing: [],
     });
+  });
+
+  it('treats a missing `indeterminate` field as absent, not incomplete (#315)', () => {
+    // `indeterminate` was added to the citation format after this parser
+    // shipped. A citation taken before that change carries no such count,
+    // and that is a fact about when it was measured, not a malformed
+    // citation — so its absence must not flip `incomplete` to true, and the
+    // parsed value must be `undefined` rather than a fabricated `0`.
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(false);
+    expect(citations[0]?.indeterminate).toBeUndefined();
+  });
+
+  it('parses an `indeterminate` field when present', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 5',
+      'accused: 0',
+      'indeterminate: 1',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(false);
+    expect(citations[0]?.indeterminate).toBe(1);
+  });
+
+  it('reports a non-numeric `indeterminate` field as incomplete, the same as any other count field', () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 5',
+      'accused: 0',
+      'indeterminate: one',
+      'measured_at: 2026-08-04T00:00:00Z',
+      '```',
+    ].join('\n');
+    const citations = parseCensusCitations(text);
+    expect(citations[0]?.incomplete).toBe(true);
+    expect(citations[0]?.missing).toContain('indeterminate');
   });
 
   it('parses multiple citation blocks in one document', () => {
