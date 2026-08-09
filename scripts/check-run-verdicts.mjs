@@ -95,12 +95,12 @@ export function classifyConclusion(conclusion) {
 /**
  * @param {unknown} checkRun
  * @param {number} index
- * @returns {{name: string, conclusion: string | null, status: string, startedAt: string, id: number}}
+ * @returns {{name: string, conclusion: string | null, status: string, startedAt: string | null, id: number}}
  */
 function parseCheckRun(checkRun, index) {
   const name = /** @type {any} */ (checkRun)?.name;
   const status = /** @type {any} */ (checkRun)?.status;
-  const startedAt = /** @type {any} */ (checkRun)?.started_at;
+  const startedAtRaw = /** @type {any} */ (checkRun)?.started_at;
   const id = /** @type {any} */ (checkRun)?.id;
   const conclusion = /** @type {any} */ (checkRun)?.conclusion ?? null;
   if (typeof name !== 'string' || name === '') {
@@ -108,9 +108,6 @@ function parseCheckRun(checkRun, index) {
   }
   if (typeof status !== 'string' || status === '') {
     throw new Error(`check run ${index + 1} (${name}) has no status`);
-  }
-  if (typeof startedAt !== 'string' || Number.isNaN(Date.parse(startedAt))) {
-    throw new Error(`check run ${index + 1} (${name}) has no valid started_at`);
   }
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new Error(
@@ -120,6 +117,27 @@ function parseCheckRun(checkRun, index) {
   if (conclusion !== null && typeof conclusion !== 'string') {
     throw new Error(
       `check run ${index + 1} (${name}) has a non-string conclusion`,
+    );
+  }
+  // A queued or in-progress run legitimately has not started yet, so GitHub
+  // reports `started_at: null` for it -- that is not malformed input, it is
+  // the normal shape of "pending". Only a completed run is required to carry
+  // a valid timestamp; a completed run with none is the actually-malformed
+  // case.
+  let startedAt = null;
+  if (startedAtRaw !== null && startedAtRaw !== undefined) {
+    if (
+      typeof startedAtRaw !== 'string' ||
+      Number.isNaN(Date.parse(startedAtRaw))
+    ) {
+      throw new Error(
+        `check run ${index + 1} (${name}) has an invalid started_at`,
+      );
+    }
+    startedAt = startedAtRaw;
+  } else if (status === 'completed') {
+    throw new Error(
+      `check run ${index + 1} (${name}) is completed but has no started_at`,
     );
   }
   // A run whose status is not yet 'completed' has not settled on a
@@ -136,13 +154,14 @@ function parseCheckRun(checkRun, index) {
 }
 
 /**
- * Reduce every check run to the single most-recently-started run per name.
+ * Reduce every check run to the single most-recent run per name.
  *
- * `gh pr checks` itself renders only the latest run for a given name, so
- * reporting anything else here would disagree with the tool this replaces
- * along a second axis the issue never raised. Ties (identical started_at,
- * which two runs queued in the same second can produce) are broken by the
- * larger id, since check-run ids are assigned in creation order.
+ * Ordered by id rather than `started_at`: check-run ids are assigned in
+ * creation order and are always present, while `started_at` is legitimately
+ * `null` on a run that is still queued -- ordering by timestamp would have
+ * no answer for that case. `gh pr checks` itself renders only the latest run
+ * for a given name, so reporting anything else here would disagree with the
+ * tool this replaces along a second axis the issue never raised.
  *
  * @param {readonly unknown[]} checkRuns
  * @returns {Map<string, ReturnType<typeof parseCheckRun>>}
@@ -154,12 +173,7 @@ export function latestCheckRunsByName(checkRuns) {
   const latest = new Map();
   for (const run of parsed) {
     const current = latest.get(run.name);
-    if (
-      !current ||
-      Date.parse(run.startedAt) > Date.parse(current.startedAt) ||
-      (Date.parse(run.startedAt) === Date.parse(current.startedAt) &&
-        run.id > current.id)
-    ) {
+    if (!current || run.id > current.id) {
       latest.set(run.name, run);
     }
   }
@@ -230,25 +244,24 @@ export function resolveRepo(requested, env, run) {
   return /^[^/\s]+\/[^/\s]+$/.test(slug) ? slug : null;
 }
 
+const PAGE_SIZE = 100;
+
 /**
- * `commits/<sha>/check-runs` dereferences its path segment, so a short
- * prefix resolves the same way `gh api commits/<sha>/...` always has in this
- * repo (see probe-sha-query.mjs) -- no separate resolve step is needed here.
+ * Fetch a single page of `commits/<sha>/check-runs`.
  *
  * @param {string} repo
  * @param {string} sha
+ * @param {number} page
  * @param {NodeJS.ProcessEnv} env
  * @param {typeof spawnSync} run
- * @returns {{ok: true, checkRuns: unknown[]} | {ok: false, reason: string}}
+ * @returns {{ok: true, totalCount: number, rows: unknown[]} | {ok: false, reason: string}}
  */
-export function fetchCheckRuns(repo, sha, env, run) {
+function fetchCheckRunsPage(repo, sha, page, env, run) {
   const result = run(
     'gh',
     [
       'api',
-      `repos/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
-      '--jq',
-      '.check_runs',
+      `repos/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=${PAGE_SIZE}&page=${page}`,
     ],
     { encoding: 'utf8', env },
   );
@@ -264,22 +277,94 @@ export function fetchCheckRuns(repo, sha, env, run) {
     };
   }
   const stdout = String(result.stdout ?? '').trim();
-  let checkRuns;
+  let payload;
   try {
-    checkRuns = JSON.parse(stdout || 'null');
+    payload = JSON.parse(stdout || 'null');
   } catch {
     return {
       ok: false,
       reason: 'the check-runs query did not return valid JSON',
     };
   }
-  if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
+  const totalCount = /** @type {any} */ (payload)?.total_count;
+  const rows = /** @type {any} */ (payload)?.check_runs;
+  if (!Number.isSafeInteger(totalCount) || totalCount < 0) {
+    return {
+      ok: false,
+      reason:
+        'the check-runs response carried no non-negative integer total_count',
+    };
+  }
+  if (!Array.isArray(rows)) {
+    return {
+      ok: false,
+      reason: 'the check-runs response carried no check_runs array',
+    };
+  }
+  return { ok: true, totalCount, rows };
+}
+
+/**
+ * `commits/<sha>/check-runs` dereferences its path segment, so a short
+ * prefix resolves the same way `gh api commits/<sha>/...` always has in this
+ * repo (see probe-sha-query.mjs) -- no separate resolve step is needed here.
+ *
+ * Pages through every result rather than reading only the first `per_page`
+ * rows. A commit with many re-run attempts -- routine in this repo once
+ * concurrency-group cancellation (#540) makes cancelled runs common -- can
+ * carry well over 100 check runs, and silently dropping the rest is the same
+ * shape of misreporting this file exists to remove: a check beyond page one
+ * would be invisible to `latestCheckRunsByName` even though it may be the
+ * most recent attempt for its name.
+ *
+ * @param {string} repo
+ * @param {string} sha
+ * @param {NodeJS.ProcessEnv} env
+ * @param {typeof spawnSync} run
+ * @returns {{ok: true, checkRuns: unknown[]} | {ok: false, reason: string}}
+ */
+export function fetchCheckRuns(repo, sha, env, run) {
+  const collected = [];
+  const seenIds = new Set();
+  let expectedTotal;
+  for (let page = 1; ; page += 1) {
+    const result = fetchCheckRunsPage(repo, sha, page, env, run);
+    if (!result.ok) return result;
+    expectedTotal ??= result.totalCount;
+    if (result.totalCount !== expectedTotal) {
+      return {
+        ok: false,
+        reason: `the check-runs total_count changed from ${expectedTotal} to ${result.totalCount} while it was paged`,
+      };
+    }
+    for (const row of result.rows) {
+      const id = /** @type {any} */ (row)?.id;
+      if (typeof id === 'number') {
+        if (seenIds.has(id)) {
+          return {
+            ok: false,
+            reason: `the check-runs response returned duplicate check run id ${id} while it was paged`,
+          };
+        }
+        seenIds.add(id);
+      }
+      collected.push(row);
+    }
+    if (collected.length >= expectedTotal) break;
+    if (result.rows.length === 0) {
+      return {
+        ok: false,
+        reason: `the check-runs response ended after ${collected.length} of ${expectedTotal} rows`,
+      };
+    }
+  }
+  if (collected.length === 0) {
     return {
       ok: false,
       reason: `no check runs found for ${sha}`,
     };
   }
-  return { ok: true, checkRuns };
+  return { ok: true, checkRuns: collected };
 }
 
 export function formatReport(sha, verdicts) {

@@ -159,6 +159,65 @@ describe('latestCheckRunsByName', () => {
     const latest = latestCheckRunsByName(checkRuns);
     expect(latest.get('some check')?.conclusion).toBeNull();
   });
+
+  it('REGRESSION: a queued run with started_at: null is a normal pending case, not malformed input', () => {
+    // GitHub reports `started_at: null` for a run that has been created but
+    // not yet begun executing. That is a legitimate, common shape -- not an
+    // error -- and must not be rejected the way a genuinely malformed run is.
+    const checkRuns = [
+      checkRun({
+        id: 1,
+        name: 'Queued check',
+        status: 'queued',
+        conclusion: null,
+        started_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).not.toThrow();
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Queued check')?.startedAt).toBeNull();
+    expect(latest.get('Queued check')?.conclusion).toBeNull();
+    expect(classifyConclusion(latest.get('Queued check')!.conclusion)).toBe(
+      VERDICT_PENDING,
+    );
+  });
+
+  it('still refuses a completed run that carries no started_at at all, which is genuinely malformed', () => {
+    const checkRuns = [
+      checkRun({
+        status: 'completed',
+        conclusion: 'success',
+        started_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /completed but has no started_at/,
+    );
+  });
+
+  it('the latest-by-id selection still works when the newest run for a name is queued with no started_at', () => {
+    const checkRuns = [
+      checkRun({
+        id: 1,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'success',
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        started_at: null,
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Desktop')?.id).toBe(2);
+    expect(latest.get('Desktop')?.startedAt).toBeNull();
+    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
+      VERDICT_PENDING,
+    );
+  });
 });
 
 describe('buildVerdicts', () => {
@@ -214,6 +273,10 @@ describe('resolveRepo', () => {
   });
 });
 
+function pagePayload(rows: unknown[], totalCount = rows.length) {
+  return JSON.stringify({ total_count: totalCount, check_runs: rows });
+}
+
 describe('fetchCheckRuns', () => {
   it('parses the check_runs array from gh api', () => {
     const result = fetchCheckRuns(
@@ -222,11 +285,11 @@ describe('fetchCheckRuns', () => {
       {},
       stub((_command, argv) => {
         expect(argv[1]).toBe(
-          'repos/o/r/commits/abc123/check-runs?per_page=100',
+          'repos/o/r/commits/abc123/check-runs?per_page=100&page=1',
         );
         return {
           status: 0,
-          stdout: JSON.stringify([checkRun({ id: 1 })]),
+          stdout: pagePayload([checkRun({ id: 1 })]),
         };
       }),
     );
@@ -250,11 +313,59 @@ describe('fetchCheckRuns', () => {
       'o/r',
       'abc123',
       {},
-      stub(() => ({ status: 0, stdout: '[]' })),
+      stub(() => ({ status: 0, stdout: pagePayload([], 0) })),
     );
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain(
       'no check runs found',
+    );
+  });
+
+  it('REGRESSION: pages through a commit with more than 100 check runs instead of silently dropping the rest', () => {
+    const totalRows = 137;
+    const allRuns = Array.from({ length: totalRows }, (_, i) =>
+      checkRun({ id: i + 1, name: `check ${i + 1}` }),
+    );
+    const requestedPages: number[] = [];
+    const result = fetchCheckRuns(
+      'o/r',
+      'abc123',
+      {},
+      stub((_command, argv) => {
+        const match = /[&?]page=(\d+)/.exec(String(argv[1]));
+        const page = Number(match?.[1]);
+        requestedPages.push(page);
+        const start = (page - 1) * 100;
+        const rows = allRuns.slice(start, start + 100);
+        return { status: 0, stdout: pagePayload(rows, totalRows) };
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.checkRuns).toHaveLength(totalRows);
+    expect(requestedPages).toEqual([1, 2]);
+  });
+
+  it('reports undetermined when total_count changes mid-page rather than trusting a moving target', () => {
+    let call = 0;
+    const result = fetchCheckRuns(
+      'o/r',
+      'abc123',
+      {},
+      stub(() => {
+        call += 1;
+        return {
+          status: 0,
+          stdout: pagePayload(
+            Array.from({ length: 100 }, (_, i) => checkRun({ id: i + 1 })),
+            call === 1 ? 150 : 200,
+          ),
+        };
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain(
+      'total_count changed',
     );
   });
 });
@@ -267,7 +378,7 @@ describe('main', () => {
       {},
       stub(() => ({
         status: 0,
-        stdout: JSON.stringify([
+        stdout: pagePayload([
           checkRun({ id: 1, name: 'Sequencing hold', conclusion: 'cancelled' }),
           checkRun({ id: 2, name: 'Stacked base', conclusion: 'success' }),
         ]),
@@ -285,7 +396,7 @@ describe('main', () => {
       {},
       stub(() => ({
         status: 0,
-        stdout: JSON.stringify([
+        stdout: pagePayload([
           checkRun({
             id: 1,
             name: 'Citation reachability',
@@ -304,7 +415,7 @@ describe('main', () => {
       {},
       stub(() => ({
         status: 0,
-        stdout: JSON.stringify([
+        stdout: pagePayload([
           checkRun({ id: 1, name: 'Stacked base', conclusion: 'success' }),
         ]),
       })),
@@ -327,7 +438,7 @@ describe('main', () => {
     const result = main(
       ['--repo', 'o/r'],
       {},
-      stub(() => ({ status: 0, stdout: '[]' })),
+      stub(() => ({ status: 0, stdout: pagePayload([], 0) })),
       () => undefined,
     );
     expect(result).toBe(EXIT_UNDETERMINED);
