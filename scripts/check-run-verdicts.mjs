@@ -328,28 +328,65 @@ export function resolveRepo(requested, env, run) {
 
 const PAGE_SIZE = 100;
 
-// A sane upper bound on how many pages a single commit's check-runs could
-// legitimately span. No real commit needs 100,000 check runs; this exists
-// only to fail closed instead of looping forever against a pathological or
-// hostile API response.
+/**
+ * A sane upper bound on how many pages a single commit's check-runs
+ * response could legitimately span, as defense in depth against a runaway
+ * or hostile `gh api --paginate` response. No real commit needs 100,000
+ * check runs.
+ */
 const MAX_PAGES = 1000;
 
 /**
- * Fetch a single page of `commits/<sha>/check-runs`.
+ * `commits/<sha>/check-runs` dereferences its path segment, so a short
+ * prefix resolves the same way `gh api commits/<sha>/...` always has in this
+ * repo (see probe-sha-query.mjs) -- no separate resolve step is needed here.
+ *
+ * Pages through every result rather than reading only the first `per_page`
+ * rows. A commit with many re-run attempts -- routine in this repo once
+ * concurrency-group cancellation (#540) makes cancelled runs common -- can
+ * carry well over 100 check runs, and silently dropping the rest is the same
+ * shape of misreporting this file exists to remove: a check beyond page one
+ * would be invisible to `latestCheckRunsByName` even though it may be the
+ * most recent attempt for its name.
+ *
+ * TERMINATION SIGNAL. An earlier version of this function inferred "no more
+ * pages" from row counts alone (a short/empty page, or reaching the
+ * API-reported `total_count`). Review found that heuristic unsound in both
+ * directions: a *full* page reaching `total_count` is not proof there is
+ * nothing beyond it (an under-reported `total_count`), and even a
+ * short/empty page does not, by construction, rule out a later page still
+ * holding real data if the underlying list changed mid-fetch in a way that
+ * did not also change the reported `total_count`.
+ *
+ * GitHub's REST API already has an authoritative answer to "is there
+ * another page": the response's `Link` header carries `rel="next"` if and
+ * only if another page exists
+ * (https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+ * `gh api --paginate` follows that header itself, so this delegates
+ * termination to it entirely instead of re-deriving it from row counts --
+ * verified directly against this repo's own commits: `gh api
+ * .../check-runs?per_page=1 --paginate --slurp` against a commit with 20
+ * check runs returns exactly 20 page objects (one per Link "next" hop),
+ * and `per_page=20` against that same commit returns exactly 1 (no
+ * wasted trailing empty-page request once `total_count` divides evenly by
+ * `per_page`). `total_count` is still cross-checked for consistency across
+ * every page and against the number of rows actually collected -- not to
+ * decide when to stop, but as a sanity check on the API's own metadata.
  *
  * @param {string} repo
  * @param {string} sha
- * @param {number} page
  * @param {NodeJS.ProcessEnv} env
  * @param {typeof spawnSync} run
- * @returns {{ok: true, totalCount: number, rows: unknown[]} | {ok: false, reason: string}}
+ * @returns {{ok: true, checkRuns: unknown[]} | {ok: false, reason: string}}
  */
-function fetchCheckRunsPage(repo, sha, page, env, run) {
+export function fetchCheckRuns(repo, sha, env, run) {
   const result = run(
     'gh',
     [
       'api',
-      `repos/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=${PAGE_SIZE}&page=${page}`,
+      `repos/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=${PAGE_SIZE}`,
+      '--paginate',
+      '--slurp',
     ],
     { encoding: 'utf8', env },
   );
@@ -365,88 +402,53 @@ function fetchCheckRunsPage(repo, sha, page, env, run) {
     };
   }
   const stdout = String(result.stdout ?? '').trim();
-  let payload;
+  let pages;
   try {
-    payload = JSON.parse(stdout || 'null');
+    pages = JSON.parse(stdout || 'null');
   } catch {
     return {
       ok: false,
       reason: 'the check-runs query did not return valid JSON',
     };
   }
-  const totalCount = /** @type {any} */ (payload)?.total_count;
-  const rows = /** @type {any} */ (payload)?.check_runs;
-  if (!Number.isSafeInteger(totalCount) || totalCount < 0) {
+  if (!Array.isArray(pages) || pages.length === 0) {
     return {
       ok: false,
-      reason:
-        'the check-runs response carried no non-negative integer total_count',
+      reason: 'the check-runs response carried no pages',
     };
   }
-  if (!Array.isArray(rows)) {
+  if (pages.length > MAX_PAGES) {
     return {
       ok: false,
-      reason: 'the check-runs response carried no check_runs array',
+      reason: `the check-runs response spanned ${pages.length} pages, over the ${MAX_PAGES}-page safety cap -- refusing to report a possibly-incomplete verdict`,
     };
   }
-  return { ok: true, totalCount, rows };
-}
-
-/**
- * `commits/<sha>/check-runs` dereferences its path segment, so a short
- * prefix resolves the same way `gh api commits/<sha>/...` always has in this
- * repo (see probe-sha-query.mjs) -- no separate resolve step is needed here.
- *
- * Pages through every result rather than reading only the first `per_page`
- * rows. A commit with many re-run attempts -- routine in this repo once
- * concurrency-group cancellation (#540) makes cancelled runs common -- can
- * carry well over 100 check runs, and silently dropping the rest is the same
- * shape of misreporting this file exists to remove: a check beyond page one
- * would be invisible to `latestCheckRunsByName` even though it may be the
- * most recent attempt for its name.
- *
- * The only trustworthy signal that pagination has reached the end is a
- * *short* page (fewer rows returned than were requested). `total_count` is
- * reported by the API up front and is not re-verified against what
- * pagination can actually reach -- a response that under-reports
- * `total_count` while still holding a full page of rows must not be
- * accepted as complete just because `collected.length` happens to reach
- * that (possibly wrong) number. Doing so would silently truncate results in
- * exactly the scenario this fix exists to close: a later, still-unseen
- * check-run (e.g. a genuine failure) would never be requested. So this
- * always requests one page past the last full page, and only accepts the
- * result once a short page confirms there is nothing left -- and even then
- * only if the rows actually collected match the reported total_count
- * exactly. Any other combination is reported undetermined (fail closed)
- * rather than risking a possibly-incomplete verdict.
- *
- * @param {string} repo
- * @param {string} sha
- * @param {NodeJS.ProcessEnv} env
- * @param {typeof spawnSync} run
- * @returns {{ok: true, checkRuns: unknown[]} | {ok: false, reason: string}}
- */
-export function fetchCheckRuns(repo, sha, env, run) {
   const collected = [];
   const seenIds = new Set();
   let expectedTotal;
-  for (let page = 1; ; page += 1) {
-    if (page > MAX_PAGES) {
+  for (const [index, page] of pages.entries()) {
+    const totalCount = /** @type {any} */ (page)?.total_count;
+    const rows = /** @type {any} */ (page)?.check_runs;
+    if (!Number.isSafeInteger(totalCount) || totalCount < 0) {
       return {
         ok: false,
-        reason: `the check-runs response did not terminate within ${MAX_PAGES} pages (safety cap reached) -- refusing to report a possibly-incomplete verdict`,
+        reason: `page ${index + 1} of the check-runs response carried no non-negative integer total_count`,
       };
     }
-    const result = fetchCheckRunsPage(repo, sha, page, env, run);
-    if (!result.ok) return result;
-    expectedTotal ??= result.totalCount;
-    if (result.totalCount !== expectedTotal) {
+    if (!Array.isArray(rows)) {
       return {
         ok: false,
-        reason: `the check-runs total_count changed from ${expectedTotal} to ${result.totalCount} while it was paged`,
+        reason: `page ${index + 1} of the check-runs response carried no check_runs array`,
       };
     }
-    for (const row of result.rows) {
+    expectedTotal ??= totalCount;
+    if (totalCount !== expectedTotal) {
+      return {
+        ok: false,
+        reason: `the check-runs total_count changed from ${expectedTotal} to ${totalCount} while it was paged`,
+      };
+    }
+    for (const row of rows) {
       const id = /** @type {any} */ (row)?.id;
       if (typeof id === 'number') {
         if (seenIds.has(id)) {
@@ -459,18 +461,12 @@ export function fetchCheckRuns(repo, sha, env, run) {
       }
       collected.push(row);
     }
-    if (result.rows.length < PAGE_SIZE) {
-      // A short (or empty) page is the only reliable end-of-pagination
-      // signal. Do not treat reaching `expectedTotal` on a *full* page as
-      // done -- that trusts a number the API hasn't yet proven true.
-      if (collected.length !== expectedTotal) {
-        return {
-          ok: false,
-          reason: `the check-runs response reported total_count=${expectedTotal} but pagination actually reached ${collected.length} rows before the pages ran out`,
-        };
-      }
-      break;
-    }
+  }
+  if (collected.length !== expectedTotal) {
+    return {
+      ok: false,
+      reason: `the check-runs response reported total_count=${expectedTotal} but pagination (following the API's own "next page" Link header, not a row-count guess) actually collected ${collected.length} rows`,
+    };
   }
   if (collected.length === 0) {
     return {

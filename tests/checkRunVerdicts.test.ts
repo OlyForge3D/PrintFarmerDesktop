@@ -333,8 +333,22 @@ describe('resolveRepo', () => {
   });
 });
 
+function pageObj(rows: unknown[], totalCount = rows.length) {
+  return { total_count: totalCount, check_runs: rows };
+}
+
+// `fetchCheckRuns` now issues a single `gh api ... --paginate --slurp` call
+// and lets `gh` itself follow the API's `Link` header across every page
+// (see the comment on `fetchCheckRuns`). `--slurp` wraps every page `gh`
+// fetched into one outer JSON array, so the stub's `stdout` here always
+// represents *all* pages `gh` would have returned for a given scenario --
+// there is no separate stub invocation per page.
 function pagePayload(rows: unknown[], totalCount = rows.length) {
-  return JSON.stringify({ total_count: totalCount, check_runs: rows });
+  return JSON.stringify([pageObj(rows, totalCount)]);
+}
+
+function slurpPayload(pages: ReturnType<typeof pageObj>[]) {
+  return JSON.stringify(pages);
 }
 
 describe('fetchCheckRuns', () => {
@@ -345,8 +359,10 @@ describe('fetchCheckRuns', () => {
       {},
       stub((_command, argv) => {
         expect(argv[1]).toBe(
-          'repos/o/r/commits/abc123/check-runs?per_page=100&page=1',
+          'repos/o/r/commits/abc123/check-runs?per_page=100',
         );
+        expect(argv).toContain('--paginate');
+        expect(argv).toContain('--slurp');
         return {
           status: 0,
           stdout: pagePayload([checkRun({ id: 1 })]),
@@ -381,60 +397,60 @@ describe('fetchCheckRuns', () => {
     );
   });
 
+  it('reports undetermined when gh returns no pages at all', () => {
+    const result = fetchCheckRuns(
+      'o/r',
+      'abc123',
+      {},
+      stub(() => ({ status: 0, stdout: slurpPayload([]) })),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain('no pages');
+  });
+
   it('REGRESSION: pages through a commit with more than 100 check runs instead of silently dropping the rest', () => {
+    // `--paginate --slurp` means `gh` itself made every request and handed
+    // back one page object per request it followed via the Link header --
+    // this simulates the two page objects `gh` would slurp for 137 rows.
     const totalRows = 137;
     const allRuns = Array.from({ length: totalRows }, (_, i) =>
       checkRun({ id: i + 1, name: `check ${i + 1}` }),
     );
-    const requestedPages: number[] = [];
     const result = fetchCheckRuns(
       'o/r',
       'abc123',
       {},
-      stub((_command, argv) => {
-        const match = /[&?]page=(\d+)/.exec(String(argv[1]));
-        const page = Number(match?.[1]);
-        requestedPages.push(page);
-        const start = (page - 1) * 100;
-        const rows = allRuns.slice(start, start + 100);
-        return { status: 0, stdout: pagePayload(rows, totalRows) };
-      }),
+      stub(() => ({
+        status: 0,
+        stdout: slurpPayload([
+          pageObj(allRuns.slice(0, 100), totalRows),
+          pageObj(allRuns.slice(100), totalRows),
+        ]),
+      })),
     );
 
     expect(result.ok).toBe(true);
     expect(result.ok && result.checkRuns).toHaveLength(totalRows);
-    expect(requestedPages).toEqual([1, 2]);
   });
 
   it('REGRESSION: fails closed when a full first page hides a real check-run behind an under-reported total_count', () => {
-    // The API reports total_count=100 and page 1 delivers exactly 100 rows
-    // -- collected.length reaching total_count on a *full* page must not be
-    // trusted as "done". Here a second, later check-run genuinely exists
-    // (e.g. a still-running or newly failed check) but total_count never
-    // accounted for it. Silently stopping after page 1 would hide it from
-    // buildVerdicts entirely -- exactly the failure mode this fix exists to
-    // close -- so this must report undetermined instead of a (possibly
-    // clean) verdict.
-    const requestedPages: number[] = [];
+    // The API reports total_count=100 but `gh`'s own Link-header-driven
+    // pagination still followed a real "next" link to a second page
+    // holding one more row (e.g. a still-running or newly failed check).
+    // `total_count` never accounted for it. This must report undetermined
+    // rather than a (possibly clean) verdict based on the stale total.
     const result = fetchCheckRuns(
       'o/r',
       'abc123',
       {},
-      stub((_command, argv) => {
-        const match = /[&?]page=(\d+)/.exec(String(argv[1]));
-        const page = Number(match?.[1]);
-        requestedPages.push(page);
-        if (page === 1) {
-          const rows = Array.from({ length: 100 }, (_, i) =>
-            checkRun({ id: i + 1 }),
-          );
-          return { status: 0, stdout: pagePayload(rows, 100) };
-        }
-        // The hidden, previously-unseen check-run: reported total_count is
-        // unchanged (still 100), yet a real row exists past the "total".
-        return {
-          status: 0,
-          stdout: pagePayload(
+      stub(() => ({
+        status: 0,
+        stdout: slurpPayload([
+          pageObj(
+            Array.from({ length: 100 }, (_, i) => checkRun({ id: i + 1 })),
+            100,
+          ),
+          pageObj(
             [
               checkRun({
                 id: 101,
@@ -444,40 +460,98 @@ describe('fetchCheckRuns', () => {
             ],
             100,
           ),
-        };
-      }),
+        ]),
+      })),
     );
 
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain(
-      'reported total_count=100 but pagination actually reached',
+      'reported total_count=100 but pagination',
     );
-    // Must have actually requested the second page rather than stopping
-    // at page 1 just because collected.length reached total_count.
-    expect(requestedPages).toEqual([1, 2]);
   });
 
-  it('reports undetermined when total_count changes mid-page rather than trusting a moving target', () => {
-    let call = 0;
+  it('REGRESSION: fails closed when a full page then an empty page hides a real check-run on a would-be third page', () => {
+    // Round-4 finding: a prior row-count-based implementation trusted an
+    // empty page (0 rows) as proof pagination was complete once
+    // collected.length matched total_count, even though an empty page does
+    // not, by itself, rule out further real data. Here `gh`'s own
+    // Link-header-driven pagination still followed a "next" link past the
+    // empty page to a real third page holding a genuine failure -- exactly
+    // the scenario an empty-page-trusting implementation would silently
+    // miss. Because this implementation no longer decides "done" itself at
+    // all (gh's Link header already decided that before slurping), the
+    // hidden row is present in the collected set, and the total_count
+    // cross-check (100 reported vs. 101 actually collected) still catches
+    // the inconsistency and fails closed.
     const result = fetchCheckRuns(
       'o/r',
       'abc123',
       {},
-      stub(() => {
-        call += 1;
-        return {
-          status: 0,
-          stdout: pagePayload(
+      stub(() => ({
+        status: 0,
+        stdout: slurpPayload([
+          pageObj(
             Array.from({ length: 100 }, (_, i) => checkRun({ id: i + 1 })),
-            call === 1 ? 150 : 200,
+            100,
           ),
-        };
-      }),
+          pageObj([], 100),
+          pageObj(
+            [
+              checkRun({
+                id: 102,
+                name: 'hidden failure past an empty page',
+                conclusion: 'failure',
+              }),
+            ],
+            100,
+          ),
+        ]),
+      })),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain(
+      'reported total_count=100 but pagination',
+    );
+  });
+
+  it('reports undetermined when total_count changes mid-page rather than trusting a moving target', () => {
+    const result = fetchCheckRuns(
+      'o/r',
+      'abc123',
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: slurpPayload([
+          pageObj(
+            Array.from({ length: 100 }, (_, i) => checkRun({ id: i + 1 })),
+            150,
+          ),
+          pageObj(
+            Array.from({ length: 50 }, (_, i) => checkRun({ id: i + 101 })),
+            200,
+          ),
+        ]),
+      })),
     );
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain(
       'total_count changed',
     );
+  });
+
+  it('reports undetermined when the response spans an implausible number of pages', () => {
+    const pages = Array.from({ length: 1001 }, (_, i) =>
+      pageObj([checkRun({ id: i + 1 })], 1001),
+    );
+    const result = fetchCheckRuns(
+      'o/r',
+      'abc123',
+      {},
+      stub(() => ({ status: 0, stdout: slurpPayload(pages) })),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain('safety cap');
   });
 });
 
