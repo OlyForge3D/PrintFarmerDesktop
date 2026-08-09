@@ -10,6 +10,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -186,6 +187,51 @@ function availableSubstDrive() {
     if (!existsSync(`${letter}:\\`)) return letter;
   }
   throw new Error('no free drive letter is available for the subst fixture');
+}
+
+// Builds the `\\localhost\<drive>$\...` UNC admin-share spelling of a local
+// drive-letter path. Returns null when the path is not drive-letter rooted
+// (e.g. already UNC), in which case the caller should treat the vector as
+// unreachable.
+function uncAdminSharePath(target: string) {
+  const parsed = path.parse(target);
+  const driveLetter = parsed.root.replace(/[:\\]/g, '');
+  if (!/^[a-zA-Z]$/.test(driveLetter)) return null;
+  const rest = target.slice(parsed.root.length);
+  return `\\\\localhost\\${driveLetter}$\\${rest}`;
+}
+
+// Probed once at collection time (not inside a test body) so
+// `it.skipIf(!uncAdminShareAvailable)` can report an explicit, visible skip
+// in the run summary when the loopback SMB admin share is unreachable (e.g.
+// disabled administrative shares, blocked loopback SMB, a restricted CI
+// runner). A test body that only warns-and-returns on this condition would
+// still report "passed" with zero assertions executed, silently certifying
+// the #566 fix without ever exercising it -- `it.skipIf` avoids that by
+// making the non-exercise show up as a skipped test, not a passing one.
+const uncAdminShareAvailable = (() => {
+  if (!onWindows) return false;
+  let probeRoot: string | null = null;
+  try {
+    probeRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-unc-capability-'));
+    const uncProbe = uncAdminSharePath(probeRoot);
+    if (!uncProbe) return false;
+    return statSync(uncProbe).isDirectory();
+  } catch {
+    return false;
+  } finally {
+    if (probeRoot) rmSync(probeRoot, { recursive: true, force: true });
+  }
+})();
+if (onWindows && !uncAdminShareAvailable) {
+  console.warn(
+    '[safe-worktree-remove #566 UNC regression] the \\\\localhost\\<drive>$ ' +
+      'admin share did not resolve to the local volume in this environment ' +
+      '(disabled administrative shares, blocked loopback SMB, or a ' +
+      'restricted runner). The UNC caller-location regression test is ' +
+      'skipped -- see the skipped-test count in the run summary -- rather ' +
+      'than passing without exercising the fix.',
+  );
 }
 
 function windowsShortPath(target: string) {
@@ -734,6 +780,54 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(!uncAdminShareAvailable)(
+    'refuses a UNC admin-share caller aliasing a registered worktree by ' +
+      'physical identity (#566)',
+    () => {
+      // `realpathSync.native` canonicalises within a filesystem namespace but
+      // does not fold the UNC admin-share namespace onto the drive-letter
+      // namespace for the same physical directory (issue #566, measured
+      // vector D). This exercises the real Windows filesystem and cannot be
+      // mocked: it needs the loopback SMB admin share (`\\localhost\<drive>$`)
+      // to actually resolve to the local volume. `uncAdminShareAvailable` is
+      // probed once at collection time, so when that share is disabled or
+      // unreachable this test is `skipIf`-skipped -- visible in the run's
+      // skipped-test count -- rather than executing a body that would pass
+      // vacuously with no assertions run.
+      const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-unc-caller-'));
+      const target = path.join(root, 'worktree');
+      const unrelated = path.join(root, 'unrelated');
+      mkdirSync(target);
+      mkdirSync(unrelated);
+      const uncTarget = uncAdminSharePath(target);
+      const uncUnrelated = uncAdminSharePath(unrelated);
+      try {
+        if (!uncTarget || !uncUnrelated) {
+          throw new Error(
+            'uncAdminShareAvailable was true but uncAdminSharePath ' +
+              `returned null for a drive-letter temp directory: ${root}`,
+          );
+        }
+
+        // Positive: the caller cwd is the same physical directory as the
+        // worktree being removed, spelled through the UNC admin share. The
+        // guard must still refuse, matching the drive-letter-spelled case.
+        expect(() =>
+          validateCallerLocation(uncTarget, target, 'win32'),
+        ).toThrow('current directory is inside the worktree being removed');
+
+        // Negative control: a genuinely unrelated directory, reached through
+        // the same UNC namespace, must still be allowed — the guard must not
+        // simply refuse every UNC-spelled caller.
+        expect(() =>
+          validateCallerLocation(uncUnrelated, target, 'win32'),
+        ).not.toThrow();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('verifies target survival after unlink and before git removal', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-junction-order-'));
