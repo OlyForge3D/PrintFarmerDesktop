@@ -965,7 +965,29 @@ const SCRIPT_UNREACHABLE = Symbol('script-unreachable');
 function resolveNarrowingForScript(scripts, name, visited) {
   if (visited.has(name)) return SCRIPT_UNREACHABLE;
   visited.add(name);
+  try {
+    return resolveNarrowingForScriptBody(scripts, name, visited);
+  } finally {
+    // Vasquez and Ripley (review of PR #647, round 20): `visited` must
+    // track only the names on the CURRENTLY ACTIVE resolution path (a
+    // recursion stack), not every name ever seen across the whole
+    // resolution -- a monotonically-growing set conflates "this script is
+    // an ancestor of itself on this very path" (a genuine cycle) with
+    // "this script was already resolved and finished on a different,
+    // now-completed branch" (legitimate DAG-style reuse of the same
+    // shared alias target from two independent places, e.g. both `stop`
+    // and `start` aliasing to the same `shared` script -- not a cycle at
+    // all). Removing `name` here, once its own resolution has fully
+    // returned, restores that distinction: a real self-reference while
+    // `name` is still an ancestor on the stack is still caught (nothing
+    // between `add` and this `delete` removes it early), but a sibling
+    // branch that reaches the same name AFTER this one has finished sees
+    // a name that is no longer marked visited, and resolves it fresh.
+    visited.delete(name);
+  }
+}
 
+function resolveNarrowingForScriptBody(scripts, name, visited) {
   const isRestartFallback =
     name === 'restart' && typeof scripts.restart !== 'string';
 
@@ -1065,13 +1087,21 @@ function resolveNarrowingForScript(scripts, name, visited) {
  * itself would fail to run), or when re-entering this same hook name
  * indicates a cycle (round 19, Ripley) -- both cases mean callers must
  * distinguish this from "ran clean" the same way they do for a main
- * script.
+ * script. Same round-20 stack-scoping applies here as in
+ * `resolveNarrowingForScript`: `hookName` is removed from `visited` once
+ * this call returns, so a later, independent reuse of the same hook name
+ * (which cannot happen for `hookName` itself within one call, but matters
+ * for names it goes on to alias into) is not mistaken for a cycle.
  */
 function checkLifecycleHook(scripts, hookName, visited) {
   if (visited.has(hookName)) return SCRIPT_UNREACHABLE;
   if (typeof scripts[hookName] !== 'string') return null;
   visited.add(hookName);
-  return checkScriptCommandForNarrowing(scripts, scripts[hookName], visited);
+  try {
+    return checkScriptCommandForNarrowing(scripts, scripts[hookName], visited);
+  } finally {
+    visited.delete(hookName);
+  }
 }
 
 /**

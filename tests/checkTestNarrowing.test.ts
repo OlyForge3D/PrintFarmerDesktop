@@ -862,6 +862,91 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
   });
 
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 18): `stop`'s own narrowing is still caught even though `stop` itself also goes on to alias to a missing script", () => {
+    // Direct narrowing in `stop`'s command is detected before alias
+    // resolution is even attempted for `stop`'s own command, so a direct
+    // narrowing there is unaffected by the abort-vs-skip distinction --
+    // this only matters when `stop` itself has no direct narrowing but
+    // goes on to unreachably alias elsewhere. Included as a sanity check
+    // that the round-16 positive control (stop narrows directly, no
+    // start) still passes under the new stop-presence-gated logic.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez and Ripley, review of PR #647, round 20): `postrestart` IS caught when `stop` and `start` legitimately reuse the same shared alias target from two independent branches (not a cycle)', () => {
+    // `stop -> shared` and `start -> shared` reach the same script twice,
+    // but from two DIFFERENT, non-cyclic branches -- once `stop`'s
+    // resolution has fully returned, `shared` is no longer an ancestor on
+    // the active path, so resolving it again through `start` is
+    // legitimate reuse, not a self-reference. Round 19's fix (treating
+    // ANY re-encounter of a name in `visited` as unreachable) went too
+    // far: it conflated this with a genuine cycle, incorrectly returning
+    // `SCRIPT_UNREACHABLE` for `start` and suppressing the real
+    // `postrestart` narrowing below. `visited` must be scoped to the
+    // active recursion path (popped on return), not accumulate forever.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'npm run shared',
+      start: 'npm run shared',
+      shared: 'echo ok',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez and Ripley, review of PR #647, round 20): a generic `post<name>` hook IS caught when a `pre<name>` hook and the main script legitimately reuse the same shared alias target', () => {
+    // Same DAG-reuse shape as the restart-fallback case above, but for the
+    // generic (non-restart) pre/main/post pattern: `prea` and `a` both
+    // alias to `shared`, which itself has no narrowing -- `shared`'s
+    // resolution via `prea` must not leave a stale "visited" mark that
+    // then falsely blocks resolving it again (legitimately) via `a`,
+    // which would incorrectly suppress `posta`'s real narrowing.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run a',
+      prea: 'npm run shared',
+      a: 'npm run shared',
+      shared: 'echo ok',
+      posta: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez and Ripley, review of PR #647, round 20): a genuine cycle through a shared intermediate is still refused, even with the round-20 stack-scoping fix', () => {
+    // Sanity check alongside the two DAG-reuse positive controls above:
+    // `start` aliasing back to `restart` ITSELF (a true self-reference,
+    // not reuse of an unrelated shared script) must still be caught as
+    // unreachable -- the round-19 fix's actual goal (real cycles refused)
+    // must survive the round-20 correction (legitimate reuse permitted).
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
   it("NEGATIVE CONTROL (Ripley, review of PR #647, round 19): `postrestart` is not reached when the fallback's `start` cyclically aliases back to `restart` itself", () => {
     // `visited` exists only to stop THIS CHECKER from recursing forever --
     // it must not be read by callers as "this path resolved cleanly."
