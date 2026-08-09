@@ -509,7 +509,7 @@ See T2.5. A search that expects `open_package` to be the only door will not find
 **Controls, delivered by #20** (`native/model-core/src/limits.rs`): a compression-ratio ceiling
 `MAX_COMPRESSION_RATIO = 300` above a 4 MiB floor, an aggregate
 `MAX_TOTAL_DECOMPRESSED_BYTES = 2 GiB`, `MAX_XML_DEPTH = 64`,
-`MAX_XML_EVENTS = 200_000_000`, and a `DEFAULT_PARSE_TIMEOUT` of 120 seconds. Path traversal,
+`MAX_XML_EVENTS = 50_000_000`, and a `DEFAULT_PARSE_TIMEOUT` of 120 seconds. Path traversal,
 DTD and entity attacks, deep nesting, the XML event budget, and component cycles are covered by
 `native/model-core/tests/threemf_security.rs` with the fixtures `malformed_zip_bomb.3mf` and
 `malformed_path_traversal.3mf`.
@@ -518,17 +518,44 @@ DTD and entity attacks, deep nesting, the XML event budget, and component cycles
 product, including the harder cases where a cheap preflight guard shadows a stricter
 accumulator on all honest input.
 
-**`MAX_XML_EVENTS` is the one control here whose _shipped value_ no test reaches, and that is
-structural rather than an oversight (#127).** The densest construct quick-xml emits is `<a/>x`
-— five bytes, two events — so 200,000,000 events need a model part of roughly 500 MB to reach,
-barely inside the 512 MB `MAX_MODEL_XML_BYTES` ceiling. For metadata parts it is unreachable
-outright: `MAX_METADATA_XML_BYTES = 8 MiB` caps them near 3.2M events, some sixty times below
-the budget. What is covered end-to-end is that the budget is _wired_ — each of the four
-documents the reader walks builds its own `XmlGuard`, and `threemf_security.rs` drives real
-packages through `parse_bytes_with_limits` at a reduced budget and asserts each part charges
-exactly one event per element. Read that as "a reader that forgets to `observe` is caught",
-not as "200,000,000 is the right number". Raising `MAX_MODEL_XML_BYTES` makes this cap the
-only defence against a document that is cheap to store and expensive to walk.
+**`MAX_XML_EVENTS` was re-sized from measured fixture-corpus density, closing the gap #127
+identified (#165).** The original 200,000,000 was untestable at its shipped value: the densest
+construct quick-xml emits is `<a/>x` — five bytes, two events — so reaching it needed a model
+part of roughly 500 MB, barely inside the 512 MB `MAX_MODEL_XML_BYTES` ceiling, and the only
+measurement backing that number came from one synthetic 361×361 stress grid (26.2 bytes/event),
+extrapolating to ~20.5M events for a document filling the entire model-part ceiling — a ~10×
+gap from the shipped cap.
+
+#165 bisected the actual budget every well-formed fixture under
+`native/model-core/tests/fixtures/threemf/` needs to parse (the same
+`smallest_event_budget_that_parses` helper `threemf_security.rs` uses for its own tests) and
+divided each part's model-XML byte length by that budget. The worst (densest) case was
+`unit_inch.3mf` at ~17.01 bytes/event — small, mostly-metadata packages are denser than
+large geometry-dominated ones, because vertex/triangle elements carry more bytes per event than
+the wrapper and header elements around them. Extrapolated to the 512 MiB ceiling, that gives
+`536,870,912 / 17.01 ≈ 31,556,218` events as this repo's actual worst-case legitimate figure, in
+place of the ~20.5M the single synthetic grid implied. **Caveat stated plainly: every fixture in
+that corpus is hand-authored for this repo's own tests (see
+`native/model-core/tests/fixtures/threemf/manifest.json`), not a survey of real Bambu/Orca/Prusa
+slicer output** — real vendor exports could in principle be denser still, but this is the
+measurement the issue asked for and the best evidence available in-repo.
+
+`MAX_XML_EVENTS` is now `50,000,000` — roughly 58% headroom over the measured worst case, a
+margin comparable to what the same reasoning gave against the older 20.5M estimate. That size
+is also small enough that a hostile `<a/>x` document reaching it is only ~119 MiB, so the
+shipped value itself is now end-to-end testable:
+`the_shipped_budget_rejects_and_admits_at_the_exact_line` in `threemf_security.rs` drives a real
+package through `parse_bytes_with_limits` at exactly `MAX_XML_EVENTS` and at one event less,
+rather than at a reduced stand-in. The wiring tests #127 added remain at a reduced budget on
+purpose — they prove every reader path charges the guard, which does not need the real ceiling
+and is cheaper to run at a smaller one — except for the vendor plate layout path
+(`charges_the_vendor_plate_layout_part_without_swallowing_the_violation`), which still cannot
+reach the shipped value even now: `MAX_METADATA_XML_BYTES = 8 MiB` caps that part near 3.2M
+events regardless of what `MAX_XML_EVENTS` is set to, so it keeps testing wiring only. Raising
+`MAX_MODEL_XML_BYTES` would still make this cap the only defence against a document that is
+cheap to store and expensive to walk; that direction is out of scope here and pinned by
+`the_shipped_event_budget_stays_reachable_within_the_model_byte_ceiling`.
+
 
 **Scope of these controls, which is narrower than it looks.** Every limit above is enforced by
 `ParseGuard` on the `threemf::open_package` path. The retarget archive reader does not use
