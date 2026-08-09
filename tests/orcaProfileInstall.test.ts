@@ -971,29 +971,28 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
 
       const metaDir = path.join(installRoot, '.pfd-backup-meta');
       const metaPath = path.join(metaDir, `${operationId}.json`);
+      const metaFileName = `${operationId}.json`;
       const originalRecord = await readFile(metaPath, 'utf8');
 
+      // Match on basename, not the exact path string: `findBackupByOperationId`
+      // resolves the metadata directory through `realpath()` before joining
+      // the filename (closing an earlier, separate TOCTOU on the directory
+      // itself — see `ensureBackupMetaDirSafe`), so the `filePath` this hook
+      // receives from production code can legitimately be a canonicalized
+      // form (e.g. a resolved 8.3 short name or drive-letter normalization on
+      // some Windows filesystems/runners) that differs as a *string* from
+      // this test's own non-canonicalized `metaPath`, even though both name
+      // the same file. `operationId` is a fresh UUID per test, so its
+      // filename is unique enough to identify the right call without
+      // depending on exact path-string equality.
       let raceSimulated = true;
       __setIdentityPinPreOpenHookForTests(async (filePath) => {
-        if (filePath !== metaPath) return;
+        if (path.basename(filePath) !== metaFileName) return;
         await rm(metaPath, { force: true });
         raceSimulated = await tryMakeFileSymlink(escapeTarget, metaPath);
-        if (process.env.PFD_DEBUG_IDENTITY_PIN) {
-          const escapeLstat = await lstat(escapeTarget, { bigint: true });
-          let metaLstatMsg: string;
-          try {
-            const metaLstat = await lstat(metaPath, { bigint: true });
-            metaLstatMsg = `dev=${metaLstat.dev} ino=${metaLstat.ino} isSymlink=${metaLstat.isSymbolicLink()}`;
-          } catch (e) {
-            metaLstatMsg = e instanceof Error ? e.message : String(e);
-          }
-          console.error(
-            `[identity-pin-debug] preOpen raceSimulated=${raceSimulated} escapeTarget dev=${escapeLstat.dev} ino=${escapeLstat.ino} metaPath-lstat=${metaLstatMsg}`,
-          );
-        }
       });
       __setIdentityPinPostOpenHookForTests(async (filePath) => {
-        if (filePath !== metaPath || !raceSimulated) return;
+        if (path.basename(filePath) !== metaFileName || !raceSimulated) return;
         // Swap back to the original, legitimate file *before* this
         // function's own fstat-based identity check runs. A path-based
         // recheck at this point would see a perfectly ordinary file and
@@ -1001,14 +1000,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         // the path, so this restoration is irrelevant to it.
         await rm(metaPath, { force: true });
         await writeFile(metaPath, originalRecord, 'utf8');
-        if (process.env.PFD_DEBUG_IDENTITY_PIN) {
-          const metaLstat = await lstat(metaPath, { bigint: true });
-          console.error(
-            `[identity-pin-debug] postOpen restored metaPath dev=${metaLstat.dev} ino=${metaLstat.ino}`,
-          );
-        }
       });
-      process.env.PFD_DEBUG_IDENTITY_PIN = '1'; // TEMP: CI-only diagnostic, see readFileWithIdentityPin
       try {
         const located = await findBackupByOperationId(installRoot, operationId);
         if (!raceSimulated) {
@@ -1021,7 +1013,6 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
           'metadata read trusted content reached through a swap-in/swap-back around the read',
         ).toBeNull();
       } finally {
-        delete process.env.PFD_DEBUG_IDENTITY_PIN;
         __setIdentityPinPreOpenHookForTests(null);
         __setIdentityPinPostOpenHookForTests(null);
         await rm(escapeDir, { recursive: true, force: true });

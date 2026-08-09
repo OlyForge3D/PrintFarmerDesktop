@@ -863,13 +863,6 @@ async function readFileWithIdentityPin(
       await identityPinPostOpenHookForTests(filePath);
     }
     const opened = await handle.stat({ bigint: true });
-    if (process.env.PFD_DEBUG_IDENTITY_PIN) {
-      // TEMPORARY diagnostic instrumentation for CI-only investigation of
-      // an unexplained Windows-runner mismatch. Remove once diagnosed.
-      console.error(
-        `[identity-pin-debug] path=${filePath} expectedDev=${expectedDev} expectedIno=${expectedIno} openedDev=${opened.dev} openedIno=${opened.ino} match=${opened.dev === expectedDev && opened.ino === expectedIno}`,
-      );
-    }
     if (opened.dev !== expectedDev || opened.ino !== expectedIno) {
       // open() resolved to a different file than the one lstat validated
       // — whether via a symlink present at that instant (regardless of
