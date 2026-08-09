@@ -1914,6 +1914,158 @@ describe('a reflog that cannot prove it is complete is not read as a genuine neg
   });
 });
 
+describe('a self-cancelling create/discard pair pruned together is not read as a genuine negative (#315)', () => {
+  // The chain-of-object-ids check above closes the hole in its own
+  // predecessor — a non-genesis entry can never masquerade as the genesis,
+  // because its OLD id is never the all-zero sha. Review for #315 found a
+  // SECOND hole in it: a CONTIGUOUS, SELF-CANCELLING pair of entries (commit,
+  // then `reset --hard` it away) starts and ends at the SAME sha. If
+  // `gc.reflogExpireUnreachable` prunes both together once the commit they
+  // made unreachable ages past it, the entries immediately before and after
+  // the pair still connect to EACH OTHER — the chain heals with no visible
+  // seam, and a real creation this worktree made is read as never having
+  // happened.
+  //
+  // No inspection of the SURVIVING entries can close this: the missing
+  // pair's shas are, by construction, exactly what a legitimate gap-free
+  // history would show once they're gone. The only sound remedy is to ask
+  // whether there was ever an OPPORTUNITY for such a pair to be pruned at
+  // all — the genesis entry's own age against `gc.reflogExpireUnreachable`.
+  //
+  // This fixture reaches that shape directly: `work` creates a commit (a
+  // genuine `commit:` entry) and immediately `reset --hard`s it away (a
+  // `reset:` entry whose OLD id is that commit's NEW id and whose NEW id is
+  // back to the pre-commit value). Both lines are then removed from the raw
+  // reflog file — simulating exactly what `git reflog expire` does once the
+  // orphaned commit's entries age past `gc.reflogExpireUnreachable` — and the
+  // surviving genesis entry's own timestamp is rewritten to look 50 days
+  // old, simulating a ref old enough for that pruning to have had a real
+  // opportunity to occur. What survives is a single-entry, zero-rooted,
+  // fully "continuous" chain: exactly the shape the prior chain-only check
+  // read as a confident, provably-complete `false`.
+  let root: string;
+  let work: string;
+  let genesisNewSha: string;
+  let survivingLineCount: number;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-roundtrip-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // The self-cancelling pair: create a commit, then discard it in the same
+    // motion a rollback would. `reset:`'s OLD sha is the commit's NEW sha and
+    // its own NEW sha is back to `feature`'s actual remote tip, so once both
+    // lines are erased below, nothing distinguishes this from a reflog that
+    // never saw either operation.
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(lines.length - 2);
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    // Backdate the surviving genesis entry's timestamp by 50 days — older
+    // than `gc.reflogExpireUnreachable`'s 30-day default — so the fixture
+    // actually exercises the case the age check exists for, rather than one
+    // that would (correctly) read `false` because no time has really passed.
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    const fiftyDaysAgo = Math.floor(Date.now() / 1000) - 50 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(fiftyDaysAgo);
+    genesisNewSha = tokens[1]!;
+    const backdated = tokens.join(' ') + message;
+    survivingLineCount = survivors.length;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('leaves a single-entry, zero-rooted, fully continuous chain', () => {
+    // Pinned so a future change to this fixture cannot silently start
+    // exercising a different shape while keeping this describe block's name:
+    // the whole point is that the SURVIVING reflog looks perfectly complete.
+    expect(survivingLineCount).toBe(1);
+    const rawLog = readFileSync(
+      path.join(work, '.git', 'logs', 'HEAD'),
+      'utf8',
+    );
+    const lines = rawLog.split('\n').filter((line) => line.length > 0);
+    expect(lines.length).toBe(1);
+    const [oldSha, newSha] = lines[0]!.split(' ');
+    expect(oldSha).toBe(ZERO_SHA);
+    expect(newSha).toBe(genesisNewSha);
+  });
+
+  it('authoredHere() reports null, not false, once a create/discard pair could have been pruned', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('a naive two-valued reading (`!== true`) cannot tell this apart from a genuine negative', () => {
+    const originalCwd = process.cwd();
+    let value: boolean | null;
+    try {
+      process.chdir(work);
+      value = authoredHere();
+    } finally {
+      process.chdir(originalCwd);
+    }
+    const twoValuedReading = value === true;
+    expect(twoValuedReading).toBe(false);
+    expect(value).not.toBe(false);
+    expect(value).toBeNull();
+  });
+
+  it('still refuses the push, because null is read exactly like false downstream', () => {
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+    expect(stderr).toContain('push-guard.unattributed-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
+  });
+});
+
 describe('core.logAllRefUpdates=false does not disable an existing reflog', () => {
   // Not a test of the guard. A test of the assumption the fixture above was
   // resting on, kept because that assumption is wrong in the direction that
