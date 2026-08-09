@@ -60,6 +60,23 @@ const execFileAsync = promisify(execFile);
  */
 export const ORCA_INSTALL_MAX_BYTES = 1_048_576;
 
+/**
+ * Filename prefix reserved for this module's own bookkeeping files that live
+ * directly alongside real profiles in the install root (temp files during
+ * atomic writes, and the durable per-operation backup-metadata record — see
+ * `BACKUP_META_FILE_PREFIX` below). No real profile's `safeFilename` may
+ * begin with this prefix, so a bookkeeping file can never collide with, or
+ * be mistaken for, an installed profile.
+ *
+ * `generateProfileIdentity` (orcaProfileGenerator.ts) always appends a
+ * `_[PFD-<8-hex-chars>].json` suffix, which this prefix does not resemble,
+ * so no legitimately generated name can equal `RESERVED_FILE_PREFIX + ...`.
+ * This is enforced by a test (`orcaProfileGenerator` name derivation never
+ * starts with this prefix) rather than left as an assumption, matching this
+ * file's existing convention for the reachability argument below.
+ */
+export const RESERVED_FILE_PREFIX = '.pfd-';
+
 function isErrno(error: unknown, code: string): boolean {
   return (
     error !== null &&
@@ -99,15 +116,11 @@ function isUnderRoot(candidate: string, root: string): boolean {
  * that do not yet exist (never through a symlink). Returns the canonical
  * path of the final directory.
  *
- * Shared by `ensureInstallRootSafe` (APPDATA -> installRoot) and
- * `ensureBackupMetaDirSafe` (installRoot -> installRoot/.pfd-backup-meta),
- * so a reparse point anywhere in either chain is rejected identically. The
- * durable backup-metadata sidecar (#208) originally reused only the
- * destination-file symlink check, not this per-segment root walk — so a
- * junction at `.pfd-backup-meta` itself (or a segment under it) could
- * redirect metadata reads/writes outside the canonical OrcaSlicer
- * directory, exactly the escape this walk exists to prevent for the
- * install root.
+ * Shared by `ensureInstallRootSafe` (APPDATA -> installRoot). The durable
+ * backup-metadata record (#208) lives as a plain leaf file directly inside
+ * the install root (see `BACKUP_META_FILE_PREFIX`), not a separate
+ * subdirectory, so it is validated by this exact same walk rather than a
+ * dedicated one.
  */
 async function walkDirSafe(
   baseRoot: string,
@@ -322,6 +335,19 @@ export function computeInstallPath(
       'Install filename uses reserved Windows path syntax.',
     );
   }
+  // This module writes its own bookkeeping files (atomic-write temp files,
+  // the durable per-operation backup-metadata record) directly alongside
+  // real profiles in the install root, all under `RESERVED_FILE_PREFIX`. A
+  // real profile filename must never be able to collide with one of those
+  // — see `RESERVED_FILE_PREFIX`'s doc comment for why no legitimately
+  // generated name can reach this in practice; this rejects it outright
+  // regardless.
+  if (safeFilename.startsWith(RESERVED_FILE_PREFIX)) {
+    throw makeError(
+      'pathRestricted',
+      'Install filename collides with a reserved internal prefix.',
+    );
+  }
   const dest = path.join(installRoot, safeFilename);
   // Verify no path traversal via basename comparison.
   if (path.basename(dest) !== safeFilename) {
@@ -522,8 +548,8 @@ export interface LocatedBackup {
 }
 
 /**
- * Directory (inside the install root) holding one durable identity record
- * per install operation that produced a backup, keyed by `operationId`.
+ * Durable per-operation backup-identity record, keyed by `operationId`, so
+ * restore can recover which backup a given install operation produced.
  *
  * Restore used to be gated on `profileCache` (`getCachedProfile`), an
  * in-memory, process-lifetime, `MAX_CACHE_ENTRIES`-bounded LRU map, so it
@@ -546,8 +572,33 @@ export interface LocatedBackup {
  * The backup's content hash is still verified independently before any
  * write happens (see `restoreOrcaProfileWindows`); metadata never bypasses
  * that check, it only recovers *which* file to check.
+ *
+ * Design history (rounds 1-4): the record was originally stored in a
+ * dedicated `.pfd-backup-meta` subdirectory of the install root, with its
+ * own directory-level TOCTOU guard layered on top of the leaf-file guard.
+ * Across four review rounds, that directory-level guard was narrowed
+ * (lstat bracket -> fd-pinned before-check -> fd-pinned before-and-after
+ * checks) but never fully closed, because Node has no directory-handle-
+ * relative open (`openat`) on any platform: the leaf file's own path
+ * necessarily re-resolves through the directory as a fresh string, so any
+ * finite number of directory rechecks around it still leaves a
+ * single-syscall window between the last recheck and the leaf operation.
+ *
+ * That entire class of finding is a self-inflicted problem: the real
+ * backup file this record describes is written directly into `installRoot`
+ * (see `installOrcaProfileWindows`, step 5) with only `ensureInstallRootSafe`
+ * validated once up front and no per-write directory recheck at all — and
+ * that level of protection has already been accepted through review. There
+ * is no principled reason to hold the *record describing* a backup to a
+ * stricter standard than the backup's own bytes. So the record is now
+ * stored the same way the backup itself is: as a leaf file directly in
+ * `installRoot`, named `${RESERVED_FILE_PREFIX}op-${operationId}.json`,
+ * validated via the exact same `ensureInstallRootSafe` call every real
+ * profile write and restore already goes through — no separate
+ * subdirectory, and therefore no separate directory-level TOCTOU surface
+ * to keep re-discovering narrower instances of.
  */
-const BACKUP_META_DIR = '.pfd-backup-meta';
+const BACKUP_META_FILE_PREFIX = `${RESERVED_FILE_PREFIX}op-`;
 
 const OPERATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -566,18 +617,15 @@ function validateOperationId(operationId: string): void {
 }
 
 /**
- * Ensure `installRoot/.pfd-backup-meta` exists, is not itself (nor any
- * segment leading to it) a symlink/junction, and canonicalizes to somewhere
- * under the install root. Returns the canonical metadata directory path.
- *
- * `installRoot` is independently re-validated here (via
- * `ensureInstallRootSafe`) rather than assumed safe from a prior call: this
- * is called both from the install path (after `ensureInstallRootSafe` has
- * already run) and from `findBackupByOperationId` on the restore path,
- * which has no other opportunity to check the install root before reading
- * metadata off disk.
+ * Validate `installRoot` (via `ensureInstallRootSafe`, the same check every
+ * real profile write and restore already goes through) and return its
+ * canonical path plus the path the metadata record for `operationId` lives
+ * at within it.
  */
-async function ensureBackupMetaDirSafe(installRoot: string): Promise<string> {
+async function resolveBackupMetaPath(
+  installRoot: string,
+  operationId: string,
+): Promise<{ canonicalInstallRoot: string; metaPath: string }> {
   await ensureInstallRootSafe(installRoot);
   let canonicalInstallRoot: string;
   try {
@@ -585,175 +633,15 @@ async function ensureBackupMetaDirSafe(installRoot: string): Promise<string> {
   } catch {
     throw makeError('pathRestricted', 'Install root is inaccessible.');
   }
-  return walkDirSafe(installRoot, canonicalInstallRoot, BACKUP_META_DIR);
+  return {
+    canonicalInstallRoot,
+    metaPath: path.join(
+      canonicalInstallRoot,
+      `${BACKUP_META_FILE_PREFIX}${operationId}.json`,
+    ),
+  };
 }
 
-/**
- * Re-verify, at the moment of use, that `metaDir` (the validated
- * `.pfd-backup-meta` directory itself) is still a real directory and not a
- * symlink/junction.
- *
- * Round-2 reviewer finding (Vasquez): `ensureBackupMetaDirSafe` validates
- * the directory chain once, up front, but the leaf-file checks added for
- * round 1 (`tempInfo`/`before`/`after` lstat calls) only ever inspect the
- * *file* being written or read — never the *directory* containing it. If
- * `.pfd-backup-meta` itself is swapped for a junction after validation but
- * before the leaf write/read, the leaf file the temp-write or read then
- * touches is a perfectly ordinary file sitting in the attacker's target
- * directory, so none of the leaf-level `isSymbolicLink()` checks ever trip
- * — the swap is invisible at the leaf.
- *
- * This closes that gap the same way the leaf-level checks do: by
- * re-checking immediately adjacent to the operation rather than trusting a
- * validation performed earlier. It cannot eliminate the single-syscall gap
- * between this check and the very next syscall (Node's fs API has no
- * directory-handle-relative open on Windows), but it collapses the
- * previously large validate-once-then-use-later window down to that
- * irreducible minimum, exactly as reviewers suggested.
- */
-async function assertBackupMetaDirNotSwapped(metaDir: string): Promise<void> {
-  let info: Awaited<ReturnType<typeof lstat>>;
-  try {
-    info = await lstat(metaDir);
-  } catch {
-    throw makeError(
-      'pathRestricted',
-      'Backup metadata directory is missing or inaccessible.',
-    );
-  }
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw makeError(
-      'pathRestricted',
-      'Backup metadata directory was redirected; refused.',
-    );
-  }
-}
-
-/**
- * Capture `metaDir`'s identity (device/inode) via `lstat`, rejecting it
- * outright if it is a symlink or not a directory. Returns `null` if it is
- * missing, inaccessible, or unsafe.
- *
- * Paired with `verifyBackupMetaDirIdentityPinned` below: this captures the
- * *expected* identity once; the pinned check later confirms an opened
- * descriptor still reports that same identity, rather than trusting a
- * second independent path lookup to agree with the first.
- */
-async function captureBackupMetaDirIdentity(
-  metaDir: string,
-): Promise<{ dev: bigint; ino: bigint } | null> {
-  try {
-    const info = await lstat(metaDir, { bigint: true });
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      return null;
-    }
-    return { dev: info.dev, ino: info.ino };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Re-verify, via an *opened descriptor* rather than a second path-based
- * `lstat`, that `metaDir` still resolves to the same directory object whose
- * identity `captureBackupMetaDirIdentity` captured earlier.
- *
- * Round-4 finding (Ripley/Vasquez, relayed by the work monitor after
- * `bd525537`): the previous `assertBackupMetaDirNotSwapped` bracket
- * (`lstat` before, operation, `lstat` after) re-validates the *path* twice.
- * A swap-in-then-swap-back around the operation defeats that bracket with
- * no real-world race required at all — round 3 found the exact same shape
- * against the leaf file's lstat-before/read/lstat-after check, which is
- * why the leaf read is now pinned to a file descriptor
- * (`readFileWithIdentityPin`) instead. This applies that same fix one
- * level up: compare an *earlier-captured* identity against what an opened
- * descriptor reports, immediately adjacent to the vulnerable operation,
- * instead of trusting two independent path lookups to agree with each
- * other. `readBackupMetaFileSafely` calls this both immediately before and
- * immediately after the leaf read, so a swap held in place for the whole
- * read (not reverted) is also caught, not just a swap-then-immediate-
- * revert.
- *
- * This cannot eliminate the single-syscall gap between this check and the
- * very next syscall: Node has no directory-handle-relative open (`openat`)
- * on any platform, and holding a directory handle open does not, by
- * itself, block Windows from deleting/replacing that directory entry
- * (verified experimentally — Node's default `open()` flags do not request
- * exclusive/no-share-delete semantics, so `rm()`+recreate on a path still
- * succeeds even while a handle to the original directory remains open).
- * So this narrows the gap to that irreducible minimum rather than closing
- * it outright — but it removes both the "swap, then silently revert
- * before the next check" bypass and the "hold the swap for the whole
- * operation" bypass, leaving only an attacker who swaps in strictly after
- * one pin check and reverts strictly before the other, bounded to the
- * width of the single leaf read itself.
- */
-async function verifyBackupMetaDirIdentityPinned(
-  metaDir: string,
-  expected: { dev: bigint; ino: bigint },
-): Promise<boolean> {
-  let handle: FileHandle;
-  try {
-    handle = await open(metaDir, 'r');
-  } catch {
-    return false;
-  }
-  try {
-    const opened = await handle.stat({ bigint: true });
-    return (
-      opened.isDirectory() &&
-      opened.dev === expected.dev &&
-      opened.ino === expected.ino
-    );
-  } finally {
-    await handle.close();
-  }
-}
-
-/**
- * Test-only hook invoked immediately before the write path re-verifies
- * `metaDir` (right before creating the temp file). Lets a regression test
- * deterministically swap `.pfd-backup-meta` itself for a junction at
- * exactly the moment the round-2 TOCTOU window exists, proving the
- * directory-level recheck refuses the operation rather than silently
- * writing through the junction. No-op in production; never set outside
- * tests.
- */
-let backupMetaDirWriteRaceHookForTests:
-  ((metaDir: string) => Promise<void> | void) | null = null;
-
-export function __setBackupMetaDirWriteRaceHookForTests(
-  hook: ((metaDir: string) => Promise<void> | void) | null,
-): void {
-  backupMetaDirWriteRaceHookForTests = hook;
-}
-
-/**
- * Durably record which backup file a given install operation produced.
- * Overwrites any prior record for the same `operationId`: if an operation
- * is retried and produces a newer backup, that newer backup is the one
- * restore should recover.
- *
- * Writes via an unpredictably-named, exclusively-created temp file in the
- * validated metadata directory, then an atomic rename over the final path
- * — the same pattern already used for profile installs/restores. This
- * closes a TOCTOU window a reviewer identified: the previous
- * lstat-then-writeFile(metaPath) sequence had a gap between checking that
- * `metaPath` was not a symlink and the subsequent write, during which an
- * attacker could replace `metaPath` with a symlink and have the write
- * follow it. `wx` (exclusive create) on an unguessable temp name cannot be
- * pre-empted, and `rename()` replaces whatever is at the destination path
- * (including a symlink placed there in the interim) rather than following
- * it — so there is no window in which a symlink at `metaPath` causes data
- * to be written through it.
- *
- * Round-2 reviewer finding (Vasquez): the above closes the leaf-file race,
- * but `.pfd-backup-meta` (the directory itself) was still validated only
- * once, up front, by `ensureBackupMetaDirSafe`. This re-verifies `metaDir`
- * immediately before both the temp-file creation and the rename, so a
- * directory-level swap is caught at the point of use rather than trusted
- * from an earlier check.
- */
 /**
  * Test-only hook invoked immediately before the atomic `rename()` in
  * `writeBackupMeta`, i.e. exactly inside the write-side race window a
@@ -772,20 +660,39 @@ export function __setBackupMetaWriteRaceHookForTests(
   backupMetaWriteRaceHookForTests = hook;
 }
 
+/**
+ * Durably record which backup file a given install operation produced.
+ * Overwrites any prior record for the same `operationId`: if an operation
+ * is retried and produces a newer backup, that newer backup is the one
+ * restore should recover.
+ *
+ * The record is a leaf file directly in the (once, freshly re-validated)
+ * install root, written via the exact same pattern already used for real
+ * profile installs/restores: an unpredictably-named, exclusively-created
+ * (`wx`) temp file, verified not to be a symlink, then an atomic `rename()`
+ * onto the final path. `wx` on an unguessable temp name cannot be
+ * pre-empted, and `rename()` replaces whatever is at the destination path
+ * (including a symlink placed there in the interim) rather than following
+ * it — so there is no window in which a symlink at `metaPath` causes data
+ * to be written through it. There is no separate metadata subdirectory (see
+ * `BACKUP_META_FILE_PREFIX`'s doc comment), so there is no directory-level
+ * TOCTOU surface distinct from the one every real profile write already
+ * carries and has already been reviewed against.
+ */
 async function writeBackupMeta(
   installRoot: string,
   operationId: string,
   record: BackupMetaRecord,
 ): Promise<void> {
   validateOperationId(operationId);
-  const metaDir = await ensureBackupMetaDirSafe(installRoot);
-  const metaPath = path.join(metaDir, `${operationId}.json`);
-  const tempPath = path.join(metaDir, `.pfd-meta-tmp-${randomUUID()}.json`);
-
-  if (backupMetaDirWriteRaceHookForTests) {
-    await backupMetaDirWriteRaceHookForTests(metaDir);
-  }
-  await assertBackupMetaDirNotSwapped(metaDir);
+  const { canonicalInstallRoot, metaPath } = await resolveBackupMetaPath(
+    installRoot,
+    operationId,
+  );
+  const tempPath = path.join(
+    canonicalInstallRoot,
+    `${RESERVED_FILE_PREFIX}meta-tmp-${randomUUID()}.json`,
+  );
 
   await writeFile(tempPath, JSON.stringify(record), {
     encoding: 'utf8',
@@ -799,10 +706,6 @@ async function writeBackupMeta(
         'Backup metadata temp file was redirected; refused.',
       );
     }
-    // Re-verify the containing directory again immediately before the
-    // rename, narrowing the window a second time rather than relying on
-    // the pre-write check alone.
-    await assertBackupMetaDirNotSwapped(metaDir);
     if (backupMetaWriteRaceHookForTests) {
       await backupMetaWriteRaceHookForTests(metaPath);
     }
@@ -958,168 +861,31 @@ async function readFileWithIdentityPin(
 }
 
 /**
- * Test-only hook invoked at the very start of `readBackupMetaFileSafely`,
- * before the containing-directory recheck. Lets a regression test
- * deterministically swap `.pfd-backup-meta` itself for a junction at
- * exactly the moment the round-2 directory-level TOCTOU window exists
- * (Vasquez), proving the directory recheck refuses the read rather than
- * transparently following the junction to read an attacker's file that
- * merely happens to sit at the same leaf filename. No-op in production;
- * never set outside tests.
+ * Read `metaPath` back, refusing to trust the content unless the leaf
+ * file's identity matches what was validated immediately beforehand (via
+ * `readFileWithIdentityPin`, which is immune to a swap-in/swap-back around
+ * the read — see its doc comment for the round-3 finding that motivated
+ * it). `metaPath` lives directly in the (once, freshly re-validated)
+ * install root, the same protection level already accepted for real
+ * profile/backup reads, so there is no separate containing-directory
+ * bracket to maintain here.
  */
-let backupMetaDirReadRaceHookForTests:
-  ((metaDir: string) => Promise<void> | void) | null = null;
-
-export function __setBackupMetaDirReadRaceHookForTests(
-  hook: ((metaDir: string) => Promise<void> | void) | null,
-): void {
-  backupMetaDirReadRaceHookForTests = hook;
-}
-
-/**
- * Read `metaPath` back, refusing to trust the content if the leaf file's
- * identity doesn't match what was validated immediately beforehand (via
- * `readFileWithIdentityPin`), or if the containing `metaDir` itself isn't
- * confirmed, via an opened descriptor, to still be the same directory
- * whose identity was captured up front.
- *
- * This guards the read at both the leaf-file level (identity-pinned file
- * descriptor, immune to swap-in/swap-back — see `readFileWithIdentityPin`)
- * and the containing-directory level (identity-pinned via
- * `verifyBackupMetaDirIdentityPinned`, immediately adjacent to the leaf
- * read, immune to the same swap-in/swap-back shape — see its doc comment)
- * rather than relying on a single check-then-use or a defeatable
- * check-before/check-after bracket. Any deviation at either level
- * invalidates the result: the record is treated as not found rather than
- * trusted.
- *
- * Round-2 reviewer finding (Vasquez): round 1 only bracketed the leaf file
- * (`metaPath`). A directory-level swap of `.pfd-backup-meta` itself is
- * invisible to those leaf checks, because the leaf file the read then
- * touches is a perfectly ordinary file sitting in the attacker's target
- * directory. Bracketing `metaDir` too closes that separate gap.
- *
- * Round-3 reviewer finding (Ripley): the leaf-file bracket itself (lstat
- * before, read, lstat after) was a *path* recheck, which a swap-in then
- * swap-back around the read could defeat. Replaced with
- * `readFileWithIdentityPin`, which pins identity to a file descriptor
- * instead of re-resolving the path a second time.
- *
- * Round-4 finding (Ripley/Vasquez, relayed after `bd525537`): the
- * directory-level guard from round 2 (`assertBackupMetaDirNotSwapped`
- * called before *and* after) was the exact same defeatable-bracket shape
- * round 3 found and fixed at the leaf level — a swap-in-then-swap-back
- * around the read passes both the "before" and "after" *path-based*
- * lstat checks even though the read itself ran while swapped. Replaced
- * both the "before" and "after" lstat with `captureBackupMetaDirIdentity`
- * / `verifyBackupMetaDirIdentityPinned`, which compare an opened
- * descriptor against an identity captured once up front — the same
- * fd-pinning approach already used for the leaf file, applied one level
- * up, bracketing the leaf read immediately before and immediately after
- * rather than only once.
- *
- * This closes two distinct things: (1) a swap-in-then-swap-back that
- * completes entirely before the leaf read starts (caught by the "before"
- * check observing the swap), and (2) a swap held in place for the
- * *entire* leaf read (caught by the "after" check, since nothing was
- * reverted yet when it runs) — `metaPath` re-resolves through `metaDir`
- * as a fresh path string inside `readFileWithIdentityPin` (Node has no
- * directory-handle-relative open), so the leaf-level pin alone cannot
- * detect a directory swap that is consistently present for its own lstat
- * *and* its own open. What remains open, and cannot be closed without a
- * directory-handle-relative open unavailable in Node's public `fs` API,
- * is an attacker who swaps in strictly *after* the "before" check and
- * reverts strictly *before* the "after" check — bounded to the width of
- * the single leaf read operation itself, the narrowest window achievable
- * here.
- */
-/**
- * Test-only hook invoked in `readBackupMetaFileSafely`, immediately after
- * `verifyBackupMetaDirIdentityPinned` has already confirmed `metaDir`'s
- * identity, but strictly before `readFileWithIdentityPin(metaPath)` begins
- * its own (separate) `lstat` of the leaf path. Lets a regression test
- * probe the one gap that genuinely cannot be closed with Node's public
- * `fs` API: there is no directory-handle-relative open (`openat`), so the
- * leaf read necessarily re-resolves `metaPath` as a fresh path string
- * rather than through the descriptor `verifyBackupMetaDirIdentityPinned`
- * already validated. No-op in production; never set outside tests.
- */
-let backupMetaDirPreLeafReadHookForTests:
-  ((metaDir: string) => Promise<void> | void) | null = null;
-
-export function __setBackupMetaDirPreLeafReadHookForTests(
-  hook: ((metaDir: string) => Promise<void> | void) | null,
-): void {
-  backupMetaDirPreLeafReadHookForTests = hook;
-}
-
 async function readBackupMetaFileSafely(
-  metaDir: string,
   metaPath: string,
 ): Promise<string | null> {
-  if (backupMetaDirReadRaceHookForTests) {
-    await backupMetaDirReadRaceHookForTests(metaDir);
-  }
-
-  const expectedDirIdentity = await captureBackupMetaDirIdentity(metaDir);
-  if (!expectedDirIdentity) {
-    return null;
-  }
-
-  // Re-verify metaDir's identity via an opened descriptor, immediately
-  // adjacent to the leaf read, rather than trusting the lstat above and a
-  // later independent lstat to agree with each other (see
-  // `verifyBackupMetaDirIdentityPinned`'s doc comment).
-  const dirIdentityPinned = await verifyBackupMetaDirIdentityPinned(
-    metaDir,
-    expectedDirIdentity,
-  );
-  if (!dirIdentityPinned) {
-    return null;
-  }
-
-  if (backupMetaDirPreLeafReadHookForTests) {
-    await backupMetaDirPreLeafReadHookForTests(metaDir);
-  }
-
-  // Leaf-file identity is pinned via `readFileWithIdentityPin` (see its
-  // doc comment): this closes the swap-in/swap-back bypass a reviewer
-  // found in the previous lstat-before/read/lstat-after bracket. However,
-  // because `metaPath` re-resolves through `metaDir` as a fresh path
-  // string (Node has no directory-handle-relative open), that leaf-level
-  // pin alone cannot detect a directory swap held in place for the
-  // *entire* read: both its lstat and its open would consistently — and
-  // wrongly — agree with each other via the same swapped directory.
   const bytes = await readFileWithIdentityPin(metaPath);
   if (bytes === null) {
     return null; // No record at this path, or the read was not safe to trust.
   }
-
-  // Re-verify metaDir's identity again, fd-pinned, immediately after the
-  // leaf read completes. This catches exactly the case the "before" check
-  // and the leaf-level pin cannot: a swap held in place across the whole
-  // read. Combined with the "before" check, the only gap left is an
-  // attacker who both swaps in *after* the "before" check and reverts
-  // *before* this "after" check — bounded to the width of the single leaf
-  // read itself, which is the narrowest window achievable without a
-  // directory-handle-relative open.
-  const dirIdentityStillPinned = await verifyBackupMetaDirIdentityPinned(
-    metaDir,
-    expectedDirIdentity,
-  );
-  if (!dirIdentityStillPinned) {
-    return null;
-  }
-
   return bytes.toString('utf8');
 }
 
 /**
  * Resolve the backup that a specific install operation produced, purely
  * from the durable on-disk metadata record for `operationId`. Returns null
- * if there is no record, the record is malformed, the metadata directory
- * chain is unsafe (e.g. a symlink/junction), or the backup file it points
- * to no longer exists.
+ * if there is no record, the record is malformed, the install root is
+ * unsafe (e.g. a symlink/junction), or the backup file it points to no
+ * longer exists.
  */
 export async function findBackupByOperationId(
   installRoot: string,
@@ -1128,14 +894,17 @@ export async function findBackupByOperationId(
   if (!OPERATION_ID_PATTERN.test(operationId)) {
     return null;
   }
-  let metaDir: string;
+  let metaPath: string;
+  let canonicalInstallRoot: string;
   try {
-    metaDir = await ensureBackupMetaDirSafe(installRoot);
+    ({ metaPath, canonicalInstallRoot } = await resolveBackupMetaPath(
+      installRoot,
+      operationId,
+    ));
   } catch {
-    return null; // Install root or metadata dir chain is unsafe or missing.
+    return null; // Install root is unsafe or missing.
   }
-  const metaPath = path.join(metaDir, `${operationId}.json`);
-  const raw = await readBackupMetaFileSafely(metaDir, metaPath);
+  const raw = await readBackupMetaFileSafely(metaPath);
   if (raw === null) {
     return null; // No record, or the read was not safe to trust.
   }
@@ -1163,11 +932,6 @@ export async function findBackupByOperationId(
   ) {
     return null;
   }
-  // metaDir is canonical (installRoot resolved through walkDirSafe) and
-  // BACKUP_META_DIR has no path separators, so its parent is the canonical
-  // install root — use that rather than the raw, possibly-unresolved
-  // installRoot argument to join the backup filename.
-  const canonicalInstallRoot = path.dirname(metaDir);
   const backupPath = path.join(canonicalInstallRoot, record.backupFileName);
   try {
     const info = await lstat(backupPath);

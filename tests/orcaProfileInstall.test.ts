@@ -332,9 +332,6 @@ import {
   restoreOrcaProfileWindows,
   findBackupByOperationId,
   __setBackupMetaWriteRaceHookForTests,
-  __setBackupMetaDirWriteRaceHookForTests,
-  __setBackupMetaDirReadRaceHookForTests,
-  __setBackupMetaDirPreLeafReadHookForTests,
   __setIdentityPinPreOpenHookForTests,
   __setIdentityPinPostOpenHookForTests,
 } from '../src/main/orcaProfileInstall.js';
@@ -752,62 +749,52 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'refuses to write/read backup metadata through a junctioned .pfd-backup-meta directory',
+    'refuses to write/read backup metadata when the install root itself is a junctioned directory',
     async () => {
-      // Reviewer finding (Vasquez, reproduced concretely on Windows): the
-      // durable backup-metadata sidecar directory reused only the
-      // destination-file symlink check, not the same per-segment
-      // reparse-point walk that guards the install root itself. If
-      // `.pfd-backup-meta` (or a segment leading to it) is a symlink or
-      // junction, writeBackupMeta/findBackupByOperationId could write to or
-      // read from outside the canonical OrcaSlicer directory — the same
-      // escape class #158 already covers for the profile install path.
-      const safeFilename = 'junction_meta_profile.json';
+      // The durable backup-metadata record is now a plain leaf file
+      // directly inside installRoot (no separate `.pfd-backup-meta`
+      // subdirectory — see `BACKUP_META_FILE_PREFIX`'s doc comment), so it
+      // shares exactly the install-root validation
+      // (`ensureInstallRootSafe`) every real profile write/restore already
+      // goes through, rather than a directory-specific guard of its own.
+      // This proves that sharing: if the install root is itself a
+      // junction escaping APPDATA, both the profile write and the
+      // metadata record it would produce are refused identically.
+      const safeFilename = 'junction_root_meta_profile.json';
       const operationId = randomUUID();
-      const original = '{"name":"v1-junction-meta"}';
-      const updated = '{"name":"v2-junction-meta"}';
+      const original = '{"name":"v1-junction-root-meta"}';
 
       const installRoot = getWindowsOrcaInstallRoot();
-      const escapeDir = path.join(sandboxAppData, '..', 'meta-escape');
+      const escapeDir = path.join(sandboxAppData, '..', 'root-meta-escape');
       await mkdir(escapeDir, { recursive: true });
 
-      // Seed a backup to write metadata for.
-      await installOrcaProfileWindows(
-        original,
-        sha256(original),
-        safeFilename,
-        randomUUID(),
-      );
+      // Replace the install root itself with a junction pointing outside
+      // the sandboxed APPDATA tree, before any install has happened.
+      // `symlink()` requires the link's parent directory to exist, so
+      // ensure that (installRoot's own leaf directory must not exist yet).
+      await mkdir(path.dirname(installRoot), { recursive: true });
+      await rm(installRoot, { recursive: true, force: true });
+      await makeDirReparsePoint(escapeDir, installRoot);
 
-      // Replace .pfd-backup-meta (not yet created, since no operation has
-      // written metadata under this safeFilename/root combination yet) with
-      // a junction pointing outside the sandbox, before the install that
-      // would create a metadata record for it.
-      const metaDir = path.join(installRoot, '.pfd-backup-meta');
-      await rm(metaDir, { recursive: true, force: true });
-      await makeDirReparsePoint(escapeDir, metaDir);
-
-      // The install that would write a backup-metadata record must refuse,
-      // rather than writing through the junction into escapeDir.
       await expect(
         installOrcaProfileWindows(
-          updated,
-          sha256(updated),
+          original,
+          sha256(original),
           safeFilename,
           operationId,
         ),
       ).rejects.toMatchObject({ code: 'pathRestricted' });
       expect(
         await readdir(escapeDir),
-        'metadata was written through a junctioned .pfd-backup-meta directory',
+        'profile or metadata was written through a junctioned install root',
       ).toEqual([]);
 
-      // A lookup against the same junctioned directory must also refuse,
-      // rather than reading whatever happens to be under escapeDir.
+      // A lookup against the same junctioned root must also refuse, not
+      // read whatever happens to be under escapeDir.
       const located = await findBackupByOperationId(installRoot, operationId);
       expect(located).toBeNull();
 
-      await rm(metaDir, { recursive: true, force: true });
+      await rm(installRoot, { recursive: true, force: true });
       await rm(escapeDir, { recursive: true, force: true });
     },
   );
@@ -815,9 +802,8 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   it.runIf(process.platform === 'win32')(
     'metadata write survives a symlink planted at metaPath during the exact write race window (TOCTOU on write)',
     async () => {
-      // Reviewer finding (Vasquez, round 3): the directory chain leading to
-      // .pfd-backup-meta is validated, but the *file write itself* used to
-      // be a plain lstat-then-writeFile(metaPath) sequence — if an attacker
+      // Reviewer finding (Vasquez, round 3): the *file write itself* used
+      // to be a plain lstat-then-writeFile(metaPath) sequence — if an attacker
       // replaced metaPath with a symlink in the gap between the check and
       // the write, the write would follow it. writeBackupMeta now writes an
       // unpredictably-named file with exclusive create (`wx`, so a
@@ -842,7 +828,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       await writeFile(escapeTarget, 'untouched', 'utf8');
 
       // Seed the destination file, then overwrite it once so a backup (and
-      // therefore .pfd-backup-meta) actually gets created — the first
+      // therefore a metadata record) actually gets created — the first
       // install into an empty destination has nothing to back up.
       const seed = '{"name":"v0-toctou-write-seed"}';
       await installOrcaProfileWindows(
@@ -882,8 +868,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         return;
       }
 
-      const metaDir = path.join(installRoot, '.pfd-backup-meta');
-      const metaPath = path.join(metaDir, `${operationId}.json`);
+      const metaPath = path.join(installRoot, `.pfd-op-${operationId}.json`);
       // The symlink planted mid-race must have been replaced by a real
       // file, not written through.
       const metaPathInfo = await lstat(metaPath);
@@ -970,22 +955,22 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         'utf8',
       );
 
-      const metaDir = path.join(installRoot, '.pfd-backup-meta');
-      const metaPath = path.join(metaDir, `${operationId}.json`);
-      const metaFileName = `${operationId}.json`;
+      const metaPath = path.join(installRoot, `.pfd-op-${operationId}.json`);
+      const metaFileName = `.pfd-op-${operationId}.json`;
       const originalRecord = await readFile(metaPath, 'utf8');
 
       // Match on basename, not the exact path string: `findBackupByOperationId`
-      // resolves the metadata directory through `realpath()` before joining
-      // the filename (closing an earlier, separate TOCTOU on the directory
-      // itself — see `ensureBackupMetaDirSafe`), so the `filePath` this hook
-      // receives from production code can legitimately be a canonicalized
-      // form (e.g. a resolved 8.3 short name or drive-letter normalization on
-      // some Windows filesystems/runners) that differs as a *string* from
-      // this test's own non-canonicalized `metaPath`, even though both name
-      // the same file. `operationId` is a fresh UUID per test, so its
-      // filename is unique enough to identify the right call without
-      // depending on exact path-string equality.
+      // resolves the install root through `realpath()` before joining the
+      // metadata filename (closing an earlier, separate TOCTOU on the
+      // install root itself — see `ensureInstallRootSafe`), so the
+      // `filePath` this hook receives from production code can
+      // legitimately be a canonicalized form (e.g. a resolved 8.3 short
+      // name or drive-letter normalization on some Windows
+      // filesystems/runners) that differs as a *string* from this test's
+      // own non-canonicalized `metaPath`, even though both name the same
+      // file. `operationId` is a fresh UUID per test, so its filename is
+      // unique enough to identify the right call without depending on
+      // exact path-string equality.
       let raceSimulated = true;
       __setIdentityPinPreOpenHookForTests(async (filePath) => {
         if (path.basename(filePath) !== metaFileName) return;
@@ -1108,278 +1093,33 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'refuses to write metadata when .pfd-backup-meta itself is swapped for a junction during the write race window (TOCTOU on write, directory level)',
+    'rejects a safeFilename that collides with the reserved backup-metadata prefix',
     async () => {
-      // Reviewer finding (Vasquez, round 2): the leaf-file TOCTOU fix above
-      // only ever inspects metaPath (the file). ensureBackupMetaDirSafe
-      // validates the .pfd-backup-meta directory chain once, up front, but
-      // nothing re-checked that the directory itself was still real at the
-      // moment of the write. If an attacker swaps .pfd-backup-meta for a
-      // junction after validation but before the temp-file write, the temp
-      // file lands as an ordinary file inside the attacker's target
-      // directory — none of the leaf-level isSymbolicLink() checks trip,
-      // because the leaf file really is a plain file, just in the wrong
-      // place. writeBackupMeta now re-verifies metaDir itself immediately
-      // before both the temp-file create and the rename via a test-only
-      // hook fired at exactly that point, so this test can simulate the
-      // directory-level swap deterministically rather than relying on real
-      // timing.
-      const safeFilename = 'toctou_write_dir_profile.json';
-      const operationId = randomUUID();
-      const original = '{"name":"v1-toctou-write-dir"}';
-      const updated = '{"name":"v2-toctou-write-dir"}';
-
-      const installRoot = getWindowsOrcaInstallRoot();
-      const escapeDir = path.join(
-        sandboxAppData,
-        '..',
-        `write-dir-race-escape-${operationId}`,
-      );
-      await mkdir(escapeDir, { recursive: true });
-
-      // Seed the destination, then overwrite it once so a backup (and
-      // .pfd-backup-meta) actually gets created.
-      const seed = '{"name":"v0-toctou-write-dir-seed"}';
-      await installOrcaProfileWindows(
-        seed,
-        sha256(seed),
-        safeFilename,
-        randomUUID(),
-      );
-      await installOrcaProfileWindows(
-        original,
-        sha256(original),
-        safeFilename,
-        randomUUID(),
-      );
-
-      const metaDir = path.join(installRoot, '.pfd-backup-meta');
-
-      let raceSimulated = true;
-      __setBackupMetaDirWriteRaceHookForTests(async (dir) => {
-        await rm(dir, { recursive: true, force: true });
-        await makeDirReparsePoint(escapeDir, dir);
-        raceSimulated = true;
-      });
-
-      try {
-        await expect(
-          installOrcaProfileWindows(
-            updated,
-            sha256(updated),
-            safeFilename,
-            operationId,
-          ),
-        ).rejects.toMatchObject({ code: 'pathRestricted' });
-      } finally {
-        __setBackupMetaDirWriteRaceHookForTests(null);
-      }
-
-      if (!raceSimulated) {
-        return;
-      }
-
-      // Nothing should have been written into the attacker's directory —
-      // the directory-level recheck must refuse before the temp-file
-      // write, not merely fail after writing through the junction.
-      expect(
-        await readdir(escapeDir),
-        'metadata was written through a .pfd-backup-meta directory swapped mid-race',
-      ).toEqual([]);
-
-      // Clean up the junction so later tests see a normal directory again.
-      await rm(metaDir, { recursive: true, force: true });
-      await rm(escapeDir, { recursive: true, force: true });
+      // The durable metadata record now lives as a plain leaf file
+      // directly in installRoot, named `.pfd-op-<operationId>.json` (see
+      // `BACKUP_META_FILE_PREFIX`). computeInstallPath must reject any
+      // profile safeFilename that could collide with this — or any other
+      // `.pfd-`-prefixed bookkeeping filename this module writes — outright,
+      // rather than relying solely on the (already-guaranteed) fact that
+      // generateProfileIdentity never produces such a name.
+      const original = '{"name":"v1-reserved-prefix"}';
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.pfd-op-not-a-real-uuid.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.pfd-tmp-anything.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
     },
-    15_000, // extra installs + directory-swap instrumentation add I/O overhead
-  );
-
-  it.runIf(process.platform === 'win32')(
-    'refuses to trust a metadata read when .pfd-backup-meta itself is swapped for a junction during the read race window (TOCTOU on read, directory level)',
-    async () => {
-      // Reviewer finding (Vasquez, round 2): the leaf-file read-side fix
-      // above only ever inspects metaPath (the file). A directory-level
-      // swap of .pfd-backup-meta between validation and the read is
-      // invisible to those leaf checks, because the file the read then
-      // touches is a perfectly ordinary file sitting in the attacker's
-      // target directory (the attacker just needs to place a same-named
-      // file there). readBackupMetaFileSafely now re-verifies metaDir
-      // itself immediately before the leaf-level checks via a test-only
-      // hook, so this test simulates the directory swap deterministically.
-      const safeFilename = 'toctou_read_dir_profile.json';
-      const operationId = randomUUID();
-      const original = '{"name":"v1-toctou-read-dir"}';
-
-      const installRoot = getWindowsOrcaInstallRoot();
-      const escapeDir = path.join(
-        sandboxAppData,
-        '..',
-        `read-dir-race-escape-${operationId}`,
-      );
-      await mkdir(escapeDir, { recursive: true });
-
-      // Seed, then overwrite under operationId so a real metadata record
-      // legitimately exists before the race hook fires.
-      const seed = '{"name":"v0-toctou-read-dir-seed"}';
-      await installOrcaProfileWindows(
-        seed,
-        sha256(seed),
-        safeFilename,
-        randomUUID(),
-      );
-      const installResult = await installOrcaProfileWindows(
-        original,
-        sha256(original),
-        safeFilename,
-        operationId,
-      );
-      const realBackupFileName = path.basename(installResult.backupPath);
-
-      const metaDir = path.join(installRoot, '.pfd-backup-meta');
-
-      // Plant an attacker-controlled record, under the same leaf filename
-      // the real record uses, inside the escape directory — pointing at a
-      // backupFileName that genuinely exists under installRoot, so the
-      // separate "backup file itself doesn't exist" check can't be the
-      // reason a bad read gets rejected. This isolates the test to the
-      // directory-level recheck specifically.
-      await writeFile(
-        path.join(escapeDir, `${operationId}.json`),
-        JSON.stringify({
-          safeFilename: 'attacker.json',
-          backupFileName: realBackupFileName,
-          backupHash: 'f'.repeat(64),
-          createdAt: Date.now(),
-        }),
-        'utf8',
-      );
-
-      __setBackupMetaDirReadRaceHookForTests(async (dir) => {
-        await rm(dir, { recursive: true, force: true });
-        await makeDirReparsePoint(escapeDir, dir);
-      });
-
-      try {
-        const located = await findBackupByOperationId(installRoot, operationId);
-        expect(
-          located,
-          'metadata read trusted content reached through a directory-level junction swap',
-        ).toBeNull();
-      } finally {
-        __setBackupMetaDirReadRaceHookForTests(null);
-        await rm(metaDir, { recursive: true, force: true });
-        await rm(escapeDir, { recursive: true, force: true });
-      }
-    },
-    15_000, // extra installs + directory-swap instrumentation add I/O overhead
-  );
-
-  it.runIf(process.platform === 'win32')(
-    'refuses to trust a metadata read when .pfd-backup-meta is swapped for a junction and held swapped for the entire leaf read (TOCTOU on read, directory level, held-swap variant)',
-    async () => {
-      // Reviewer finding (Ripley/Vasquez, relayed after head bd525537):
-      // round 2's directory-level guard (assertBackupMetaDirNotSwapped
-      // called before *and* after the leaf read) was the exact same
-      // defeatable-bracket shape round 3 found and fixed for the leaf
-      // file — a swap-in-then-swap-back around the read would pass both
-      // the "before" and "after" path-based lstat checks even though the
-      // read itself ran while .pfd-backup-meta was swapped, because
-      // neither check is bound to what actually happened *during* the
-      // read.
-      //
-      // Fixed by capturing metaDir's identity once
-      // (captureBackupMetaDirIdentity) and confirming it via an *opened
-      // descriptor* (verifyBackupMetaDirIdentityPinned) both immediately
-      // before and immediately after the leaf read, rather than only
-      // once. This test exercises the case that a single before-only pin
-      // check cannot catch: the attacker swaps .pfd-backup-meta for a
-      // junction immediately after the "before" pin has already passed,
-      // and — critically — holds the swap in place through the entire
-      // leaf read instead of reverting it. A single "before" pin sees the
-      // legitimate directory and passes; only the "after" pin, run once
-      // the read has actually happened, observes the still-swapped
-      // directory and rejects. (An earlier version of this test
-      // mistakenly believed this to be an irreducible gap; it was
-      // resolved by re-adding a fd-pinned "after" check.)
-      const safeFilename = 'toctou_read_dir_residual_profile.json';
-      const operationId = randomUUID();
-      const original = '{"name":"v1-toctou-read-dir-residual"}';
-
-      const installRoot = getWindowsOrcaInstallRoot();
-      const escapeDir = path.join(
-        sandboxAppData,
-        '..',
-        `read-dir-residual-escape-${operationId}`,
-      );
-      await mkdir(escapeDir, { recursive: true });
-
-      const seed = '{"name":"v0-toctou-read-dir-residual-seed"}';
-      await installOrcaProfileWindows(
-        seed,
-        sha256(seed),
-        safeFilename,
-        randomUUID(),
-      );
-      const installResult = await installOrcaProfileWindows(
-        original,
-        sha256(original),
-        safeFilename,
-        operationId,
-      );
-      const realBackupFileName = path.basename(installResult.backupPath);
-
-      const metaDir = path.join(installRoot, '.pfd-backup-meta');
-
-      // Plant an attacker-controlled record under the same leaf filename
-      // the real record uses, inside the escape directory the junction
-      // will point at — pointing at a backupFileName that genuinely
-      // exists, so a passing read is unambiguously attributable to the
-      // directory-level identity check (not the separate, unrelated
-      // "does the referenced backup file exist" check).
-      await writeFile(
-        path.join(escapeDir, `${operationId}.json`),
-        JSON.stringify({
-          safeFilename: 'attacker.json',
-          backupFileName: realBackupFileName,
-          backupHash: 'f'.repeat(64),
-          createdAt: Date.now(),
-        }),
-        'utf8',
-      );
-
-      let raceSimulated = true;
-      __setBackupMetaDirPreLeafReadHookForTests(async (dir) => {
-        await rm(dir, { recursive: true, force: true });
-        try {
-          await makeDirReparsePoint(escapeDir, dir);
-        } catch {
-          raceSimulated = false;
-        }
-      });
-
-      try {
-        const located = await findBackupByOperationId(installRoot, operationId);
-        if (!raceSimulated) {
-          // This runner could not create the junction fixture; nothing
-          // further to assert.
-          return;
-        }
-        // The fd-pinned "after" check (added this round, adjacent to the
-        // "before" pin) observes the still-swapped directory once the
-        // leaf read completes and rejects the record, even though the
-        // leaf file itself (lstat + open, both transparently traversing
-        // the junction) is internally self-consistent throughout.
-        expect(
-          located,
-          'metadata read trusted content reached while .pfd-backup-meta was held swapped for the whole read',
-        ).toBeNull();
-      } finally {
-        __setBackupMetaDirPreLeafReadHookForTests(null);
-        await rm(metaDir, { recursive: true, force: true }).catch(() => {});
-        await rm(escapeDir, { recursive: true, force: true });
-      }
-    },
-    15_000, // extra installs + directory-swap instrumentation add I/O overhead
   );
 });
 
