@@ -117,39 +117,36 @@ describe('capability flags are truthful in split deployment (#493)', () => {
     }
   });
 
-  describe.each(FLAG_NAMES)(
-    'flag %s — unknown vs false (AC4)',
-    (flag) => {
-      const sourceField = CALIBRATION_FLAG_SOURCES[flag];
+  describe.each(FLAG_NAMES)('flag %s — unknown vs false (AC4)', (flag) => {
+    const sourceField = CALIBRATION_FLAG_SOURCES[flag];
 
-      // Measured: changing the `raw === undefined ? 'unknown' : ...` branch
-      // in calibrationWire.ts to unconditionally return `'false'` (collapsing
-      // absent into false, the pre-#493 behaviour) turns every "field is
-      // absent" row below RED while the "field is explicitly false" row
-      // stays green — proving these two rows are not redundant with each
-      // other and that `flagAdvertisement` actually distinguishes them.
-      it('reports false advertisement when the backing field is explicitly false', () => {
-        const body = printFarmerCapabilitiesResponse({
-          deploymentMode: 'split',
-          [sourceField]: false,
-        });
-        const caps = RemoteCalibrationCapabilities.parse(body);
-        expect(caps.flagAdvertisement[flag]).toBe('false');
-        // The fail-closed gate stays false either way; this pair is about
-        // `flagAdvertisement`, not about weakening `flags`.
-        expect(caps.flags[flag]).toBe(false);
+    // Measured: changing the `raw === undefined ? 'unknown' : ...` branch
+    // in calibrationWire.ts to unconditionally return `'false'` (collapsing
+    // absent into false, the pre-#493 behaviour) turns every "field is
+    // absent" row below RED while the "field is explicitly false" row
+    // stays green — proving these two rows are not redundant with each
+    // other and that `flagAdvertisement` actually distinguishes them.
+    it('reports false advertisement when the backing field is explicitly false', () => {
+      const body = printFarmerCapabilitiesResponse({
+        deploymentMode: 'split',
+        [sourceField]: false,
       });
+      const caps = RemoteCalibrationCapabilities.parse(body);
+      expect(caps.flagAdvertisement[flag]).toBe('false');
+      // The fail-closed gate stays false either way; this pair is about
+      // `flagAdvertisement`, not about weakening `flags`.
+      expect(caps.flags[flag]).toBe(false);
+    });
 
-      it('reports unknown advertisement when the backing field is absent, distinguishable from false', () => {
-        const body = printFarmerCapabilitiesResponse({
-          deploymentMode: 'split',
-        });
-        delete body[sourceField];
-        const caps = RemoteCalibrationCapabilities.parse(body);
-        expect(caps.flagAdvertisement[flag]).toBe('unknown');
-        expect(caps.flagAdvertisement[flag]).not.toBe('false');
-        expect(caps.flags[flag]).toBe(false);
+    it('reports unknown advertisement when the backing field is absent, distinguishable from false', () => {
+      const body = printFarmerCapabilitiesResponse({
+        deploymentMode: 'split',
       });
-    },
-  );
+      delete body[sourceField];
+      const caps = RemoteCalibrationCapabilities.parse(body);
+      expect(caps.flagAdvertisement[flag]).toBe('unknown');
+      expect(caps.flagAdvertisement[flag]).not.toBe('false');
+      expect(caps.flags[flag]).toBe(false);
+    });
+  });
 });
