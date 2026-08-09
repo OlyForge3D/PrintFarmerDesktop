@@ -78,6 +78,36 @@ describe('normalizeInstant — timezone-explicitness', () => {
     expect(normalizeInstant('2026-08-10T18:00')).toBeNull();
   });
 
+  it('rejects a lowercase-t timezone-less datetime, the same as its uppercase-T equivalent', () => {
+    expect(normalizeInstant('2026-08-10t23:30:00')).toBeNull();
+  });
+
+  it('rejects a timezone-less RFC-2822-style datetime', () => {
+    expect(normalizeInstant('Mon, 10 Aug 2026 18:00:00')).toBeNull();
+  });
+
+  it('rejects a timezone-less slash-separated datetime', () => {
+    expect(normalizeInstant('2026/08/10 18:00:00')).toBeNull();
+  });
+
+  it('accepts a lowercase-t datetime once it carries an explicit Z', () => {
+    expect(normalizeInstant('2026-08-10t23:30:00Z')).toBe(
+      Date.parse('2026-08-10t23:30:00Z'),
+    );
+  });
+
+  it('accepts an RFC-2822-style datetime once it carries an explicit GMT zone', () => {
+    expect(normalizeInstant('Mon, 10 Aug 2026 18:00:00 GMT')).toBe(
+      Date.parse('Mon, 10 Aug 2026 18:00:00 GMT'),
+    );
+  });
+
+  it('accepts a slash-separated datetime once it carries an explicit numeric offset', () => {
+    expect(normalizeInstant('2026/08/10 18:00:00 +0000')).toBe(
+      Date.parse('2026/08/10 18:00:00 +0000'),
+    );
+  });
+
   it('accepts the same instant written with an explicit Z', () => {
     expect(normalizeInstant('2026-08-10T18:00:00Z')).toBe(
       Date.parse('2026-08-10T18:00:00Z'),
@@ -118,6 +148,36 @@ describe('normalizeInstant — timezone-explicitness', () => {
     });
     expect(withZone.verdict).toBe(VERDICT_FRESH);
     expect(withoutZone.verdict).toBe(VERDICT_UNVERIFIABLE);
+  });
+
+  it('closes the lowercase-t variant of the same spoof', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    const withZone = classifyCensusFreshness({
+      measuredAt: '2026-08-10t18:00:00Z',
+      now,
+    });
+    const withoutZone = classifyCensusFreshness({
+      measuredAt: '2026-08-10t18:00:00',
+      now,
+    });
+    expect(withZone.verdict).toBe(VERDICT_FRESH);
+    expect(withoutZone.verdict).toBe(VERDICT_UNVERIFIABLE);
+  });
+
+  it('closes the RFC-2822-style and slash-separated variants of the same spoof', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    expect(
+      classifyCensusFreshness({
+        measuredAt: 'Mon, 10 Aug 2026 18:00:00',
+        now,
+      }).verdict,
+    ).toBe(VERDICT_UNVERIFIABLE);
+    expect(
+      classifyCensusFreshness({
+        measuredAt: '2026/08/10 18:00:00',
+        now,
+      }).verdict,
+    ).toBe(VERDICT_UNVERIFIABLE);
   });
 });
 

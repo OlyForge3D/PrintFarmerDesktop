@@ -100,42 +100,58 @@ export const SAMPLE_TIMESTAMP_FOR_CONTROLS = '2024-01-01T00:00:00Z';
 export const FABRICATED_ANCIENT_TIMESTAMP = '2000-01-01T00:00:00Z';
 
 /**
- * Matches an ISO-8601-shaped date-and-time string (a date, a `T` or space
- * separator, and a time-of-day) that has no trailing `Z` or numeric UTC
- * offset. `Date.parse` resolves such a string in the *host machine's local
- * timezone*, not UTC — so the very same instant, written with and without
- * an explicit offset, parses to two different epoch-ms values depending on
- * where this check happens to run. A citation or `--now` value in this
- * shape lets a caller spoof freshness simply by omitting the offset (e.g.
- * `2026-08-10T18:00:00` reads as fresher or staler than
- * `2026-08-10T18:00:00Z` depending on the runner's TZ), which defeats the
- * entire point of a check whose answer must not depend on who runs it or
- * where. A bare date with no time-of-day (`2026-08-10`) is exempt: the ISO
- * 8601 / ECMA-262 spec fixes that form to UTC midnight, so it carries no
- * such ambiguity.
+ * A bare calendar date with no time-of-day component (`2026-08-10`).
+ * ECMA-262 fixes this exact shape to UTC midnight, so it is unambiguous
+ * even without an explicit zone -- the one exemption to the rule below.
  */
-const TIMEZONELESS_DATETIME_PATTERN =
-  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Matches a string that explicitly names its timezone at the end: a
+ * trailing `Z`/`z`, a named zone abbreviation (`GMT`, `UTC`), or a numeric
+ * offset (`+05:00`, `-0500`, ...).
+ *
+ * `normalizeInstant` requires every date-and-time string to match this (or
+ * be a bare date, above) rather than trying to enumerate and reject every
+ * *ambiguous* shape one at a time. That blocklist approach caught
+ * uppercase-`T`/space-separated ISO forms but missed lowercase `t`
+ * (`2026-08-10t23:30:00`), timezone-less RFC 2822 (`Mon, 10 Aug 2026
+ * 18:00:00`), and slash-separated forms (`2026/08/10 18:00:00`) -- every
+ * one of which `Date.parse` resolves in the *host machine's local
+ * timezone*, not UTC, so the same instant written with and without an
+ * explicit zone parses to two different epoch-ms values depending on where
+ * this check happens to run, letting a caller spoof freshness by omitting
+ * it. A positive "does this demonstrably carry absolute-instant
+ * information" check closes every shape sharing that ambiguity at once,
+ * regardless of separator, case, or overall format, instead of requiring a
+ * new negative pattern each time another shape turns up.
+ */
+const EXPLICIT_TIMEZONE_SUFFIX_PATTERN = /(?:Z|z|GMT|UTC|[+-]\d{2}:?\d{2})$/;
 
 /**
  * Normalizes a value that names one instant in time — a finite epoch-ms
- * number or a parseable, timezone-explicit ISO string — to epoch-ms, or
- * null if it names no usable instant. Unlike `resolveNow`, this never
- * defaults an omitted value to the real clock: `measured_at` has no
- * meaningful "unset means now". A date-and-time string with no explicit
- * `Z`/offset is rejected (returns null) rather than silently resolved
- * against the local timezone of whatever machine happens to run this
- * check -- see `TIMEZONELESS_DATETIME_PATTERN`.
+ * number or a parseable, timezone-explicit string — to epoch-ms, or null
+ * if it names no usable instant. Unlike `resolveNow`, this never defaults
+ * an omitted value to the real clock: `measured_at` has no meaningful
+ * "unset means now". A string that is neither a bare ISO date nor
+ * explicitly zoned is rejected (returns null) rather than silently
+ * resolved against the local timezone of whatever machine happens to run
+ * this check -- see `EXPLICIT_TIMEZONE_SUFFIX_PATTERN` and
+ * `BARE_ISO_DATE_PATTERN`.
  */
 export function normalizeInstant(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;
   }
-  if (
-    typeof value === 'string' &&
-    TIMEZONELESS_DATETIME_PATTERN.test(value.trim())
-  ) {
-    return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (
+      trimmed !== '' &&
+      !BARE_ISO_DATE_PATTERN.test(trimmed) &&
+      !EXPLICIT_TIMEZONE_SUFFIX_PATTERN.test(trimmed)
+    ) {
+      return null;
+    }
   }
   return normalizeTimestamp(value);
 }
