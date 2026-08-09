@@ -388,6 +388,16 @@ agree) or the gate holds with agreement confirmed; exit `1` means the gate is re
 position mismatch was found — re-derive before acting on it; exit `2` means the inputs could not be
 resolved (never read as either answer).
 
+**This is Ralph's merge-gate instance of a more general rule.** #568 found the same
+premise-decay defect recurring simultaneously across routing, review, and publish — not
+just Ralph's merge gate — in one afternoon around PR #561. The generalized pre-action
+check (re-fetch at moment of use, check terminal state first, the `--is-ancestor` /
+squash inversion written out with both honest predicates, and the negative-control
+requirement) lives in `.squad/skills/agent-collaboration/SKILL.md`'s "Re-derive state at
+the moment of use — before routing, holding, reviewing, or publishing," which every squad
+role reads. This section stays the authoritative procedure for Ralph's own merge gate
+specifically; it is not restated a second time in the shared file.
+
 ---
 
 ## 10. Report Format
