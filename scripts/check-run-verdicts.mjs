@@ -234,9 +234,19 @@ function parseCheckRun(checkRun, index) {
  * not tied to `completed_at`'s tie -- a later rerun was, definitionally,
  * *started* no earlier than the run it superseded, even when both happen
  * to finish in the same second. So a `completed_at` tie falls through to
- * comparing `started_at` before ever falling back to id; id is used only
- * when both timestamps are identical too, at which point the two runs are
- * genuinely indistinguishable by any signal this API exposes.
+ * comparing `started_at` before ever falling back to id.
+ *
+ * If `started_at` *also* ties -- both timestamps identical between two
+ * completed runs, or both still-open runs never having started at all --
+ * there is no timestamp left this API guarantees is monotonic, and id is
+ * not a safe way to break that tie either (the entire reason id ordering
+ * was abandoned as this file's primary signal in the first place). Rather
+ * than trust id as a last resort, this throws: an unresolvable tie means
+ * "which run is truly latest" cannot be determined from the data available,
+ * and guessing risks silently picking the stale run -- exactly the failure
+ * mode this file exists to close. Callers (`buildVerdicts`/`main`) already
+ * treat a thrown error as undetermined, so this fails closed rather than
+ * reporting a possibly-wrong verdict as authoritative.
  *
  * @param {ReturnType<typeof parseCheckRun>} candidate
  * @param {ReturnType<typeof parseCheckRun>} current
@@ -255,7 +265,7 @@ function isNewerCheckRun(candidate, current) {
     // Both completed: compare the timestamp every completed run is
     // required to carry. A tie on `completed_at` (only second-resolution)
     // falls through to `started_at` -- still a monotonic, timestamp-based
-    // signal, not id -- before id is used as the absolute last resort.
+    // signal, not id.
     if (candidate.completedAt !== current.completedAt) {
       return (
         Date.parse(/** @type {string} */ (candidate.completedAt)) >
@@ -271,21 +281,29 @@ function isNewerCheckRun(candidate, current) {
         Date.parse(/** @type {string} */ (current.startedAt))
       );
     }
-    return candidate.id > current.id;
+    throw new Error(
+      `cannot determine the latest attempt for check "${candidate.name}" -- runs ${candidate.id} and ${current.id} have identical started_at and completed_at, and no other signal this API provides is a safe way to order them`,
+    );
   }
   // Both still open: prefer whichever has actually started over one still
   // queued with no started_at, since that is strictly more information
   // about progress; between two with comparable started_at, compare it
-  // directly, and fall back to id only when neither has started at all.
+  // directly. If neither has started at all, there is no timestamp signal
+  // to compare -- fail closed the same way as the completed/completed tie
+  // above rather than trusting id.
   if (candidate.startedAt === null && current.startedAt === null) {
-    return candidate.id > current.id;
+    throw new Error(
+      `cannot determine the latest attempt for check "${candidate.name}" -- runs ${candidate.id} and ${current.id} have neither started yet, and no other signal this API provides is a safe way to order them`,
+    );
   }
   if (candidate.startedAt === null) return false;
   if (current.startedAt === null) return true;
   if (candidate.startedAt !== current.startedAt) {
     return Date.parse(candidate.startedAt) > Date.parse(current.startedAt);
   }
-  return candidate.id > current.id;
+  throw new Error(
+    `cannot determine the latest attempt for check "${candidate.name}" -- runs ${candidate.id} and ${current.id} share the same started_at with neither completed, and no other signal this API provides is a safe way to order them`,
+  );
 }
 
 /**

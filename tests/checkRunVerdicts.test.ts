@@ -140,7 +140,13 @@ describe('latestCheckRunsByName', () => {
     expect(classifyConclusion(run!.conclusion)).not.toBe(VERDICT_FAILED);
   });
 
-  it('breaks a completed_at tie by the larger id when started_at is ALSO tied (genuinely indistinguishable)', () => {
+  it('REGRESSION: fails closed (throws) rather than trusting id when completed_at AND started_at both tie', () => {
+    // If both timestamps this API guarantees are identical between two
+    // completed runs, there is no signal left to determine which is truly
+    // latest -- id is not a safe way to break that tie (the entire reason
+    // id ordering was abandoned as this file's primary signal). Guessing
+    // via id risks silently picking the stale run, so this must fail
+    // closed instead of resolving to a (possibly wrong) verdict.
     const checkRuns = [
       checkRun({
         id: 10,
@@ -155,9 +161,9 @@ describe('latestCheckRunsByName', () => {
         conclusion: 'success',
       }),
     ];
-    const latest = latestCheckRunsByName(checkRuns);
-    expect(latest.get('some check')?.id).toBe(11);
-    expect(latest.get('some check')?.conclusion).toBe('success');
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
+    );
   });
 
   it('REGRESSION: breaks a completed_at tie by started_at, not id, when a later rerun has a LOWER id', () => {
@@ -372,6 +378,57 @@ describe('latestCheckRunsByName', () => {
     expect(latest.get('Desktop')?.startedAt).toBeNull();
     expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
       VERDICT_PENDING,
+    );
+  });
+
+  it('REGRESSION: fails closed (throws) when two still-open runs for the same name have neither started yet', () => {
+    // Two queued runs for the same check, neither started: there is no
+    // timestamp signal at all to order them by, and id is not a safe
+    // substitute (same reasoning as the completed/completed tie above).
+    const checkRuns = [
+      checkRun({
+        id: 5,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        started_at: null,
+        completed_at: null,
+      }),
+      checkRun({
+        id: 6,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        started_at: null,
+        completed_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
+    );
+  });
+
+  it('REGRESSION: fails closed (throws) when two still-open runs for the same name share an identical started_at', () => {
+    const checkRuns = [
+      checkRun({
+        id: 7,
+        name: 'Desktop',
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: null,
+      }),
+      checkRun({
+        id: 8,
+        name: 'Desktop',
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
     );
   });
 });
