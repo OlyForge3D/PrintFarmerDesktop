@@ -107,37 +107,90 @@ export const FABRICATED_ANCIENT_TIMESTAMP = '2000-01-01T00:00:00Z';
 const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Matches a string that explicitly names its timezone at the end: a
- * trailing `Z`; a named zone abbreviation (`GMT`, `UTC`), bare or itself
- * followed by a numeric offset (`GMT+1`, `UTC-05`, `GMT+01:30`, ...); or a
- * standalone numeric offset (`+05:00`, `-0500`, `+0`, `-5`, ...). The
- * offset digits may be one or two hour digits with an optional two-digit,
- * colon-or-not-separated minute part, because that is the full range
- * `Date.parse` itself accepts as an explicit, unambiguous offset --
- * rejecting a shape `Date.parse` treats as absolute (e.g. `GMT+0`, `UTC+00`,
- * bare `+00`) would be a false positive (a genuinely fresh,
- * correctly-timestamped citation wrongly classified UNVERIFIABLE), not a
- * security fix. The named-zone forms are also matched case-insensitively
- * (`gmt`, `Gmt`, `utc`, ...) for the same reason: `Date.parse` treats zone
- * names case-insensitively too.
- *
- * `normalizeInstant` requires every date-and-time string to match this (or
- * be a bare date, above) rather than trying to enumerate and reject every
- * *ambiguous* shape one at a time. That blocklist approach caught
- * uppercase-`T`/space-separated ISO forms but missed lowercase `t`
- * (`2026-08-10t23:30:00`), timezone-less RFC 2822 (`Mon, 10 Aug 2026
- * 18:00:00`), and slash-separated forms (`2026/08/10 18:00:00`) -- every
- * one of which `Date.parse` resolves in the *host machine's local
- * timezone*, not UTC, so the same instant written with and without an
- * explicit zone parses to two different epoch-ms values depending on where
- * this check happens to run, letting a caller spoof freshness by omitting
- * it. A positive "does this demonstrably carry absolute-instant
- * information" check closes every shape sharing that ambiguity at once,
- * regardless of separator, case, or overall format, instead of requiring a
- * new negative pattern each time another shape turns up.
+ * Matches a bare zone abbreviation at the end of a string with no numeric
+ * offset attached: a trailing `Z`, `GMT`, or `UTC` (any case). Used as the
+ * first, simplest check in `hasExplicitZoneSuffix` below.
  */
-const EXPLICIT_TIMEZONE_SUFFIX_PATTERN =
-  /(?:z|(?:gmt|utc)(?:[+-]\d{1,2}(?::?\d{2})?)?|[+-]\d{1,2}(?::?\d{2})?)$/i;
+const BARE_ZONE_ABBREVIATION_PATTERN = /(?:z|gmt|utc)$/i;
+
+/**
+ * Matches a numeric zone offset at the end of a string, optionally preceded
+ * by a named zone abbreviation (`GMT+1`, `UTC-05:00`, ...), capturing its
+ * digits so `hasExplicitZoneSuffix` can validate the resulting hour/minute
+ * are in-range rather than accepting any digit shape `Date.parse` happens
+ * to tolerate.
+ *
+ * Two capture shapes:
+ *   - colon form: sign + 1-2 hour digits + `:` + 1-2 minute digits
+ *     (`+1:30`, `-05:00`, `GMT+1:2`, ...)
+ *   - contiguous form: sign + 1-4 digits with no colon (`+0`, `+00`,
+ *     `+0000`, `+130`, ...), whose hour/minute split depends on digit
+ *     count -- see `hasExplicitZoneSuffix`.
+ */
+const ZONE_OFFSET_SUFFIX_PATTERN =
+  /(?:gmt|utc)?([+-])(?:(\d{1,2}):(\d{1,2})|(\d{1,4}))$/i;
+
+/**
+ * Returns whether `trimmed` demonstrably carries absolute-instant
+ * information via an explicit zone/offset suffix: a bare `Z`/`GMT`/`UTC`
+ * abbreviation, or a numeric offset within a real, in-range hour (0-23) and
+ * minute (0-59).
+ *
+ * `Date.parse` itself is lenient about the *shape* of a numeric offset --
+ * it will parse `GMT+25`, `UTC+99`, or `GMT+2400` as if they were valid
+ * offsets, arithmetically shifting the instant by 25 hours, 99 hours, or
+ * 24 hours respectively, rather than rejecting them. Treating "the regex
+ * matched *a* sign-and-digits shape" as sufficient (as an earlier version
+ * of this check did) would accept these syntactically-offset-shaped but
+ * semantically bogus values as FRESH -- a citation with a garbled offset
+ * could still spoof freshness even though it nominally "has a zone". This
+ * function closes that gap by validating the captured hour/minute are in
+ * range *after* the regex captures them, rather than trying to constrain
+ * the pattern to only match a fixed set of literal digit-count shapes
+ * (which previously caused legitimate forms like `GMT+0`/`+1:0`/`GMT+1:2`
+ * to be missed one at a time as new bug reports surfaced).
+ *
+ * The non-colon digit-count-dependent split (1-2 digits = hour only, 3
+ * digits = 1 hour digit + 2 minute digits, 4 digits = 2 hour digits + 2
+ * minute digits) mirrors the actual behavior of `Date.parse`, confirmed by
+ * direct experimentation (e.g. `Date.parse('...GMT+130')` resolves as a
+ * +01:30 offset, not +13:00).
+ */
+function hasExplicitZoneSuffix(trimmed) {
+  if (BARE_ZONE_ABBREVIATION_PATTERN.test(trimmed)) {
+    return true;
+  }
+  const match = ZONE_OFFSET_SUFFIX_PATTERN.exec(trimmed);
+  if (!match) {
+    return false;
+  }
+  let hour;
+  let minute;
+  if (match[2] !== undefined) {
+    hour = Number(match[2]);
+    minute = Number(match[3]);
+  } else {
+    const digits = match[4];
+    if (digits.length <= 2) {
+      hour = Number(digits);
+      minute = 0;
+    } else if (digits.length === 3) {
+      hour = Number(digits.slice(0, 1));
+      minute = Number(digits.slice(1));
+    } else {
+      hour = Number(digits.slice(0, 2));
+      minute = Number(digits.slice(2));
+    }
+  }
+  return (
+    Number.isInteger(hour) &&
+    hour >= 0 &&
+    hour <= 23 &&
+    Number.isInteger(minute) &&
+    minute >= 0 &&
+    minute <= 59
+  );
+}
 
 /**
  * Normalizes a value that names one instant in time — a finite epoch-ms
@@ -147,8 +200,7 @@ const EXPLICIT_TIMEZONE_SUFFIX_PATTERN =
  * "unset means now". A string that is neither a bare ISO date nor
  * explicitly zoned is rejected (returns null) rather than silently
  * resolved against the local timezone of whatever machine happens to run
- * this check -- see `EXPLICIT_TIMEZONE_SUFFIX_PATTERN` and
- * `BARE_ISO_DATE_PATTERN`.
+ * this check -- see `hasExplicitZoneSuffix` and `BARE_ISO_DATE_PATTERN`.
  */
 export function normalizeInstant(value) {
   if (typeof value === 'number') {
@@ -159,7 +211,7 @@ export function normalizeInstant(value) {
     if (
       trimmed !== '' &&
       !BARE_ISO_DATE_PATTERN.test(trimmed) &&
-      !EXPLICIT_TIMEZONE_SUFFIX_PATTERN.test(trimmed)
+      !hasExplicitZoneSuffix(trimmed)
     ) {
       return null;
     }

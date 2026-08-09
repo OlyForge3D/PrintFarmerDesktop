@@ -156,6 +156,52 @@ describe('normalizeInstant — timezone-explicitness', () => {
     );
   });
 
+  it('accepts a colon-separated offset with an unpadded single-digit minute, e.g. "+1:0"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 +1:0')).toBe(
+      Date.parse('2026-08-10 18:00:00 +1:0'),
+    );
+  });
+
+  it('accepts a named zone with a colon-separated unpadded-minute offset, e.g. "GMT+1:2"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+1:2')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+1:2'),
+    );
+  });
+
+  it('accepts the real-world boundary offsets +14:00 and +23:59', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00+14:00')).toBe(
+      Date.parse('2026-08-10T18:00:00+14:00'),
+    );
+    expect(normalizeInstant('2026-08-10T18:00:00+23:59')).toBe(
+      Date.parse('2026-08-10T18:00:00+23:59'),
+    );
+  });
+
+  it('rejects an out-of-range hour offset like "GMT+25", even though Date.parse tolerates it arithmetically', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+25')).toBeNull();
+  });
+
+  it('rejects an out-of-range hour offset like "UTC+99"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 UTC+99')).toBeNull();
+  });
+
+  it('rejects an out-of-range contiguous offset like "GMT+2400" (24 hours)', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+2400')).toBeNull();
+  });
+
+  it('rejects an out-of-range minute component like "GMT+2360" (60 minutes)', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+2360')).toBeNull();
+  });
+
+  it('demonstrates the bogus-offset spoof is closed: a garbled +25 offset does not classify FRESH', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    const withBogusOffset = classifyCensusFreshness({
+      measuredAt: '2026-08-10 18:00:00 GMT+25',
+      now,
+    });
+    expect(withBogusOffset.verdict).toBe(VERDICT_UNVERIFIABLE);
+  });
+
   it('accepts the same instant written with an explicit Z', () => {
     expect(normalizeInstant('2026-08-10T18:00:00Z')).toBe(
       Date.parse('2026-08-10T18:00:00Z'),
