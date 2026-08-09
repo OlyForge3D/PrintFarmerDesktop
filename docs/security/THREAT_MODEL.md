@@ -837,13 +837,14 @@ which is precisely the class of invariant that decays silently as new call sites
 ### T4.1 — Malicious or licence-incompatible dependency
 
 **Controls. Enforced.** `scripts/generate-sbom.mjs` produces a CycloneDX SBOM covering both
-dependency trees, staged into `resources/compliance/` and verified in both the Package and
-release jobs by `scripts/verify-sbom.mjs`. That establishes _what_ is being reproduced. Three
-policies now consume it so that _acceptability_ is checked too:
+dependency trees, staged into `resources/compliance/` and verified in both the `package` job
+(`ci.yml:241`, displayed as `Release package`) and release jobs by `scripts/verify-sbom.mjs`. That
+establishes _what_ is being reproduced. Three policies now consume it so that _acceptability_ is
+checked too:
 
 - **Licence policy — deterministic, blocking.** `scripts/verify-licenses.mjs` evaluates every
   shipped component's SPDX licence (handling `OR`/`AND`/`WITH`, parentheses and cargo's legacy
-  `/`) against `scripts/supply-chain-policy.json`, and fails the Package job on any licence not
+  `/`) against `scripts/supply-chain-policy.json`, and fails the `package` job on any licence not
   compatible with the AGPL-3.0-only outbound licence or covered by a reviewed component
   exception. The policy document itself is validated before use; a missing/renamed outbound key,
   reasonless exception, or stale exception identity fails **closed**. A GPL-2.0-only dependency is
@@ -885,9 +886,10 @@ Two specifics raise the stakes:
 
 → Enumeration: PR B1. Policy, notices and gates: PR B2 (this slice).
 
-**Residual.** The advisory audit reads databases fetched at run time, so it is wired non-blocking
-(T4.2); a high-severity advisory on a shipped crate surfaces as a warning and is escalated by a
-human, not by an automatic merge block. The licence allowlist is a property of policy, not of the
+**Residual.** The advisory audit reads databases fetched at run time, so it is required but run in
+report mode rather than blocking (T4.2); a high-severity advisory on a shipped crate surfaces as a
+warning and is escalated by a human, not by an automatic merge block. The licence allowlist is a
+property of policy, not of the
 current tree — a new permissive licence (e.g. `BSD-3-Clause`) is admitted without a change, and
 an ambiguous one is handled by a reviewed exception with a written reason rather than by widening
 the allowlist.
@@ -922,7 +924,7 @@ first-party alias, or a `node:` builtin — with a guard that a zero-offender re
 non-empty scan. Both `scripts/verify-sbom.mjs` and the advisory job compare exact SBOM identities
 against independent evidence before trusting the document: npm's own installed production tree
 plus packages imported by shipped source (which independently recovers Electron), and a raw walk
-of feature-resolved `cargo metadata`. The Package job also requires the feature-bound Cargo
+of feature-resolved `cargo metadata`. The `package` job also requires the feature-bound Cargo
 closure to be a strict superset of a featureless resolve, so a closure that ignores features
 cannot pass. Missing Electron or one crate, including `quick-xml`, fails before an incomplete
 artifact can be published or an empty advisory result can be reported as success.
@@ -940,14 +942,16 @@ mitigation is to separate deterministic checks (licences, bans, sources) from li
 checks (advisories), and to let only the deterministic ones block a pull request.
 
 **Implemented.** The licence gate (`verify-licenses.mjs`, T4.1) is deterministic and blocks in
-the Package job. The advisory gate (`audit-advisories.mjs`) runs in a dedicated non-required
-`advisories` job in **report mode**: findings at or above the threshold surface as `::warning::`
-annotations and the job stays green, so a newly published advisory never retroactively fails an
-unrelated pull request. The gate is nonetheless a real gate — `--mode block` exits non-zero on
-any blocking advisory, and the threshold/waiver logic is unit-tested from both sides in
-`tests/supplyChainPolicy.test.ts`; only the CI wiring is non-blocking. Crucially, an inability to
-run the audit — tool missing, unparseable output, registry unreachable — exits non-zero in
-**both** modes, so "could not check" reads as a red job rather than a silent pass. Converting a
+the `package` job. The advisory gate (`audit-advisories.mjs`) runs as the `Dependency advisories`
+job (`ci.yml:347-348`), which **is** a required status-check context on `development` — it is not
+absent from the required list. What makes it non-blocking is that it runs in **report mode**:
+findings at or above the threshold surface as `::warning::` annotations and the job stays green,
+so a newly published advisory never retroactively fails an unrelated pull request. The gate is
+nonetheless a real gate — `--mode block` exits non-zero on any blocking advisory, and the
+threshold/waiver logic is unit-tested from both sides in `tests/supplyChainPolicy.test.ts`; only
+the CI wiring is non-blocking. Crucially, an inability to run the audit — tool missing,
+unparseable output, registry unreachable — exits non-zero in **both** modes, so "could not check"
+reads as a red job rather than a silent pass. Converting a
 loud failure into a quiet one is the failure mode this control exists to avoid. Waivers are
 per-advisory-id with a written reason; there is no blanket ignore. A mismatch between the
 feature-resolved Cargo graph and the SBOM is also fatal in both modes, independent of whether
