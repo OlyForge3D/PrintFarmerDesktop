@@ -81,6 +81,24 @@ const args = ['issue', 'list', '--repo', 'owner/repo', '-l', 'hold:sequenced'];
 execFileSync('gh', args, { encoding: 'utf8' });
 `;
 
+// Vasquez (round 3): a binding declared safely and then REASSIGNED to a
+// banned form before the call must resolve to the reassignment that
+// actually reaches execFileSync, not the original safe declaration -- the
+// bypass was "most recent in the whole file" (which finds the first/only
+// match under a non-global regex) instead of "most recent before the call".
+const GH_PR_LIST_ARGV_REASSIGNED_SNIPPET = `
+let ghArgs = ['pr', 'list', '--repo', 'owner/repo'];
+ghArgs = ['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced'];
+execFileSync('gh', ghArgs);
+`;
+
+// Negative control: a safe declaration alone (no unsafe reassignment before
+// the call) must NOT be flagged -- only the reassignment shape is a hazard.
+const GH_PR_LIST_ARGV_SAFE_ONLY_SNIPPET = `
+let ghArgs = ['pr', 'list', '--repo', 'owner/repo', '--state', 'all'];
+execFileSync('gh', ghArgs);
+`;
+
 // The safe instrument: a per-object read. Must never be flagged, or every
 // script that reads labels correctly (check-sequencing-hold.mjs,
 // lift-hold-on-close.mjs's fetchPullRequest) would fail this check.
@@ -432,6 +450,26 @@ describe('flattenGhArgvInvocations', () => {
     // the same interpolated-value limit LABEL_INDEX_PATTERNS already has.
     const variableArgvSnippet = "execFileSync('gh', ghArgs);";
     expect(flattenGhArgvInvocations(variableArgvSnippet)).toBe('');
+  });
+
+  // Vasquez (round 3): reassignment bypass -- a binding declared safely and
+  // then reassigned to a banned form before the call must resolve to the
+  // reassignment, not the original declaration.
+  it('resolves a reassigned argv variable to its most recent assignment before the call', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_PR_LIST_ARGV_REASSIGNED_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('does not flag a safe-only argv variable with no unsafe reassignment', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_PR_LIST_ARGV_SAFE_ONLY_SNIPPET,
+    );
+    expect(flattened).not.toContain('--label');
+    expect(flattened).not.toContain('hold:sequenced');
   });
 });
 

@@ -171,9 +171,21 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
  *      argument-injection-shaped evasion of the intended check, not a
  *      different feature. Resolved by finding the identifier passed as the
  *      second argument to a `'gh'` call, then locating that identifier's
- *      most recent array-literal assignment (`NAME = [...]`, with or
- *      without a `const`/`let`/`var` declarator) anywhere in the file and
- *      flattening THAT array's tokens instead.
+ *      MOST RECENT array-literal assignment (`NAME = [...]`, with or
+ *      without a `const`/`let`/`var` declarator) that appears BEFORE the
+ *      call site in the file, and flattening THAT array's tokens instead.
+ *      Vasquez (round 3): "most recent in the whole file" is not the same
+ *      as "most recent before the call" -- a binding declared safely and
+ *      then REASSIGNED to a banned form before the call (`let ghArgs =
+ *      ['pr', 'list']; ghArgs = ['pr', 'list', '--label', name];
+ *      execFileSync('gh', ghArgs);`) resolved to the first (safe)
+ *      assignment under the original single-match `exec()`, silently
+ *      ignoring the reassignment that actually reaches the call. Fixed by
+ *      scanning ALL `NAME = [...]` assignments in the file and keeping the
+ *      last one whose position precedes the call site -- source order is
+ *      the only ordering a text scan can use as a stand-in for control
+ *      flow, but it is enough to catch the reassignment shape a reviewer
+ *      demonstrated without becoming a real data-flow analysis.
  *
  * Deliberately narrow beyond these two shapes: an argv assembled through
  * `.push()`, `.concat()`, spread from another variable, or any interpolated
@@ -183,8 +195,8 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
  * this file's own header comment. Widening indefinitely would turn this
  * lint into a JavaScript interpreter; the two shapes handled here are the
  * ones actually observed to matter -- the literal-at-call-site shape this
- * repo's own scripts use, and the one-step variable-indirection evasion of
- * it a reviewer demonstrated.
+ * repo's own scripts use, and the variable-indirection (including
+ * reassignment) evasions of it a reviewer demonstrated.
  */
 export function flattenGhArgvInvocations(contents) {
   const flattened = [];
@@ -213,12 +225,29 @@ export function flattenGhArgvInvocations(contents) {
   let variableCall;
   while ((variableCall = variableCallPattern.exec(contents)) !== null) {
     const varName = variableCall[1];
+    const callIndex = variableCall.index;
+
+    // Vasquez (round 3): a binding can be declared safely and then
+    // REASSIGNED to a banned form before the call reads it. Scanning for
+    // the first (or only) `NAME = [...]` in the whole file would resolve to
+    // the original, safe declaration and miss the reassignment that
+    // actually feeds `execFileSync`. Instead, walk every `NAME = [...]`
+    // assignment in the file and keep the LAST one that appears before the
+    // call site -- source order is the only stand-in for control flow a
+    // text scan has, but it is enough to catch "declare safe, reassign
+    // unsafe, then call" without becoming a real data-flow analysis.
     const assignmentPattern = new RegExp(
       `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+      'g',
     );
-    const assignment = assignmentPattern.exec(contents);
-    if (!assignment) continue;
-    const tokens = tokensFromArrayBody(assignment[1]);
+    let assignment;
+    let mostRecentBeforeCall = null;
+    while ((assignment = assignmentPattern.exec(contents)) !== null) {
+      if (assignment.index >= callIndex) break;
+      mostRecentBeforeCall = assignment;
+    }
+    if (!mostRecentBeforeCall) continue;
+    const tokens = tokensFromArrayBody(mostRecentBeforeCall[1]);
     if (tokens.length > 0) {
       flattened.push(`gh ${tokens.join(' ')}`);
     }
