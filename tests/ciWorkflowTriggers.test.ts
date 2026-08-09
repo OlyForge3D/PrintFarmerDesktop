@@ -179,6 +179,43 @@ function concurrencyDeclarations(workflow: string): Array<{
   });
 }
 
+/**
+ * Resolves ci.yml's `concurrency.group` expression for a given event context,
+ * by reading the real declaration out of the workflow text and substituting
+ * into its actual `format('{0}-{1}-{2}', ...)` call -- not a hand-duplicated
+ * reimplementation of the formula that could silently drift from ci.yml.
+ *
+ * Throws if the group expression's shape no longer matches what this helper
+ * expects, rather than silently mirroring the wrong thing: a change to the
+ * key's shape should be caught here (and the tests below re-derived) the same
+ * way the pinned `toEqual` above forces a look.
+ */
+function resolveGroup(
+  workflow: string,
+  { eventName, ref, sha }: { eventName: string; ref: string; sha: string },
+): string {
+  const [declaration] = concurrencyDeclarations(workflow);
+  const group = declaration?.group ?? '';
+  const shapeMatch =
+    /^ci-\$\{\{ format\('(.+)',\s*github\.event_name,\s*github\.ref,\s*github\.event_name\s*!=\s*'pull_request'\s*&&\s*github\.sha\s*\|\|\s*''\)\s*\}\}$/.exec(
+      group,
+    );
+  if (!shapeMatch) {
+    throw new Error(
+      `ci.yml concurrency.group no longer matches the expected format() shape ` +
+        `(got: ${JSON.stringify(group)}); update resolveGroup() and the tests ` +
+        `that depend on it`,
+    );
+  }
+  const pattern = shapeMatch[1] ?? '';
+  const third = eventName !== 'pull_request' ? sha : '';
+  const formatted = pattern
+    .replace('{0}', eventName)
+    .replace('{1}', ref)
+    .replace('{2}', third);
+  return `ci-${formatted}`;
+}
+
 describe('CI is safe to run under a merge queue', () => {
   it('keys `concurrency:` per merge-group entry and cancels only pull requests', () => {
     // This test used to assert `toEqual([])` -- no `concurrency:` at all. That
@@ -215,10 +252,20 @@ describe('CI is safe to run under a merge queue', () => {
     // Still not verified: no merge queue has run on this repository, so the
     // cancellation behaviour above remains documentation, not observation.
     // What changed is that the configuration no longer depends on it.
+    //
+    // #555: the group key changed from `ci-${{ github.ref }}` to fold in
+    // `github.event_name` (so groups are structurally distinct per trigger
+    // type, not just incidentally distinct because ref shapes differ) and
+    // `github.sha` for every non-pull_request event (so two pushes to the
+    // same branch -- previously `ci-refs/heads/development` for both -- no
+    // longer share a group; before this, `cancel-in-progress: false` only
+    // protected the *in-progress* run, and GitHub still evicted a *pending*
+    // run in the same group when a third one queued behind it).
     expect(concurrencyDeclarations(ciWorkflow)).toEqual([
       {
         line: 'concurrency:',
-        group: 'ci-${{ github.ref }}',
+        group:
+          "ci-${{ format('{0}-{1}-{2}', github.event_name, github.ref, github.event_name != 'pull_request' && github.sha || '') }}",
         cancel: "${{ github.event_name == 'pull_request' }}",
         cancels: false,
       },
@@ -291,17 +338,74 @@ describe('CI is safe to run under a merge queue', () => {
       'refs/heads/gh-readonly-queue/development/pr-227-db03fbf1f5555dd0419c58ceb39615b7e89d946d',
       'refs/heads/gh-readonly-queue/development/pr-221-db03fbf1f5555dd0419c58ceb39615b7e89d946d',
     ];
-    const [declaration] = concurrencyDeclarations(ciWorkflow);
-    const group = declaration?.group ?? '';
-    // Substitute each real ref into the real group expression.
+    // Both real entries share a base sha; the `github.sha` GitHub actually
+    // exposes for a merge_group event is the entry's own merge commit, which
+    // differs per entry too, but the ref alone is already sufficient to
+    // distinguish them -- held constant here to isolate that.
     const resolved = observedQueueRefs.map((ref) =>
-      group.replace('${{ github.ref }}', ref),
+      resolveGroup(ciWorkflow, { eventName: 'merge_group', ref, sha: 'sha' }),
     );
     expect(new Set(resolved).size).toBe(observedQueueRefs.length);
     // Counterfactual on the same two refs: the key the ban names -- constant
     // across entries -- collapses them onto one group, which is the eviction.
     const banned = observedQueueRefs.map(() => 'ci-CI');
     expect(new Set(banned).size).toBe(1);
+  });
+
+  it('never reuses a group between a push and a merge_group entry, even for the same ref text (#555)', () => {
+    // The issue's title claim: nothing structural stopped a push run and a
+    // merge_group run from resolving to the same group if their `github.ref`
+    // values ever happened to coincide -- only the fact that the two ref
+    // shapes never actually collide in practice made that safe. `github.
+    // event_name` is now the leading token of the group, so even a
+    // (hypothetical, constructed) identical ref cannot collapse the two
+    // trigger types onto one group.
+    const sameRefOnBothTriggers = 'refs/heads/development';
+    const pushGroup = resolveGroup(ciWorkflow, {
+      eventName: 'push',
+      ref: sameRefOnBothTriggers,
+      sha: 'deadbeef',
+    });
+    const mergeGroupGroup = resolveGroup(ciWorkflow, {
+      eventName: 'merge_group',
+      ref: sameRefOnBothTriggers,
+      sha: 'deadbeef',
+    });
+    const pullRequestGroup = resolveGroup(ciWorkflow, {
+      eventName: 'pull_request',
+      ref: sameRefOnBothTriggers,
+      sha: 'deadbeef',
+    });
+    expect(new Set([pushGroup, mergeGroupGroup, pullRequestGroup]).size).toBe(
+      3,
+    );
+  });
+
+  it('gives two successive pushes to the same branch distinct groups (#555)', () => {
+    // The actual defect: before #555, `group: ci-${{ github.ref }}` resolved
+    // to `ci-refs/heads/development` for every push to trunk regardless of
+    // sha, so a run still pending behind an in-progress one was evicted by a
+    // third push queuing -- a behaviour `cancel-in-progress: false` does not
+    // guard against, because that flag only concerns runs already in progress.
+    const pushA = resolveGroup(ciWorkflow, {
+      eventName: 'push',
+      ref: 'refs/heads/development',
+      sha: 'aaaaaaa',
+    });
+    const pushB = resolveGroup(ciWorkflow, {
+      eventName: 'push',
+      ref: 'refs/heads/development',
+      sha: 'bbbbbbb',
+    });
+    const pushC = resolveGroup(ciWorkflow, {
+      eventName: 'push',
+      ref: 'refs/heads/development',
+      sha: 'ccccccc',
+    });
+    expect(new Set([pushA, pushB, pushC]).size).toBe(3);
+    // Counterfactual: this is exactly the collision the old key produced.
+    const bannedKey = 'ci-refs/heads/development';
+    expect(new Set([bannedKey, bannedKey, bannedKey]).size).toBe(1);
   });
 
   it('reads a block whose keys sit behind comments, not just a tight one', () => {
@@ -444,12 +548,26 @@ describe('CI is safe to run under a merge queue', () => {
     // cancels only pull requests' above. Widening the exemption to the whole
     // block, or to any line mentioning the key, would swallow a job-level
     // guard, so it is pinned to the top-level key at two spaces.
+    // Widening the exemption to the whole block, or to any line mentioning the
+    // key, would swallow a job-level guard, so it is pinned to the top-level
+    // `cancel-in-progress:` and `group:` keys at two spaces, plus comment
+    // lines (which cannot skip or cancel anything themselves).
+    //
+    // `group:` was added to the exemption for #555: `github.event_name` is now
+    // also the leading token of the concurrency group key, alongside
+    // `cancel-in-progress:`'s pre-existing branch on the same variable. Same
+    // reasoning applies: a top-level `group:` key decides which *group* a run
+    // is dispatched into, not whether the job itself is skipped -- it cannot
+    // produce a `skipped` conclusion for a required context.
     const eventNameLines = ciWorkflow
       .split('\n')
       .filter((line: string) => line.includes('github.event_name'));
     const notOnAStepCondition = eventNameLines.filter(
       (line: string) =>
-        !/^ {8}if:/.test(line) && !/^ {2}cancel-in-progress:/.test(line),
+        !/^\s*#/.test(line) &&
+        !/^ {8}if:/.test(line) &&
+        !/^ {2}cancel-in-progress:/.test(line) &&
+        !/^ {2}group:/.test(line),
     );
     expect(notOnAStepCondition).toEqual([]);
   });
