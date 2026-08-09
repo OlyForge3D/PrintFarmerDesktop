@@ -209,8 +209,25 @@ git merge-base --is-ancestor 14304447 origin/development
 # exit 1  <-- WRONG: PR #561 shipped hours earlier
 
 # 2. Honest check: content diff of held head against the merge commit, scoped to owned paths
+git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md package.json
+# `package.json` is non-empty (adds one line, `probe:silent-success`) -- this is NOT
+# the squash failing to reproduce held content. PR #500 landed that entry on
+# development at 11:53 on merge day, after #561's branch tip (14304447, 11:24) was
+# last synced but hours before #561 itself was squash-merged (19:04). The squash
+# necessarily lands on top of development's *then-current* tip, so a file also
+# touched by an intervening, unrelated PR picks up that PR's change too -- this is
+# base drift at merge time, distinct from the moving-tip decay described below.
+# Isolate #561's *own* contribution to a shared file by diffing against the squash's
+# immediate parent instead of the held branch tip:
+git diff 9991065e^ 9991065e -- package.json
+# adds exactly one line, `worktree:remove` -- matches `gh pr diff 561`'s own
+# package.json diff exactly; this is the honest per-PR content check for a file
+# also touched by other work landing around the same time.
+# The other four paths are exclusively owned by #561 and diff empty against the
+# held tip directly:
 git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
-# (no output) <-- squash reproduced the held content byte-for-byte
+# (no output) <-- squash reproduced the held content byte-for-byte on paths #561
+# alone owns; no other PR touched these before the squash landed
 
 # CAUTION, do not substitute origin/development for 9991065e above: as trunk keeps
 # evolving, the same diff against the *moving* tip instead of the fixed merge commit
