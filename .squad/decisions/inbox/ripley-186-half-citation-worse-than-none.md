@@ -95,15 +95,18 @@ run. This PR's companion change
 (wiring `check-merge-queue-contexts.mjs`'s live half into
 `.github/workflows/ci.yml`'s `advisories` job) closes that specific gap so a
 future citation to "the required-contexts check" points at a step that
-genuinely runs on a pull request, not at a script nothing calls. It runs on
-the same terms as the rest of that job, no more and no less: gated behind
-`steps.changes.outputs.docs_only != 'true'`, the same docs-only fast path the
-job's SBOM and `cargo-audit` steps already stand down under (ci.yml:80-102
-documents why — a job-level or workflow-level skip would leave the required
-context unreported instead). A citation to this step should say "runs on any
-pull request that touches more than documentation," not "every pull
-request" — the two are different claims, and this file exists because that
-distinction is exactly the kind that gets lost in restatement.
+genuinely runs, not at a script nothing calls. It runs on the same
+`docs_only` terms as the rest of that job — gated behind
+`steps.changes.outputs.docs_only != 'true'`, the same fast path the job's
+SBOM and `cargo-audit` steps already stand down under (ci.yml:80-102
+documents why) — and, per the round-4 correction below, only on `push`, not
+on `pull_request` or `merge_group`. A citation to this step should say "runs
+on any push to development/main that touches more than documentation," not
+"every pull request" — an earlier draft of this section said the latter,
+which was already an overstatement before the round-4 security fix made it
+additionally wrong about which trigger the step runs under at all; this file
+exists because that distinction is exactly the kind that gets lost in
+restatement.
 
 The wiring itself needed a second correction mid-review, on the same theme.
 The first version gave the `advisories` job `permissions: administration:
@@ -130,9 +133,11 @@ clause exits BEFORE the `npm run check:merge-queue-contexts` line, so in
 this repository's current state — no `MERGE_QUEUE_CONTEXTS_TOKEN` secret
 configured — `scripts/check-merge-queue-contexts.mjs`'s `main()` has not
 executed once in CI, ever. What is true, precisely: the Actions STEP runs
-(is not skipped) on every non-docs-only pull request, and its shell body
-always executes; what is not true is that the script inside it runs, or
-partially runs, absent that secret. `tests/enforcementCitations.test.ts` and
+(is not skipped) on every non-docs-only push to `development`/`main` (see
+the round-4 correction below for why it no longer runs on pull requests at
+all), and its shell body always executes; what is not true is that the
+script inside it runs, or partially runs, absent that secret.
+`tests/enforcementCitations.test.ts` and
 `scripts/check-script-reachability.mjs`'s `UNENFORCED_CHECKS` still classify
 this as "invoked"/"enforced" — correctly, by their own stated definition,
 which is "does some workflow `run:` line reference this command" (a
@@ -150,6 +155,34 @@ failure). The honest scope-limit is stated here, in prose a citation can
 point at, rather than forced into either boolean: this step has a citable,
 re-derivable call site; whether that call site has ever fired is a separate
 question neither classifier answers, and today the answer is no.
+
+A fourth review pass (Vasquez and Ripley independently, Hicks on a separate
+prose point, all same PR) caught a defect one level more serious than
+overstatement: a real vulnerability in the step itself. `MERGE_QUEUE_CONTEXTS_TOKEN`
+is repo-admin-scoped, and the step handed it to `npm run
+check:merge-queue-contexts` unconditionally on every non-docs-only run of
+this job — including `pull_request` and `merge_group` events, where
+`actions/checkout@v4` (no `ref:` override) checks out PR-authored content.
+`npm run <script>` resolves the script name from `package.json` and its body
+from `scripts/check-merge-queue-contexts.mjs`, both part of that same
+untrusted checkout on those events, so a pull request could redefine either
+one to exfiltrate the token — the same trust boundary `pull_request_target`
+exists to protect, crossed here not by using the wrong trigger but by handing
+a real secret to a `pull_request`-triggered step regardless. This was a
+structural risk from the moment this step was written, independent of
+whether the secret currently exists in this repo (it doesn't yet — but the
+fix has to hold once it does). The fix restricts the step to `github.event_name
+== 'push'`: it now runs only over already-merged, already-reviewed content on
+`development`/`main`, never over a PR's own code. That narrows the claim
+above about "runs on any pull request that touches more than documentation"
+(paragraph two of this section) — it no longer runs on pull requests at all;
+it runs on pushes to protected branches that touch more than documentation.
+Separately, `.squad/decisions.md`'s account of this step once claimed it was
+"non-blocking... like the SBOM/cargo-audit steps already in that job" — only
+this step carries `continue-on-error: true` (`ci.yml`); the SBOM and
+advisory-audit steps achieve their own non-blocking behavior by internally
+choosing to `::warning::` and exit 0, not by that shared step setting.
+Corrected there to not claim a parity the YAML doesn't have.
 
 **A member is licensed — and expected — to falsify a constraint in their own
 brief and report it, without needing permission first.** Bishop did this in

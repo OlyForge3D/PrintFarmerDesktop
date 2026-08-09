@@ -13,7 +13,13 @@ name: CI
 # compares once a MERGE_QUEUE_CONTEXTS_TOKEN secret with repo-admin read is
 # configured — GITHUB_TOKEN cannot read branch protection regardless of
 # `permissions:` grants — and reports that precondition plainly otherwise;
-# see the step's own comment for why.
+# see the step's own comment for why. It also only ever runs on `push`, never
+# on `pull_request`/`merge_group`, because that secret is repo-admin-scoped
+# and this job checks out whatever triggered it with no `ref:` override — on
+# a pull_request/merge_group event that checkout is PR-authored content, and
+# handing it a repo-admin secret would let a PR redefine the very npm script
+# being invoked to exfiltrate that secret (Vasquez + Ripley, PR #661 review
+# round 4). See the step's own comment for the full reasoning.
 
 on:
   push:
@@ -431,16 +437,35 @@ jobs:
       # whole workflow at load time — Hicks, PR #661 review, run 31313684210
       # — GITHUB_TOKEN cannot be granted this regardless of what the
       # `permissions:` block says, since it isn't one of the scopes that
-      # block accepts). So this step is real and runs on every non-docs-only
-      # pull request, but until a PAT or GitHub App token with admin read is
-      # added as the MERGE_QUEUE_CONTEXTS_TOKEN secret, it can only report
-      # that precondition — it does not silently claim success, and it does
-      # not run at all without the guard clause below turning that absence
-      # into a visible, one-line reason rather than a raw 403 in the script's
-      # stack trace. `continue-on-error` keeps either outcome from taking the
-      # required "Dependency advisories" context down with it.
+      # block accepts).
+      #
+      # `github.event_name == 'push'` is load-bearing, not incidental: this
+      # step is the only one in this job that receives a repo-admin-scoped
+      # secret (MERGE_QUEUE_CONTEXTS_TOKEN), and `actions/checkout@v4` above
+      # (no `ref:` override) checks out whatever triggered the run. On a
+      # `pull_request` or `merge_group` event that is PR-authored content —
+      # `npm run check:merge-queue-contexts` resolves the `check:*` script
+      # name and scripts/check-merge-queue-contexts.mjs's contents from that
+      # checkout, so a PR could redefine either to exfiltrate the token
+      # (Vasquez + Ripley, PR #661 review round 4: same finding,
+      # independently). Restricting to `push` means this step only ever runs
+      # over already-merged, already-reviewed content on `development`/`main`
+      # — the same trust boundary `pull_request_target` vs `pull_request`
+      # exists to draw, achieved here by gating on event name instead of
+      # switching triggers for the whole job. The practical effect: this
+      # check no longer runs as a per-PR gate, only after merge — which
+      # matches how it is written (`continue-on-error: true`, a report, not a
+      # block) and is the same discharge path already named for
+      # check:protection-assumptions in check-script-reachability.mjs
+      # ("wire it into a scheduled workflow the moment a privileged token
+      # exists"); this is that token's job arriving with it, on push instead
+      # of a schedule, since one already had to exist for this job to run at
+      # all. Until MERGE_QUEUE_CONTEXTS_TOKEN is provisioned, the guard below
+      # still reports the precondition rather than silently succeeding.
+      # `continue-on-error` keeps either outcome from taking the required
+      # "Dependency advisories" context down with it.
       - name: Check merge-queue required contexts against live branch protection
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && github.event_name == 'push'
         continue-on-error: true
         env:
           MERGE_QUEUE_CONTEXTS_TOKEN: ${{ secrets.MERGE_QUEUE_CONTEXTS_TOKEN }}
