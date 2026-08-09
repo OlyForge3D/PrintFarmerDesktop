@@ -197,6 +197,48 @@ import { invokeGh as runGh } from './gh-utils.mjs';
 runGh(['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
 `;
 
+// Ripley (round 8): the original wrapper-body test, `/['"]gh['"]\s*,/`,
+// matched that literal text ANYWHERE in a function's body -- a plain
+// string, not an actual call -- and flagged an unrelated function as a
+// wrapper. Neither snippet below shells out to `gh` at all.
+const GH_STRING_LITERAL_FALSE_POSITIVE_SNIPPET = `
+function notAWrapper(x) {
+  const message = "success: 'gh', done";
+  return message + x;
+}
+notAWrapper(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+const GH_COMMENT_FALSE_POSITIVE_SNIPPET = `
+function notAWrapper2(x) {
+  // calls 'gh', badly -- this comment must not count as a real call
+  return x + 1;
+}
+notAWrapper2(['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Vasquez (round 8): a wrapper written as a CLASS METHOD, called via
+// property access (`runner.invokeGh([...])`), was invisible to the
+// function/arrow/const-only definition-header pattern.
+const GH_CLASS_METHOD_WRAPPER_SNIPPET = `
+class Runner {
+  invokeGh(args) {
+    return execFileSync('gh', args);
+  }
+}
+const runner = new Runner();
+runner.invokeGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Vasquez (round 8): a plain REFERENCE ALIAS -- `const myGh = invokeGh;`,
+// no call, no parens -- to an already-known wrapper, later called under
+// the alias, must resolve too.
+const GH_ALIASED_WRAPPER_SNIPPET = `
+const invokeGh = (args) => execFileSync('gh', args);
+const myGh = invokeGh;
+myGh(['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
 // The safe instrument: a per-object read. Must never be flagged, or every
 // script that reads labels correctly (check-sequencing-hold.mjs,
 // lift-hold-on-close.mjs's fetchPullRequest) would fail this check.
@@ -616,6 +658,66 @@ execFileSync('gh', [
     expect(consumerViolation).toBeDefined();
     expect(consumerViolation!.matches).toContain('gh issue list --label');
   });
+
+  // Vasquez (round 8): end-to-end, a wrapper written as a CLASS METHOD
+  // (called via property access, `runner.invokeGh([...])`) must be flagged
+  // through the real scanning entrypoint.
+  it('flags a call through a class-method wrapper', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_CLASS_METHOD_WRAPPER_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Vasquez (round 8): end-to-end, a bare reference alias of an
+  // already-known wrapper (`const myGh = invokeGh;`, no call) must be
+  // flagged through the real scanning entrypoint when called under the
+  // alias.
+  it('flags a call through an aliased wrapper reference', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_ALIASED_WRAPPER_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh issue list --label');
+  });
+
+  // Ripley (round 8): end-to-end negative controls -- a function whose body
+  // merely contains the literal text `'gh',` inside a string or a comment
+  // must NOT produce a violation, since it is not an actual wrapper.
+  it('does not flag a call through a function whose body only contains the gh-call shape inside a string literal', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_STRING_LITERAL_FALSE_POSITIVE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  it('does not flag a call through a function whose body only contains the gh-call shape inside a comment', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_COMMENT_FALSE_POSITIVE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
 });
 
 describe('flattenGhArgvInvocations', () => {
@@ -788,6 +890,28 @@ describe('findGhWrapperNames', () => {
     const names = findGhWrapperNames(GH_WRAPPER_ARGV_SECOND_PARAMETER_SNIPPET);
     expect(names.has('runGh')).toBe(true);
   });
+
+  // Ripley (round 8): a plain string containing the literal text `'gh',`
+  // must not be mistaken for an actual call to `gh`.
+  it('does not report a function whose body only contains the literal text inside a STRING, not an actual call', () => {
+    const names = findGhWrapperNames(GH_STRING_LITERAL_FALSE_POSITIVE_SNIPPET);
+    expect(names.has('notAWrapper')).toBe(false);
+  });
+
+  // Ripley (round 8): same false-positive shape, but via a COMMENT rather
+  // than a string literal.
+  it('does not report a function whose body only contains the literal text inside a COMMENT, not an actual call', () => {
+    const names = findGhWrapperNames(GH_COMMENT_FALSE_POSITIVE_SNIPPET);
+    expect(names.has('notAWrapper2')).toBe(false);
+  });
+
+  // Vasquez (round 8): a CLASS METHOD (`invokeGh(args) { ... }` inside a
+  // class body) must be recognized as a wrapper definition, the same as a
+  // function declaration or arrow assignment.
+  it('finds a class-method wrapper by behavior', () => {
+    const names = findGhWrapperNames(GH_CLASS_METHOD_WRAPPER_SNIPPET);
+    expect(names.has('invokeGh')).toBe(true);
+  });
 });
 
 // Vasquez/Ripley (round 6): both gaps -- nested wrappers (a wrapper that
@@ -836,6 +960,18 @@ describe('collectProjectGhWrapperNames', () => {
     expect(wrapperNamesByPath.get('scripts/example.mjs')!.has('runGh')).toBe(
       false,
     );
+  });
+
+  // Vasquez (round 8): a bare reference alias (`const myGh = invokeGh;`,
+  // no call) to an already-known wrapper must resolve too, via the same
+  // fixed-point loop used for nested/cross-file wrappers.
+  it('resolves a bare reference alias of an already-known wrapper', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      { path: 'scripts/example.mjs', contents: GH_ALIASED_WRAPPER_SNIPPET },
+    ]);
+    const names = wrapperNamesByPath.get('scripts/example.mjs')!;
+    expect(names.has('invokeGh')).toBe(true);
+    expect(names.has('myGh')).toBe(true);
   });
 });
 

@@ -424,24 +424,61 @@ export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
  * function-like definition header -- `function NAME(...)`, `const NAME =
  * (...) => `, `const NAME = (...) => ` (`const` replaceable by
  * `let`/`var`), `const NAME = function (...) `, `const NAME = async (...)
- * => ` -- capturing `NAME` in group 1 or 2. A fresh `RegExp` instance must
- * be built per scan (via `new RegExp(DEFINITION_HEADER_PATTERN_SOURCE,
- * 'g')`) rather than sharing one stateful global-flagged instance across
- * calls, since each caller advances its own `lastIndex`.
+ * => `, OR a class/object METHOD SHORTHAND (`NAME(...) {`, with an
+ * optional leading `async`/`static`) -- capturing `NAME` in group 1, 2, or
+ * 3. A fresh `RegExp` instance must be built per scan (via `new
+ * RegExp(DEFINITION_HEADER_PATTERN_SOURCE, 'g')`) rather than sharing one
+ * stateful global-flagged instance across calls, since each caller
+ * advances its own `lastIndex`.
+ *
+ * Vasquez (round 8): a wrapper written as a CLASS METHOD --
+ * `class Runner { invokeGh(args) { return execFileSync('gh', args); } }`,
+ * called as `runner.invokeGh([...])` -- was invisible, since neither
+ * `function NAME(...)` nor `const NAME = ...` matched a bare `NAME(...) {`
+ * shorthand. The third alternative below matches that shorthand while
+ * excluding JS control-flow keywords that share the same `KEYWORD (...) {`
+ * shape (`if`, `for`, `while`, `switch`, `catch`) via a negative lookahead,
+ * and requires the identifier not be preceded by `.`/a word character (so
+ * it does not also match at the CALL site `runner.invokeGh(` -- only at an
+ * actual definition, which is never preceded by `.`). The `(?=\{)` at the
+ * end is a lookahead, not a consumed match: like the other two
+ * alternatives, this leaves `definition[0].length` pointing just BEFORE
+ * the opening `{`, which is what `extractDefinitionBody` expects.
  */
 const DEFINITION_HEADER_PATTERN_SOURCE =
   '(?:function\\s+([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*)|' +
   '(?:(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s+)?' +
   '(?:function\\b[^(]*\\([^)]*\\)\\s*|\\([^)]*\\)\\s*=>\\s*|' +
-  '[A-Za-z_$][\\w$]*\\s*=>\\s*))';
+  '[A-Za-z_$][\\w$]*\\s*=>\\s*))|' +
+  '(?:(?<![\\w$.])' +
+  '(?!(?:if|for|while|switch|catch|function|else|return|typeof|new|await|yield|do)\\b)' +
+  '(?:static\\s+)?(?:async\\s+)?([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*(?=\\{))';
+
+/**
+ * Strips `//line` and `/* block *\/` comments before a body is tested for
+ * "does this shell out to `gh`/call another wrapper" -- Ripley (round 8):
+ * without this, a comment merely QUOTING that shape (e.g. `// example:
+ * execFileSync('gh', args)` written to document the pattern, the same
+ * kind of prose this file's own header comment already has to avoid
+ * self-matching) would be indistinguishable from actually calling it.
+ * Deliberately simple (not a real tokenizer): a `//` or `/*` occurring
+ * inside a STRING LITERAL would be incorrectly treated as a comment start
+ * too, but that is a rarer, lower-stakes mistake than the reverse (a
+ * comment being read as executable code), and is the same class of
+ * approximation this file's text-scan approach already accepts elsewhere.
+ */
+function stripCommentsForWrapperBodyScan(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+}
 
 /**
  * Finds every function-like definition in `contents` -- `function NAME(...)
  * { ... }`, `const NAME = (...) => { ... }`, `const NAME = (...) =>
  * expression;`, `const NAME = function (...) { ... }` (with `const`
- * replaceable by `let`/`var`) -- whose OWN BODY contains the generic
- * `'gh', ...` shape `flattenGhArgvInvocations` already recognizes as "shells
- * out to the real `gh` binary". Returns the set of such names.
+ * replaceable by `let`/`var`), or a class/object method shorthand -- whose
+ * OWN BODY actually CALLS `execFileSync`/`spawnSync`/similar with `'gh'` as
+ * its first argument (the same shape `flattenGhArgvInvocations` recognizes
+ * as "shells out to the real `gh` binary"). Returns the set of such names.
  *
  * Ripley (round 4): a wrapper can be named ANYTHING -- `gh`, `invokeGh`,
  * `runGh`, a repo-specific helper -- so detecting it by name would either
@@ -452,14 +489,30 @@ const DEFINITION_HEADER_PATTERN_SOURCE =
  * into a real AST: this is a text scan using balanced-brace/paren depth to
  * find the definition's own body text, not a JavaScript interpreter.
  *
+ * Ripley (round 8): the original body test, `/['"]gh['"]\s*,/`, matched
+ * that literal text ANYWHERE in a body -- inside a plain string
+ * (`"success: 'gh', done"`) or a comment (`// calls 'gh', badly`) -- and
+ * flagged an unrelated function as a wrapper. Reproduced locally.
+ * Tightened two ways: (1) comments are stripped first (see
+ * `stripCommentsForWrapperBodyScan`); (2) the pattern now requires an
+ * OPEN PAREN immediately before the quoted `'gh'` (`\(\s*['"]gh['"]\s*,`),
+ * matching only an actual call-argument shape (`execFileSync('gh', ...)`,
+ * `foo('gh', ...)`) rather than any occurrence of the substring. A value
+ * like `logMessage('gh', 'ok')`, where `'gh'` is coincidentally the first
+ * argument to an unrelated call, can still produce a false positive --
+ * that is the same "detected by textual call-shape, not by executing the
+ * program" limit this file states throughout, just narrower than before.
+ *
  * Deliberately narrow, ON ITS OWN: a wrapper that only calls ANOTHER
- * wrapper (never `'gh'` directly), or one imported from a different
+ * wrapper (never `'gh'` directly), an alias of another wrapper's own
+ * reference (`const myGh = invokeGh;`), or one imported from a different
  * module, is not found by this function alone -- see
- * `findNestedGhWrapperNames` and `collectProjectGhWrapperNames`, which
- * extend this same one-hop, text-scan-only detection to nested and
- * cross-file cases by iterating this behavioral test to a fixed point
- * across the whole scanned file set, rather than widening this function
- * itself into something that reads more than one file's own text.
+ * `findNestedGhWrapperNames`, `findAliasedGhWrapperNames`, and
+ * `collectProjectGhWrapperNames`, which extend this same text-scan-only
+ * detection to nested, aliased, and cross-file cases by iterating these
+ * behavioral tests to a fixed point across the whole scanned file set,
+ * rather than widening this function itself into something that reads
+ * more than one file's own text.
  */
 export function findGhWrapperNames(contents) {
   const wrapperNames = new Set();
@@ -468,17 +521,17 @@ export function findGhWrapperNames(contents) {
     DEFINITION_HEADER_PATTERN_SOURCE,
     'g',
   );
+  const directGhCallPattern = /\(\s*['"]gh['"]\s*,/;
 
   let definition;
   while ((definition = definitionHeaderPattern.exec(contents)) !== null) {
-    const name = definition[1] ?? definition[2];
+    const name = definition[1] ?? definition[2] ?? definition[3];
     if (!name) continue;
 
-    const body = extractDefinitionBody(
-      contents,
-      definition.index + definition[0].length,
+    const body = stripCommentsForWrapperBodyScan(
+      extractDefinitionBody(contents, definition.index + definition[0].length),
     );
-    if (/['"]gh['"]\s*,/.test(body)) {
+    if (directGhCallPattern.test(body)) {
       wrapperNames.add(name);
     }
   }
@@ -516,12 +569,11 @@ function findNestedGhWrapperNames(contents, knownWrapperNames) {
 
   let definition;
   while ((definition = definitionHeaderPattern.exec(contents)) !== null) {
-    const name = definition[1] ?? definition[2];
+    const name = definition[1] ?? definition[2] ?? definition[3];
     if (!name || knownWrapperNames.has(name)) continue;
 
-    const body = extractDefinitionBody(
-      contents,
-      definition.index + definition[0].length,
+    const body = stripCommentsForWrapperBodyScan(
+      extractDefinitionBody(contents, definition.index + definition[0].length),
     );
     if (callsKnownWrapperPattern.test(body)) {
       nested.add(name);
@@ -529,6 +581,43 @@ function findNestedGhWrapperNames(contents, knownWrapperNames) {
   }
 
   return nested;
+}
+
+/**
+ * Extends wrapper detection to a plain REFERENCE ALIAS: `const myGh =
+ * invokeGh;` (no call, no parens -- just the bare function value assigned
+ * to another binding), later called as `myGh([...])`. Vasquez (round 8):
+ * this is a different shape from both `findGhWrapperNames` (which only
+ * ever looks for a body that itself shells out) and `findNestedGhWrapperNames`
+ * (which looks for a body that CALLS another wrapper) -- an alias
+ * assignment is neither a function definition nor a call, just a name-to-
+ * name binding, so neither existing pass could see it. `knownWrapperNames`
+ * may include names resolved so far in `collectProjectGhWrapperNames`'s
+ * fixed-point loop (same-file, nested, or already-aliased), so an alias of
+ * an alias is resolved too, one iteration later.
+ */
+function findAliasedGhWrapperNames(contents, knownWrapperNames) {
+  const aliased = new Set();
+  if (knownWrapperNames.size === 0) return aliased;
+
+  const escapedKnownNames = [...knownWrapperNames].map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  );
+  const aliasPattern = new RegExp(
+    `\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*` +
+      `(?:${escapedKnownNames.join('|')})\\s*(?=[;,)\\n]|$)`,
+    'g',
+  );
+
+  let match;
+  while ((match = aliasPattern.exec(contents)) !== null) {
+    const name = match[1];
+    if (!knownWrapperNames.has(name)) {
+      aliased.add(name);
+    }
+  }
+
+  return aliased;
 }
 
 /**
@@ -615,12 +704,16 @@ function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
  * as wrappers, beyond what it can already find unaided by reading only its
  * own text via `findGhWrapperNames`.
  *
- * Extends single-file, single-hop wrapper detection in two directions,
- * both found in round-6 review (Vasquez/Ripley):
+ * Extends single-file, single-hop wrapper detection in THREE directions,
+ * found across rounds 6 and 8 review (Vasquez/Ripley):
  *   1. NESTED wrappers: a wrapper that calls another already-known wrapper
  *      rather than `gh` directly, resolved to a FIXED POINT so a chain of
  *      any depth is eventually found, not just one hop.
- *   2. CROSS-FILE wrappers: a wrapper defined in one scanned file and
+ *   2. ALIASED wrappers: a bare reference assignment (`const myGh =
+ *      invokeGh;`, no call, no parens) to an already-known wrapper, later
+ *      called under the new name (`myGh([...])`) -- a name-to-name binding
+ *      neither of the other two passes recognizes on its own.
+ *   3. CROSS-FILE wrappers: a wrapper defined in one scanned file and
  *      imported (by name, with an optional alias) into another --
  *      `import { invokeGh } from './gh-utils.mjs'; invokeGh([...])` -- is
  *      invisible to a per-file scan that only reads its own text, since
@@ -628,10 +721,10 @@ function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
  *
  * Still deliberately narrow beyond these: a wrapper imported from a file
  * OUTSIDE `SCANNED_DIRECTORIES` (this function only knows about the paths
- * it is given), a namespace/default import, or an argv threaded through
- * anything past what `flattenGhArgvInvocations` itself can resolve
- * (`.push()`, spread, a computed/interpolated call) remains out of reach --
- * the same limits stated throughout this file.
+ * it is given), a namespace/default import, a getter/setter method, or an
+ * argv threaded through anything past what `flattenGhArgvInvocations`
+ * itself can resolve (`.push()`, spread, a computed/interpolated call)
+ * remains out of reach -- the same limits stated throughout this file.
  */
 export function collectProjectGhWrapperNames(files) {
   const knownPaths = new Set(files.map((file) => file.path));
@@ -649,6 +742,16 @@ export function collectProjectGhWrapperNames(files) {
       for (const nestedName of findNestedGhWrapperNames(file.contents, known)) {
         if (!known.has(nestedName)) {
           known.add(nestedName);
+          changed = true;
+        }
+      }
+
+      for (const aliasedName of findAliasedGhWrapperNames(
+        file.contents,
+        known,
+      )) {
+        if (!known.has(aliasedName)) {
+          known.add(aliasedName);
           changed = true;
         }
       }
