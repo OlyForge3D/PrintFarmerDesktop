@@ -46,6 +46,8 @@ export function flattenGhArgvInvocations(
   extraWrapperNames?: Iterable<string>,
 ): string;
 
+export function flattenIndirectLabelQueryConstruction(contents: string): string;
+
 export function findGhWrapperNames(contents: string): Set<string>;
 
 export function collectProjectGhWrapperNames(

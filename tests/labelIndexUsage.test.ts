@@ -8,6 +8,7 @@ import {
   collectScannedFiles,
   findGhWrapperNames,
   flattenGhArgvInvocations,
+  flattenIndirectLabelQueryConstruction,
   formatViolation,
   scanLabelIndexUsage,
 } from '../scripts/check-label-index-usage.mjs';
@@ -292,6 +293,58 @@ const client = {
   }
 };
 client.runGh('safe', ['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Vasquez (round 10): a wrapper re-exported through a barrel file with an
+// ALIAS (`export { invokeGh as runGh } from './gh-utils.mjs';`), then
+// imported (under that alias) from the barrel -- must resolve the same
+// way a non-aliased re-export does.
+const GH_WRAPPER_BARREL_ALIASED_INDEX_SNIPPET = `
+export { invokeGh as runGh } from './gh-utils.mjs';
+`;
+const GH_WRAPPER_BARREL_ALIASED_CONSUMER_SNIPPET = `
+import { runGh } from './index.mjs';
+runGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Vasquez (round 10): a string literal containing \`//\` (e.g. a URL) on the
+// SAME LINE, BEFORE the wrapper's real gh call -- a naive line-comment
+// strip would mistake the \`//\` inside the string for a comment start and
+// discard the rest of the line, including the real call.
+const GH_WRAPPER_URL_STRING_SAME_LINE_SNIPPET = `
+function invokeGh(args) { console.log('https://example.com'); return execFileSync('gh', args); }
+invokeGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Vasquez (round 10): a FACTORY function that itself does not directly
+// call \`gh\`'s own name at the call site -- it RETURNS a closure that
+// does -- and the returned value, not the factory, is what is later
+// called under a new name.
+const GH_FACTORY_RETURNED_WRAPPER_SNIPPET = `
+function makeGhRunner() {
+  return (args) => execFileSync('gh', args);
+}
+const runGh = makeGhRunner();
+runGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Hicks (round 10): the label qualifier is assembled into a variable
+// FIRST, and only later interpolated into a SEPARATE outbound fetch call
+// -- neither the \`label:\` text nor the request URL ever appear together
+// in one matched span.
+const INDIRECT_LABEL_QUERY_SNIPPET = `
+const label = 'hold:sequenced';
+const query = \`repo:owner/repo label:\${label}\`;
+fetch(\`https://api.github.com/search/issues?q=\${encodeURIComponent(query)}\`);
+`;
+
+// Negative control: an unrelated fetch call and an unrelated \`label:\`-
+// containing string in the SAME file, with no actual link between them --
+// must NOT be flagged, since the fetch's own argument text never
+// references the label-holding variable NOR a GitHub host.
+const INDIRECT_LABEL_QUERY_NEGATIVE_CONTROL_SNIPPET = `
+const greeting = 'hello label: not a github query';
+fetch('https://example.com/unrelated');
 `;
 
 // The safe instrument: a per-object read. Must never be flagged, or every
@@ -854,6 +907,96 @@ execFileSync('gh', [
     expect(violations).toHaveLength(1);
     expect(violations[0]!.matches).toEqual(['gh pr list --label']);
   });
+
+  // Vasquez (round 10): end-to-end, a wrapper re-exported through a
+  // barrel file UNDER AN ALIAS must be flagged in the importing file.
+  it('flags a call through a wrapper re-exported through a barrel file under an alias', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/gh-utils.mjs',
+          contents: GH_WRAPPER_DEFINITION_MODULE_SNIPPET,
+        },
+        {
+          path: 'scripts/index.mjs',
+          contents: GH_WRAPPER_BARREL_ALIASED_INDEX_SNIPPET,
+        },
+        {
+          path: 'scripts/consumer.mjs',
+          contents: GH_WRAPPER_BARREL_ALIASED_CONSUMER_SNIPPET,
+        },
+      ],
+    });
+    const consumerViolation = violations.find(
+      (violation) => violation.path === 'scripts/consumer.mjs',
+    );
+    expect(consumerViolation).toBeDefined();
+    expect(consumerViolation!.matches).toContain('gh pr list --label');
+  });
+
+  // Vasquez (round 10): end-to-end, a wrapper must still be recognized
+  // when a string literal containing `//` (e.g. a URL) appears earlier on
+  // the same line as the real gh call, so the fix must not regress into a
+  // false NEGATIVE via an overly naive comment strip.
+  it('flags a call through a wrapper even when a same-line string literal contains //', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_URL_STRING_SAME_LINE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Vasquez (round 10): end-to-end, a factory-returned wrapper
+  // (`const runGh = makeGhRunner();`) must be flagged through the real
+  // scanning entrypoint.
+  it('flags a call through a factory-returned wrapper', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_FACTORY_RETURNED_WRAPPER_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Hicks (round 10): end-to-end, a label qualifier assembled into a
+  // variable first and only later interpolated into a separate GitHub
+  // fetch call must be flagged.
+  it('flags an indirect two-step label-index query construction', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: INDIRECT_LABEL_QUERY_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('search API label: qualifier');
+  });
+
+  // Negative control: an unrelated fetch call and an unrelated
+  // `label:`-containing string, with no actual link between them, must
+  // not be flagged.
+  it('does not flag an unrelated fetch call alongside an unrelated label:-containing string', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: INDIRECT_LABEL_QUERY_NEGATIVE_CONTROL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
 });
 
 describe('flattenGhArgvInvocations', () => {
@@ -1017,6 +1160,51 @@ describe('flattenGhArgvInvocations', () => {
     expect(matches[0]).toContain('gh pr list');
     expect(flattened).not.toContain('gh issue list');
   });
+
+  // Vasquez (round 10): a factory-returned wrapper's call site must
+  // resolve too, once `makeGhRunner` (the factory) and `runGh` (its
+  // return value, bound under a new name) are both supplied via
+  // extraWrapperNames -- the same project-wide resolution
+  // `collectProjectGhWrapperNames` performs.
+  it('resolves a factory-returned wrapper when both names are supplied via extraWrapperNames', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_FACTORY_RETURNED_WRAPPER_SNIPPET,
+      ['makeGhRunner', 'runGh'],
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+});
+
+describe('flattenIndirectLabelQueryConstruction', () => {
+  // Hicks (round 10): a `label:` qualifier assembled into a variable
+  // first, then interpolated into a SEPARATE fetch call to a GitHub host,
+  // must be recognized even though neither the literal text `label:` nor
+  // the request URL ever appear together in one matched span.
+  it('recognizes a label qualifier built in a variable and used in a later fetch call to a GitHub host', () => {
+    const flattened = flattenIndirectLabelQueryConstruction(
+      INDIRECT_LABEL_QUERY_SNIPPET,
+    );
+    expect(flattened).not.toBe('');
+  });
+
+  it('returns an empty string when there is no label:-containing variable at all', () => {
+    expect(
+      flattenIndirectLabelQueryConstruction('fetch("https://example.com");'),
+    ).toBe('');
+  });
+
+  // Negative control: an unrelated fetch call and an unrelated `label:`-
+  // containing string, with no actual link (the fetch never references
+  // the label-holding variable, nor a GitHub host) -- must not be flagged.
+  it('does not flag an unrelated fetch call alongside an unrelated label:-containing string', () => {
+    expect(
+      flattenIndirectLabelQueryConstruction(
+        INDIRECT_LABEL_QUERY_NEGATIVE_CONTROL_SNIPPET,
+      ),
+    ).toBe('');
+  });
 });
 
 describe('findGhWrapperNames', () => {
@@ -1072,6 +1260,15 @@ describe('findGhWrapperNames', () => {
   // function declaration or arrow assignment.
   it('finds a class-method wrapper by behavior', () => {
     const names = findGhWrapperNames(GH_CLASS_METHOD_WRAPPER_SNIPPET);
+    expect(names.has('invokeGh')).toBe(true);
+  });
+
+  // Vasquez (round 10): a string literal containing `//` (e.g. a URL) on
+  // the SAME LINE, BEFORE the wrapper's real gh call, must not cause the
+  // comment-stripping pass to discard the rest of the line -- the wrapper
+  // must still be recognized.
+  it('finds a wrapper even when a string literal containing // appears earlier on the same line', () => {
+    const names = findGhWrapperNames(GH_WRAPPER_URL_STRING_SAME_LINE_SNIPPET);
     expect(names.has('invokeGh')).toBe(true);
   });
 });
@@ -1182,6 +1379,49 @@ describe('collectProjectGhWrapperNames', () => {
     expect(
       wrapperNamesByPath.get('scripts/consumer2.mjs')!.has('invokeGh'),
     ).toBe(true);
+  });
+
+  // Vasquez (round 10): a wrapper re-exported through a barrel file with
+  // an ALIAS (`export { invokeGh as runGh } from './gh-utils.mjs';`) must
+  // resolve the same way a non-aliased re-export does.
+  it('resolves a wrapper re-exported through a barrel file UNDER AN ALIAS', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      {
+        path: 'scripts/gh-utils.mjs',
+        contents: GH_WRAPPER_DEFINITION_MODULE_SNIPPET,
+      },
+      {
+        path: 'scripts/index.mjs',
+        contents: GH_WRAPPER_BARREL_ALIASED_INDEX_SNIPPET,
+      },
+      {
+        path: 'scripts/consumer.mjs',
+        contents: GH_WRAPPER_BARREL_ALIASED_CONSUMER_SNIPPET,
+      },
+    ]);
+    expect(wrapperNamesByPath.get('scripts/index.mjs')!.has('runGh')).toBe(
+      true,
+    );
+    expect(wrapperNamesByPath.get('scripts/consumer.mjs')!.has('runGh')).toBe(
+      true,
+    );
+  });
+
+  // Vasquez (round 10): a wrapper's return value, assigned from a CALL to
+  // an already-known wrapper (`const runGh = makeGhRunner();`), must
+  // resolve too -- `makeGhRunner` is already known as a wrapper because
+  // its own body textually shells out to gh (nested inside the closure it
+  // returns).
+  it('resolves a factory-returned wrapper (const NAME = knownWrapper())', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      {
+        path: 'scripts/example.mjs',
+        contents: GH_FACTORY_RETURNED_WRAPPER_SNIPPET,
+      },
+    ]);
+    const names = wrapperNamesByPath.get('scripts/example.mjs')!;
+    expect(names.has('makeGhRunner')).toBe(true);
+    expect(names.has('runGh')).toBe(true);
   });
 });
 

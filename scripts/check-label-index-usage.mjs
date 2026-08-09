@@ -179,6 +179,88 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
 });
 
 /**
+ * Detects a TWO-STEP label-index query construction: a `label:` qualifier
+ * is assembled into a string/template-literal VARIABLE first, and that
+ * variable is only later interpolated into a SEPARATE outbound network
+ * call (`fetch(...)`) -- so neither the `label:` text nor the request URL
+ * ever appears together in one matched span the way `LABEL_INDEX_PATTERNS`'
+ * `search API label: qualifier` pattern (anchored on `search/issues` and
+ * `label:` co-occurring within one line) expects.
+ *
+ * Hicks (round 10): a repo script that builds its search query as
+ * ```
+ * const query = `repo:owner/repo label:${label}`;
+ * fetch(`https://api.github.com/search/issues?q=${encodeURIComponent(query)}`);
+ * ```
+ * produces NO violation today, since `label:` and the outbound call are on
+ * different lines with no `[^\n]*`-bridgeable text between them -- this
+ * is the same lagged label-search-index hazard #299 describes, just
+ * spelled through an intermediate variable rather than inline. Rather than
+ * chase indirection depth indefinitely (each round of review has found a
+ * new indirection shape), this recognizes the underlying TWO-FACT pattern
+ * directly: (1) some variable's initializer is a string/template literal
+ * containing the literal text `label:`, and (2) that variable's name is
+ * referenced inside a `fetch(...)` call whose own argument text names a
+ * GitHub host (`github.com`) -- i.e. the file both KNOWS a label qualifier
+ * and MAKES a GitHub network call built from it, regardless of how many
+ * assignments sit between the two. When found, this synthesizes the
+ * canonical text `search/issues label:` so the EXISTING `search API
+ * label: qualifier` pattern fires on it, the same composition style
+ * `flattenGhArgvInvocations` already uses for wrapped gh calls, rather
+ * than adding a parallel, six-pattern-list-sized bespoke check.
+ *
+ * Deliberately narrow: requires a literal `label:` substring in the
+ * variable's OWN initializer (not itself further indirected through
+ * another variable -- chasing that would be unbounded), and requires the
+ * `fetch(...)` argument text to name `github.com` literally, to avoid
+ * flagging an unrelated `fetch` call that happens to reference a
+ * same-named variable holding unrelated text. A `label:` fragment built
+ * from `.push()`/string concatenation across multiple statements, or
+ * passed through a wrapper function rather than a literal `fetch(...)`
+ * call, remains out of reach -- the same "text scan, not an interpreter"
+ * limit stated throughout this file.
+ */
+export function flattenIndirectLabelQueryConstruction(contents) {
+  const flattened = [];
+
+  const labelVariablePattern =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(`[^`]*label:[^`]*`|'[^']*label:[^']*'|"[^"]*label:[^"]*")/g;
+  const labelVariableNames = new Set();
+  let labelMatch;
+  while ((labelMatch = labelVariablePattern.exec(contents)) !== null) {
+    labelVariableNames.add(labelMatch[1]);
+  }
+  if (labelVariableNames.size === 0) return '';
+
+  const escapedNames = [...labelVariableNames].map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  );
+  const nameReferencePattern = new RegExp(
+    `\\b(?:${escapedNames.join('|')})\\b`,
+  );
+
+  const fetchCallPattern = /\bfetch\s*\(/g;
+  let header;
+  while ((header = fetchCallPattern.exec(contents)) !== null) {
+    const argsStart = header.index + header[0].length;
+    let depth = 1;
+    let index = argsStart;
+    for (; index < contents.length && depth > 0; index++) {
+      if (contents[index] === '(') depth++;
+      else if (contents[index] === ')') depth--;
+    }
+    if (depth !== 0) continue; // unbalanced -- do not guess.
+    const argsText = contents.slice(argsStart, index - 1);
+
+    if (/github\.com/i.test(argsText) && nameReferencePattern.test(argsText)) {
+      flattened.push('search/issues label: (indirect, via variable)');
+    }
+  }
+
+  return flattened.join('\n');
+}
+
+/**
  * Normalizes `execFile(Sync)`/`spawn(Sync)`-style argv-array invocations of
  * `gh` into the same plain-text command shape `LABEL_INDEX_PATTERNS` already
  * matches, so `execFileSync('gh', ['pr', 'list', '--label', name])` is not
@@ -574,14 +656,67 @@ const DEFINITION_HEADER_PATTERN_SOURCE =
  * execFileSync('gh', args)` written to document the pattern, the same
  * kind of prose this file's own header comment already has to avoid
  * self-matching) would be indistinguishable from actually calling it.
- * Deliberately simple (not a real tokenizer): a `//` or `/*` occurring
- * inside a STRING LITERAL would be incorrectly treated as a comment start
- * too, but that is a rarer, lower-stakes mistake than the reverse (a
- * comment being read as executable code), and is the same class of
- * approximation this file's text-scan approach already accepts elsewhere.
+ *
+ * Vasquez (round 10): a NAIVE regex-based strip (treating every `//` as a
+ * line-comment start) produces the OPPOSITE mistake -- a real wrapper is
+ * missed (false NEGATIVE) if a string literal containing `//` (e.g. a URL,
+ * `console.log('https://example.com')`) appears on the SAME LINE before
+ * the wrapper's actual `execFileSync('gh', ...)` call: the naive strip
+ * would treat that `//` as starting a comment and discard the rest of the
+ * line, including the real call. This is a lightweight, single-pass
+ * scanner (not a full tokenizer) that tracks single/double/backtick
+ * STRING-LITERAL boundaries (with basic backslash-escape awareness) and
+ * only treats `//`/`/* *\/` as a comment start OUTSIDE of one -- so a `//`
+ * inside a string is preserved (and left in the output verbatim, along
+ * with the rest of the string), while a genuine comment is still removed.
+ * String contents are deliberately NOT otherwise altered: this keeps round
+ * 8's fix intact, since `DIRECT_GH_CALL_PATTERN`'s own `(?<=\()` --
+ * requiring `'gh'` be immediately preceded by `(` -- still prevents a bare
+ * quoted string (even one left untouched here) from being mistaken for an
+ * actual call.
  */
 function stripCommentsForWrapperBodyScan(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  let result = '';
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (quote) {
+      result += ch;
+      if (ch === '\\' && i + 1 < text.length) {
+        result += text[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      result += ch;
+      continue;
+    }
+
+    if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      result += '\n';
+      continue;
+    }
+
+    if (ch === '/' && text[i + 1] === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) {
+        i++;
+      }
+      i++; // land on the closing `/`, loop's own i++ advances past it.
+      result += ' ';
+      continue;
+    }
+
+    result += ch;
+  }
+  return result;
 }
 
 /**
@@ -790,6 +925,53 @@ function findAliasedGhWrapperNames(contents, knownWrapperNames) {
   }
 
   return aliased;
+}
+
+/**
+ * Extends wrapper detection to a FACTORY-RETURNED wrapper: `const runGh =
+ * makeGhRunner();`, where `makeGhRunner` is itself already known as a
+ * wrapper (because its own body -- textually, per `collectDirectGhWrapperDefinitions`'s
+ * substring test -- contains a direct `execFileSync('gh', ...)` call,
+ * typically nested inside the CLOSURE it `return`s: `function
+ * makeGhRunner() { return (args) => execFileSync('gh', args); }`).
+ * Vasquez (round 10): `runGh` -- the name actually CALLED with the
+ * label-index argv -- is neither a function/arrow DEFINITION (so
+ * `findGhWrapperNames` cannot see it) nor a bare reference to a known name
+ * (so `findAliasedGhWrapperNames`'s no-parens alias pattern cannot see it
+ * either, since here there IS a call, just to the FACTORY, not to `gh`) --
+ * the factory's return value, not the factory itself, is what `runGh`
+ * actually holds, and text-scanning cannot execute the factory to find
+ * that out. Treating `makeGhRunner` as already-known (which it already
+ * is, structurally, once its body substring-matches the direct-call
+ * shape) and simply recognizing `NAME = FACTORY(...)` as a SECOND
+ * aliasing shape alongside the no-parens one above is the same
+ * "shape, not semantics" compromise this file makes throughout: it
+ * resolves the exact repro'd case, and any name assigned from a CALL to
+ * an already-known wrapper name, without attempting real interprocedural
+ * return-value tracking.
+ */
+function findFactoryReturnedGhWrapperNames(contents, knownWrapperNames) {
+  const factoryAliased = new Set();
+  if (knownWrapperNames.size === 0) return factoryAliased;
+
+  const escapedKnownNames = [...knownWrapperNames].map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  );
+  const factoryCallPattern = new RegExp(
+    `\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*` +
+      `(?:${escapedKnownNames.join('|')})\\s*\\([^)]*\\)`,
+    'g',
+  );
+
+  let match;
+  while ((match = factoryCallPattern.exec(contents)) !== null) {
+    const name = match[1];
+    if (!knownWrapperNames.has(name)) {
+      factoryAliased.add(name);
+    }
+  }
+
+  return factoryAliased;
 }
 
 /**
@@ -1009,15 +1191,19 @@ function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
  * as wrappers, beyond what it can already find unaided by reading only its
  * own text via `findGhWrapperNames`.
  *
- * Extends single-file, single-hop wrapper detection in FOUR directions,
- * found across rounds 6, 8, and 9 review (Vasquez/Ripley):
+ * Extends single-file, single-hop wrapper detection in FIVE directions,
+ * found across rounds 6, 8, 9, and 10 review (Vasquez/Ripley):
  *   1. NESTED wrappers: a wrapper that calls another already-known wrapper
  *      rather than `gh` directly, resolved to a FIXED POINT so a chain of
  *      any depth is eventually found, not just one hop.
  *   2. ALIASED wrappers: a bare reference assignment (`const myGh =
  *      invokeGh;`, no call, no parens) to an already-known wrapper, later
  *      called under the new name (`myGh([...])`) -- a name-to-name binding
- *      neither of the other two passes recognizes on its own.
+ *      neither of the other two passes recognizes on its own. A
+ *      FACTORY-RETURNED variant of the same idea -- `const runGh =
+ *      makeGhRunner();`, a CALL to an already-known wrapper whose return
+ *      value (not the wrapper itself) is the one actually invoked later --
+ *      is resolved the same way, via `findFactoryReturnedGhWrapperNames`.
  *   3. CROSS-FILE wrappers: a wrapper defined in one scanned file and
  *      imported OR RE-EXPORTED (by name, with an optional alias) into
  *      another -- `import { invokeGh } from './gh-utils.mjs';
@@ -1087,6 +1273,16 @@ export function collectProjectGhWrapperNames(files) {
       )) {
         if (!known.has(aliasedName)) {
           known.add(aliasedName);
+          changed = true;
+        }
+      }
+
+      for (const factoryAliasedName of findFactoryReturnedGhWrapperNames(
+        file.contents,
+        known,
+      )) {
+        if (!known.has(factoryAliasedName)) {
+          known.add(factoryAliasedName);
           changed = true;
         }
       }
@@ -1202,6 +1398,7 @@ export function scanLabelIndexUsage({ files, allowlist } = {}) {
         file.contents,
         projectWrapperNames.get(file.path),
       ),
+      flattenIndirectLabelQueryConstruction(file.contents),
     ]
       .filter(Boolean)
       .join('\n');
