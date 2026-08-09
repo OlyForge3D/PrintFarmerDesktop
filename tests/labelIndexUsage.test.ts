@@ -353,6 +353,39 @@ fetch('https://example.com/unrelated');
 const OBJECT_READ_SNIPPET =
   'fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`)';
 
+// Vasquez (round 11): a comment merely QUOTING the direct-call shape --
+// documenting the pattern, not executing it -- must never itself be
+// flattened into a violation. `flattenGhArgvInvocations`'s own call-site
+// scans previously read raw (non-comment-stripped) text, so this comment
+// alone produced a false positive.
+const GH_COMMENT_ONLY_DIRECT_CALL_SNIPPET = `
+// example of the banned shape: execFileSync('gh', ['pr', 'list', '--label', 'hold:sequenced']);
+console.log('nothing real happens here');
+`;
+
+// Vasquez (round 11): a method-shorthand wrapper called through BRACKET
+// (computed-property) access -- \`helpers['invokeGh']([...])\` -- is exactly
+// as legitimate a call site as dot access (\`helpers.invokeGh([...])\`), but
+// the method-mode call-site pattern previously required a literal \`.\`.
+const GH_WRAPPER_BRACKET_CALL_SNIPPET = `
+const helpers = {
+  invokeGh(args) { return execFileSync('gh', args); }
+};
+helpers['invokeGh'](['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Ripley (round 11): a REGEX LITERAL with escaped slashes (\`\\/\\/\`, e.g.
+// matching a URL scheme) is not a quoted string, so round 10's
+// quote-tracking comment-stripper does not protect it -- the escaped
+// slash's second character was read as an ordinary character and then
+// paired with the regex's own closing \`/\` delimiter to look like a \`//\`
+// comment start, discarding the rest of the line (the real gh call)
+// as a false NEGATIVE.
+const GH_WRAPPER_REGEX_LITERAL_SAME_LINE_SNIPPET = String.raw`
+function invokeGh(args) { const isHttps = /^https:\/\//.test('x'); return execFileSync('gh', args); }
+invokeGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
 describe('scanLabelIndexUsage', () => {
   it('flags gh pr list --label as an unlisted violation', () => {
     const { violations, allowlisted } = scanLabelIndexUsage({
@@ -997,6 +1030,52 @@ execFileSync('gh', [
     });
     expect(violations).toHaveLength(0);
   });
+
+  // Vasquez (round 11): end-to-end, a comment merely quoting the
+  // direct-call shape must not itself be flagged.
+  it('does not flag a comment that merely quotes the direct-call shape', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_COMMENT_ONLY_DIRECT_CALL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  // Vasquez (round 11): end-to-end, a method-shorthand wrapper called
+  // through bracket (computed-property) access must be flagged the same
+  // as a dot-accessed call.
+  it('flags a call through a method wrapper invoked via bracket access', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_BRACKET_CALL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Ripley (round 11): end-to-end, a wrapper must still be flagged when a
+  // same-line regex literal with escaped slashes appears before the real
+  // gh call.
+  it('flags a call through a wrapper even when a same-line regex literal contains escaped slashes', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_REGEX_LITERAL_SAME_LINE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
 });
 
 describe('flattenGhArgvInvocations', () => {
@@ -1175,6 +1254,40 @@ describe('flattenGhArgvInvocations', () => {
     expect(flattened).toContain('--label');
     expect(flattened).toContain('hold:sequenced');
   });
+
+  // Vasquez (round 11): a comment merely QUOTING the direct-call shape
+  // (documenting the pattern, not executing it) must not itself be
+  // flattened into a violation -- this function's own call-site scans
+  // must strip comments from `contents` first, the same way every
+  // wrapper-DEFINITION test in this file already does for an extracted
+  // body.
+  it('does not flatten a comment that merely quotes the direct-call shape', () => {
+    expect(flattenGhArgvInvocations(GH_COMMENT_ONLY_DIRECT_CALL_SNIPPET)).toBe(
+      '',
+    );
+  });
+
+  // Vasquez (round 11): a method-shorthand wrapper called through BRACKET
+  // (computed-property) access must resolve exactly as a dot-accessed call
+  // would.
+  it('resolves a method wrapper called through bracket (computed-property) access', () => {
+    const flattened = flattenGhArgvInvocations(GH_WRAPPER_BRACKET_CALL_SNIPPET);
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  // Ripley (round 11): a wrapper must still be recognized when a REGEX
+  // LITERAL with escaped slashes (not a quoted string) appears earlier on
+  // the same line as the real gh call.
+  it('resolves a wrapper even when a same-line regex literal contains escaped slashes', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_REGEX_LITERAL_SAME_LINE_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
 });
 
 describe('flattenIndirectLabelQueryConstruction', () => {
@@ -1269,6 +1382,17 @@ describe('findGhWrapperNames', () => {
   // must still be recognized.
   it('finds a wrapper even when a string literal containing // appears earlier on the same line', () => {
     const names = findGhWrapperNames(GH_WRAPPER_URL_STRING_SAME_LINE_SNIPPET);
+    expect(names.has('invokeGh')).toBe(true);
+  });
+
+  // Ripley (round 11): a REGEX LITERAL with escaped slashes (not a quoted
+  // string) on the SAME LINE, BEFORE the wrapper's real gh call, must not
+  // cause the comment-stripping pass to discard the rest of the line
+  // either -- the wrapper must still be recognized.
+  it('finds a wrapper even when a same-line regex literal contains escaped slashes', () => {
+    const names = findGhWrapperNames(
+      GH_WRAPPER_REGEX_LITERAL_SAME_LINE_SNIPPET,
+    );
     expect(names.has('invokeGh')).toBe(true);
   });
 });

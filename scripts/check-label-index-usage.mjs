@@ -341,9 +341,30 @@ export function flattenIndirectLabelQueryConstruction(contents) {
  * own by reading only `contents`. Kept optional so every existing direct
  * caller/test that only cares about a single file's own text keeps working
  * unchanged.
+ *
+ * Vasquez (round 11): comments are stripped from `contents` FIRST, before
+ * any of the call-site scans below run. Every wrapper-DEFINITION test in
+ * this file already strips comments from an extracted body before testing
+ * it (`stripCommentsForWrapperBodyScan`, used by
+ * `collectDirectGhWrapperDefinitions`/`findNestedGhWrapperNames`/etc.), but
+ * this function's own CALL-SITE scans (`flattenArgvAfter`,
+ * `flattenArgvAcrossCallArguments`, `flattenArgvFromRestParams`) read raw
+ * `contents` directly -- so a comment merely QUOTING the direct-call shape
+ * (`// example: execFileSync('gh', ['pr', 'list', '--label', name]);`,
+ * written to document the pattern, not to execute it) still flattened into
+ * a violation. Reproduced locally: a comment-only snippet with no real
+ * call produced a match. Stripping comments once, up front, for every scan
+ * this function performs closes that false positive; positions used
+ * internally (`resolveVariableArrayBefore`'s `beforeIndex`, call-site
+ * `index`s) stay self-consistent because every scan in this function reads
+ * from this same, single stripped string -- this function never reports
+ * character offsets back to a caller, only a flattened token stream, so
+ * the length change a stripped line-comment produces cannot desync a
+ * position a caller holds against the ORIGINAL text.
  */
-export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
+export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
   const flattened = [];
+  const contents = stripCommentsForWrapperBodyScan(rawContents);
 
   const tokensFromArrayBody = (arrayBody) =>
     [...arrayBody.matchAll(/['"`]([^'"`]*)['"`]/g)].map(
@@ -446,10 +467,14 @@ export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
   // call-site pattern to the SHAPE the wrapper name was actually DEFINED
   // with: `'bare'` requires the call NOT be preceded by `.` (a bare
   // function/arrow wrapper is only ever legitimately called as a bare
-  // identifier); `'method'` requires the call BE preceded by `.` (a class/
-  // object method-shorthand wrapper is only ever legitimately called
-  // through property access); `'any'` keeps the original, unscoped match
-  // (used for `extraWrapperNames` -- nested/cross-file/aliased names this
+  // identifier); `'method'` requires the call BE preceded by `.` OR be a
+  // computed-property (bracket) access naming the SAME wrapper as a
+  // quoted string (`['invokeGh'](...)`/`["invokeGh"](...)`) -- Vasquez
+  // (round 11): a method-shorthand wrapper called through BRACKET property
+  // access (`helpers['invokeGh']([...])`) is exactly as legitimate a call
+  // site as dot access, and the dot-only pattern missed it entirely,
+  // reproduced locally; `'any'` keeps the original, unscoped match (used
+  // for `extraWrapperNames` -- nested/cross-file/aliased names this
   // function cannot itself classify by definition shape, since they were
   // resolved from a project-wide pass rather than this file's own text).
   const flattenArgvAcrossCallArguments = (wrapperName, matchMode = 'any') => {
@@ -458,7 +483,10 @@ export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
       matchMode === 'bare'
         ? new RegExp(`(?<!\\.)\\b${escapedName}\\s*\\(`, 'g')
         : matchMode === 'method'
-          ? new RegExp(`\\.${escapedName}\\s*\\(`, 'g')
+          ? new RegExp(
+              `(?:\\.${escapedName}|\\[\\s*['"]${escapedName}['"]\\s*])\\s*\\(`,
+              'g',
+            )
           : new RegExp(`\\b${escapedName}\\s*\\(`, 'g');
     let header;
     while ((header = callHeaderPattern.exec(contents)) !== null) {
@@ -674,6 +702,28 @@ const DEFINITION_HEADER_PATTERN_SOURCE =
  * requiring `'gh'` be immediately preceded by `(` -- still prevents a bare
  * quoted string (even one left untouched here) from being mistaken for an
  * actual call.
+ *
+ * Ripley (round 11): a REGEX LITERAL containing escaped slashes (e.g.
+ * `/^https:\/\//`, matching a URL scheme) is not a quoted string -- none
+ * of `'`/`"`/`` ` `` delimit it -- so the round-10 fix's quote-tracking
+ * does not protect it. The escaped-slash pair `\/` in `\/\/ ` was still
+ * read one character at a time OUTSIDE any tracked quote, and the SECOND
+ * `/` of that pair was then seen adjacent to the regex's own CLOSING `/`
+ * delimiter, so the scanner mistook that boundary for a `//` line-comment
+ * start and discarded the rest of the line -- including a real
+ * `execFileSync('gh', ...)` call written after the regex literal on the
+ * same line. Reproduced locally: `const re = /^https:\/\//; return
+ * execFileSync('gh', args);` on one line left the wrapper undetected.
+ * Fixed narrowly, without adding full regex-literal-boundary tracking (a
+ * `/.../ ` delimiter is genuinely ambiguous with division without knowing
+ * the preceding token, which this scanner does not track): a backslash
+ * OUTSIDE a string is now treated the same escape-pair way one INSIDE a
+ * string already was -- the backslash and the character immediately after
+ * it are consumed and copied TOGETHER, so that character is never
+ * separately re-examined as a potential comment-start. This resolves the
+ * `\/` case (the escaped character can no longer pair with a following
+ * unescaped `/` to look like `//`) without needing to know whether a given
+ * `/` opens/closes a regex literal at all.
  */
 function stripCommentsForWrapperBodyScan(text) {
   let result = '';
@@ -695,6 +745,16 @@ function stripCommentsForWrapperBodyScan(text) {
     if (ch === '"' || ch === "'" || ch === '`') {
       quote = ch;
       result += ch;
+      continue;
+    }
+
+    // Ripley (round 11): consume an escaped-character pair even OUTSIDE a
+    // tracked string/quote, so the character right after a backslash (as
+    // in a regex literal's `\/`) can never be separately re-examined as
+    // the start of a `//`/`/* */` comment.
+    if (ch === '\\' && i + 1 < text.length) {
+      result += ch + text[i + 1];
+      i++;
       continue;
     }
 
