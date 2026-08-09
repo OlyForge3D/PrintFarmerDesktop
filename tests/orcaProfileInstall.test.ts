@@ -333,6 +333,8 @@ import {
   findBackupByOperationId,
   __setBackupMetaReadRaceHookForTests,
   __setBackupMetaWriteRaceHookForTests,
+  __setBackupMetaDirWriteRaceHookForTests,
+  __setBackupMetaDirReadRaceHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -983,6 +985,173 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         await rm(escapeDir, { recursive: true, force: true });
       }
     },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to write metadata when .pfd-backup-meta itself is swapped for a junction during the write race window (TOCTOU on write, directory level)',
+    async () => {
+      // Reviewer finding (Vasquez, round 2): the leaf-file TOCTOU fix above
+      // only ever inspects metaPath (the file). ensureBackupMetaDirSafe
+      // validates the .pfd-backup-meta directory chain once, up front, but
+      // nothing re-checked that the directory itself was still real at the
+      // moment of the write. If an attacker swaps .pfd-backup-meta for a
+      // junction after validation but before the temp-file write, the temp
+      // file lands as an ordinary file inside the attacker's target
+      // directory — none of the leaf-level isSymbolicLink() checks trip,
+      // because the leaf file really is a plain file, just in the wrong
+      // place. writeBackupMeta now re-verifies metaDir itself immediately
+      // before both the temp-file create and the rename via a test-only
+      // hook fired at exactly that point, so this test can simulate the
+      // directory-level swap deterministically rather than relying on real
+      // timing.
+      const safeFilename = 'toctou_write_dir_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-write-dir"}';
+      const updated = '{"name":"v2-toctou-write-dir"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `write-dir-race-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      // Seed the destination, then overwrite it once so a backup (and
+      // .pfd-backup-meta) actually gets created.
+      const seed = '{"name":"v0-toctou-write-dir-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+
+      const metaDir = path.join(installRoot, '.pfd-backup-meta');
+
+      let raceSimulated = true;
+      __setBackupMetaDirWriteRaceHookForTests(async (dir) => {
+        await rm(dir, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, dir);
+        raceSimulated = true;
+      });
+
+      try {
+        await expect(
+          installOrcaProfileWindows(
+            updated,
+            sha256(updated),
+            safeFilename,
+            operationId,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+      } finally {
+        __setBackupMetaDirWriteRaceHookForTests(null);
+      }
+
+      if (!raceSimulated) {
+        return;
+      }
+
+      // Nothing should have been written into the attacker's directory —
+      // the directory-level recheck must refuse before the temp-file
+      // write, not merely fail after writing through the junction.
+      expect(
+        await readdir(escapeDir),
+        'metadata was written through a .pfd-backup-meta directory swapped mid-race',
+      ).toEqual([]);
+
+      // Clean up the junction so later tests see a normal directory again.
+      await rm(metaDir, { recursive: true, force: true });
+      await rm(escapeDir, { recursive: true, force: true });
+    },
+    15_000, // extra installs + directory-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to trust a metadata read when .pfd-backup-meta itself is swapped for a junction during the read race window (TOCTOU on read, directory level)',
+    async () => {
+      // Reviewer finding (Vasquez, round 2): the leaf-file read-side fix
+      // above only ever inspects metaPath (the file). A directory-level
+      // swap of .pfd-backup-meta between validation and the read is
+      // invisible to those leaf checks, because the file the read then
+      // touches is a perfectly ordinary file sitting in the attacker's
+      // target directory (the attacker just needs to place a same-named
+      // file there). readBackupMetaFileSafely now re-verifies metaDir
+      // itself immediately before the leaf-level checks via a test-only
+      // hook, so this test simulates the directory swap deterministically.
+      const safeFilename = 'toctou_read_dir_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-read-dir"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `read-dir-race-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      // Seed, then overwrite under operationId so a real metadata record
+      // legitimately exists before the race hook fires.
+      const seed = '{"name":"v0-toctou-read-dir-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+      const realBackupFileName = path.basename(installResult.backupPath);
+
+      const metaDir = path.join(installRoot, '.pfd-backup-meta');
+
+      // Plant an attacker-controlled record, under the same leaf filename
+      // the real record uses, inside the escape directory — pointing at a
+      // backupFileName that genuinely exists under installRoot, so the
+      // separate "backup file itself doesn't exist" check can't be the
+      // reason a bad read gets rejected. This isolates the test to the
+      // directory-level recheck specifically.
+      await writeFile(
+        path.join(escapeDir, `${operationId}.json`),
+        JSON.stringify({
+          safeFilename: 'attacker.json',
+          backupFileName: realBackupFileName,
+          backupHash: 'f'.repeat(64),
+          createdAt: Date.now(),
+        }),
+        'utf8',
+      );
+
+      __setBackupMetaDirReadRaceHookForTests(async (dir) => {
+        await rm(dir, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, dir);
+      });
+
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        expect(
+          located,
+          'metadata read trusted content reached through a directory-level junction swap',
+        ).toBeNull();
+      } finally {
+        __setBackupMetaDirReadRaceHookForTests(null);
+        await rm(metaDir, { recursive: true, force: true });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + directory-swap instrumentation add I/O overhead
   );
 });
 

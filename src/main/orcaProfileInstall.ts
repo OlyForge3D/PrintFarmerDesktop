@@ -587,6 +587,65 @@ async function ensureBackupMetaDirSafe(installRoot: string): Promise<string> {
 }
 
 /**
+ * Re-verify, at the moment of use, that `metaDir` (the validated
+ * `.pfd-backup-meta` directory itself) is still a real directory and not a
+ * symlink/junction.
+ *
+ * Round-2 reviewer finding (Vasquez): `ensureBackupMetaDirSafe` validates
+ * the directory chain once, up front, but the leaf-file checks added for
+ * round 1 (`tempInfo`/`before`/`after` lstat calls) only ever inspect the
+ * *file* being written or read — never the *directory* containing it. If
+ * `.pfd-backup-meta` itself is swapped for a junction after validation but
+ * before the leaf write/read, the leaf file the temp-write or read then
+ * touches is a perfectly ordinary file sitting in the attacker's target
+ * directory, so none of the leaf-level `isSymbolicLink()` checks ever trip
+ * — the swap is invisible at the leaf.
+ *
+ * This closes that gap the same way the leaf-level checks do: by
+ * re-checking immediately adjacent to the operation rather than trusting a
+ * validation performed earlier. It cannot eliminate the single-syscall gap
+ * between this check and the very next syscall (Node's fs API has no
+ * directory-handle-relative open on Windows), but it collapses the
+ * previously large validate-once-then-use-later window down to that
+ * irreducible minimum, exactly as reviewers suggested.
+ */
+async function assertBackupMetaDirNotSwapped(metaDir: string): Promise<void> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(metaDir);
+  } catch {
+    throw makeError(
+      'pathRestricted',
+      'Backup metadata directory is missing or inaccessible.',
+    );
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw makeError(
+      'pathRestricted',
+      'Backup metadata directory was redirected; refused.',
+    );
+  }
+}
+
+/**
+ * Test-only hook invoked immediately before the write path re-verifies
+ * `metaDir` (right before creating the temp file). Lets a regression test
+ * deterministically swap `.pfd-backup-meta` itself for a junction at
+ * exactly the moment the round-2 TOCTOU window exists, proving the
+ * directory-level recheck refuses the operation rather than silently
+ * writing through the junction. No-op in production; never set outside
+ * tests.
+ */
+let backupMetaDirWriteRaceHookForTests:
+  ((metaDir: string) => Promise<void> | void) | null = null;
+
+export function __setBackupMetaDirWriteRaceHookForTests(
+  hook: ((metaDir: string) => Promise<void> | void) | null,
+): void {
+  backupMetaDirWriteRaceHookForTests = hook;
+}
+
+/**
  * Durably record which backup file a given install operation produced.
  * Overwrites any prior record for the same `operationId`: if an operation
  * is retried and produces a newer backup, that newer backup is the one
@@ -604,6 +663,13 @@ async function ensureBackupMetaDirSafe(installRoot: string): Promise<string> {
  * (including a symlink placed there in the interim) rather than following
  * it — so there is no window in which a symlink at `metaPath` causes data
  * to be written through it.
+ *
+ * Round-2 reviewer finding (Vasquez): the above closes the leaf-file race,
+ * but `.pfd-backup-meta` (the directory itself) was still validated only
+ * once, up front, by `ensureBackupMetaDirSafe`. This re-verifies `metaDir`
+ * immediately before both the temp-file creation and the rename, so a
+ * directory-level swap is caught at the point of use rather than trusted
+ * from an earlier check.
  */
 /**
  * Test-only hook invoked immediately before the atomic `rename()` in
@@ -632,6 +698,12 @@ async function writeBackupMeta(
   const metaDir = await ensureBackupMetaDirSafe(installRoot);
   const metaPath = path.join(metaDir, `${operationId}.json`);
   const tempPath = path.join(metaDir, `.pfd-meta-tmp-${randomUUID()}.json`);
+
+  if (backupMetaDirWriteRaceHookForTests) {
+    await backupMetaDirWriteRaceHookForTests(metaDir);
+  }
+  await assertBackupMetaDirNotSwapped(metaDir);
+
   await writeFile(tempPath, JSON.stringify(record), {
     encoding: 'utf8',
     flag: 'wx', // exclusive create: fails if anything (incl. a symlink) already exists there
@@ -644,6 +716,10 @@ async function writeBackupMeta(
         'Backup metadata temp file was redirected; refused.',
       );
     }
+    // Re-verify the containing directory again immediately before the
+    // rename, narrowing the window a second time rather than relying on
+    // the pre-write check alone.
+    await assertBackupMetaDirNotSwapped(metaDir);
     if (backupMetaWriteRaceHookForTests) {
       await backupMetaWriteRaceHookForTests(metaPath);
     }
@@ -676,20 +752,59 @@ export function __setBackupMetaReadRaceHookForTests(
 }
 
 /**
+ * Test-only hook invoked at the very start of `readBackupMetaFileSafely`,
+ * before the containing-directory recheck. Lets a regression test
+ * deterministically swap `.pfd-backup-meta` itself for a junction at
+ * exactly the moment the round-2 directory-level TOCTOU window exists
+ * (Vasquez), proving the directory recheck refuses the read rather than
+ * transparently following the junction to read an attacker's file that
+ * merely happens to sit at the same leaf filename. No-op in production;
+ * never set outside tests.
+ */
+let backupMetaDirReadRaceHookForTests:
+  ((metaDir: string) => Promise<void> | void) | null = null;
+
+export function __setBackupMetaDirReadRaceHookForTests(
+  hook: ((metaDir: string) => Promise<void> | void) | null,
+): void {
+  backupMetaDirReadRaceHookForTests = hook;
+}
+
+/**
  * Read `metaPath` back, refusing to trust the content if the path was (or
- * became) a symlink immediately before or immediately after the read.
+ * became) a symlink immediately before or immediately after the read, or
+ * if the containing `metaDir` itself was (or became) a symlink/junction
+ * around the read.
  *
- * This brackets the read with two independent symlink checks rather than
- * relying on a single check-then-use, closing (to the extent Node's
- * cross-platform fs API allows without `O_NOFOLLOW`, which libuv does not
- * implement on Windows) the window in which an attacker could swap the
- * metadata file for a symlink between validation and use. Any symlink
- * observed on either side of the read invalidates the result: the record
- * is treated as not found rather than trusted.
+ * This brackets the read with independent symlink checks at both the
+ * leaf-file level and the containing-directory level, rather than relying
+ * on a single check-then-use, closing (to the extent Node's cross-platform
+ * fs API allows without `O_NOFOLLOW`, which libuv does not implement on
+ * Windows, or directory-handle-relative opens, which Node does not expose
+ * at all) the window in which an attacker could swap the metadata file —
+ * or the directory containing it — between validation and use. Any
+ * symlink observed at either level, on either side of the read, invalidates
+ * the result: the record is treated as not found rather than trusted.
+ *
+ * Round-2 reviewer finding (Vasquez): round 1 only bracketed the leaf file
+ * (`metaPath`). A directory-level swap of `.pfd-backup-meta` itself is
+ * invisible to those leaf checks, because the leaf file the read then
+ * touches is a perfectly ordinary file sitting in the attacker's target
+ * directory. Bracketing `metaDir` too closes that separate gap.
  */
 async function readBackupMetaFileSafely(
+  metaDir: string,
   metaPath: string,
 ): Promise<string | null> {
+  if (backupMetaDirReadRaceHookForTests) {
+    await backupMetaDirReadRaceHookForTests(metaDir);
+  }
+  try {
+    await assertBackupMetaDirNotSwapped(metaDir);
+  } catch {
+    return null;
+  }
+
   try {
     const before = await lstat(metaPath);
     if (before.isSymbolicLink()) return null;
@@ -711,6 +826,9 @@ async function readBackupMetaFileSafely(
   try {
     const after = await lstat(metaPath);
     if (after.isSymbolicLink()) return null; // Swapped mid-read; discard.
+    // Re-verify the containing directory again immediately after the
+    // read, in case it was swapped mid-read rather than beforehand.
+    await assertBackupMetaDirNotSwapped(metaDir);
   } catch {
     return null;
   }
@@ -739,7 +857,7 @@ export async function findBackupByOperationId(
     return null; // Install root or metadata dir chain is unsafe or missing.
   }
   const metaPath = path.join(metaDir, `${operationId}.json`);
-  const raw = await readBackupMetaFileSafely(metaPath);
+  const raw = await readBackupMetaFileSafely(metaDir, metaPath);
   if (raw === null) {
     return null; // No record, or the read was not safe to trust.
   }
