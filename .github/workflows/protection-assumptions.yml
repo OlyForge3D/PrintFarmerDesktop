@@ -1,0 +1,60 @@
+name: Protection assumptions
+
+# merge-queue: publication
+#
+# Scheduler-triggered only, never runs on pull_request at all, so this
+# context MUST NOT be added to a branch ruleset's required contexts (#122's
+# deadlock).
+#
+# #491: `check:protection-assumptions` used to have no live invocation at
+# all — `scripts/check-script-reachability.mjs`'s UNENFORCED_CHECKS entry for
+# it claimed "every one of those endpoints needs admin scope that the
+# default GITHUB_TOKEN does not carry", which is true of
+# `/branches/{branch}/protection` and `/collaborators` but false of
+# `/rulesets` and `/branches?protected=true` — both return 200 to an
+# unauthenticated request against this public repository (measured). This
+# workflow deliberately does NOT pass a privileged token, so
+# `scripts/check-protection-assumptions.mjs`'s main() takes its public-tier
+# path: it checks the two assumptions that back on those two endpoints
+# (protected branches; rulesets covering feature branches — #151's actual
+# question) for real, and reports the other seven by name as
+# not-checked-no-scope rather than silently doing nothing. Provisioning an
+# admin-scoped token as a repository secret (the same shape as
+# MERGE_QUEUE_CONTEXTS_TOKEN in ci.yml) would let this same step check all
+# nine; that remains a separate, deliberate decision.
+
+on:
+  schedule:
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protection-assumptions:
+    name: Re-check the premises of #111 and #151 (public tier)
+    runs-on: ubuntu-latest
+    # A moved public-tier premise is a report, not a merge-blocking failure —
+    # nothing in this repository requires this context, and it must stay that
+    # way (see the merge-queue note above). A finding is still visible in the
+    # run log and the job's own conclusion; continue-on-error only stops it
+    # from being read as a required check by anything that might later be
+    # tempted to add it as one.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: development
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Deliberately no GITHUB_TOKEN / GH_TOKEN in env: this is the public
+      # tier, and the point is to prove it runs without one. A privileged
+      # token would take the full nine-assumption path instead and this
+      # workflow does not have one to give it.
+      - name: Re-check public-tier protection assumptions
+        run: npm run check:protection-assumptions
