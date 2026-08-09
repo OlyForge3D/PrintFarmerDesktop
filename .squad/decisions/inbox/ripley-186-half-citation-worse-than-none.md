@@ -188,16 +188,22 @@ A fifth review pass (Vasquez, PR #661; Ralph independently confirmed live via
 `gh api repos/OlyForge3D/PrintFarmerDesktop/branches/main` returning 404) found
 that the `event_name == 'push'` restriction above closes the PR-review-bypass
 path but not a second one: `ci.yml:26`'s top-level trigger (pre-existing,
-untouched by this fix) lists `branches: [development, main]`, but `main` does
-not exist in this repository yet. Anyone with push access could create `main`
-and push attacker-controlled content directly to it — bypassing PR review
-entirely — and that push still satisfies `event_name == 'push'`, with
-`actions/checkout@v4` still checking out exactly that unreviewed content and
-handing it the token. The fix adds a second, independent condition to the step
-itself, `github.ref == 'refs/heads/development'` (`ci.yml:468`): defense in
-depth on top of the event-name gate, not a replacement for it, so the step
-will not run over a push to `main` even once `main` exists, until this
-condition is deliberately revisited alongside real branch protection on it.
+untouched by the round-4 fix) listed `branches: [development, main]`, but
+`main` did not exist in this repository. Anyone with push access could create
+`main` and push attacker-controlled content directly to it — bypassing PR
+review entirely — and that push would still satisfy `event_name == 'push'`,
+with `actions/checkout@v4` still checking out exactly that unreviewed content
+and handing it the token. Two changes close this, deliberately redundant with
+each other, though they landed in two separate PRs rather than together: PR
+#661 shipped the step-level `github.ref == 'refs/heads/development'` condition
+(`ci.yml:505` at that head), so the step will not run over a push to `main`
+regardless of what the top-level trigger lists — that version was reviewed
+unanimously and merged (`79c99edd`), on the judgment that the ref-pin alone
+was sufficient to close the exposure. PR #668, a small follow-up opened after
+#661 merged, additionally drops `main` from the `on.push.branches` list
+itself (`ci.yml:26`), removing the unused/exposed trigger entry at its source
+instead of relying only on the downstream guard — defense-in-depth, not a fix
+to a gap that was still open at #661's merge.
 
 **A member is licensed — and expected — to falsify a constraint in their own
 brief and report it, without needing permission first.** Bishop did this in

@@ -478,9 +478,13 @@ describe('CI is safe to run under a merge queue', () => {
     );
   });
 
-  it('still restricts push runs to the two long-lived branches', () => {
+  it('still restricts push runs to the one real long-lived branch', () => {
+    // `main` was dropped (PR #661 review round 5): it is not a real branch
+    // in this repo yet, and listing it here let anyone with push access
+    // create one and push attacker-controlled content straight to it,
+    // bypassing PR review while still triggering this workflow's push path.
     expect(topLevelSection(ciWorkflow, 'on')).toContain(
-      '    branches: [development, main]',
+      '    branches: [development]',
     );
   });
 
