@@ -210,12 +210,15 @@ git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-work
 git merge-base --is-ancestor 9991065e origin/development
 # exit 0  <-- correct: the squash commit itself is on development
 
-# 4. Negative control: same content-diff predicate against a path with no relation to #561
-# (scripts/check-merge-landed.mjs is not in `gh pr diff 561 --name-only`'s file list)
-git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 origin/development -- scripts/check-merge-landed.mjs
-# nonzero output <-- correctly reports "not shipped" for content that was never merged,
-# confirming the predicate in step 2 has real discriminating power rather than always
-# reporting "shipped"
+# 4. Negative control: same diff shape as step 2 (a real held-ish ref vs. a real landed
+# ref, scoped to one path) — applied to a path unrelated to #561
+# (scripts/check-merge-landed.mjs is not in `gh pr diff 561 --name-only`'s file list).
+# 5baba942 is the merge commit of PR #425, an ancestor of origin/development that
+# predates scripts/check-merge-landed.mjs's own creation entirely.
+git diff 5baba9420c3762e5ad68fd25baf0cd61fb8e31ce origin/development -- scripts/check-merge-landed.mjs
+# nonzero output <-- correctly reports "not shipped": the held ref has none of this
+# file's content at all, confirming the predicate in step 2 has real discriminating
+# power rather than always reporting "shipped"
 ```
 
 Step 1 and step 3 name the same repository state and disagree only because one names the
