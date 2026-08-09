@@ -98,7 +98,7 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
   'scripts/check-dated-measurement.mjs':
     'A comment quotes `gh issue list --label squad --state open` as one of two ' +
     'worked, dated examples of #462 (a stale claim composed between a read and ' +
-    'a send). It is prose describing a past incident\'s output, not a command ' +
+    "a send). It is prose describing a past incident's output, not a command " +
     'this file executes -- fetchLiveUpdatedAt() reads `issues/{n}` per object, ' +
     'never a label list. A scan that cannot tell "quoted as an example" from ' +
     '"executed" would either need to parse comments out of every scanned ' +

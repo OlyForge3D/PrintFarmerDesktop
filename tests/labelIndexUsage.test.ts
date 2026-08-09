@@ -28,7 +28,7 @@ const SEARCH_API_SNIPPET =
 // script that reads labels correctly (check-sequencing-hold.mjs,
 // lift-hold-on-close.mjs's fetchPullRequest) would fail this check.
 const OBJECT_READ_SNIPPET =
-  "fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`)";
+  'fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`)';
 
 describe('scanLabelIndexUsage', () => {
   it('flags gh pr list --label as an unlisted violation', () => {
@@ -43,9 +43,7 @@ describe('scanLabelIndexUsage', () => {
 
   it('flags gh issue list --label as an unlisted violation', () => {
     const { violations } = scanLabelIndexUsage({
-      files: [
-        { path: 'scripts/example.mjs', contents: GH_ISSUE_LIST_SNIPPET },
-      ],
+      files: [{ path: 'scripts/example.mjs', contents: GH_ISSUE_LIST_SNIPPET }],
     });
     expect(violations).toHaveLength(1);
     expect(violations[0]!.matches).toContain('gh issue list --label');
@@ -91,9 +89,7 @@ describe('scanLabelIndexUsage', () => {
 
   it('permits a matched file present in the allowlist with a real reason', () => {
     const { violations, allowlisted } = scanLabelIndexUsage({
-      files: [
-        { path: 'scripts/example.mjs', contents: SEARCH_API_SNIPPET },
-      ],
+      files: [{ path: 'scripts/example.mjs', contents: SEARCH_API_SNIPPET }],
       allowlist: { 'scripts/example.mjs': 'a written reason' },
     });
     expect(violations).toEqual([]);
@@ -108,9 +104,7 @@ describe('scanLabelIndexUsage', () => {
     'rejects an allowlist entry with an empty reason (%j)',
     (emptyReason) => {
       const { violations, allowlisted } = scanLabelIndexUsage({
-        files: [
-          { path: 'scripts/example.mjs', contents: SEARCH_API_SNIPPET },
-        ],
+        files: [{ path: 'scripts/example.mjs', contents: SEARCH_API_SNIPPET }],
         allowlist: { 'scripts/example.mjs': emptyReason },
       });
       expect(allowlisted).toEqual([]);
@@ -187,9 +181,9 @@ describe('ALLOWED_LABEL_INDEX_USAGE', () => {
     expect(ALLOWED_LABEL_INDEX_USAGE).toHaveProperty(
       'scripts/lift-hold-on-close.mjs',
     );
-    expect(ALLOWED_LABEL_INDEX_USAGE['scripts/lift-hold-on-close.mjs']).toContain(
-      're-read',
-    );
+    expect(
+      ALLOWED_LABEL_INDEX_USAGE['scripts/lift-hold-on-close.mjs'],
+    ).toContain('re-read');
   });
 });
 
