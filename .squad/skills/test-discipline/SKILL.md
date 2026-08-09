@@ -30,6 +30,15 @@ Prove the passing side at the **documented legitimate maximum**, not at a comfor
 
 Also pin the boundary _adjacently_. A far-under case does not constrain the comparison operator: testing `MAX + 50` rejects and `5,000` passes leaves an off-by-one at `MAX` undetected. One of the two cases must sit next to the limit.
 
+## Check the predicate answers the question you asked
+
+Before trusting any matching or ancestry check in a test or assertion,
+check it against `.squad/known-lying-commands.md`. A predicate can return a
+confident, well-formed answer to a neighbouring question — PowerShell
+`.Contains()` doing element-equality on a `--jq` array, `git branch -a
+--contains` proving reachability instead of tip-ness — with nothing in the
+output to tell you it happened.
+
 ## Assert the specific failure, not merely that something failed
 
 `assert!(result.is_err())` passes when an unrelated earlier failure occurs, so it can pass while the control you meant to test never runs. Assert the exact diagnostic code (`threemf.limit.compression_ratio`), not just the presence of an error.
