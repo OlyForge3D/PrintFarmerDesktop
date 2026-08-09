@@ -6,10 +6,14 @@ name: CI
 # is the only class whose contexts may appear in a branch ruleset. See #122 for
 # what happens otherwise. scripts/check-merge-queue-contexts.mjs holds that
 # classification, enforced on every pull request by tests/mergeQueueReadiness.test.ts
-# under `npm run test`; its comparison against live branch protection runs in
-# CI too, as the "Check merge-queue required contexts against live branch
+# under `npm run test`; its comparison against live branch protection is wired
+# into the "Check merge-queue required contexts against live branch
 # protection" step in the `advisories` job below (#186, #472 — that
-# comparison used to run only by hand).
+# comparison used to have no call site at all). That step only actually
+# compares once a MERGE_QUEUE_CONTEXTS_TOKEN secret with repo-admin read is
+# configured — GITHUB_TOKEN cannot read branch protection regardless of
+# `permissions:` grants — and reports that precondition plainly otherwise;
+# see the step's own comment for why.
 
 on:
   push:
@@ -349,15 +353,6 @@ jobs:
   advisories:
     name: Dependency advisories
     runs-on: ubuntu-latest
-    # `administration: read` is the one job-level permission that differs
-    # from the top-level `contents: read` above. It exists for the new step
-    # below alone: reading `branches/{branch}/protection` is documented by
-    # GitHub as requiring repo-administration read access, not just
-    # `contents`. Scoped to this job rather than added top-level so no other
-    # job's token carries it.
-    permissions:
-      contents: read
-      administration: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -424,18 +419,34 @@ jobs:
       # that report under merge_group) emit against development's actual
       # required branch-protection contexts. `evaluateWorkflowClassification`
       # (the offline half, deterministic) already runs under `npm run test`
-      # via tests/mergeQueueReadiness.test.ts; this step is what was missing —
-      # before it existed, four workflow header comments described this
-      # comparison as enforced and nothing invoked it (measured exactly by
-      # tests/enforcementCitations.test.ts). `continue-on-error` because this
-      # is the first CI run asking GITHUB_TOKEN's `administration: read`
-      # scope to read branch protection here — if that scope turns out to be
-      # insufficient, this step goes red on its own without taking the
-      # required "Dependency advisories" context down with it, and the exact
-      # reason is in this step's own log rather than silent.
+      # via tests/mergeQueueReadiness.test.ts; before this step existed, four
+      # workflow header comments described the live half as enforced and
+      # nothing invoked it (measured exactly by
+      # tests/enforcementCitations.test.ts).
+      #
+      # GET /repos/{owner}/{repo}/branches/{branch}/protection requires the
+      # calling token to have repo-admin read access, and there is no
+      # `administration` key in the `permissions:` block available to
+      # GITHUB_TOKEN (`administration: read` was tried here and rejected the
+      # whole workflow at load time — Hicks, PR #661 review, run 31313684210
+      # — GITHUB_TOKEN cannot be granted this regardless of what the
+      # `permissions:` block says, since it isn't one of the scopes that
+      # block accepts). So this step is real and runs on every non-docs-only
+      # pull request, but until a PAT or GitHub App token with admin read is
+      # added as the MERGE_QUEUE_CONTEXTS_TOKEN secret, it can only report
+      # that precondition — it does not silently claim success, and it does
+      # not run at all without the guard clause below turning that absence
+      # into a visible, one-line reason rather than a raw 403 in the script's
+      # stack trace. `continue-on-error` keeps either outcome from taking the
+      # required "Dependency advisories" context down with it.
       - name: Check merge-queue required contexts against live branch protection
         if: steps.changes.outputs.docs_only != 'true'
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run check:merge-queue-contexts
+          MERGE_QUEUE_CONTEXTS_TOKEN: ${{ secrets.MERGE_QUEUE_CONTEXTS_TOKEN }}
+        run: |
+          if [ -z "$MERGE_QUEUE_CONTEXTS_TOKEN" ]; then
+            echo "::warning::MERGE_QUEUE_CONTEXTS_TOKEN is not set, so the live half of scripts/check-merge-queue-contexts.mjs cannot run here. GITHUB_TOKEN cannot read branch protection (GitHub requires repo-admin read for that endpoint, and 'administration' is not a valid GITHUB_TOKEN permissions key). Add a PAT or GitHub App installation token with admin:read on this repo as the MERGE_QUEUE_CONTEXTS_TOKEN secret to make this step compare live required contexts."
+            exit 0
+          fi
+          GITHUB_TOKEN="$MERGE_QUEUE_CONTEXTS_TOKEN" npm run check:merge-queue-contexts

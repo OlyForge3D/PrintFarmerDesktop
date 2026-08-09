@@ -105,7 +105,25 @@ pull request that touches more than documentation," not "every pull
 request" — the two are different claims, and this file exists because that
 distinction is exactly the kind that gets lost in restatement.
 
-## AC2 (unchanged)
+The wiring itself needed a second correction mid-review, on the same theme.
+The first version gave the `advisories` job `permissions: administration:
+read`, reasoning that reading `branches/{branch}/protection` needed a scope
+`contents: read` didn't cover. `administration` is not a valid
+`permissions:` key at all — GitHub Actions rejected the whole workflow at
+load time (Hicks, PR #661 review, run `31313684210`), which took down every
+check-run context on the PR, the opposite of what a "citations must be
+accurate" fix should do. And re-spelling it correctly would not have helped:
+that endpoint requires the calling token to hold repo-admin read access,
+which `GITHUB_TOKEN` cannot be granted through `permissions:` regardless of
+which key is named, because "grant GITHUB_TOKEN admin on its own repo" is
+not a thing that block can express. The corrected step drops the invalid
+permission and reads an optional `MERGE_QUEUE_CONTEXTS_TOKEN` secret; absent
+that secret it prints a one-line `::warning::` naming exactly this
+precondition and exits, rather than crashing the workflow or silently
+reporting success. It is still true that the step runs on every
+non-docs-only pull request — what it cannot yet do, until someone provisions
+that secret, is complete the comparison. A citation to this step should say
+so plainly, not round up to "and therefore verifies."
 
 **A member is licensed — and expected — to falsify a constraint in their own
 brief and report it, without needing permission first.** Bishop did this in
