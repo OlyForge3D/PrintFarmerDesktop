@@ -335,7 +335,7 @@ import {
   __setIdentityPinPreOpenHookForTests,
   __setIdentityPinPostOpenHookForTests,
   __setFindBackupByOperationIdPreRevalidateHookForTests,
-  __setReadBackupFileWithRootPinRaceHookForTests,
+  __setReadFileWithRootPinRaceHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -1198,7 +1198,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'restoreOrcaProfileWindows refuses to restore through an install root swapped in the narrowest possible window inside readBackupFileWithRootPin itself (round-6 identity-based ancestor check)',
+    'restoreOrcaProfileWindows refuses to restore through an install root swapped in the narrowest possible window inside readFileWithRootPin itself (round-6 identity-based ancestor check)',
     async () => {
       // Reviewer finding (Vasquez, round 6): the round-4 fix validated
       // the ancestor directory in restoreOrcaProfileWindows via a
@@ -1208,7 +1208,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       // which installRoot could be swapped again. This test targets that
       // exact narrowest point: the ancestor check and the leaf's
       // identity-pinned read are now fused into one function
-      // (readBackupFileWithRootPin), and the swap is injected via a
+      // (readFileWithRootPin), and the swap is injected via a
       // dedicated test hook immediately after that function captures
       // installRoot's own identity but before it lstats backupPath's
       // parent directory — the tightest gap the fused check has left,
@@ -1253,7 +1253,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         realBackupBytes,
       );
 
-      __setReadBackupFileWithRootPinRaceHookForTests(async () => {
+      __setReadFileWithRootPinRaceHookForTests(async () => {
         await rm(installRoot, { recursive: true, force: true });
         await makeDirReparsePoint(escapeDir, installRoot);
       });
@@ -1270,7 +1270,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
           'restore wrote/read through a mid-check-swapped install root',
         ).toEqual([path.basename(backupPath)]);
       } finally {
-        __setReadBackupFileWithRootPinRaceHookForTests(null);
+        __setReadFileWithRootPinRaceHookForTests(null);
         await rm(installRoot, { recursive: true, force: true });
         await mkdir(installRoot, { recursive: true });
         await writeFile(backupPath, realBackupBytes, { flag: 'w' });
@@ -1419,6 +1419,133 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       } finally {
         __setFindBackupByOperationIdPreRevalidateHookForTests(null);
         await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(metaPath, JSON.stringify(rawRecord));
+        await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'findBackupByOperationId refuses a metadata record read through an install root swapped mid-read, even when a later re-check would see the genuine root again (round-7: forged safeFilename via metadata-read TOCTOU)',
+    async () => {
+      // Reviewer finding (Vasquez, round 7): the round-5 fix above only
+      // re-validated installRoot immediately before findBackupByOperationId's
+      // own last use of it (building/lstat-ing backupPath). It did not
+      // protect the *metadata read* itself, which still went through
+      // readFileWithIdentityPin(metaPath) directly with no ancestor check of
+      // its own. That let an attacker: (1) swap installRoot for a junction
+      // right as the metadata read begins, serving a forged record with a
+      // genuine backupFileName (copied from the real record, so it still
+      // resolves to the real backup bytes) but an attacker-chosen
+      // safeFilename; (2) swap the real installRoot back before the later
+      // re-validation runs, so that check sees the legitimate root and
+      // passes — while the poisoned safeFilename had already been captured.
+      // The result: restoreOrcaProfileWindows would go on to write genuine,
+      // hash-verified backup bytes to the attacker's chosen destination
+      // filename instead of the real one.
+      //
+      // This test simulates the swap happening at the narrowest possible
+      // point — inside readFileWithRootPin's own race window, which is now
+      // where the metadata read's ancestor check happens (round-7 fix) —
+      // and confirms the metadata read itself refuses to trust a record
+      // reached through a swapped root, rather than only checking
+      // afterwards whether the root eventually looks fine again.
+      const safeFilename = 'toctou_meta_read_root_swap_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-meta-read-root-swap"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `meta-read-root-swap-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      // A backup (and its metadata record) is only produced when a prior
+      // file already exists at safeFilename, so seed one first.
+      const seed = '{"name":"v0-toctou-meta-read-root-swap-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const metaFileName = `.pfd-op-${operationId}.json`;
+      const metaPath = path.join(installRoot, metaFileName);
+      const rawRecord = JSON.parse(await readFile(metaPath, 'utf8')) as {
+        safeFilename: string;
+        backupFileName: string;
+      };
+      const realBackupPath = path.join(installRoot, rawRecord.backupFileName);
+      const realBackupBytes = await readFile(realBackupPath);
+
+      // Forged metadata: genuine backupFileName (so it still points at the
+      // real, hash-verifiable backup) but an attacker-chosen safeFilename —
+      // the exact combination Vasquez's repro used to redirect the restore
+      // destination.
+      const forgedRecord = {
+        ...rawRecord,
+        safeFilename: 'attacker.json',
+      };
+      await writeFile(
+        path.join(escapeDir, metaFileName),
+        JSON.stringify(forgedRecord),
+      );
+      await writeFile(
+        path.join(escapeDir, rawRecord.backupFileName),
+        realBackupBytes,
+      );
+
+      // Swap installRoot for the escape directory at the narrowest point:
+      // inside readFileWithRootPin's own race window, mid-read of the
+      // metadata file. Swap back to the genuine root right after the leaf
+      // file is opened (still through the swapped junction) but before its
+      // content is returned — reproducing the exact "swap in, read forged
+      // data through the open handle, swap back before the next check"
+      // pattern from Vasquez's report, so any *later* re-validation
+      // (backupPath's own check) sees the legitimate root again.
+      let swappedIn = false;
+      __setReadFileWithRootPinRaceHookForTests(async () => {
+        if (swappedIn) return; // Only swap once: the meta read's own call.
+        swappedIn = true;
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      __setIdentityPinPostOpenHookForTests(async (filePath) => {
+        if (filePath !== metaPath) return;
+        // The file handle is already open against the escape directory's
+        // forged metadata; swapping back now does not change what that
+        // handle reads, but does make the *next* path-based check
+        // (findBackupByOperationId's later root re-validation) see the
+        // genuine root again.
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(metaPath, JSON.stringify(rawRecord));
+        await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });
+      });
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        expect(
+          located?.safeFilename,
+          'returned an attacker-chosen safeFilename read through a mid-read install root swap',
+        ).not.toBe('attacker.json');
+      } finally {
+        __setReadFileWithRootPinRaceHookForTests(null);
+        __setIdentityPinPostOpenHookForTests(null);
+        // The hook itself already swapped the real root out; restore it
+        // regardless of whether the swap happened mid-test.
+        await rm(installRoot, { recursive: true, force: true }).catch(() => {});
         await mkdir(installRoot, { recursive: true });
         await writeFile(metaPath, JSON.stringify(rawRecord));
         await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });

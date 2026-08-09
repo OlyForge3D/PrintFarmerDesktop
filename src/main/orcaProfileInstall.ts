@@ -913,28 +913,32 @@ async function readFileWithIdentityPin(
 }
 
 /**
- * Test-only hook invoked by `readBackupFileWithRootPin` immediately after
- * it captures `canonicalInstallRoot`'s device+inode, but before it lstats
- * `backupPath`'s parent directory. Lets a regression test swap the parent
- * for a junction at exactly this point, deterministically simulating the
- * narrowest possible ancestor-directory race (see that function's doc
- * comment). No-op in production; never set outside tests.
+ * Test-only hook invoked by `readFileWithRootPin` immediately after it
+ * captures `canonicalInstallRoot`'s device+inode, but before it lstats
+ * the target file's parent directory. Lets a regression test swap the
+ * parent for a junction at exactly this point, deterministically
+ * simulating the narrowest possible ancestor-directory race (see that
+ * function's doc comment). No-op in production; never set outside tests.
  */
-let readBackupFileWithRootPinRaceHookForTests:
-  (() => Promise<void> | void) | null = null;
+let readFileWithRootPinRaceHookForTests: (() => Promise<void> | void) | null =
+  null;
 
-export function __setReadBackupFileWithRootPinRaceHookForTests(
+export function __setReadFileWithRootPinRaceHookForTests(
   hook: (() => Promise<void> | void) | null,
 ): void {
-  readBackupFileWithRootPinRaceHookForTests = hook;
+  readFileWithRootPinRaceHookForTests = hook;
 }
 
 /**
- * Read `backupPath`'s bytes, refusing to trust them unless (a) the
- * directory that actually contains `backupPath` has the same on-disk
+ * Read `filePath`'s bytes, refusing to trust them unless (a) the
+ * directory that actually contains `filePath` has the same on-disk
  * identity (device+inode) as `canonicalInstallRoot` at the moment this
  * function runs, and (b) the leaf file's own identity survives a
- * swap-in/swap-back around the read (`readFileWithIdentityPin`).
+ * swap-in/swap-back around the read (`readFileWithIdentityPin`). Used for
+ * both the durable backup-metadata record and the backup file itself at
+ * restore time — both need exactly this protection, and both used to
+ * duplicate it (as `readBackupFileWithRootPin`, restore-only) until a
+ * round-7 finding showed the metadata-read call site needed it too.
  *
  * Round-6 reviewer finding (Vasquez): the previous approach validated the
  * ancestor directory in the *caller* — via a separately computed
@@ -943,16 +947,32 @@ export function __setReadBackupFileWithRootPinRaceHookForTests(
  * as an entirely distinct step. Folding both checks into one function
  * closes two things at once: it removes any chance of unrelated logic
  * being interposed between the ancestor check and the leaf read by a
- * caller that does other work around this call (a real risk in a function
- * like `restoreOrcaProfileWindows`), and it switches the ancestor check
- * itself from a resolved-*path-string* comparison to a device+inode
- * *identity* comparison — the same primitive the OS itself uses to decide
- * whether two opens reference the same object, and strictly stronger than
- * comparing canonicalized path strings (which can be fooled by anything
- * that normalizes two different strings to the same text, the exact class
- * of surprise a Windows CI runner's 8.3/short-name behavior already
- * produced once in this file's history for a legitimate, non-attacked
- * path).
+ * caller that does other work around this call, and it switches the
+ * ancestor check itself from a resolved-*path-string* comparison to a
+ * device+inode *identity* comparison — the same primitive the OS itself
+ * uses to decide whether two opens reference the same object, and
+ * strictly stronger than comparing canonicalized path strings (which can
+ * be fooled by anything that normalizes two different strings to the same
+ * text, the exact class of surprise a Windows CI runner's 8.3/short-name
+ * behavior already produced once in this file's history for a legitimate,
+ * non-attacked path).
+ *
+ * Round-7 reviewer finding (Vasquez): this protection originally only
+ * covered the backup *file* read in `restoreOrcaProfileWindows`. But
+ * `findBackupByOperationId` reads the durable *metadata* record first —
+ * via `resolveBackupMetaPath`'s one-time validation — and that metadata
+ * read was still only leaf-identity-pinned (`readFileWithIdentityPin`
+ * directly), not ancestor-pinned. A swap landing between
+ * `resolveBackupMetaPath`'s validation and the metadata read let an
+ * attacker serve a forged metadata record (attacker-chosen `safeFilename`,
+ * genuine `backupFileName` copied from the real record) through the
+ * swapped directory, then swap the real directory back before the later
+ * `ensureInstallRootSafeCanonical` re-check — which then saw the
+ * legitimate root and passed, while `record.safeFilename` was already
+ * poisoned. Renamed this function (from `readBackupFileWithRootPin`) and
+ * routed the metadata read through it too, so both leaf reads this module
+ * performs get the same ancestor-plus-leaf protection, at the point each
+ * one actually happens rather than trusting an earlier validation.
  *
  * This does **not** — and, using only Node's public, portable `fs` API on
  * Windows, cannot — eliminate the residual window between this function's
@@ -969,9 +989,9 @@ export function __setReadBackupFileWithRootPinRaceHookForTests(
  * (e.g. an addon calling `NtCreateFile` against a held directory handle),
  * not anything expressible through portable Node.
  */
-async function readBackupFileWithRootPin(
+async function readFileWithRootPin(
   canonicalInstallRoot: string,
-  backupPath: string,
+  filePath: string,
 ): Promise<Buffer | null> {
   let rootStat: { dev: bigint; ino: bigint };
   try {
@@ -982,41 +1002,60 @@ async function readBackupFileWithRootPin(
     return null;
   }
 
-  if (readBackupFileWithRootPinRaceHookForTests) {
-    await readBackupFileWithRootPinRaceHookForTests();
+  if (readFileWithRootPinRaceHookForTests) {
+    await readFileWithRootPinRaceHookForTests();
   }
 
   let parentStat: { dev: bigint; ino: bigint };
   try {
-    const stat = await lstat(path.dirname(backupPath), { bigint: true });
+    const stat = await lstat(path.dirname(filePath), { bigint: true });
     if (stat.isSymbolicLink()) return null;
     parentStat = { dev: stat.dev, ino: stat.ino };
   } catch {
     return null;
   }
   if (parentStat.dev !== rootStat.dev || parentStat.ino !== rootStat.ino) {
-    // backupPath's actual parent is not, in fact, the validated install
-    // root — whether due to a swap or a miscomputed backupPath. Refuse
-    // without ever touching the leaf file.
+    // filePath's actual parent is not, in fact, the validated install
+    // root — whether due to a swap or a miscomputed path. Refuse without
+    // ever touching the leaf file.
     return null;
   }
-  return await readFileWithIdentityPin(backupPath);
+  return await readFileWithIdentityPin(filePath);
 }
 
 /**
- * Read `metaPath` back, refusing to trust the content unless the leaf
- * file's identity matches what was validated immediately beforehand (via
- * `readFileWithIdentityPin`, which is immune to a swap-in/swap-back around
- * the read — see its doc comment for the round-3 finding that motivated
- * it). `metaPath` lives directly in the (once, freshly re-validated)
- * install root, the same protection level already accepted for real
- * profile/backup reads, so there is no separate containing-directory
- * bracket to maintain here.
+ * Read the durable metadata record at `metaPath` back, refusing to trust
+ * the content unless (a) `metaPath`'s actual parent directory identity
+ * matches a *freshly* re-validated `installRoot` at the moment of the
+ * read, and (b) the leaf file's own identity survives a swap-in/swap-back
+ * around the read. Both are enforced by `readFileWithRootPin` — see its
+ * doc comment for the full history.
+ *
+ * Round-7 reviewer finding (Vasquez): this used to trust `metaPath` as
+ * computed by `resolveBackupMetaPath`'s one-time validation, several
+ * `await`s before this function's own read — reading only leaf-identity
+ * (`readFileWithIdentityPin(metaPath)` directly), with no ancestor check
+ * of its own. A swap landing in that gap let a forged metadata record
+ * (attacker-chosen `safeFilename`, genuine `backupFileName` copied from
+ * the real record) be read as if legitimate, then the real directory
+ * swapped back before `findBackupByOperationId`'s later root re-check —
+ * which then saw the legitimate root and passed, while the poisoned
+ * `safeFilename` had already been captured. This now re-validates
+ * `installRoot` fresh, immediately before this exact read, rather than
+ * trusting the validation `resolveBackupMetaPath` performed earlier for a
+ * different purpose (constructing `metaPath`'s string).
  */
 async function readBackupMetaFileSafely(
+  installRoot: string,
   metaPath: string,
 ): Promise<string | null> {
-  const bytes = await readFileWithIdentityPin(metaPath);
+  let canonicalInstallRoot: string;
+  try {
+    canonicalInstallRoot = await ensureInstallRootSafeCanonical(installRoot);
+  } catch {
+    return null;
+  }
+  const bytes = await readFileWithRootPin(canonicalInstallRoot, metaPath);
   if (bytes === null) {
     return null; // No record at this path, or the read was not safe to trust.
   }
@@ -1054,7 +1093,7 @@ export async function findBackupByOperationId(
   } catch {
     return null; // Install root is unsafe or missing.
   }
-  const raw = await readBackupMetaFileSafely(metaPath);
+  const raw = await readBackupMetaFileSafely(installRoot, metaPath);
   if (raw === null) {
     return null; // No record, or the read was not safe to trust.
   }
@@ -1145,7 +1184,7 @@ export async function findBackupByOperationId(
  * `realpath(dirname(backupPath))` string comparison, and only called
  * `readFileWithIdentityPin` as a distinct, later step — leaving a small
  * but real window between the two in which the install root could be
- * swapped again. Both checks now happen inside `readBackupFileWithRootPin`
+ * swapped again. Both checks now happen inside `readFileWithRootPin`
  * (see its doc comment for the full reasoning): the ancestor check is
  * identity-based (device+inode) rather than string-based, and it is
  * issued immediately before the leaf's own identity-pinned read with no
@@ -1176,7 +1215,7 @@ export async function restoreOrcaProfileWindows(
   // backup file itself is not a symlink at the moment it is actually
   // opened (identity-pinned; see `readFileWithIdentityPin`), and that its
   // content matches the expected hash.
-  const backupBytes = await readBackupFileWithRootPin(
+  const backupBytes = await readFileWithRootPin(
     canonicalInstallRoot,
     backupPath,
   );
