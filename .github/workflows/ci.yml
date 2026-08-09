@@ -33,20 +33,45 @@ on:
   merge_group:
 
 concurrency:
-  # Unique per pull request AND per merge-queue entry. `github.ref` is
-  # `refs/pull/N/merge` for a pull_request, and
+  # Unique per pull request AND per merge-queue entry, as before: `github.ref`
+  # is `refs/pull/N/merge` for a pull_request, and
   # `refs/heads/gh-readonly-queue/<base>/pr-N-<sha>` for a merge_group, so two
   # queued entries never share a group and cannot cancel one another -- the
   # failure mode tests/ciWorkflowTriggers.test.ts bans the unkeyed form for.
-  group: ci-${{ github.ref }}
+  #
+  # `github.event_name` is now also part of the key (#555). It was not before:
+  # `ci-${{ github.ref }}` keys purely on the ref, and for EVERY push to
+  # `development` or `main` that ref is the same (`refs/heads/development`,
+  # `refs/heads/main`), so all trunk-push runs shared one group.
+  # `cancel-in-progress: false` only protects the run that is *in progress*; it
+  # does not protect a run that is *pending*. GitHub cancels a previously
+  # pending run in a group outright when a third run queues behind it,
+  # regardless of `cancel-in-progress` -- that eviction is not conditioned on
+  # this flag at all. Three quick pushes to trunk (A running, B pending, C
+  # queuing) evict B with no conclusion, so no CI result for commit B ever
+  # exists.
+  #   Before: group(push A) == group(push B) == group(push C)
+  #           == `ci-refs/heads/development`
+  #   After:  group(push A) == `ci-push-refs/heads/development-<sha_A>`
+  #           group(push B) == `ci-push-refs/heads/development-<sha_B>`
+  #           all distinct, so none can evict another.
+  # `github.sha` is folded into the key for every non-pull_request event, so
+  # every push and every merge_group entry gets its own group and can never
+  # collide with -- or evict -- another run, of any trigger type, including
+  # another run of the *same* trigger type. A pull_request's group
+  # intentionally still varies only by ref (not sha): a new commit on the same
+  # PR keeps the same group on purpose, so `cancel-in-progress: true` below
+  # can supersede the stale run.
+  group: ci-${{ format('{0}-{1}-{2}', github.event_name, github.ref, github.event_name != 'pull_request' && github.sha || '') }}
   # Only a pull_request run may be cancelled. A merge_group entry must reach a
   # conclusion: `cancelled` is not a success conclusion, so cancelling one
   # evicts the entry from the queue for a reason unrelated to its own changes.
   # Push runs on the long-lived branches are release inputs and are likewise
-  # never cancelled. Superseding a stale pull_request run is the entire point:
-  # without it a run that is still in flight when its head is replaced still
-  # publishes a green, and that green is attributed to a commit that is no
-  # longer the head (#405).
+  # never cancelled -- and, as of #555, never even queued behind one another in
+  # the same group, so there is nothing pending for GitHub to evict either.
+  # Superseding a stale pull_request run is the entire point: without it a run
+  # that is still in flight when its head is replaced still publishes a green,
+  # and that green is attributed to a commit that is no longer the head (#405).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
