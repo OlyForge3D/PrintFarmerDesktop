@@ -112,6 +112,29 @@ permissions:
 # real `success` conclusion. Only steps a prose edit cannot affect stand down.
 # `scripts/docs-only-change.mjs` decides, and resolves every uncertainty toward
 # the full build.
+#
+# Docs-and-tests tier (#623).
+#
+# A change confined to documentation and `tests/` needs the test run --
+# `Desktop`'s `Test` step is a documentation check in its own right, see the
+# comment on the `Format check` / `Test` steps below -- but it cannot affect
+# the sidecar, the packaged release build, or the dependency set. PR #620
+# changed one PR_CLOSES.md line, one decisions.md entry and added a 192-line
+# test file, and ran the full matrix anyway: ~30 minutes of `Sidecar`,
+# `Release package` and `Dependency advisories` compute with no signal.
+#
+# `docs_and_tests` (from the same `scripts/docs-only-change.mjs` step) is a
+# SUPERSET of `docs_only`: every path `docs_only` admits, `docs_and_tests`
+# admits too, plus anything under `tests/`. That containment is why `Desktop`
+# below is untouched by this tier -- its heavy steps already gate on
+# `docs_only` alone, and a change that is docs-and-tests but not docs-only, by
+# construction, contains a `tests/` file, so `docs_only` is already `false`
+# and those steps already run. Only `Sidecar`, `Release package` and
+# `Dependency advisories` gain a second condition, `docs_and_tests != 'true'`,
+# alongside their existing `docs_only != 'true'`: standing down on EITHER
+# tier, exactly as `Desktop` already does for `docs_only` alone. The manifest
+# denylist in `scripts/docs-only-change.mjs` is shared by both predicates, so
+# a dependency manifest can reach neither tier.
 jobs:
   desktop:
     name: Desktop (${{ matrix.os }})
@@ -209,45 +232,45 @@ jobs:
         run: node scripts/docs-only-change.mjs
 
       - name: Install Rust
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - name: Format check
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo fmt --check
 
       - name: Clippy
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Clippy (sqlite feature)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo clippy --locked --all-targets --features sqlite -- -D warnings
 
       - name: Clippy (step feature)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo clippy --locked --all-targets --features step -- -D warnings
 
       - name: Test
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo test --locked
 
       - name: Test (sqlite feature)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo test --locked --features sqlite
 
       - name: Test (step feature)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo test --locked --features step
 
       - name: Build (lib3mf feature)
-        if: steps.changes.outputs.docs_only != 'true' && runner.os == 'Windows'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'Windows'
         run: cargo build --locked --features lib3mf
 
       - name: Test (lib3mf feature)
-        if: steps.changes.outputs.docs_only != 'true' && runner.os == 'Windows'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'Windows'
         run: cargo test --locked --features lib3mf
 
   package:
@@ -268,18 +291,18 @@ jobs:
         run: node scripts/docs-only-change.mjs
 
       - uses: actions/setup-node@v4
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         with:
           node-version: 22
           cache: npm
 
       - name: Install Rust
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         id: npm_ci
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         env:
           NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
@@ -294,12 +317,12 @@ jobs:
           retention-days: 90
 
       - name: Build sidecar (release)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         working-directory: native
         run: cargo build --locked --release -p model-core --features sqlite
 
       - name: Package app (bundles the prebuilt sidecar)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         env:
           # The sidecar is built in the dedicated step above; the packaging
           # hook only needs to stage it.
@@ -314,44 +337,44 @@ jobs:
         # both toolchains, so it is the only one where the cargo half of the
         # SBOM is derived from a real `cargo metadata` resolution at the
         # feature set a release builds.
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npm run verify:sbom
 
       - name: Verify third-party licence policy
         # Deterministic gate: every shipped component's licence must be
         # compatible with the AGPL-3.0-only outbound licence or hold a reviewed
         # exception. Reads the SBOM `npm run package` staged above.
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npm run verify:licenses
 
       - name: Verify third-party notices reproduce from the SBOM
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npm run verify:notices
 
       - name: Verify packaged sidecar and compliance resources
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: node scripts/verify-packaged-sidecar.mjs
 
       - name: Verify committed lockfiles are unchanged
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: git diff --exit-code -- native/Cargo.lock package-lock.json
 
       - name: Packaged Electron end-to-end tests
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npx playwright test --grep-invert "@gpu|@a11y"
 
       - name: Packaged accessibility (material WCAG A/AA)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npx playwright test e2e/release.accessibility.spec.ts
 
       - name: Packaged WebGL2 (host default capability report)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         env:
           PRINTFARMER_E2E_GPU_MODE: default
         run: npx playwright test e2e/release.gpu.spec.ts
 
       - name: Packaged WebGL2 (SwiftShader fallback)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         env:
           PRINTFARMER_E2E_GPU_MODE: swiftshader
         run: npx playwright test e2e/release.gpu.spec.ts
@@ -375,22 +398,22 @@ jobs:
         run: node scripts/docs-only-change.mjs
 
       - uses: actions/setup-node@v4
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         with:
           node-version: 22
           cache: npm
 
       - name: Install Rust
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: cargo install cargo-audit --locked
 
       - name: Install dependencies
         id: npm_ci
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         env:
           NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
@@ -405,7 +428,7 @@ jobs:
           retention-days: 90
 
       - name: Generate SBOM (scopes advisories to what ships)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npm run sbom
 
       # Report mode by design (see docs/security/THREAT_MODEL.md T4.2): advisory
@@ -417,7 +440,7 @@ jobs:
       # audit runs, the gate independently walks feature-resolved cargo metadata
       # and requires its exact name@version set to match the generated SBOM.
       - name: Audit shipped dependencies for known advisories
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npm run audit:advisories
 
       # #186 / #472: runs the live half of scripts/check-merge-queue-contexts.mjs
@@ -482,7 +505,7 @@ jobs:
       # `development` is where this repo's actual review gate (this PR's own
       # merge queue) lives.
       - name: Check merge-queue required contexts against live branch protection
-        if: steps.changes.outputs.docs_only != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/development'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/development'
         continue-on-error: true
         env:
           MERGE_QUEUE_CONTEXTS_TOKEN: ${{ secrets.MERGE_QUEUE_CONTEXTS_TOKEN }}
