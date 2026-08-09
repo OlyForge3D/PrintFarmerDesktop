@@ -1,0 +1,377 @@
+#!/usr/bin/env node
+// Reads check-run conclusions from the Checks API directly, instead of
+// `gh pr checks`, because the rendered table collapses two different
+// outcomes onto one string.
+//
+// THE DEFECT (#562). `gh pr checks` renders both `conclusion: failure` and
+// `conclusion: cancelled` as the single word `fail`. Since #540 made
+// concurrency-group supersede-cancellation routine, a rapid re-push now
+// produces a wall of `fail` rows for checks that never ran a failing step --
+// they were cancelled by a newer run superseding them, not defeated by one.
+// An agent or human triaging from that rendered view reads "fail" as "the
+// build is broken" and has no way to tell the two apart, because the view
+// does not carry the distinction.
+//
+//     $ gh pr checks 560
+//     Sequencing hold        fail          <- rendered
+//
+//     $ gh api commits/<sha>/check-runs --jq '... | select(.name=="Sequencing hold")'
+//     conclusion=cancelled                  <- ground truth, five runs, zero failures
+//
+// THE FIX. Read `commits/<sha>/check-runs` -- which dereferences a SHA prefix
+// rather than filtering on it (see probe-sha-query.mjs / #379) -- and
+// classify each conclusion into one of three verdicts instead of two:
+//
+//   passed      success, neutral, skipped
+//   failed      failure, timed_out, action_required, startup_failure
+//   superseded  cancelled, stale -- NOT folded into failed. "No verdict",
+//               exactly as the citation-reachability harness (#562's cited
+//               precedent) exits 2 for "could not look" rather than
+//               guessing.
+//   pending     status is not yet completed (conclusion is still null)
+//
+// `superseded` is deliberately its own bucket rather than a note attached to
+// `failed`. Folding it back in under a different label reproduces the exact
+// defect this file exists to remove: a reader who only checks
+// `verdict === 'failed'` would still read a superseded run as broken.
+//
+// CONTROLS, per the citation-reachability pattern this issue names
+// explicitly: a positive control (a genuine `failure` still reports
+// `failed`), a negative control (`success` reports `passed`), and an
+// explicit assertion that `cancelled` does NOT report `failed`. All three are
+// exercised in tests/checkRunVerdicts.test.ts, and a matcher whose positive
+// control was never established is how #562's class of defect survives.
+//
+// When more than one run exists for a check name at a SHA (retries,
+// concurrency-superseded attempts), only the most recently started run's
+// conclusion is reported -- the same "latest, not aggregate" rule
+// `gh pr checks` itself applies, so this does not introduce a second axis of
+// disagreement with the tool it replaces.
+
+import process from 'node:process';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+export const EXIT_CLEAN = 0;
+export const EXIT_FAILED = 1;
+export const EXIT_UNDETERMINED = 2;
+
+export const VERDICT_PASSED = 'passed';
+export const VERDICT_FAILED = 'failed';
+export const VERDICT_SUPERSEDED = 'superseded';
+export const VERDICT_PENDING = 'pending';
+
+const PASS_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
+const FAILED_CONCLUSIONS = new Set([
+  'failure',
+  'timed_out',
+  'action_required',
+  'startup_failure',
+]);
+const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
+
+/**
+ * Classify one check run's conclusion into a verdict.
+ *
+ * This is the whole fix: `cancelled` and `stale` map to `superseded`, a
+ * distinct third answer, rather than being folded into `failed` the way
+ * `gh pr checks` folds them. A conclusion this function has never seen
+ * throws rather than guessing a bucket for it -- an unrecognized conclusion
+ * is exactly the situation a silent default would misreport.
+ *
+ * @param {string | null} conclusion
+ * @returns {'passed' | 'failed' | 'superseded' | 'pending'}
+ */
+export function classifyConclusion(conclusion) {
+  if (conclusion === null) return VERDICT_PENDING;
+  if (PASS_CONCLUSIONS.has(conclusion)) return VERDICT_PASSED;
+  if (FAILED_CONCLUSIONS.has(conclusion)) return VERDICT_FAILED;
+  if (SUPERSEDED_CONCLUSIONS.has(conclusion)) return VERDICT_SUPERSEDED;
+  throw new Error(
+    `unrecognized check-run conclusion ${JSON.stringify(conclusion)}; refusing to guess a verdict for it`,
+  );
+}
+
+/**
+ * @param {unknown} checkRun
+ * @param {number} index
+ * @returns {{name: string, conclusion: string | null, status: string, startedAt: string, id: number}}
+ */
+function parseCheckRun(checkRun, index) {
+  const name = /** @type {any} */ (checkRun)?.name;
+  const status = /** @type {any} */ (checkRun)?.status;
+  const startedAt = /** @type {any} */ (checkRun)?.started_at;
+  const id = /** @type {any} */ (checkRun)?.id;
+  const conclusion = /** @type {any} */ (checkRun)?.conclusion ?? null;
+  if (typeof name !== 'string' || name === '') {
+    throw new Error(`check run ${index + 1} has no non-empty name`);
+  }
+  if (typeof status !== 'string' || status === '') {
+    throw new Error(`check run ${index + 1} (${name}) has no status`);
+  }
+  if (typeof startedAt !== 'string' || Number.isNaN(Date.parse(startedAt))) {
+    throw new Error(`check run ${index + 1} (${name}) has no valid started_at`);
+  }
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error(
+      `check run ${index + 1} (${name}) has no positive integer id`,
+    );
+  }
+  if (conclusion !== null && typeof conclusion !== 'string') {
+    throw new Error(
+      `check run ${index + 1} (${name}) has a non-string conclusion`,
+    );
+  }
+  // A run whose status is not yet 'completed' has not settled on a
+  // conclusion regardless of what the field carries, so it is forced to
+  // null here rather than trusted -- the same "don't trust a field the API
+  // hasn't committed to yet" discipline as elsewhere in this repo's checks.
+  return {
+    name,
+    conclusion: status === 'completed' ? conclusion : null,
+    status,
+    startedAt,
+    id,
+  };
+}
+
+/**
+ * Reduce every check run to the single most-recently-started run per name.
+ *
+ * `gh pr checks` itself renders only the latest run for a given name, so
+ * reporting anything else here would disagree with the tool this replaces
+ * along a second axis the issue never raised. Ties (identical started_at,
+ * which two runs queued in the same second can produce) are broken by the
+ * larger id, since check-run ids are assigned in creation order.
+ *
+ * @param {readonly unknown[]} checkRuns
+ * @returns {Map<string, ReturnType<typeof parseCheckRun>>}
+ */
+export function latestCheckRunsByName(checkRuns) {
+  const parsed = checkRuns.map((checkRun, index) =>
+    parseCheckRun(checkRun, index),
+  );
+  const latest = new Map();
+  for (const run of parsed) {
+    const current = latest.get(run.name);
+    if (
+      !current ||
+      Date.parse(run.startedAt) > Date.parse(current.startedAt) ||
+      (Date.parse(run.startedAt) === Date.parse(current.startedAt) &&
+        run.id > current.id)
+    ) {
+      latest.set(run.name, run);
+    }
+  }
+  return latest;
+}
+
+/**
+ * @param {readonly unknown[]} checkRuns
+ * @returns {{name: string, conclusion: string | null, verdict: string}[]}
+ */
+export function buildVerdicts(checkRuns) {
+  if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
+    throw new Error('no check runs to classify');
+  }
+  return [...latestCheckRunsByName(checkRuns).values()]
+    .map((run) => ({
+      name: run.name,
+      conclusion: run.conclusion,
+      verdict: classifyConclusion(run.conclusion),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function parseArgs(argv) {
+  /** @type {{repo?: string, sha?: string, help?: boolean, error?: string}} */
+  const out = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--help' || arg === '-h') {
+      out.help = true;
+    } else if (arg === '--repo' || arg === '--sha') {
+      const value = argv[i + 1];
+      if (!value || value.startsWith('--')) {
+        out.error = `${arg} requires a value`;
+        return out;
+      }
+      if (arg === '--repo') out.repo = value;
+      else out.sha = value;
+      i += 1;
+    } else {
+      out.error = `unknown argument ${JSON.stringify(arg)}`;
+      return out;
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {string | undefined} requested
+ * @param {NodeJS.ProcessEnv} env
+ * @param {typeof spawnSync} run
+ * @returns {string | null}
+ */
+export function resolveRepo(requested, env, run) {
+  if (requested) return /^[^/\s]+\/[^/\s]+$/.test(requested) ? requested : null;
+  if (env.GITHUB_REPOSITORY) {
+    return /^[^/\s]+\/[^/\s]+$/.test(env.GITHUB_REPOSITORY)
+      ? env.GITHUB_REPOSITORY
+      : null;
+  }
+  const result = run(
+    'gh',
+    ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'],
+    { encoding: 'utf8', env },
+  );
+  if (!result || result.error || result.status !== 0) return null;
+  const slug = String(result.stdout ?? '').trim();
+  return /^[^/\s]+\/[^/\s]+$/.test(slug) ? slug : null;
+}
+
+/**
+ * `commits/<sha>/check-runs` dereferences its path segment, so a short
+ * prefix resolves the same way `gh api commits/<sha>/...` always has in this
+ * repo (see probe-sha-query.mjs) -- no separate resolve step is needed here.
+ *
+ * @param {string} repo
+ * @param {string} sha
+ * @param {NodeJS.ProcessEnv} env
+ * @param {typeof spawnSync} run
+ * @returns {{ok: true, checkRuns: unknown[]} | {ok: false, reason: string}}
+ */
+export function fetchCheckRuns(repo, sha, env, run) {
+  const result = run(
+    'gh',
+    [
+      'api',
+      `repos/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
+      '--jq',
+      '.check_runs',
+    ],
+    { encoding: 'utf8', env },
+  );
+  if (!result || result.error) {
+    return { ok: false, reason: 'the check-runs query could not be executed' };
+  }
+  if (result.status !== 0) {
+    const stderr = String(result.stderr ?? '').trim();
+    const status = /HTTP (\d{3})/.exec(stderr)?.[1];
+    return {
+      ok: false,
+      reason: `the check-runs query failed${status ? ` (HTTP ${status})` : ''}`,
+    };
+  }
+  const stdout = String(result.stdout ?? '').trim();
+  let checkRuns;
+  try {
+    checkRuns = JSON.parse(stdout || 'null');
+  } catch {
+    return {
+      ok: false,
+      reason: 'the check-runs query did not return valid JSON',
+    };
+  }
+  if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
+    return {
+      ok: false,
+      reason: `no check runs found for ${sha}`,
+    };
+  }
+  return { ok: true, checkRuns };
+}
+
+export function formatReport(sha, verdicts) {
+  const lines = [`check-run verdicts for ${sha}`, ''];
+  for (const { name, conclusion, verdict } of verdicts) {
+    lines.push(
+      `  ${verdict.padEnd(10)} ${name}  (conclusion=${conclusion ?? 'null'})`,
+    );
+  }
+  const superseded = verdicts.filter((v) => v.verdict === VERDICT_SUPERSEDED);
+  if (superseded.length > 0) {
+    lines.push(
+      '',
+      `${superseded.length} check(s) superseded (cancelled by a newer run) -- not a failure, no verdict.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+export const USAGE = `usage: node scripts/check-run-verdicts.mjs --sha <sha-or-prefix> [--repo owner/name]
+
+Reads commits/<sha>/check-runs from the Checks API and reports a three-way
+verdict per check name -- passed, failed, or superseded -- instead of the
+two-way pass/fail 'gh pr checks' renders. 'cancelled' reports 'superseded',
+never 'failed'.
+
+exit 0  every check passed, is pending, or was superseded (no verdict)
+exit 1  at least one check genuinely failed
+exit 2  undetermined -- could not read check runs`;
+
+export function runMain(argv, env, run, write) {
+  const args = parseArgs(argv);
+  if (args.help) {
+    write(USAGE);
+    return EXIT_CLEAN;
+  }
+  if (args.error) {
+    write(`${args.error}\n\n${USAGE}`);
+    return EXIT_UNDETERMINED;
+  }
+  if (!args.sha) {
+    write(`--sha is required\n\n${USAGE}`);
+    return EXIT_UNDETERMINED;
+  }
+
+  const repo = resolveRepo(args.repo, env, run);
+  if (!repo) {
+    write('undetermined: could not determine a valid owner/name repository');
+    return EXIT_UNDETERMINED;
+  }
+
+  const fetched = fetchCheckRuns(repo, args.sha, env, run);
+  if (!fetched.ok) {
+    write(`undetermined: ${fetched.reason}`);
+    return EXIT_UNDETERMINED;
+  }
+
+  let verdicts;
+  try {
+    verdicts = buildVerdicts(fetched.checkRuns);
+  } catch (error) {
+    write(
+      `undetermined: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return EXIT_UNDETERMINED;
+  }
+
+  write(formatReport(args.sha, verdicts));
+  return verdicts.some((v) => v.verdict === VERDICT_FAILED)
+    ? EXIT_FAILED
+    : EXIT_CLEAN;
+}
+
+export function main(
+  argv,
+  env = process.env,
+  run = spawnSync,
+  write = (text) => process.stdout.write(`${text}\n`),
+) {
+  try {
+    return runMain(argv, env, run, write);
+  } catch (error) {
+    write(
+      `undetermined: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return EXIT_UNDETERMINED;
+  }
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  process.exitCode = main(process.argv.slice(2));
+}

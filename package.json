@@ -72,6 +72,7 @@
     "instrument:probe": "node scripts/instrument-probe.mjs",
     "report:pr-snapshot": "node scripts/pr-snapshot-report.mjs",
     "report:rerun-masked-failures": "node scripts/check-rerun-masked-failures.mjs",
+    "report:check-verdicts": "node scripts/check-run-verdicts.mjs",
     "report:cleanup-recurrence": "node scripts/check-cleanup-recurrence.mjs",
     "lift:sequencing-hold": "node scripts/lift-hold-on-close.mjs",
     "mutation:harness": "node scripts/mutation-harness.mjs",
