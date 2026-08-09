@@ -591,6 +591,16 @@ Full reasoning, citations, and the demonstration this issue asks for: `.squad/de
 
 **Why:** #361 documents that this exact failure survived being written down and enforced on others, in the same session, by the person enforcing it — the control alone does not catch it because the control and the error operate at different levels: the control validates the instrument, the error is one level up, in the choice of instrument for the claim. Recording the second question in the same file as the first closes that gap where the rule is actually read, rather than leaving it as a standalone observation that nothing routes people to.
 
+## 2026-08-09 — #197: a positive control must be aimed at the question's axis, not merely its corpus
+
+**By:** Hicks
+
+**What was decided.** `.squad/skills/testing/SKILL.md` gains a further amendment, distinct from #361's. #361 established that a searched _artifact_ can be the wrong place to look even when a control fires there (question 2: "is this artifact a place the evidence would necessarily appear"). #197 is one level more specific: even when the artifact is the right one, the _positive control itself_ can be misaimed within it — sampling the same corpus, even the same mechanism, but the wrong axis of that corpus — and firing on an unrelated string proves the instrument runs without proving the pattern is shaped to catch the thing being asked about. The file now states the rule explicitly: when a zero result is load-bearing, the control must be a known-present instance of the thing being denied, not merely any string that shares the file, with the `jobs.package` job-key-vs-`name:`-line worked example from #197 recorded alongside #361's three instances rather than replacing them.
+
+**Overlap with #361, stated explicitly so this is not read as a duplicate.** #361's question 2 asks whether the _artifact_ could ever show the signal. #197's instance passes that test — `ci.yml` is exactly the right file, since job keys and their `name:` values both live there — and still reaches a false negative, because the _query's pattern shape_ (`name:` lines) excludes the axis (job keys) the claim turns on, while the positive control was only a plain string search across the whole file and never exercised that excluding pattern against a job key at all. #361 does not by itself rule this out: a reader could satisfy #361's "name the mechanism" test (the evidence does live in this file) while still misaiming the pattern and validating the _file_, not the _pattern_, with a same-corpus control. The two entries are complementary, not restatements of each other, and both are needed in the same file.
+
+**Why:** the failure instance in #197 was filed against a security document (`docs/security/THREAT_MODEL.md`) with raw command output attached, on the strength of a passing positive control — the exact "apparent rigor" #361 already warns reads as diligence and stops further questioning. Recording the sharper rule next to #361's, rather than folding it silently into an existing paragraph, keeps both failure shapes separately citable.
+
 ## 2026-08-08 — #372: the agent emoji marker is not a provenance field; quote the sender line, don't trust the marker
 
 **By:** Fact Checker
