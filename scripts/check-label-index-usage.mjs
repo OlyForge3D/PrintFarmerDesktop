@@ -38,6 +38,7 @@
 
 import { lstatSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -226,25 +227,40 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
  *      finding every function/arrow definition in the file whose OWN BODY
  *      contains shape 1's `'gh', ...` shape (i.e. it truly shells out to
  *      the real binary, detected by behavior, not by guessing conventional
- *      names like `gh` or `invokeGh`), then re-running shapes 1 and 2
- *      against each such wrapper's own name in place of the literal `'gh'`
- *      string.
+ *      names like `gh` or `invokeGh`), then re-running the same argv-
+ *      resolution logic against each such wrapper's own call sites.
+ *      Ripley (round 5): the FIRST implementation of this only looked at a
+ *      wrapper's FIRST argument, so a real repo-style wrapper with a
+ *      different signature -- `runGh(run, args, env)`, argv in the SECOND
+ *      position -- still bypassed it. Fixed by scanning every argument in
+ *      a wrapper call's full, paren-balanced argument list, not just the
+ *      first, and resolving each array-literal or array-variable argument
+ *      found anywhere in that list -- see `flattenArgvAcrossCallArguments`
+ *      below.
  *
  * Deliberately narrow beyond these shapes: an argv assembled through
  * `.push()`, `.concat()`, spread from another variable, or any interpolated
  * (non-literal) token cannot be resolved by a text scan without executing
  * the program, so it remains unmatched -- the same limit
  * `LABEL_INDEX_PATTERNS` already has for any interpolated value, stated in
- * this file's own header comment. A wrapper imported from another file (its
- * definition not visible in the text this function is given) is equally out
- * of reach for the same reason. Widening indefinitely would turn this lint
- * into a JavaScript interpreter; the shapes handled here are the ones
- * actually observed to matter -- the literal-at-call-site shape this repo's
- * own scripts use, the variable-indirection (including reassignment)
- * evasions of it, and the wrapper-function indirection a reviewer
- * demonstrated.
+ * this file's own header comment. Widening indefinitely would turn this
+ * lint into a JavaScript interpreter; the shapes handled here are the ones
+ * actually observed to matter -- the literal-at-call-site shape this
+ * repo's own scripts use, the variable-indirection (including
+ * reassignment) evasions of it, and the wrapper-function indirection
+ * (including cross-file and nested wrappers, resolved project-wide by
+ * `collectProjectGhWrapperNames` and passed in as `extraWrapperNames`) a
+ * reviewer demonstrated.
+ *
+ * `extraWrapperNames` lets a caller that has already resolved wrapper
+ * names ACROSS the whole scanned file set (nested wrappers, or a wrapper
+ * imported from another scanned file -- see `collectProjectGhWrapperNames`)
+ * feed those names in alongside the ones this function can find on its
+ * own by reading only `contents`. Kept optional so every existing direct
+ * caller/test that only cares about a single file's own text keeps working
+ * unchanged.
  */
-export function flattenGhArgvInvocations(contents) {
+export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
   const flattened = [];
 
   const tokensFromArrayBody = (arrayBody) =>
@@ -252,17 +268,33 @@ export function flattenGhArgvInvocations(contents) {
       (tokenMatch) => tokenMatch[1],
     );
 
+  // Resolves an identifier to its most recent array-literal assignment
+  // (`NAME = [...]`) BEFORE `beforeIndex` in the file -- the reassignment-
+  // aware logic Vasquez's round-3 finding required: scanning for the
+  // first (or only) `NAME = [...]` in the whole file would resolve to an
+  // original, safe declaration and miss a later reassignment that
+  // actually feeds the call it is resolved for.
+  const resolveVariableArrayBefore = (varName, beforeIndex) => {
+    const assignmentPattern = new RegExp(
+      `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+      'g',
+    );
+    let assignment;
+    let mostRecentBefore = null;
+    while ((assignment = assignmentPattern.exec(contents)) !== null) {
+      if (assignment.index >= beforeIndex) break;
+      mostRecentBefore = assignment;
+    }
+    return mostRecentBefore ? tokensFromArrayBody(mostRecentBefore[1]) : null;
+  };
+
   // Resolves an array-literal argv passed either directly at a call site
-  // (`prefix[...]`) or by name (`prefix identifierName`, itself resolved to
-  // its most recent array-literal assignment BEFORE the call site -- the
-  // reassignment-aware logic Vasquez's round-3 finding required), for an
-  // arbitrary `prefix` regex source so it can be reused for the literal
-  // `'gh',` shape (shape 1/2) and for each discovered wrapper's `NAME(`
-  // shape (shape 3). The two callers below build `prefix` differently
-  // (`'gh'` is followed by a comma before its argv argument; a wrapper call
-  // like `gh([...])` has the argv as its FIRST argument, no comma before
-  // it) -- `prefix` already encodes that difference, so this helper only
-  // needs to match `prefix` followed directly by the argv shape.
+  // (`prefix[...]`) or by name (`prefix identifierName`, resolved via
+  // `resolveVariableArrayBefore`), for an arbitrary `prefix` regex source.
+  // Used only for shape 1/2: the literal `'gh'` string followed by a
+  // comma then its SECOND argument -- a fixed position, unlike a wrapper
+  // call's argv, which can be at any parameter position (see
+  // `flattenArgvAcrossCallArguments` below for that shape).
   const flattenArgvAfter = (prefix) => {
     const directPattern = new RegExp(`${prefix}\\s*\\[([\\s\\S]*?)]`, 'g');
     let directCall;
@@ -282,33 +314,86 @@ export function flattenGhArgvInvocations(contents) {
     );
     let variableCall;
     while ((variableCall = variablePattern.exec(contents)) !== null) {
-      const varName = variableCall[1];
-      const callIndex = variableCall.index;
-
-      // Vasquez (round 3): a binding can be declared safely and then
-      // REASSIGNED to a banned form before the call reads it. Scanning for
-      // the first (or only) `NAME = [...]` in the whole file would resolve
-      // to the original, safe declaration and miss the reassignment that
-      // actually feeds the call. Instead, walk every `NAME = [...]`
-      // assignment in the file and keep the LAST one that appears before
-      // the call site -- source order is the only stand-in for control
-      // flow a text scan has, but it is enough to catch "declare safe,
-      // reassign unsafe, then call" without becoming a real data-flow
-      // analysis.
-      const assignmentPattern = new RegExp(
-        `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
-        'g',
+      const tokens = resolveVariableArrayBefore(
+        variableCall[1],
+        variableCall.index,
       );
-      let assignment;
-      let mostRecentBeforeCall = null;
-      while ((assignment = assignmentPattern.exec(contents)) !== null) {
-        if (assignment.index >= callIndex) break;
-        mostRecentBeforeCall = assignment;
-      }
-      if (!mostRecentBeforeCall) continue;
-      const tokens = tokensFromArrayBody(mostRecentBeforeCall[1]);
-      if (tokens.length > 0) {
+      if (tokens && tokens.length > 0) {
         flattened.push(`gh ${tokens.join(' ')}`);
+      }
+    }
+  };
+
+  // Splits a call's argument-list text on TOP-LEVEL commas only (depth-0
+  // relative to the argument list itself), so a nested array/object/call
+  // argument's internal commas are not mistaken for argument separators.
+  const splitTopLevelArguments = (argsText) => {
+    const args = [];
+    let depth = 0;
+    let current = '';
+    for (const character of argsText) {
+      if (character === '(' || character === '[' || character === '{') {
+        depth++;
+      } else if (character === ')' || character === ']' || character === '}') {
+        depth--;
+      }
+      if (character === ',' && depth === 0) {
+        args.push(current);
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    if (current.trim() !== '') args.push(current);
+    return args;
+  };
+
+  // Shape 3 (Ripley, round 5): a wrapper's argv is not always its FIRST
+  // parameter -- a real repo-style wrapper like `runGh(run, args, env)`
+  // takes it second. Rather than assuming a fixed position, this finds
+  // every call site of `wrapperName(...)`, extracts its FULL, paren-
+  // balanced argument list, splits that list on top-level commas, and
+  // resolves EVERY argument that is itself an array literal or an
+  // identifier resolving to a preceding array assignment -- wherever in
+  // the parameter list it falls.
+  const flattenArgvAcrossCallArguments = (wrapperName) => {
+    const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callHeaderPattern = new RegExp(`\\b${escapedName}\\s*\\(`, 'g');
+    let header;
+    while ((header = callHeaderPattern.exec(contents)) !== null) {
+      const callIndex = header.index;
+      const argsStart = header.index + header[0].length;
+
+      let depth = 1;
+      let index = argsStart;
+      for (; index < contents.length && depth > 0; index++) {
+        if (contents[index] === '(') depth++;
+        else if (contents[index] === ')') depth--;
+      }
+      if (depth !== 0) continue; // unbalanced -- do not guess.
+      const argsText = contents.slice(argsStart, index - 1);
+
+      for (const rawArgument of splitTopLevelArguments(argsText)) {
+        const argument = rawArgument.trim();
+        if (argument === '') continue;
+
+        const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
+        if (arrayLiteralMatch) {
+          const tokens = tokensFromArrayBody(arrayLiteralMatch[1]);
+          if (tokens.length > 0) flattened.push(`gh ${tokens.join(' ')}`);
+          continue;
+        }
+
+        const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
+        if (identifierMatch) {
+          const tokens = resolveVariableArrayBefore(
+            identifierMatch[1],
+            callIndex,
+          );
+          if (tokens && tokens.length > 0) {
+            flattened.push(`gh ${tokens.join(' ')}`);
+          }
+        }
       }
     }
   };
@@ -318,18 +403,37 @@ export function flattenGhArgvInvocations(contents) {
   // (`'gh', [...]` / `'gh', varName`) -- a comma separates `'gh'` from it.
   flattenArgvAfter(`['"]gh['"]\\s*,\\s*`);
 
-  // Shape 3: a local wrapper function whose own body shells out to `gh`
-  // (matches the same `'gh', ...` shape just handled above), called
-  // elsewhere by name with the argv as its FIRST argument (`NAME([...])` /
-  // `NAME(varName)`) -- no comma before it, since it is the whole argument
-  // list of the wrapper call, not the second argument of an inner call.
-  for (const wrapperName of findGhWrapperNames(contents)) {
-    const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    flattenArgvAfter(`\\b${escapedName}\\s*\\(\\s*`);
+  // Shape 3: every wrapper this file's own text can find by behavior
+  // (`findGhWrapperNames`), PLUS every name a project-wide caller already
+  // resolved (nested-in-file wrappers found via fixed-point iteration, or
+  // wrappers imported from another scanned file) and passed in via
+  // `extraWrapperNames` -- see `collectProjectGhWrapperNames`.
+  const wrapperNames = new Set([
+    ...findGhWrapperNames(contents),
+    ...extraWrapperNames,
+  ]);
+  for (const wrapperName of wrapperNames) {
+    flattenArgvAcrossCallArguments(wrapperName);
   }
 
   return flattened.join('\n');
 }
+
+/**
+ * Shared by `findGhWrapperNames` and `findNestedGhWrapperNames`: matches a
+ * function-like definition header -- `function NAME(...)`, `const NAME =
+ * (...) => `, `const NAME = (...) => ` (`const` replaceable by
+ * `let`/`var`), `const NAME = function (...) `, `const NAME = async (...)
+ * => ` -- capturing `NAME` in group 1 or 2. A fresh `RegExp` instance must
+ * be built per scan (via `new RegExp(DEFINITION_HEADER_PATTERN_SOURCE,
+ * 'g')`) rather than sharing one stateful global-flagged instance across
+ * calls, since each caller advances its own `lastIndex`.
+ */
+const DEFINITION_HEADER_PATTERN_SOURCE =
+  '(?:function\\s+([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*)|' +
+  '(?:(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s+)?' +
+  '(?:function\\b[^(]*\\([^)]*\\)\\s*|\\([^)]*\\)\\s*=>\\s*|' +
+  '[A-Za-z_$][\\w$]*\\s*=>\\s*))';
 
 /**
  * Finds every function-like definition in `contents` -- `function NAME(...)
@@ -348,17 +452,22 @@ export function flattenGhArgvInvocations(contents) {
  * into a real AST: this is a text scan using balanced-brace/paren depth to
  * find the definition's own body text, not a JavaScript interpreter.
  *
- * Deliberately narrow: a wrapper imported from another module (its
- * definition not present in this file's text), or one that only calls the
- * real `gh` binary through further indirection (a wrapper that calls
- * ANOTHER wrapper) is not resolved -- the same one-hop, text-scan-only
- * limit the rest of this file already documents.
+ * Deliberately narrow, ON ITS OWN: a wrapper that only calls ANOTHER
+ * wrapper (never `'gh'` directly), or one imported from a different
+ * module, is not found by this function alone -- see
+ * `findNestedGhWrapperNames` and `collectProjectGhWrapperNames`, which
+ * extend this same one-hop, text-scan-only detection to nested and
+ * cross-file cases by iterating this behavioral test to a fixed point
+ * across the whole scanned file set, rather than widening this function
+ * itself into something that reads more than one file's own text.
  */
 export function findGhWrapperNames(contents) {
   const wrapperNames = new Set();
 
-  const definitionHeaderPattern =
-    /(?:function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*)|(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b[^(]*\([^)]*\)\s*|\([^)]*\)\s*=>\s*|[A-Za-z_$][\w$]*\s*=>\s*))/g;
+  const definitionHeaderPattern = new RegExp(
+    DEFINITION_HEADER_PATTERN_SOURCE,
+    'g',
+  );
 
   let definition;
   while ((definition = definitionHeaderPattern.exec(contents)) !== null) {
@@ -375,6 +484,195 @@ export function findGhWrapperNames(contents) {
   }
 
   return wrapperNames;
+}
+
+/**
+ * Extends `findGhWrapperNames`' single-hop, "calls `'gh'` directly"
+ * detection to NESTED wrappers: a function whose own body does not shell
+ * out to `gh` directly, but instead calls one of the names already in
+ * `knownWrapperNames` (itself possibly a wrapper found this same way, one
+ * level down -- `collectProjectGhWrapperNames` iterates this to a fixed
+ * point so a chain of wrappers of any depth is eventually resolved, not
+ * just one hop). Vasquez/Ripley (round 6): a wrapper that calls ANOTHER
+ * wrapper, with neither one calling the real `gh` binary directly in its
+ * own body, bypassed `findGhWrapperNames` entirely, since it only ever
+ * tested a body against the literal `'gh', ...` shape.
+ */
+function findNestedGhWrapperNames(contents, knownWrapperNames) {
+  const nested = new Set();
+  if (knownWrapperNames.size === 0) return nested;
+
+  const escapedKnownNames = [...knownWrapperNames].map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  );
+  const callsKnownWrapperPattern = new RegExp(
+    `\\b(?:${escapedKnownNames.join('|')})\\s*\\(`,
+  );
+
+  const definitionHeaderPattern = new RegExp(
+    DEFINITION_HEADER_PATTERN_SOURCE,
+    'g',
+  );
+
+  let definition;
+  while ((definition = definitionHeaderPattern.exec(contents)) !== null) {
+    const name = definition[1] ?? definition[2];
+    if (!name || knownWrapperNames.has(name)) continue;
+
+    const body = extractDefinitionBody(
+      contents,
+      definition.index + definition[0].length,
+    );
+    if (callsKnownWrapperPattern.test(body)) {
+      nested.add(name);
+    }
+  }
+
+  return nested;
+}
+
+/**
+ * Parses ES-module named-import bindings -- `import { a, b as c } from
+ * './relative/path'` -- returning `{ localName, importedName, specifier }`
+ * for each named specifier. Deliberately narrow: only named imports
+ * (`{ ... }`) of a quoted specifier are recognized; default imports,
+ * namespace imports (`import * as ns from ...`), and dynamic `import(...)`
+ * are out of scope, matching this file's stated one-hop/text-scan limits
+ * elsewhere. `specifier` is returned UNRESOLVED (as written in the source)
+ * -- resolving it against the scanned file set is `resolveRelativeModulePath`'s
+ * job, kept separate so this function stays a pure syntax read.
+ */
+function findImportedBindings(contents) {
+  const bindings = [];
+  const importPattern = /import\s*\{([^}]*)}\s*from\s*['"]([^'"]+)['"]/g;
+
+  let importMatch;
+  while ((importMatch = importPattern.exec(contents)) !== null) {
+    const specifier = importMatch[2];
+    for (const rawSpecifier of importMatch[1].split(',')) {
+      const trimmed = rawSpecifier.trim();
+      if (trimmed === '') continue;
+
+      const aliasMatch = /^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/.exec(
+        trimmed,
+      );
+      if (aliasMatch) {
+        bindings.push({
+          importedName: aliasMatch[1],
+          localName: aliasMatch[2],
+          specifier,
+        });
+        continue;
+      }
+
+      const nameMatch = /^([A-Za-z_$][\w$]*)$/.exec(trimmed);
+      if (nameMatch) {
+        bindings.push({
+          importedName: nameMatch[1],
+          localName: nameMatch[1],
+          specifier,
+        });
+      }
+    }
+  }
+
+  return bindings;
+}
+
+/**
+ * Resolves a relative import specifier (`./gh-utils.mjs`, `../lib/gh`) to
+ * one of the paths in `knownPaths`, relative to the importing file's OWN
+ * path (`fromPath`) -- both must use POSIX-style `/` separators, which is
+ * what `git ls-files` (this file's own `listFiles` default) and every
+ * `ScannedFile.path` in this module already use. Returns `null` for a
+ * bare/package specifier (does not start with `./`/`../`) or one that does
+ * not resolve to any path this scan already has the text for -- an import
+ * from outside the scanned directories, or from a file this scan does not
+ * track, is out of reach for the same reason a wrapper defined in an
+ * unscanned file always has been.
+ */
+function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
+  if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+    return null;
+  }
+
+  const fromDirectory = path.posix.dirname(fromPath);
+  const joined = path.posix
+    .normalize(path.posix.join(fromDirectory, specifier))
+    .replace(/\\/g, '/');
+
+  const candidates = [joined, `${joined}.mjs`, `${joined}.js`, `${joined}.cjs`];
+  for (const candidate of candidates) {
+    if (knownPaths.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolves gh-wrapper names PROJECT-WIDE across every file in `files`,
+ * returning a `Map<path, Set<wrapperName>>` -- the names each file's own
+ * `flattenGhArgvInvocations(contents, extraWrapperNames)` call should treat
+ * as wrappers, beyond what it can already find unaided by reading only its
+ * own text via `findGhWrapperNames`.
+ *
+ * Extends single-file, single-hop wrapper detection in two directions,
+ * both found in round-6 review (Vasquez/Ripley):
+ *   1. NESTED wrappers: a wrapper that calls another already-known wrapper
+ *      rather than `gh` directly, resolved to a FIXED POINT so a chain of
+ *      any depth is eventually found, not just one hop.
+ *   2. CROSS-FILE wrappers: a wrapper defined in one scanned file and
+ *      imported (by name, with an optional alias) into another --
+ *      `import { invokeGh } from './gh-utils.mjs'; invokeGh([...])` -- is
+ *      invisible to a per-file scan that only reads its own text, since
+ *      the wrapper's defining body never appears in the importing file.
+ *
+ * Still deliberately narrow beyond these: a wrapper imported from a file
+ * OUTSIDE `SCANNED_DIRECTORIES` (this function only knows about the paths
+ * it is given), a namespace/default import, or an argv threaded through
+ * anything past what `flattenGhArgvInvocations` itself can resolve
+ * (`.push()`, spread, a computed/interpolated call) remains out of reach --
+ * the same limits stated throughout this file.
+ */
+export function collectProjectGhWrapperNames(files) {
+  const knownPaths = new Set(files.map((file) => file.path));
+  const wrapperNamesByPath = new Map(
+    files.map((file) => [file.path, findGhWrapperNames(file.contents)]),
+  );
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    for (const file of files) {
+      const known = wrapperNamesByPath.get(file.path);
+
+      for (const nestedName of findNestedGhWrapperNames(file.contents, known)) {
+        if (!known.has(nestedName)) {
+          known.add(nestedName);
+          changed = true;
+        }
+      }
+
+      for (const { localName, importedName, specifier } of findImportedBindings(
+        file.contents,
+      )) {
+        if (known.has(localName)) continue;
+        const resolvedPath = resolveRelativeModulePath(
+          file.path,
+          specifier,
+          knownPaths,
+        );
+        if (!resolvedPath) continue;
+        const sourceWrapperNames = wrapperNamesByPath.get(resolvedPath);
+        if (sourceWrapperNames?.has(importedName)) {
+          known.add(localName);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return wrapperNamesByPath;
 }
 
 /**
@@ -427,9 +725,17 @@ export function scanLabelIndexUsage({ files, allowlist } = {}) {
   const known = allowlist ?? ALLOWED_LABEL_INDEX_USAGE;
   const violations = [];
   const allowlisted = [];
+  const fileList = files ?? [];
+  const projectWrapperNames = collectProjectGhWrapperNames(fileList);
 
-  for (const file of files ?? []) {
-    const searchText = [file.contents, flattenGhArgvInvocations(file.contents)]
+  for (const file of fileList) {
+    const searchText = [
+      file.contents,
+      flattenGhArgvInvocations(
+        file.contents,
+        projectWrapperNames.get(file.path),
+      ),
+    ]
       .filter(Boolean)
       .join('\n');
 

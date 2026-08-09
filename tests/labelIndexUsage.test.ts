@@ -4,6 +4,7 @@ import {
   ALLOWED_LABEL_INDEX_USAGE,
   LABEL_INDEX_PATTERNS,
   SCANNED_DIRECTORIES,
+  collectProjectGhWrapperNames,
   collectScannedFiles,
   findGhWrapperNames,
   flattenGhArgvInvocations,
@@ -152,6 +153,48 @@ function gh(message) {
   console.log('not a wrapper: ' + message);
 }
 gh(['pr', 'list', '--label', 'hold:sequenced']);
+`;
+
+// Ripley (round 5): a real repo-style wrapper's argv is not always its
+// FIRST parameter -- `runGh(run, args, env)` takes it second. The lint
+// must resolve an array-literal/array-variable argument found ANYWHERE in
+// a wrapper call's argument list, not assume position 0.
+const GH_WRAPPER_ARGV_SECOND_PARAMETER_SNIPPET = `
+function runGh(run, args, env) {
+  return run('gh', args, env);
+}
+runGh(execFileSync, ['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced'], { encoding: 'utf8' });
+`;
+
+// Same hazard as above, but the argv argument in the second position is a
+// variable, not a literal -- both the position-agnostic scan AND the
+// existing variable-resolution logic must compose correctly.
+const GH_WRAPPER_ARGV_SECOND_PARAMETER_VARIABLE_SNIPPET = `
+function runGh(run, args, env) {
+  return run('gh', args, env);
+}
+const wrapperArgs = ['issue', 'list', '--repo', 'owner/repo', '-l', 'hold:sequenced'];
+runGh(execFileSync, wrapperArgs, { encoding: 'utf8' });
+`;
+
+// Vasquez/Ripley (round 6): a NESTED wrapper -- one that calls another
+// wrapper rather than shelling out to `gh` directly in its own body --
+// must still be resolved, at whatever depth, via fixed-point iteration.
+const GH_NESTED_WRAPPER_SNIPPET = `
+const invokeGh = (args) => execFileSync('gh', args);
+const runGh = (args) => invokeGh(args);
+runGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Vasquez (round 6): a wrapper defined in ONE scanned file and imported
+// (optionally under an alias) into ANOTHER must still be resolved -- the
+// importing file's own text never contains the wrapper's defining body.
+const GH_WRAPPER_DEFINITION_MODULE_SNIPPET = `
+export const invokeGh = (args) => execFileSync('gh', args);
+`;
+const GH_WRAPPER_IMPORT_CONSUMER_SNIPPET = `
+import { invokeGh as runGh } from './gh-utils.mjs';
+runGh(['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
 `;
 
 // The safe instrument: a per-object read. Must never be flagged, or every
@@ -520,6 +563,59 @@ execFileSync('gh', [
       'scripts/c.mjs',
     ]);
   });
+
+  // Ripley (round 5): end-to-end, through the real scanLabelIndexUsage
+  // entrypoint (not just the flattenGhArgvInvocations helper), a wrapper
+  // whose argv is not its first parameter must still produce a violation.
+  it('flags a call through a wrapper whose argv is its second parameter', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_ARGV_SECOND_PARAMETER_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Vasquez/Ripley (round 6): end-to-end, a NESTED wrapper (one that calls
+  // another wrapper rather than gh directly) must be flagged through the
+  // real scanning entrypoint, which is what wires flattenGhArgvInvocations
+  // up to collectProjectGhWrapperNames.
+  it('flags a call through a nested wrapper (a wrapper that calls another wrapper)', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        { path: 'scripts/example.mjs', contents: GH_NESTED_WRAPPER_SNIPPET },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Vasquez (round 6): end-to-end, a wrapper imported (under an alias) from
+  // ANOTHER scanned file must be flagged in the IMPORTING file, through the
+  // real scanning entrypoint across the whole file set.
+  it('flags a call through a wrapper imported from another scanned file', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/gh-utils.mjs',
+          contents: GH_WRAPPER_DEFINITION_MODULE_SNIPPET,
+        },
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_IMPORT_CONSUMER_SNIPPET,
+        },
+      ],
+    });
+    const consumerViolation = violations.find(
+      (violation) => violation.path === 'scripts/example.mjs',
+    );
+    expect(consumerViolation).toBeDefined();
+    expect(consumerViolation!.matches).toContain('gh issue list --label');
+  });
 });
 
 describe('flattenGhArgvInvocations', () => {
@@ -617,6 +713,46 @@ describe('flattenGhArgvInvocations', () => {
     const flattened = flattenGhArgvInvocations(NON_WRAPPER_SAME_NAME_SNIPPET);
     expect(flattened).toBe('');
   });
+
+  // Ripley (round 5): a wrapper's argv is not always its FIRST parameter --
+  // a real repo-style wrapper like `runGh(run, args, env)` takes it second.
+  // The scan must resolve an array-literal or array-variable argument found
+  // ANYWHERE in the wrapper call's argument list, not assume position 0.
+  it('resolves a wrapper argv passed as the SECOND parameter (array literal)', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_ARGV_SECOND_PARAMETER_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('resolves a wrapper argv passed as the SECOND parameter (variable)', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_ARGV_SECOND_PARAMETER_VARIABLE_SNIPPET,
+    );
+    expect(flattened).toContain('gh issue list');
+    expect(flattened).toContain('-l');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  // Vasquez/Ripley (round 6): a NESTED wrapper -- one whose own body calls
+  // ANOTHER wrapper rather than `gh` directly -- must be resolved too, via
+  // the `extraWrapperNames` a project-wide caller (collectProjectGhWrapperNames)
+  // supplies after fixed-point iteration.
+  it('resolves a nested wrapper when its name is supplied via extraWrapperNames', () => {
+    const flattened = flattenGhArgvInvocations(GH_NESTED_WRAPPER_SNIPPET, [
+      'runGh',
+    ]);
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('does NOT resolve a nested wrapper on its own, without extraWrapperNames (documents the single-file limit extraWrapperNames exists to lift)', () => {
+    const flattened = flattenGhArgvInvocations(GH_NESTED_WRAPPER_SNIPPET);
+    expect(flattened).not.toContain('--label');
+  });
 });
 
 describe('findGhWrapperNames', () => {
@@ -643,6 +779,63 @@ describe('findGhWrapperNames', () => {
   it('returns an empty set for a file with no function definitions at all', () => {
     const names = findGhWrapperNames('const x = 1;');
     expect(names.size).toBe(0);
+  });
+
+  // Ripley (round 5): behavior detection must not depend on where the argv
+  // parameter sits in the wrapper's own signature -- `runGh(run, args, env)`
+  // still shells out to `gh` via `run('gh', args, env)` in its body.
+  it('finds a wrapper whose own argv parameter is not its first parameter', () => {
+    const names = findGhWrapperNames(GH_WRAPPER_ARGV_SECOND_PARAMETER_SNIPPET);
+    expect(names.has('runGh')).toBe(true);
+  });
+});
+
+// Vasquez/Ripley (round 6): both gaps -- nested wrappers (a wrapper that
+// calls another wrapper, neither shelling out to `gh` directly in its own
+// body) and cross-file wrapper imports -- require resolving wrapper names
+// PROJECT-WIDE, across every scanned file at once, not one file's text in
+// isolation. `collectProjectGhWrapperNames` is the function that does this.
+describe('collectProjectGhWrapperNames', () => {
+  it('resolves a nested wrapper (one that calls another wrapper, not gh directly) via fixed-point iteration', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      { path: 'scripts/example.mjs', contents: GH_NESTED_WRAPPER_SNIPPET },
+    ]);
+    const names = wrapperNamesByPath.get('scripts/example.mjs')!;
+    expect(names.has('invokeGh')).toBe(true);
+    expect(names.has('runGh')).toBe(true);
+  });
+
+  it('resolves a wrapper imported (under an alias) from another scanned file', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      {
+        path: 'scripts/gh-utils.mjs',
+        contents: GH_WRAPPER_DEFINITION_MODULE_SNIPPET,
+      },
+      {
+        path: 'scripts/example.mjs',
+        contents: GH_WRAPPER_IMPORT_CONSUMER_SNIPPET,
+      },
+    ]);
+    expect(
+      wrapperNamesByPath.get('scripts/gh-utils.mjs')!.has('invokeGh'),
+    ).toBe(true);
+    // The consumer imports `invokeGh` AS `runGh` -- the local (aliased)
+    // name is what must be recognized as a wrapper in ITS OWN file.
+    expect(wrapperNamesByPath.get('scripts/example.mjs')!.has('runGh')).toBe(
+      true,
+    );
+  });
+
+  it('does not resolve an import from a file outside the given file set', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      {
+        path: 'scripts/example.mjs',
+        contents: GH_WRAPPER_IMPORT_CONSUMER_SNIPPET,
+      },
+    ]);
+    expect(wrapperNamesByPath.get('scripts/example.mjs')!.has('runGh')).toBe(
+      false,
+    );
   });
 });
 
