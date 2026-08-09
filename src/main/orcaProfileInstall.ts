@@ -630,6 +630,87 @@ async function assertBackupMetaDirNotSwapped(metaDir: string): Promise<void> {
 }
 
 /**
+ * Capture `metaDir`'s identity (device/inode) via `lstat`, rejecting it
+ * outright if it is a symlink or not a directory. Returns `null` if it is
+ * missing, inaccessible, or unsafe.
+ *
+ * Paired with `verifyBackupMetaDirIdentityPinned` below: this captures the
+ * *expected* identity once; the pinned check later confirms an opened
+ * descriptor still reports that same identity, rather than trusting a
+ * second independent path lookup to agree with the first.
+ */
+async function captureBackupMetaDirIdentity(
+  metaDir: string,
+): Promise<{ dev: bigint; ino: bigint } | null> {
+  try {
+    const info = await lstat(metaDir, { bigint: true });
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      return null;
+    }
+    return { dev: info.dev, ino: info.ino };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Re-verify, via an *opened descriptor* rather than a second path-based
+ * `lstat`, that `metaDir` still resolves to the same directory object whose
+ * identity `captureBackupMetaDirIdentity` captured earlier.
+ *
+ * Round-4 finding (Ripley/Vasquez, relayed by the work monitor after
+ * `bd525537`): the previous `assertBackupMetaDirNotSwapped` bracket
+ * (`lstat` before, operation, `lstat` after) re-validates the *path* twice.
+ * A swap-in-then-swap-back around the operation defeats that bracket with
+ * no real-world race required at all — round 3 found the exact same shape
+ * against the leaf file's lstat-before/read/lstat-after check, which is
+ * why the leaf read is now pinned to a file descriptor
+ * (`readFileWithIdentityPin`) instead. This applies that same fix one
+ * level up: compare an *earlier-captured* identity against what an opened
+ * descriptor reports, immediately adjacent to the vulnerable operation,
+ * instead of trusting two independent path lookups to agree with each
+ * other. `readBackupMetaFileSafely` calls this both immediately before and
+ * immediately after the leaf read, so a swap held in place for the whole
+ * read (not reverted) is also caught, not just a swap-then-immediate-
+ * revert.
+ *
+ * This cannot eliminate the single-syscall gap between this check and the
+ * very next syscall: Node has no directory-handle-relative open (`openat`)
+ * on any platform, and holding a directory handle open does not, by
+ * itself, block Windows from deleting/replacing that directory entry
+ * (verified experimentally — Node's default `open()` flags do not request
+ * exclusive/no-share-delete semantics, so `rm()`+recreate on a path still
+ * succeeds even while a handle to the original directory remains open).
+ * So this narrows the gap to that irreducible minimum rather than closing
+ * it outright — but it removes both the "swap, then silently revert
+ * before the next check" bypass and the "hold the swap for the whole
+ * operation" bypass, leaving only an attacker who swaps in strictly after
+ * one pin check and reverts strictly before the other, bounded to the
+ * width of the single leaf read itself.
+ */
+async function verifyBackupMetaDirIdentityPinned(
+  metaDir: string,
+  expected: { dev: bigint; ino: bigint },
+): Promise<boolean> {
+  let handle: FileHandle;
+  try {
+    handle = await open(metaDir, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const opened = await handle.stat({ bigint: true });
+    return (
+      opened.isDirectory() &&
+      opened.dev === expected.dev &&
+      opened.ino === expected.ino
+    );
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
  * Test-only hook invoked immediately before the write path re-verifies
  * `metaDir` (right before creating the temp file). Lets a regression test
  * deterministically swap `.pfd-backup-meta` itself for a junction at
@@ -898,16 +979,19 @@ export function __setBackupMetaDirReadRaceHookForTests(
 /**
  * Read `metaPath` back, refusing to trust the content if the leaf file's
  * identity doesn't match what was validated immediately beforehand (via
- * `readFileWithIdentityPin`), or if the containing `metaDir` itself was
- * (or became) a symlink/junction around the read.
+ * `readFileWithIdentityPin`), or if the containing `metaDir` itself isn't
+ * confirmed, via an opened descriptor, to still be the same directory
+ * whose identity was captured up front.
  *
  * This guards the read at both the leaf-file level (identity-pinned file
  * descriptor, immune to swap-in/swap-back — see `readFileWithIdentityPin`)
- * and the containing-directory level (re-validated immediately before and
- * after, since Node exposes no directory-handle-relative open to pin that
- * identity the same way), rather than relying on a single check-then-use.
- * Any deviation at either level invalidates the result: the record is
- * treated as not found rather than trusted.
+ * and the containing-directory level (identity-pinned via
+ * `verifyBackupMetaDirIdentityPinned`, immediately adjacent to the leaf
+ * read, immune to the same swap-in/swap-back shape — see its doc comment)
+ * rather than relying on a single check-then-use or a defeatable
+ * check-before/check-after bracket. Any deviation at either level
+ * invalidates the result: the record is treated as not found rather than
+ * trusted.
  *
  * Round-2 reviewer finding (Vasquez): round 1 only bracketed the leaf file
  * (`metaPath`). A directory-level swap of `.pfd-backup-meta` itself is
@@ -920,7 +1004,55 @@ export function __setBackupMetaDirReadRaceHookForTests(
  * swap-back around the read could defeat. Replaced with
  * `readFileWithIdentityPin`, which pins identity to a file descriptor
  * instead of re-resolving the path a second time.
+ *
+ * Round-4 finding (Ripley/Vasquez, relayed after `bd525537`): the
+ * directory-level guard from round 2 (`assertBackupMetaDirNotSwapped`
+ * called before *and* after) was the exact same defeatable-bracket shape
+ * round 3 found and fixed at the leaf level — a swap-in-then-swap-back
+ * around the read passes both the "before" and "after" *path-based*
+ * lstat checks even though the read itself ran while swapped. Replaced
+ * both the "before" and "after" lstat with `captureBackupMetaDirIdentity`
+ * / `verifyBackupMetaDirIdentityPinned`, which compare an opened
+ * descriptor against an identity captured once up front — the same
+ * fd-pinning approach already used for the leaf file, applied one level
+ * up, bracketing the leaf read immediately before and immediately after
+ * rather than only once.
+ *
+ * This closes two distinct things: (1) a swap-in-then-swap-back that
+ * completes entirely before the leaf read starts (caught by the "before"
+ * check observing the swap), and (2) a swap held in place for the
+ * *entire* leaf read (caught by the "after" check, since nothing was
+ * reverted yet when it runs) — `metaPath` re-resolves through `metaDir`
+ * as a fresh path string inside `readFileWithIdentityPin` (Node has no
+ * directory-handle-relative open), so the leaf-level pin alone cannot
+ * detect a directory swap that is consistently present for its own lstat
+ * *and* its own open. What remains open, and cannot be closed without a
+ * directory-handle-relative open unavailable in Node's public `fs` API,
+ * is an attacker who swaps in strictly *after* the "before" check and
+ * reverts strictly *before* the "after" check — bounded to the width of
+ * the single leaf read operation itself, the narrowest window achievable
+ * here.
  */
+/**
+ * Test-only hook invoked in `readBackupMetaFileSafely`, immediately after
+ * `verifyBackupMetaDirIdentityPinned` has already confirmed `metaDir`'s
+ * identity, but strictly before `readFileWithIdentityPin(metaPath)` begins
+ * its own (separate) `lstat` of the leaf path. Lets a regression test
+ * probe the one gap that genuinely cannot be closed with Node's public
+ * `fs` API: there is no directory-handle-relative open (`openat`), so the
+ * leaf read necessarily re-resolves `metaPath` as a fresh path string
+ * rather than through the descriptor `verifyBackupMetaDirIdentityPinned`
+ * already validated. No-op in production; never set outside tests.
+ */
+let backupMetaDirPreLeafReadHookForTests:
+  ((metaDir: string) => Promise<void> | void) | null = null;
+
+export function __setBackupMetaDirPreLeafReadHookForTests(
+  hook: ((metaDir: string) => Promise<void> | void) | null,
+): void {
+  backupMetaDirPreLeafReadHookForTests = hook;
+}
+
 async function readBackupMetaFileSafely(
   metaDir: string,
   metaPath: string,
@@ -928,25 +1060,54 @@ async function readBackupMetaFileSafely(
   if (backupMetaDirReadRaceHookForTests) {
     await backupMetaDirReadRaceHookForTests(metaDir);
   }
-  try {
-    await assertBackupMetaDirNotSwapped(metaDir);
-  } catch {
+
+  const expectedDirIdentity = await captureBackupMetaDirIdentity(metaDir);
+  if (!expectedDirIdentity) {
     return null;
+  }
+
+  // Re-verify metaDir's identity via an opened descriptor, immediately
+  // adjacent to the leaf read, rather than trusting the lstat above and a
+  // later independent lstat to agree with each other (see
+  // `verifyBackupMetaDirIdentityPinned`'s doc comment).
+  const dirIdentityPinned = await verifyBackupMetaDirIdentityPinned(
+    metaDir,
+    expectedDirIdentity,
+  );
+  if (!dirIdentityPinned) {
+    return null;
+  }
+
+  if (backupMetaDirPreLeafReadHookForTests) {
+    await backupMetaDirPreLeafReadHookForTests(metaDir);
   }
 
   // Leaf-file identity is pinned via `readFileWithIdentityPin` (see its
   // doc comment): this closes the swap-in/swap-back bypass a reviewer
-  // found in the previous lstat-before/read/lstat-after bracket.
+  // found in the previous lstat-before/read/lstat-after bracket. However,
+  // because `metaPath` re-resolves through `metaDir` as a fresh path
+  // string (Node has no directory-handle-relative open), that leaf-level
+  // pin alone cannot detect a directory swap held in place for the
+  // *entire* read: both its lstat and its open would consistently — and
+  // wrongly — agree with each other via the same swapped directory.
   const bytes = await readFileWithIdentityPin(metaPath);
   if (bytes === null) {
     return null; // No record at this path, or the read was not safe to trust.
   }
 
-  try {
-    // Re-verify the containing directory again immediately after the
-    // read, in case it was swapped mid-read rather than beforehand.
-    await assertBackupMetaDirNotSwapped(metaDir);
-  } catch {
+  // Re-verify metaDir's identity again, fd-pinned, immediately after the
+  // leaf read completes. This catches exactly the case the "before" check
+  // and the leaf-level pin cannot: a swap held in place across the whole
+  // read. Combined with the "before" check, the only gap left is an
+  // attacker who both swaps in *after* the "before" check and reverts
+  // *before* this "after" check — bounded to the width of the single leaf
+  // read itself, which is the narrowest window achievable without a
+  // directory-handle-relative open.
+  const dirIdentityStillPinned = await verifyBackupMetaDirIdentityPinned(
+    metaDir,
+    expectedDirIdentity,
+  );
+  if (!dirIdentityStillPinned) {
     return null;
   }
 

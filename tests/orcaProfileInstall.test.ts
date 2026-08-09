@@ -334,6 +334,7 @@ import {
   __setBackupMetaWriteRaceHookForTests,
   __setBackupMetaDirWriteRaceHookForTests,
   __setBackupMetaDirReadRaceHookForTests,
+  __setBackupMetaDirPreLeafReadHookForTests,
   __setIdentityPinPreOpenHookForTests,
   __setIdentityPinPostOpenHookForTests,
 } from '../src/main/orcaProfileInstall.js';
@@ -1267,6 +1268,114 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       } finally {
         __setBackupMetaDirReadRaceHookForTests(null);
         await rm(metaDir, { recursive: true, force: true });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + directory-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to trust a metadata read when .pfd-backup-meta is swapped for a junction and held swapped for the entire leaf read (TOCTOU on read, directory level, held-swap variant)',
+    async () => {
+      // Reviewer finding (Ripley/Vasquez, relayed after head bd525537):
+      // round 2's directory-level guard (assertBackupMetaDirNotSwapped
+      // called before *and* after the leaf read) was the exact same
+      // defeatable-bracket shape round 3 found and fixed for the leaf
+      // file — a swap-in-then-swap-back around the read would pass both
+      // the "before" and "after" path-based lstat checks even though the
+      // read itself ran while .pfd-backup-meta was swapped, because
+      // neither check is bound to what actually happened *during* the
+      // read.
+      //
+      // Fixed by capturing metaDir's identity once
+      // (captureBackupMetaDirIdentity) and confirming it via an *opened
+      // descriptor* (verifyBackupMetaDirIdentityPinned) both immediately
+      // before and immediately after the leaf read, rather than only
+      // once. This test exercises the case that a single before-only pin
+      // check cannot catch: the attacker swaps .pfd-backup-meta for a
+      // junction immediately after the "before" pin has already passed,
+      // and — critically — holds the swap in place through the entire
+      // leaf read instead of reverting it. A single "before" pin sees the
+      // legitimate directory and passes; only the "after" pin, run once
+      // the read has actually happened, observes the still-swapped
+      // directory and rejects. (An earlier version of this test
+      // mistakenly believed this to be an irreducible gap; it was
+      // resolved by re-adding a fd-pinned "after" check.)
+      const safeFilename = 'toctou_read_dir_residual_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-read-dir-residual"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `read-dir-residual-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-read-dir-residual-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+      const realBackupFileName = path.basename(installResult.backupPath);
+
+      const metaDir = path.join(installRoot, '.pfd-backup-meta');
+
+      // Plant an attacker-controlled record under the same leaf filename
+      // the real record uses, inside the escape directory the junction
+      // will point at — pointing at a backupFileName that genuinely
+      // exists, so a passing read is unambiguously attributable to the
+      // directory-level identity check (not the separate, unrelated
+      // "does the referenced backup file exist" check).
+      await writeFile(
+        path.join(escapeDir, `${operationId}.json`),
+        JSON.stringify({
+          safeFilename: 'attacker.json',
+          backupFileName: realBackupFileName,
+          backupHash: 'f'.repeat(64),
+          createdAt: Date.now(),
+        }),
+        'utf8',
+      );
+
+      let raceSimulated = true;
+      __setBackupMetaDirPreLeafReadHookForTests(async (dir) => {
+        await rm(dir, { recursive: true, force: true });
+        try {
+          await makeDirReparsePoint(escapeDir, dir);
+        } catch {
+          raceSimulated = false;
+        }
+      });
+
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        if (!raceSimulated) {
+          // This runner could not create the junction fixture; nothing
+          // further to assert.
+          return;
+        }
+        // The fd-pinned "after" check (added this round, adjacent to the
+        // "before" pin) observes the still-swapped directory once the
+        // leaf read completes and rejects the record, even though the
+        // leaf file itself (lstat + open, both transparently traversing
+        // the junction) is internally self-consistent throughout.
+        expect(
+          located,
+          'metadata read trusted content reached while .pfd-backup-meta was held swapped for the whole read',
+        ).toBeNull();
+      } finally {
+        __setBackupMetaDirPreLeafReadHookForTests(null);
+        await rm(metaDir, { recursive: true, force: true }).catch(() => {});
         await rm(escapeDir, { recursive: true, force: true });
       }
     },
