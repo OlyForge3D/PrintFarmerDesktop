@@ -875,6 +875,21 @@ function resolveScriptAliasTarget(command) {
  * repeatedly, since the chain can be more than one hop deep -- into whichever
  * script it names, with a `visited` set so a cycle (`test` -> `a` -> `test`)
  * reports no narrowing rather than looping forever.
+ *
+ * Vasquez (review of PR #647, round 12): `restart` is not just another name
+ * in `NPM_BARE_LIFECYCLE_SCRIPTS` -- npm documents that when a package.json
+ * has no `restart` script of its own, `npm restart` does not simply no-op,
+ * it runs the `stop` script followed by the `start` script instead. Treating
+ * `restart` exactly like `test`/`start`/`stop` (resolve to `scripts.restart`
+ * or nothing) missed that real fallback:
+ * `checkPackageJsonScripts({ test: 'npm restart', start: 'vitest run -t
+ * "only this arm"' })` reached no narrowing, even though `npm restart` here
+ * genuinely executes the narrowed `start` script per npm's own documented
+ * behaviour. When the resolved target is `restart` and `scripts.restart`
+ * itself is not a string (i.e. no explicit `restart` script exists to take
+ * priority), this follows npm's fallback chain -- `stop` first, then
+ * `start` -- exactly as npm itself would run them, rather than stopping at
+ * an unresolved `restart` reference.
  */
 function resolveNarrowingThroughAliasChain(scripts, command, visited) {
   if (typeof command !== 'string') return null;
@@ -883,6 +898,19 @@ function resolveNarrowingThroughAliasChain(scripts, command, visited) {
   const target = resolveScriptAliasTarget(command);
   if (target === null || visited.has(target)) return null;
   visited.add(target);
+  if (target === 'restart' && typeof scripts.restart !== 'string') {
+    for (const fallbackTarget of ['stop', 'start']) {
+      if (visited.has(fallbackTarget)) continue;
+      visited.add(fallbackTarget);
+      const result = resolveNarrowingThroughAliasChain(
+        scripts,
+        scripts[fallbackTarget],
+        visited,
+      );
+      if (result !== null) return result;
+    }
+    return null;
+  }
   return resolveNarrowingThroughAliasChain(scripts, scripts[target], visited);
 }
 

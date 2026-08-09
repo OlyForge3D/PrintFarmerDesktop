@@ -549,6 +549,56 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     expect(explicitYarnRun).toHaveLength(1);
   });
 
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 12): bare `npm restart` falls back to npm's own stop-then-start chain when no `restart` script is defined", () => {
+    // npm documents that `npm restart` is not a no-op when `scripts.restart`
+    // is absent -- it runs `stop` then `start` instead. Treating `restart`
+    // exactly like `test`/`start`/`stop` (only ever resolving to
+    // `scripts.restart` itself) missed this real fallback: here, no
+    // `restart` script exists, so bare `npm restart` genuinely reaches the
+    // narrowed `start` script.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 12): the restart fallback tries `stop` before `start`', () => {
+    // npm runs `stop` first, then `start` -- confirms this file follows the
+    // same order rather than only ever reaching `start`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+      start: 'echo unrelated',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 12): an explicit `restart` script takes priority over the stop/start fallback', () => {
+    // When `scripts.restart` itself exists, npm runs that directly -- the
+    // stop/start fallback only applies when no `restart` script is defined
+    // at all. A narrowing hiding in `start` here must not be reached,
+    // because `npm restart` never gets there.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      restart: 'echo ok',
+      start: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
     // Round 2 added the single-string exec() shape (`'...'`/`"..."`); round
     // 3 found the identical call shape written as a template literal
