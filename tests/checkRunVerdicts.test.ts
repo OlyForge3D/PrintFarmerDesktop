@@ -302,7 +302,7 @@ describe('latestCheckRunsByName', () => {
     },
   );
 
-  it.each(['\x1b', '\x00\x1b', '\x7f\x07'])(
+  it.each(['\x1b', '\x00\x1b', '\x7f\x07', '\x9b', '\x80\x9f'])(
     'REGRESSION: refuses a check name %j that is entirely control characters once sanitized',
     (name) => {
       // A name made up only of control characters (no printable content)
@@ -310,7 +310,8 @@ describe('latestCheckRunsByName', () => {
       // whitespace per String.prototype.trim -- but becomes an empty
       // string once the ANSI/control-character sanitization strips them.
       // That must still be rejected as an empty name, not silently
-      // reported as a check with no visible label.
+      // reported as a check with no visible label. Covers both the C0/DEL
+      // range and the C1 range (\x80-\x9f).
       const checkRuns = [checkRun({ name })];
       expect(() => latestCheckRunsByName(checkRuns)).toThrow(
         /has no non-empty name once control characters are stripped/,
@@ -325,15 +326,36 @@ describe('latestCheckRunsByName', () => {
     // output. A name containing an ANSI escape sequence (ESC + CSI, here
     // "move cursor" / "clear screen" bytes) must have its control bytes
     // stripped before it is ever surfaced, so it cannot rewrite or corrupt
-    // the terminal output a human or agent is reading.
+    // the terminal output a human or agent is reading. Grouping/keying,
+    // though, must stay on the raw name -- see the collision regression
+    // test below -- so look this run up by its raw (unsanitized) name.
     const maliciousName = '\x1b[31mDANGER\x1b[0m\x07 Desktop';
     const checkRuns = [checkRun({ name: maliciousName })];
     const latest = latestCheckRunsByName(checkRuns);
-    const parsed = latest.get('[31mDANGER[0m Desktop');
+    const parsed = latest.get(maliciousName);
     expect(parsed).toBeDefined();
-    expect(parsed?.name).toBe('[31mDANGER[0m Desktop');
+    expect(parsed?.displayName).toBe('[31mDANGER[0m Desktop');
     // eslint-disable-next-line no-control-regex -- asserting the absence of control characters is the point of this regression test.
-    expect(parsed?.name).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(parsed?.displayName).not.toMatch(/[\x00-\x1f\x7f]/);
+  });
+
+  it('REGRESSION: two distinct raw names that sanitize to the same display string do not collide/alias in grouping', () => {
+    // If runs were grouped/keyed by the *sanitized* name, an
+    // attacker-controlled check name containing control characters could be
+    // crafted to sanitize to the exact same string as a different,
+    // legitimately-named check (e.g. "Desktop" vs "De\x07sktop" both
+    // sanitize to "Desktop"), silently aliasing one check's tracked run
+    // onto another's and masking its real verdict. Grouping must use the
+    // raw name as the identity, so these two remain two distinct entries.
+    const checkRuns = [
+      checkRun({ id: 1, name: 'Desktop', conclusion: 'success' }),
+      checkRun({ id: 2, name: 'De\x07sktop', conclusion: 'failure' }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.size).toBe(2);
+    expect(latest.get('Desktop')?.conclusion).toBe('success');
+    expect(latest.get('De\x07sktop')?.conclusion).toBe('failure');
+    expect(latest.get('De\x07sktop')?.displayName).toBe('Desktop');
   });
 
   it('REGRESSION: refuses a completed run whose completed_at is earlier than its started_at', () => {
@@ -1187,5 +1209,32 @@ describe('main', () => {
     // eslint-disable-next-line no-control-regex -- asserting the absence of control characters is the point of this regression test.
     expect(report).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f]/);
     expect(report).toContain('[31mDANGER[0m Desktop');
+  });
+
+  it('REGRESSION: end-to-end, a C1 control character (e.g. the single-byte CSI) in a check name is sanitized before it reaches the report', () => {
+    // C0 controls (\x00-\x1f) and DEL (\x7f) are not the only control
+    // bytes ANSI terminals act on -- the C1 range (\x80-\x9f) includes a
+    // single-byte form of CSI (\x9b) that can introduce the same escape
+    // sequences as ESC + '[' can. A sanitizer that only strips C0/DEL
+    // would let this class through untouched.
+    const written: string[] = [];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({ id: 1, name: '\x9b31mDANGER\x9b0m Desktop' }),
+        ]),
+      })),
+      (text) => {
+        written.push(text);
+      },
+    );
+    expect(result).toBe(EXIT_CLEAN);
+    const report = written.join('\n');
+    // eslint-disable-next-line no-control-regex -- asserting the absence of control characters is the point of this regression test.
+    expect(report).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+    expect(report).toContain('31mDANGER0m Desktop');
   });
 });

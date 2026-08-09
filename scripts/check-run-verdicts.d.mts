@@ -22,7 +22,10 @@ export interface CheckRunVerdict {
 }
 
 export interface LatestCheckRun {
+  /** Raw, unsanitized name -- this is the grouping/keying identity. */
   name: string;
+  /** Control-character-stripped copy, safe to print/report. */
+  displayName: string;
   conclusion: string | null;
   status: string;
   startedAt: string | null;

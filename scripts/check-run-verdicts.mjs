@@ -81,8 +81,8 @@ const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
 // Stripping every control byte removes the trigger for any such sequence
 // regardless of what follows it, without having to enumerate escape-sequence
 // grammars.
-// eslint-disable-next-line no-control-regex -- matching control characters is the point: strip every C0/DEL byte (including ESC, which begins ANSI escape sequences) out of an attacker-controlled check-run name before it is ever printed.
-const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f]/g;
+// eslint-disable-next-line no-control-regex -- matching control characters is the point: strip every C0 control, DEL, and C1 control byte (including ESC, which begins ANSI escape sequences, and \x9b, the single-byte CSI) out of an attacker-controlled check-run name before it is ever printed.
+const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f-\x9f]/g;
 // GitHub's Checks API always returns `started_at`/`completed_at` in strict
 // ISO 8601 with a literal `Z` suffix (e.g. "2026-08-06T16:00:00Z"), never
 // any other `Date.parse`-acceptable shape. `Date.parse` alone is too
@@ -140,7 +140,7 @@ export function classifyConclusion(conclusion) {
 /**
  * @param {unknown} checkRun
  * @param {number} index
- * @returns {{name: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, id: number}}
+ * @returns {{name: string, displayName: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, id: number}}
  */
 function parseCheckRun(checkRun, index) {
   const name = /** @type {any} */ (checkRun)?.name;
@@ -152,10 +152,16 @@ function parseCheckRun(checkRun, index) {
   if (typeof name !== 'string' || name.trim() === '') {
     throw new Error(`check run ${index + 1} has no non-empty name`);
   }
-  // Sanitize before this name is ever printed or embedded in an error
-  // message (see CONTROL_CHARS_PATTERN above) -- every downstream use of
-  // `name`, in this function's own error messages and beyond, reads the
-  // sanitized value from here on.
+  // Sanitize a *separate* display copy for anything that gets printed or
+  // embedded in an error message (see CONTROL_CHARS_PATTERN above) -- but
+  // never key/group runs by this sanitized value. Stripping control
+  // characters before using the result as an identity would let two
+  // distinct raw names collide into the same sanitized string (e.g.
+  // "Desktop" and "De\x07sktop" both sanitize to "Desktop"), letting an
+  // attacker-controlled check name silently alias onto -- and mask -- a
+  // different, legitimately-named check's tracked verdict. The raw `name`
+  // stays the grouping identity throughout; `displayName` is for output
+  // only.
   const sanitizedName = name.replace(CONTROL_CHARS_PATTERN, '');
   if (sanitizedName.trim() === '') {
     // A name made up entirely of control characters (no printable content
@@ -301,7 +307,8 @@ function parseCheckRun(checkRun, index) {
   // null here rather than trusted -- the same "don't trust a field the API
   // hasn't committed to yet" discipline as elsewhere in this repo's checks.
   return {
-    name: sanitizedName,
+    name,
+    displayName: sanitizedName,
     conclusion: status === 'completed' ? conclusion : null,
     status,
     startedAt,
@@ -423,7 +430,7 @@ function isNewerCheckRun(candidate, current) {
       );
     }
     throw new Error(
-      `cannot determine the latest attempt for check "${candidate.name}" -- runs ${candidate.id} and ${current.id} have identical started_at and completed_at, and no other signal this API provides is a safe way to order them`,
+      `cannot determine the latest attempt for check "${candidate.displayName}" -- runs ${candidate.id} and ${current.id} have identical started_at and completed_at, and no other signal this API provides is a safe way to order them`,
     );
   }
   // Both still open: prefer whichever has actually started over one still
@@ -434,7 +441,7 @@ function isNewerCheckRun(candidate, current) {
   // above rather than trusting id.
   if (candidate.startedAt === null && current.startedAt === null) {
     throw new Error(
-      `cannot determine the latest attempt for check "${candidate.name}" -- runs ${candidate.id} and ${current.id} have neither started yet, and no other signal this API provides is a safe way to order them`,
+      `cannot determine the latest attempt for check "${candidate.displayName}" -- runs ${candidate.id} and ${current.id} have neither started yet, and no other signal this API provides is a safe way to order them`,
     );
   }
   if (candidate.startedAt === null) return false;
@@ -443,7 +450,7 @@ function isNewerCheckRun(candidate, current) {
     return Date.parse(candidate.startedAt) > Date.parse(current.startedAt);
   }
   throw new Error(
-    `cannot determine the latest attempt for check "${candidate.name}" -- runs ${candidate.id} and ${current.id} share the same started_at with neither completed, and no other signal this API provides is a safe way to order them`,
+    `cannot determine the latest attempt for check "${candidate.displayName}" -- runs ${candidate.id} and ${current.id} share the same started_at with neither completed, and no other signal this API provides is a safe way to order them`,
   );
 }
 
@@ -481,9 +488,13 @@ export function buildVerdicts(checkRuns) {
   if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
     throw new Error('no check runs to classify');
   }
+  // Group/select using the raw name (see parseCheckRun), but the `name`
+  // in the output here is what reaches the terminal/report -- that must
+  // be the sanitized `displayName`, never the raw, attacker-controllable
+  // value.
   return [...latestCheckRunsByName(checkRuns).values()]
     .map((run) => ({
-      name: run.name,
+      name: run.displayName,
       conclusion: run.conclusion,
       verdict: classifyConclusion(run.conclusion),
     }))
