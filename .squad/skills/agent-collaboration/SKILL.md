@@ -153,7 +153,8 @@ against it, which is why nothing in any one of those sessions caught it.
 2. `gh pr view <n> --json state,mergedAt,mergeCommit` — a closed, merged PR needs no
    further routing, holding, review, or publication step, regardless of what an earlier
    round believed about it.
-3. Answer "did my work ship" with **content**, not ancestry — see below.
+3. Answer "did my work ship" against the **merge commit**, not the branch's moving tip —
+   see below.
 
 ### The `--is-ancestor` inversion on a squash-merge repo
 
@@ -170,24 +171,29 @@ because no commit from the branch is _ever_ an ancestor of the target, shipped o
 This is not a check that sometimes misses; it fails in one direction only, and that
 direction is a confident wrong answer, which is worse than an inconclusive one.
 
-**The two honest predicates instead:**
+**The two honest predicates instead — both anchored to the merge commit, never to the
+branch's moving tip:**
 
-- **Content diff** (preferred — answers "did my work ship" directly):
-  `git diff <held-sha> origin/<branch> -- <paths>`. Zero output on the paths you own means
-  your content is present at the tip. Scope it to the paths you actually touched — an
-  unscoped diff picks up unrelated churn elsewhere in the tree and answers a different
-  question.
-- **Ancestry against the merge commit** (works only if you diff the right pair): the
+- **Ancestry against the merge commit** (primary — durable forever once merged): the
   merge **commit** GitHub produced (`gh pr view --json mergeCommit`) — not the branch's own
   pre-merge tip — genuinely is an ancestor of the target once merged, because it _is_ the
-  commit that landed on it. `git merge-base --is-ancestor <mergeCommit.oid> origin/development`
-  is honest; the same command given the branch's own last head is not. See §9.1 for this
-  distinction in full.
+  commit that landed on it, and stays one permanently (barring a revert).
+  `git merge-base --is-ancestor <mergeCommit.oid> origin/development` is honest; the same
+  command given the branch's own last head is not. See §9.1 for this distinction in full.
+- **Content diff against the merge commit** (use to confirm exactly what landed, e.g. that
+  a squash reproduced your held content byte-for-byte):
+  `git diff <held-sha> <mergeCommit.oid> -- <paths>`, scoped to the paths you actually
+  touched. Zero output means the squash reproduced your held content exactly. **This must
+  target the merge commit, not `origin/<branch>`.** Diffing against the branch's moving
+  tip answers a different, time-limited question — "are these exact bytes still current at
+  trunk" — and will produce a false "not shipped" the moment any later, unrelated commit
+  touches the same paths, even though the original work landed intact and unmodified. The
+  merge commit is a fixed point; diffing against it never decays as trunk keeps evolving.
 
 **Negative-control requirement.** A check that always answers "not shipped" is
 indistinguishable, from a single reading, in either case above from a check with real
 discriminating power. Before trusting either predicate's result, run it once against a
-SHA or path you know for certain is unmerged, or against `git diff <held-sha> origin/<branch>`
+SHA or path you know for certain is unmerged, or against `git diff <held-sha> <mergeCommit.oid>`
 scoped to a path from a genuinely different, unrelated change — and confirm it reports
 "not shipped." If it doesn't, the check itself is broken and its "shipped" answer is not
 trustworthy either.
@@ -206,6 +212,15 @@ git merge-base --is-ancestor 14304447 origin/development
 git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
 # (no output) <-- squash reproduced the held content byte-for-byte
 
+# CAUTION, do not substitute origin/development for 9991065e above: as trunk keeps
+# evolving, the same diff against the *moving* tip instead of the fixed merge commit
+# eventually goes nonzero even though this work shipped intact and was never touched
+# again -- confirmed live, months after #561 merged:
+git diff 14304447 origin/development -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
+# nonzero output <-- MISLEADING: later, unrelated commits touched these same paths
+# after #561 merged; this is not evidence #561 didn't ship, it is evidence the target
+# was wrong. Always diff against the merge commit, never the branch's moving tip.
+
 # 3. Honest check: is the *merge commit* (not the branch tip) an ancestor of the target?
 git merge-base --is-ancestor 9991065e origin/development
 # exit 0  <-- correct: the squash commit itself is on development
@@ -213,9 +228,10 @@ git merge-base --is-ancestor 9991065e origin/development
 # 4. Negative control: same diff shape as step 2 (a real held-ish ref vs. a real landed
 # ref, scoped to one path) — applied to a path unrelated to #561
 # (scripts/check-merge-landed.mjs is not in `gh pr diff 561 --name-only`'s file list).
-# 5baba942 is the merge commit of PR #425, an ancestor of origin/development that
-# predates scripts/check-merge-landed.mjs's own creation entirely.
-git diff 5baba9420c3762e5ad68fd25baf0cd61fb8e31ce origin/development -- scripts/check-merge-landed.mjs
+# 5baba942 is the merge commit of PR #425, an ancestor of 9991065e that predates
+# scripts/check-merge-landed.mjs's own creation entirely. Target is 9991065e, the same
+# fixed merge commit as step 2 -- not origin/development, for the reason above.
+git diff 5baba9420c3762e5ad68fd25baf0cd61fb8e31ce 9991065e -- scripts/check-merge-landed.mjs
 # nonzero output <-- correctly reports "not shipped": the held ref has none of this
 # file's content at all, confirming the predicate in step 2 has real discriminating
 # power rather than always reporting "shipped"

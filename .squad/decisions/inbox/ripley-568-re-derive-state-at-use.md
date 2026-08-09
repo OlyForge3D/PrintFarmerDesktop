@@ -56,10 +56,15 @@ issue and covers Ralph's merge gate specifically. That section documents, in ful
    so no commit from the branch is _ever_ an ancestor of the target — shipped or not. The
    command fails in one direction only (a confident "never shipped"), which is worse than
    an inconclusive check.
-4. The two honest predicates: content diff (`git diff <held-sha> origin/<branch> -- <paths>`,
-   scoped to the paths actually owned) answers "did my work ship" directly; ancestry is
-   still usable, but only against the **merge commit** GitHub actually produced
-   (`gh pr view --json mergeCommit`), never against the branch's own last head.
+4. The two honest predicates, **both anchored to the merge commit, never to the branch's
+   moving tip**: ancestry against the **merge commit** GitHub actually produced
+   (`gh pr view --json mergeCommit`) is durable forever once merged; content diff
+   (`git diff <held-sha> <mergeCommit.oid> -- <paths>`, scoped to the paths actually owned)
+   confirms exactly what landed. Diffing against `origin/<branch>` instead of the merge
+   commit was tried in an earlier draft and rejected in review (Hicks, PR #671): as trunk
+   keeps evolving, later unrelated commits touching the same paths make that version of the
+   check falsely report "not shipped" for work that shipped intact and was never touched
+   again. A fixed commit does not decay this way; a branch's tip does.
 5. **Negative-control requirement:** before trusting either predicate's result, run it once
    against a SHA or path known to be unmerged and confirm it reports "not shipped." A check
    that always answers "not shipped" cannot be told apart, from a single reading, from one
