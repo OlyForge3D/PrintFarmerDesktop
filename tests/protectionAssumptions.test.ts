@@ -5,9 +5,13 @@ import { describe, expect, it } from 'vitest';
 import {
   EXPECTED_COLLABORATORS,
   EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI,
+  PRIVILEGED_ONLY_ASSUMPTIONS,
   REQUIRED_CONTEXT_NAMES,
   adminExemptibleSettingEnforcement,
+  evaluatePublicProtectionAssumptions,
   evaluateProtectionAssumptions,
+  fetchPrivilegedRepositoryFacts,
+  fetchPublicRepositoryFacts,
   formatViolations,
   rulesetCoversFeatureBranches,
   statusCheckEnforcement,
@@ -621,6 +625,173 @@ describe('the report names the decision, not just the drift', () => {
     expect(EXPECTED_COLLABORATORS).toEqual([
       { login: 'jpapiez', role: 'admin' },
     ]);
+  });
+});
+
+// #491: two of the nine assumptions -- protected branches, and rulesets
+// covering feature branches -- depend only on the two GitHub endpoints that
+// return 200 to an unauthenticated request against this repository
+// (`/rulesets`, `/branches?protected=true`; measured). The broader claim in
+// scripts/check-script-reachability.mjs's old UNENFORCED_CHECKS entry --
+// "every one of those endpoints needs admin scope" -- foreclosed running
+// these two without ever needing a `protection` object at all.
+// `evaluatePublicProtectionAssumptions` proves that by construction: it takes
+// no `protection` parameter and cannot throw for lacking one.
+describe('#491: the public tier needs no protection object at all', () => {
+  const publicBaseline = () => ({
+    rulesets: [
+      {
+        id: 20361532,
+        name: 'development merge queue',
+        target: 'branch',
+        enforcement: 'disabled',
+        conditions: { ref_name: { include: ['refs/heads/development'] } },
+      },
+    ],
+    protectedBranches: ['development'],
+  });
+
+  it('passes against the public-tier baseline with no protection argument', () => {
+    expect(evaluatePublicProtectionAssumptions(publicBaseline())).toEqual([]);
+  });
+
+  it('reports a moved protected-branches premise', () => {
+    const facts = publicBaseline();
+    facts.protectedBranches = ['development', 'feature/x'];
+
+    const violations = evaluatePublicProtectionAssumptions(facts);
+    expect(violations.map((v) => v.assumption)).toEqual(['protected branches']);
+  });
+
+  it('reports an enabled ruleset that now reaches a feature branch', () => {
+    const facts = publicBaseline();
+    facts.rulesets = [
+      {
+        id: 1,
+        name: 'reaches everything',
+        target: 'branch',
+        enforcement: 'active',
+        conditions: { ref_name: { include: ['refs/heads/feature/x'] } },
+      },
+    ];
+
+    const violations = evaluatePublicProtectionAssumptions(facts);
+    expect(violations.map((v) => v.assumption)).toEqual([
+      'rulesets covering feature branches',
+    ]);
+  });
+
+  it('defaults rulesets and protectedBranches to empty and still reports (nothing protected)', () => {
+    const violations = evaluatePublicProtectionAssumptions({});
+    expect(violations.map((v) => v.assumption)).toEqual(['protected branches']);
+  });
+
+  // Every assumption `evaluateProtectionAssumptions` checks that is NOT one of
+  // the two public ones must be named in PRIVILEGED_ONLY_ASSUMPTIONS, so
+  // main()'s no-token path never silently omits one from its
+  // not-checked-no-scope report.
+  it('names every non-public assumption the full evaluator checks', () => {
+    const facts = baseline();
+    facts.protection.allow_force_pushes = { enabled: true };
+    facts.protection.allow_deletions = { enabled: true };
+    facts.protection.required_linear_history = { enabled: false };
+    facts.protection.enforce_admins = { enabled: true };
+    facts.protection.required_pull_request_reviews.required_approving_review_count = 1;
+    facts.protection.required_status_checks.strict = false;
+    facts.protection.required_status_checks.contexts = [];
+    facts.collaborators = [];
+
+    const fullAssumptions = new Set(assumptionsOf(facts));
+    for (const assumption of PRIVILEGED_ONLY_ASSUMPTIONS) {
+      expect(
+        fullAssumptions.has(assumption),
+        `${assumption} is listed as privileged-only but the full evaluator never raises it`,
+      ).toBe(true);
+    }
+    // And the inverse: no assumption the full evaluator raised here (other
+    // than the two public ones, untouched by this fixture) is missing from
+    // the privileged list.
+    for (const assumption of fullAssumptions) {
+      expect(
+        PRIVILEGED_ONLY_ASSUMPTIONS.includes(assumption),
+        `${assumption} was raised by the full evaluator but is not in PRIVILEGED_ONLY_ASSUMPTIONS`,
+      ).toBe(true);
+    }
+  });
+});
+
+// #491: `fetchPublicRepositoryFacts` must reproduce the "unauthenticated"
+// half of the measurement -- no authorization header at all, not merely no
+// token variable in scope -- and `fetchPrivilegedRepositoryFacts` must
+// forward whatever token it is given. Both proven with an injected stub
+// rather than a live network call.
+describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
+  it('requests only the two public endpoints and no authorization header', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchImpl = async (url: string, init: { headers: Record<string, string> }) => {
+      calls.push({ url, headers: init.headers });
+      const body = url.includes('/rulesets') ? [] : [{ name: 'development' }];
+      return { ok: true, json: async () => body } as Response;
+    };
+
+    const facts = await fetchPublicRepositoryFacts({
+      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+      fetchImpl,
+    });
+
+    expect(facts).toEqual({ rulesets: [], protectedBranches: ['development'] });
+    expect(calls).toHaveLength(2);
+    const urls = calls.map((c) => c.url);
+    expect(urls.some((u) => u.endsWith('/rulesets'))).toBe(true);
+    expect(urls.some((u) => u.endsWith('/branches?protected=true'))).toBe(true);
+    for (const call of calls) {
+      expect(
+        Object.keys(call.headers).some((h) => h.toLowerCase() === 'authorization'),
+        'a public-tier request must carry no authorization header at all',
+      ).toBe(false);
+    }
+  });
+
+  it('surfaces a non-ok response as a thrown error', async () => {
+    const fetchImpl = async () =>
+      ({ ok: false, status: 404, statusText: 'Not Found' }) as Response;
+
+    await expect(
+      fetchPublicRepositoryFacts({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/404/);
+  });
+});
+
+describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', () => {
+  it('requests the two privileged endpoints with the given token', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchImpl = async (url: string, init: { headers: Record<string, string> }) => {
+      calls.push({ url, headers: init.headers });
+      const body = url.includes('/collaborators')
+        ? [{ login: 'jpapiez', role_name: 'admin' }]
+        : { enforce_admins: { enabled: false } };
+      return { ok: true, json: async () => body } as Response;
+    };
+
+    const facts = await fetchPrivilegedRepositoryFacts({
+      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+      token: 'a-token',
+      fetchImpl,
+    });
+
+    expect(facts.collaborators).toEqual([{ login: 'jpapiez', role: 'admin' }]);
+    expect(facts.protection).toEqual({ enforce_admins: { enabled: false } });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const authHeader = Object.entries(call.headers).find(
+        ([key]) => key.toLowerCase() === 'authorization',
+      );
+      expect(authHeader, 'a privileged-tier request must carry the given token').toBeTruthy();
+      expect(authHeader?.[1]).toContain('a-token');
+    }
   });
 });
 
