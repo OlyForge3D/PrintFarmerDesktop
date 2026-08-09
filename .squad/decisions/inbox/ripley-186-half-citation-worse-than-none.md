@@ -193,15 +193,17 @@ untouched by the round-4 fix) listed `branches: [development, main]`, but
 `main` and push attacker-controlled content directly to it — bypassing PR
 review entirely — and that push would still satisfy `event_name == 'push'`,
 with `actions/checkout@v4` still checking out exactly that unreviewed content
-and handing it the token. Two changes close this, landed together and
-deliberately redundant with each other: `main` is dropped from the
-`on.push.branches` list itself (`ci.yml:26`), removing the exposure at its
-source rather than only guarding against it downstream; and the step also
-gained a second, independent condition, `github.ref ==
-'refs/heads/development'` (`ci.yml:505` after this change), so it will not run
-over a push to `main` even if `main` is re-added to the trigger later, until
-this condition is deliberately revisited alongside real branch protection on
-it.
+and handing it the token. Two changes close this, deliberately redundant with
+each other, though they landed in two separate PRs rather than together: PR
+#661 shipped the step-level `github.ref == 'refs/heads/development'` condition
+(`ci.yml:505` at that head), so the step will not run over a push to `main`
+regardless of what the top-level trigger lists — that version was reviewed
+unanimously and merged (`79c99edd`), on the judgment that the ref-pin alone
+was sufficient to close the exposure. PR #668, a small follow-up opened after
+#661 merged, additionally drops `main` from the `on.push.branches` list
+itself (`ci.yml:26`), removing the unused/exposed trigger entry at its source
+instead of relying only on the downstream guard — defense-in-depth, not a fix
+to a gap that was still open at #661's merge.
 
 **A member is licensed — and expected — to falsify a constraint in their own
 brief and report it, without needing permission first.** Bishop did this in
