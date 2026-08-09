@@ -980,11 +980,15 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         raceSimulated = await tryMakeFileSymlink(escapeTarget, metaPath);
         if (process.env.PFD_DEBUG_IDENTITY_PIN) {
           const escapeLstat = await lstat(escapeTarget, { bigint: true });
-          const metaLstat = await lstat(metaPath, { bigint: true }).catch(
-            (e) => e,
-          );
+          let metaLstatMsg: string;
+          try {
+            const metaLstat = await lstat(metaPath, { bigint: true });
+            metaLstatMsg = `dev=${metaLstat.dev} ino=${metaLstat.ino} isSymlink=${metaLstat.isSymbolicLink()}`;
+          } catch (e) {
+            metaLstatMsg = e instanceof Error ? e.message : String(e);
+          }
           console.error(
-            `[identity-pin-debug] preOpen raceSimulated=${raceSimulated} escapeTarget dev=${escapeLstat.dev} ino=${escapeLstat.ino} metaPath-lstat=${metaLstat instanceof Error ? metaLstat.message : `dev=${metaLstat.dev} ino=${metaLstat.ino} isSymlink=${metaLstat.isSymbolicLink()}`}`,
+            `[identity-pin-debug] preOpen raceSimulated=${raceSimulated} escapeTarget dev=${escapeLstat.dev} ino=${escapeLstat.ino} metaPath-lstat=${metaLstatMsg}`,
           );
         }
       });
