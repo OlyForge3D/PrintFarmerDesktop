@@ -108,8 +108,14 @@ const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Matches a string that explicitly names its timezone at the end: a
- * trailing `Z`/`z`, a named zone abbreviation (`GMT`, `UTC`), or a numeric
- * offset (`+05:00`, `-0500`, ...).
+ * trailing `Z`, a named zone abbreviation (`GMT`, `UTC`), or a numeric
+ * offset (`+05:00`, `-0500`, ...). The named-zone forms are matched
+ * case-insensitively (`gmt`, `Gmt`, `GMT`, `utc`, `UTC`, ... are all
+ * accepted) because `Date.parse` itself treats zone names case-
+ * insensitively -- `2026-08-10T18:00:00gmt` is exactly as unambiguous an
+ * absolute instant as `...GMT`, so rejecting the lowercase form would be a
+ * false positive (a genuinely fresh, correctly-timestamped citation wrongly
+ * classified UNVERIFIABLE), not a security fix.
  *
  * `normalizeInstant` requires every date-and-time string to match this (or
  * be a bare date, above) rather than trying to enumerate and reject every
@@ -126,7 +132,7 @@ const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * regardless of separator, case, or overall format, instead of requiring a
  * new negative pattern each time another shape turns up.
  */
-const EXPLICIT_TIMEZONE_SUFFIX_PATTERN = /(?:Z|z|GMT|UTC|[+-]\d{2}:?\d{2})$/;
+const EXPLICIT_TIMEZONE_SUFFIX_PATTERN = /(?:z|gmt|utc|[+-]\d{2}:?\d{2})$/i;
 
 /**
  * Normalizes a value that names one instant in time — a finite epoch-ms

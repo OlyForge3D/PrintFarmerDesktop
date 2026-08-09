@@ -108,6 +108,18 @@ describe('normalizeInstant — timezone-explicitness', () => {
     );
   });
 
+  it('accepts a lowercase "gmt" zone suffix, since Date.parse treats zone names case-insensitively', () => {
+    expect(normalizeInstant('Mon, 10 Aug 2026 18:00:00 gmt')).toBe(
+      Date.parse('Mon, 10 Aug 2026 18:00:00 gmt'),
+    );
+  });
+
+  it('accepts a mixed-case "Utc" zone suffix, since Date.parse treats zone names case-insensitively', () => {
+    expect(normalizeInstant('2026/08/10 18:00:00 Utc')).toBe(
+      Date.parse('2026/08/10 18:00:00 Utc'),
+    );
+  });
+
   it('accepts the same instant written with an explicit Z', () => {
     expect(normalizeInstant('2026-08-10T18:00:00Z')).toBe(
       Date.parse('2026-08-10T18:00:00Z'),
