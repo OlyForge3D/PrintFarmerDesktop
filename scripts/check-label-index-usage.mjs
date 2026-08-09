@@ -628,52 +628,92 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
       'g',
     );
 
-    const processHeaderPattern = (headerPattern) => {
-      let header;
-      while ((header = headerPattern.exec(contents)) !== null) {
-        const callIndex = header.index;
-        const argsStart = header.index + header[0].length;
+    const processCallSiteAt = (callIndex, argsStart) => {
+      let depth = 1;
+      let index = argsStart;
+      for (; index < contents.length && depth > 0; index++) {
+        if (contents[index] === '(') depth++;
+        else if (contents[index] === ')') depth--;
+      }
+      if (depth !== 0) return; // unbalanced -- do not guess.
+      const argsText = contents.slice(argsStart, index - 1);
 
-        let depth = 1;
-        let index = argsStart;
-        for (; index < contents.length && depth > 0; index++) {
-          if (contents[index] === '(') depth++;
-          else if (contents[index] === ')') depth--;
+      for (const rawArgument of splitTopLevelArguments(argsText)) {
+        const argument = rawArgument.trim();
+        if (argument === '') continue;
+
+        const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
+        if (arrayLiteralMatch) {
+          const tokens = resolveArrayLiteralElementTokens(
+            arrayLiteralMatch[1],
+            contents,
+            callIndex,
+          );
+          if (tokens.length > 0) flattened.push(`gh ${tokens.join(' ')}`);
+          continue;
         }
-        if (depth !== 0) continue; // unbalanced -- do not guess.
-        const argsText = contents.slice(argsStart, index - 1);
 
-        for (const rawArgument of splitTopLevelArguments(argsText)) {
-          const argument = rawArgument.trim();
-          if (argument === '') continue;
-
-          const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
-          if (arrayLiteralMatch) {
-            const tokens = resolveArrayLiteralElementTokens(
-              arrayLiteralMatch[1],
-              contents,
-              callIndex,
-            );
-            if (tokens.length > 0) flattened.push(`gh ${tokens.join(' ')}`);
-            continue;
-          }
-
-          const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
-          if (identifierMatch) {
-            const tokens = resolveVariableArrayBefore(
-              identifierMatch[1],
-              callIndex,
-            );
-            if (tokens && tokens.length > 0) {
-              flattened.push(`gh ${tokens.join(' ')}`);
-            }
+        const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
+        if (identifierMatch) {
+          const tokens = resolveVariableArrayBefore(
+            identifierMatch[1],
+            callIndex,
+          );
+          if (tokens && tokens.length > 0) {
+            flattened.push(`gh ${tokens.join(' ')}`);
           }
         }
       }
     };
 
+    const processHeaderPattern = (headerPattern) => {
+      let header;
+      while ((header = headerPattern.exec(contents)) !== null) {
+        processCallSiteAt(header.index, header.index + header[0].length);
+      }
+    };
+
     processHeaderPattern(directHeaderPattern);
     processHeaderPattern(commaOperatorHeaderPattern);
+
+    // Vasquez (round 9/15): a method-shorthand wrapper called through a
+    // VARIABLE-KEY bracket access (`const key = 'invokeGh';
+    // obj[key]([...])`) is exactly as legitimate a call site as a literal
+    // quoted key (`obj['invokeGh']([...])`, already matched by
+    // `directHeaderPattern` in `'method'` mode) or dot access -- but the
+    // key here is a plain identifier in the source text, not a string
+    // literal naming the wrapper, so it can never be found by matching
+    // the wrapper's escaped NAME directly inside the header pattern. This
+    // instead scans every bracket-access call site in the file
+    // (`[identifier](...)`, for ANY identifier, since the wrapper's own
+    // name cannot appear literally here), resolves that identifier to its
+    // most recent scalar string-literal assignment via
+    // `resolveScalarVariableBefore` -- the same reassignment-aware,
+    // single-hop resolution already used elsewhere in this file for
+    // scalar variables -- and only treats the call as a match for THIS
+    // wrapper if the resolved value equals `wrapperName` exactly. Scoped
+    // to `'method'`/`'any'` modes only, mirroring the literal-bracket-key
+    // case: a `'bare'`-mode wrapper (only ever legitimately called as a
+    // bare identifier) has no bracket-access call shape to begin with.
+    if (matchMode === 'method' || matchMode === 'any') {
+      const variableKeyHeaderPattern = /\[\s*([A-Za-z_$][\w$]*)\s*]\s*\(/g;
+      let variableKeyHeader;
+      while (
+        (variableKeyHeader = variableKeyHeaderPattern.exec(contents)) !== null
+      ) {
+        const resolvedKey = resolveScalarVariableBefore(
+          contents,
+          variableKeyHeader[1],
+          variableKeyHeader.index,
+        );
+        if (resolvedKey !== wrapperName) continue;
+
+        processCallSiteAt(
+          variableKeyHeader.index,
+          variableKeyHeader.index + variableKeyHeader[0].length,
+        );
+      }
+    }
   };
 
   // Ripley (round 9): a wrapper whose SOLE parameter is a REST parameter

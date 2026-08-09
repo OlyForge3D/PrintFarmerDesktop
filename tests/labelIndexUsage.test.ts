@@ -478,6 +478,26 @@ const GH_ARRAY_ELEMENT_UNDECLARED_VARIABLE_SNIPPET = `
 execFileSync('gh', ['search', 'issues', undeclaredQuery]);
 `;
 
+// Vasquez (round 9/15): a method-shorthand wrapper called through a
+// VARIABLE-KEY bracket access -- \`const key = 'invokeGh'; obj[key]([...])\`
+// -- where the literal-quoted-key form (\`obj['invokeGh']([...])\`,
+// see \`GH_WRAPPER_BRACKET_CALL_SNIPPET\` above) was already handled, but
+// the key here is a plain identifier resolved from a separate assignment.
+const GH_WRAPPER_VARIABLE_KEY_BRACKET_CALL_SNIPPET = `
+const obj = { invokeGh(args) { return execFileSync('gh', args); } };
+const key = 'invokeGh';
+obj[key](['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Negative control: the same variable-key bracket-access shape, but the
+// resolved key names an UNRELATED method that never shells out to \`gh\` --
+// must not be flagged.
+const NON_WRAPPER_VARIABLE_KEY_BRACKET_CALL_SNIPPET = `
+const obj = { safeThing(args) { return args.join(' '); } };
+const key = 'safeThing';
+obj[key](['not', 'a', 'gh', 'call', '--label']);
+`;
+
 describe('scanLabelIndexUsage', () => {
   it('flags gh pr list --label as an unlisted violation', () => {
     const { violations, allowlisted } = scanLabelIndexUsage({
@@ -1323,6 +1343,36 @@ execFileSync('gh', [
         {
           path: 'scripts/example.mjs',
           contents: GH_ARRAY_ELEMENT_UNDECLARED_VARIABLE_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  // Vasquez (round 9/15): end-to-end, a method-shorthand wrapper called
+  // through a VARIABLE-KEY bracket access must be traced back to it, the
+  // same as the already-handled literal-quoted-key form.
+  it('flags a call through a variable-key bracket-access binding', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_VARIABLE_KEY_BRACKET_CALL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Negative control: a variable-key bracket access resolving to an
+  // unrelated method that never shells out to `gh` must not be flagged.
+  it('does not flag a variable-key bracket-access binding to an unrelated method', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: NON_WRAPPER_VARIABLE_KEY_BRACKET_CALL_SNIPPET,
         },
       ],
     });
