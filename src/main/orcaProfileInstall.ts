@@ -34,6 +34,7 @@ import {
   readFile,
   writeFile,
   rename,
+  rm,
   lstat,
   mkdir,
   realpath,
@@ -474,7 +475,6 @@ export async function installOrcaProfileWindows(
   } catch (writeErr) {
     // Best-effort cleanup of the temp file.
     try {
-      const { rm } = await import('node:fs/promises');
       await rm(tempPath, { force: true });
     } catch {
       // Ignore cleanup failures.
@@ -591,7 +591,38 @@ async function ensureBackupMetaDirSafe(installRoot: string): Promise<string> {
  * Overwrites any prior record for the same `operationId`: if an operation
  * is retried and produces a newer backup, that newer backup is the one
  * restore should recover.
+ *
+ * Writes via an unpredictably-named, exclusively-created temp file in the
+ * validated metadata directory, then an atomic rename over the final path
+ * — the same pattern already used for profile installs/restores. This
+ * closes a TOCTOU window a reviewer identified: the previous
+ * lstat-then-writeFile(metaPath) sequence had a gap between checking that
+ * `metaPath` was not a symlink and the subsequent write, during which an
+ * attacker could replace `metaPath` with a symlink and have the write
+ * follow it. `wx` (exclusive create) on an unguessable temp name cannot be
+ * pre-empted, and `rename()` replaces whatever is at the destination path
+ * (including a symlink placed there in the interim) rather than following
+ * it — so there is no window in which a symlink at `metaPath` causes data
+ * to be written through it.
  */
+/**
+ * Test-only hook invoked immediately before the atomic `rename()` in
+ * `writeBackupMeta`, i.e. exactly inside the write-side race window a
+ * reviewer flagged (between validating the temp file and replacing
+ * `metaPath` with it). Lets a regression test deterministically plant a
+ * symlink at `metaPath` at the precise moment the race would occur,
+ * proving `rename()` replaces it rather than writing through it. No-op in
+ * production; never set outside tests.
+ */
+let backupMetaWriteRaceHookForTests:
+  ((metaPath: string) => Promise<void> | void) | null = null;
+
+export function __setBackupMetaWriteRaceHookForTests(
+  hook: ((metaPath: string) => Promise<void> | void) | null,
+): void {
+  backupMetaWriteRaceHookForTests = hook;
+}
+
 async function writeBackupMeta(
   installRoot: string,
   operationId: string,
@@ -600,22 +631,91 @@ async function writeBackupMeta(
   validateOperationId(operationId);
   const metaDir = await ensureBackupMetaDirSafe(installRoot);
   const metaPath = path.join(metaDir, `${operationId}.json`);
-  // Refuse to write through an existing symlink at the metadata file itself
-  // (the directory chain above is already verified reparse-point-free by
-  // ensureBackupMetaDirSafe, but the leaf file could still have been
-  // replaced by a link between checks).
+  const tempPath = path.join(metaDir, `.pfd-meta-tmp-${randomUUID()}.json`);
+  await writeFile(tempPath, JSON.stringify(record), {
+    encoding: 'utf8',
+    flag: 'wx', // exclusive create: fails if anything (incl. a symlink) already exists there
+  });
   try {
-    const info = await lstat(metaPath);
-    if (info.isSymbolicLink()) {
+    const tempInfo = await lstat(tempPath);
+    if (tempInfo.isSymbolicLink()) {
       throw makeError(
         'pathRestricted',
-        'Backup metadata file is a symlink; refused.',
+        'Backup metadata temp file was redirected; refused.',
       );
     }
+    if (backupMetaWriteRaceHookForTests) {
+      await backupMetaWriteRaceHookForTests(metaPath);
+    }
+    await rename(tempPath, metaPath);
   } catch (error) {
-    if (!isErrno(error, 'ENOENT')) throw error;
+    try {
+      await rm(tempPath, { force: true });
+    } catch {
+      // Ignore cleanup failures.
+    }
+    throw error;
   }
-  await writeFile(metaPath, JSON.stringify(record), 'utf8');
+}
+
+/**
+ * Test-only hook invoked between the pre-read symlink check and the actual
+ * file read inside `findBackupByOperationId`'s metadata read. Lets a
+ * regression test deterministically simulate the TOCTOU race a reviewer
+ * flagged (the metadata file being replaced with a symlink in the window
+ * between the safety check and the read) without depending on real
+ * scheduling/timing, which is inherently non-deterministic. No-op in
+ * production; never set outside tests.
+ */
+let backupMetaReadRaceHookForTests: (() => Promise<void> | void) | null = null;
+
+export function __setBackupMetaReadRaceHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  backupMetaReadRaceHookForTests = hook;
+}
+
+/**
+ * Read `metaPath` back, refusing to trust the content if the path was (or
+ * became) a symlink immediately before or immediately after the read.
+ *
+ * This brackets the read with two independent symlink checks rather than
+ * relying on a single check-then-use, closing (to the extent Node's
+ * cross-platform fs API allows without `O_NOFOLLOW`, which libuv does not
+ * implement on Windows) the window in which an attacker could swap the
+ * metadata file for a symlink between validation and use. Any symlink
+ * observed on either side of the read invalidates the result: the record
+ * is treated as not found rather than trusted.
+ */
+async function readBackupMetaFileSafely(
+  metaPath: string,
+): Promise<string | null> {
+  try {
+    const before = await lstat(metaPath);
+    if (before.isSymbolicLink()) return null;
+  } catch {
+    return null; // No record at this path.
+  }
+
+  if (backupMetaReadRaceHookForTests) {
+    await backupMetaReadRaceHookForTests();
+  }
+
+  let raw: string;
+  try {
+    raw = await readFile(metaPath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  try {
+    const after = await lstat(metaPath);
+    if (after.isSymbolicLink()) return null; // Swapped mid-read; discard.
+  } catch {
+    return null;
+  }
+
+  return raw;
 }
 
 /**
@@ -639,17 +739,9 @@ export async function findBackupByOperationId(
     return null; // Install root or metadata dir chain is unsafe or missing.
   }
   const metaPath = path.join(metaDir, `${operationId}.json`);
-  try {
-    const info = await lstat(metaPath);
-    if (info.isSymbolicLink()) return null; // Never read through a symlink.
-  } catch {
-    return null; // No record for this operationId (never installed, or pre-#208-fix backup).
-  }
-  let raw: string;
-  try {
-    raw = await readFile(metaPath, 'utf8');
-  } catch {
-    return null;
+  const raw = await readBackupMetaFileSafely(metaPath);
+  if (raw === null) {
+    return null; // No record, or the read was not safe to trust.
   }
   let parsed: unknown;
   try {
@@ -761,7 +853,6 @@ export async function restoreOrcaProfileWindows(
     await rename(tempPath, destPath);
   } catch (writeErr) {
     try {
-      const { rm } = await import('node:fs/promises');
       await rm(tempPath, { force: true });
     } catch {
       // Ignore cleanup failures.
