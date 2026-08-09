@@ -325,6 +325,38 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
+  it("REGRESSION: a run whose created_at field is null or absent (GitHub's real Checks API shape) is parsed successfully, not rejected as malformed", () => {
+    // `created_at` is not documented on the check-run object at all --
+    // confirmed both by GitHub's REST API reference and by live
+    // `commits/<sha>/check-runs` responses from this repo's own PRs, which
+    // return `created_at: null` for every run, including completed ones.
+    // An earlier revision of this comparator (round 8) mistakenly started
+    // reading and validating `created_at`, which meant it threw "invalid
+    // created_at" on every real check run in production, while every test
+    // fixture (which always set `created_at` explicitly) stayed green.
+    // Verdict logic must only ever depend on the fields GitHub's docs and
+    // live data actually guarantee: `started_at` / `completed_at` / `id`.
+    const withNullCreatedAt = [
+      checkRun({
+        id: 1,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'success',
+        created_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(withNullCreatedAt)).not.toThrow();
+
+    const fullRun: Record<string, unknown> = checkRun({
+      id: 2,
+      name: 'Desktop (no field at all)',
+      status: 'completed',
+      conclusion: 'success',
+    });
+    delete fullRun.created_at;
+    expect(() => latestCheckRunsByName([fullRun])).not.toThrow();
+  });
+
   it('still refuses a completed run that carries no started_at at all, which is genuinely malformed', () => {
     const checkRuns = [
       checkRun({
@@ -711,12 +743,15 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('REGRESSION: an in-progress run created at the same instant as a completed run does not outrank it -- an exact-second tie is ambiguous, not a win for either side (fails closed rather than reporting a possibly-wrong pending)', () => {
+  it('REGRESSION: an in-progress run that started at the exact instant a completed run finished does not outrank it -- an exact-second tie on the recency signal is ambiguous, not a win for either side (fails closed rather than reporting a possibly-wrong pending)', () => {
     // Vasquez (round 8, still valid after the round-8 architectural
-    // rewrite): the Checks API only reports second-resolution timestamps,
-    // so two runs for the same name can genuinely tie on `created_at` --
-    // now the sole recency signal (see compareCheckRunRecency). An exact
-    // tie does not prove either run is newer, so this must fail closed
+    // rewrite -- and after the follow-up correction reverting `created_at`,
+    // which is not a real field the Checks API returns, see
+    // compareCheckRunRecency's doc comment): the Checks API only reports
+    // second-resolution timestamps, so an open run's `started_at` and a
+    // completed run's `completed_at` -- the two fields compareCheckRunRecency
+    // actually compares -- can genuinely tie to the second. An exact tie
+    // does not prove either run is newer, so this must fail closed
     // (throw), not silently pick a side.
     const checkRuns = [
       checkRun({
@@ -724,7 +759,6 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'completed',
         conclusion: 'success',
-        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:05:00Z',
       }),
@@ -733,8 +767,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
-        created_at: '2026-08-06T15:59:50Z',
-        started_at: '2026-08-06T16:00:00Z',
+        started_at: '2026-08-06T16:05:00Z',
         completed_at: null,
       }),
     ];
@@ -758,7 +791,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
-        started_at: '2026-08-06T16:00:00Z',
+        started_at: '2026-08-06T16:05:00Z',
         completed_at: null,
       }),
     ];
@@ -849,49 +882,59 @@ describe('latestCheckRunsByName', () => {
     expect(result).toBe(EXIT_UNDETERMINED);
   });
 
-  it('the latest-run selection still works when the newest run for a name is queued with no started_at, created after the completed run finished', () => {
+  it('REGRESSION: a queued run with no started_at yet cannot be safely ordered against a completed run for the same name, and fails closed rather than guessing either way', () => {
+    // Before the round-8 rewrite (and its since-reverted `created_at`
+    // follow-up, see compareCheckRunRecency's doc comment for why that was
+    // wrong), a still-queued run's `created_at` was used to bound it
+    // against a completed run's own timestamp -- if the queued run was
+    // created after the completed run finished, the queued run "won";
+    // otherwise the completed run did. `created_at` is not a field the
+    // Checks API actually returns on a check-run object at all, so that
+    // bound cannot exist anymore: a run that has not started yet carries
+    // no timestamp whatsoever the API guarantees. There is therefore no
+    // sound basis to say the queued run is newer OR older than the
+    // completed run -- confidently picking either side would be an
+    // unfounded assumption, so this must fail closed (throw), the same as
+    // any other genuinely unresolvable pair.
     const checkRuns = [
       checkRun({
         id: 1,
         name: 'Desktop',
         status: 'completed',
         conclusion: 'success',
+        started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:59:29Z',
       }),
       checkRun({
         id: 2,
         name: 'Desktop',
         status: 'queued',
         conclusion: null,
-        created_at: '2026-08-06T16:00:00Z',
         started_at: null,
         completed_at: null,
       }),
     ];
-    const latest = latestCheckRunsByName(checkRuns);
-    expect(latest.get('Desktop')?.id).toBe(2);
-    expect(latest.get('Desktop')?.startedAt).toBeNull();
-    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
-      VERDICT_PENDING,
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
     );
   });
 
-  it("REGRESSION: a stale queued run created before a completed run finished does not mask that completed run's real (failed) verdict", () => {
-    // Vasquez (round 7): a same-name `queued` run with `started_at: null`
-    // was unconditionally treated as newer than any completed run for that
-    // name, with no bound at all. That is a false-pass vector: an orphaned
-    // queued run -- created and left behind before a later, completed
-    // `failure` for the same check -- would mask that real failure behind
-    // a `pending` reading, letting `main` exit clean (0) when a real check
-    // actually failed. Bound the queued run the same way an in_progress
-    // run is already bounded: it only wins if it was created at or after
-    // the completed run's own completed_at.
+  it('REGRESSION: a queued run with no started_at yet does not mask a completed failure behind a false pending -- it fails closed instead of silently winning', () => {
+    // The specific false-pass shape Vasquez originally flagged (round 7):
+    // an orphaned queued run for a name that already has a completed
+    // `failure` must not be reported as "the latest attempt" just because
+    // it is still open, since that would print `pending` and let `main`
+    // exit clean (0) when a real check actually failed. Without any
+    // timestamp for the queued run (see the test above for why), the fix
+    // is not to swap in a different winner -- it is to refuse to pick a
+    // winner at all, which is exactly as safe a non-outcome as reporting
+    // the failure would be: either way, `main` does NOT exit clean.
     const checkRuns = [
       checkRun({
         id: 1,
         name: 'Desktop',
         status: 'queued',
         conclusion: null,
-        created_at: '2026-08-06T10:00:00Z',
         started_at: null,
         completed_at: null,
       }),
@@ -900,26 +943,22 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'completed',
         conclusion: 'failure',
-        created_at: '2026-08-06T15:58:00Z',
         started_at: '2026-08-06T15:58:29Z',
         completed_at: '2026-08-06T15:59:29Z',
       }),
     ];
-    const latest = latestCheckRunsByName(checkRuns);
-    expect(latest.get('Desktop')?.id).toBe(2);
-    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
-      VERDICT_FAILED,
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
     );
   });
 
-  it('REGRESSION (end-to-end): main() reports the real failure instead of a false pass when a stale queued run masks a completed failure', () => {
+  it('REGRESSION (end-to-end): main() does not exit clean when a queued run with no started_at coexists with a completed failure -- it exits undetermined, never a false pass', () => {
     const checkRuns = [
       checkRun({
         id: 1,
         name: 'Desktop',
         status: 'queued',
         conclusion: null,
-        created_at: '2026-08-06T10:00:00Z',
         started_at: null,
         completed_at: null,
       }),
@@ -928,7 +967,6 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'completed',
         conclusion: 'failure',
-        created_at: '2026-08-06T15:58:00Z',
         started_at: '2026-08-06T15:58:29Z',
         completed_at: '2026-08-06T15:59:29Z',
       }),
@@ -942,7 +980,7 @@ describe('latestCheckRunsByName', () => {
       })),
       () => {},
     );
-    expect(result).toBe(EXIT_FAILED);
+    expect(result).toBe(EXIT_UNDETERMINED);
   });
 
   it('REGRESSION: fails closed (throws) when two still-open runs for the same name have neither started yet', () => {
@@ -1674,5 +1712,36 @@ describe('main', () => {
       (line) => line.includes('safe') || line.includes('passed     Desktop'),
     );
     expect(checkLines).toHaveLength(1);
+  });
+
+  it('REGRESSION: end-to-end, Unicode zero-width characters and the byte-order mark in a check name are sanitized via the general Cf (format) category, not just enumerated bidi code points', () => {
+    // Vasquez (round 8, adversarial): the bidi-control fix only enumerated
+    // specific code points (U+202A-U+202E, U+2066-U+2069). Zero-width
+    // space/joiners (U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ) and the
+    // byte-order mark (U+FEFF) are a distinct invisible-character attack
+    // class -- not visual reordering, but invisible insertion/splicing --
+    // that sat outside those enumerated ranges and so still reached report
+    // output unstripped. Rather than enumerate yet another one-off list of
+    // code points, `CONTROL_CHARS_PATTERN` now matches the whole Unicode
+    // "Cf" (format) general category via `\p{Cf}`, which covers these
+    // characters (and any other invisible/format codepoint in that
+    // category) in one pass.
+    const maliciousName = 'Desktop\u200B\u200C\u200D\uFEFF (evil)';
+    const written: string[] = [];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([checkRun({ id: 1, name: maliciousName })]),
+      })),
+      (text) => {
+        written.push(text);
+      },
+    );
+    expect(result).toBe(EXIT_CLEAN);
+    const report = written.join('\n');
+    expect(report).not.toMatch(/\u200b|\u200c|\u200d|\ufeff/);
+    expect(report).toContain('Desktop (evil)');
   });
 });

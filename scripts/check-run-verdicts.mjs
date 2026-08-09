@@ -80,18 +80,23 @@ const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
 // prior lines) or otherwise corrupt the report a human or agent is reading.
 // Stripping every control byte removes the trigger for any such sequence
 // regardless of what follows it, without having to enumerate escape-sequence
-// grammars. Beyond that C0/C1/DEL byte range, two classes of Unicode
-// codepoints are stripped for the same reason: U+2028 (LINE SEPARATOR) and
-// U+2029 (PARAGRAPH SEPARATOR) are newline-equivalent characters honored by
-// many terminals/renderers, so a name embedding one could forge an apparent
-// extra row in printed report output, letting fabricated text masquerade as
-// a separate check result; U+202A-U+202E (bidi embeddings/overrides) and
-// U+2066-U+2069 (bidi isolates) let a name visually reorder or override the
-// displayed order of surrounding text in any renderer that honors Unicode
-// bidi controls -- the same "attacker name spoofs what is read" attack, via
-// a different mechanism than ANSI escapes or 8-bit control codes.
-// eslint-disable-next-line no-control-regex -- see comment above: strips C0/DEL/C1 control bytes, Unicode line/paragraph separators (U+2028/U+2029), and Unicode bidi-control characters (U+202A-U+202E, U+2066-U+2069) from an attacker-controlled check-run name before it is ever printed.
-const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g; // prettier-ignore
+// grammars. Beyond that C0/C1/DEL byte range, two further classes of
+// Unicode codepoints are stripped for the same reason: U+2028 (LINE
+// SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are newline-equivalent
+// characters honored by many terminals/renderers, so a name embedding one
+// could forge an apparent extra row in printed report output, letting
+// fabricated text masquerade as a separate check result; and the Unicode
+// "Cf" (format) general category -- bidi embeddings/overrides/isolates
+// (U+202A-U+202E, U+2066-U+2069), zero-width space/joiners (U+200B-U+200D),
+// the byte-order mark (U+FEFF), and every other invisible-or-reordering
+// codepoint in that category -- let a name visually reorder, hide, or
+// splice into the displayed text in any renderer that honors them, the
+// same "attacker name spoofs what is read" attack as ANSI escapes, just
+// via different Unicode mechanisms. Matching the whole Cf category (via
+// `\p{Cf}`) rather than an enumerated list of specific code points closes
+// this attack class in general instead of one code point at a time.
+// eslint-disable-next-line no-control-regex -- see comment above: strips C0/DEL/C1 control bytes, Unicode line/paragraph separators (U+2028/U+2029), and the entire Unicode "Cf" (format) category -- bidi controls, zero-width characters, the BOM, and similar -- from an attacker-controlled check-run name before it is ever printed.
+const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f-\x9f\u2028\u2029]|\p{Cf}/gu; // prettier-ignore
 // GitHub's Checks API always returns `started_at`/`completed_at` in strict
 // ISO 8601 with a literal `Z` suffix (e.g. "2026-08-06T16:00:00Z"), never
 // any other `Date.parse`-acceptable shape. `Date.parse` alone is too
@@ -188,14 +193,13 @@ export function classifyConclusion(conclusion) {
 /**
  * @param {unknown} checkRun
  * @param {number} index
- * @returns {{name: string, displayName: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, createdAt: string, id: number}}
+ * @returns {{name: string, displayName: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, id: number}}
  */
 function parseCheckRun(checkRun, index) {
   const name = /** @type {any} */ (checkRun)?.name;
   const status = /** @type {any} */ (checkRun)?.status;
   const startedAtRaw = /** @type {any} */ (checkRun)?.started_at;
   const completedAtRaw = /** @type {any} */ (checkRun)?.completed_at;
-  const createdAtRaw = /** @type {any} */ (checkRun)?.created_at;
   const id = /** @type {any} */ (checkRun)?.id;
   const conclusion = /** @type {any} */ (checkRun)?.conclusion ?? null;
   if (typeof name !== 'string' || name.trim() === '') {
@@ -349,22 +353,6 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${sanitizedName}) has completed_at (${completedAt}) earlier than started_at (${startedAt})`,
     );
   }
-  // Unlike `started_at`/`completed_at`, GitHub sets `created_at` the moment
-  // a check run is created and never leaves it null, regardless of status
-  // -- it is the one timestamp every run, however early in its lifecycle,
-  // is guaranteed to carry. That makes it the only available signal for
-  // bounding a still-`queued` run (no `started_at` yet) against a
-  // `completed` run for the same name: see `isNewerCheckRun`'s use of it
-  // below. Missing or malformed `created_at` is therefore rejected the
-  // same way the other timestamps are, for every run regardless of status.
-  if (
-    typeof createdAtRaw !== 'string' ||
-    !isValidGitHubTimestamp(createdAtRaw)
-  ) {
-    throw new Error(
-      `check run ${index + 1} (${sanitizedName}) has an invalid created_at`,
-    );
-  }
   // A run whose status is not yet 'completed' has not settled on a
   // conclusion regardless of what the field carries, so it is forced to
   // null here rather than trusted -- the same "don't trust a field the API
@@ -376,7 +364,6 @@ function parseCheckRun(checkRun, index) {
     status,
     startedAt,
     completedAt,
-    createdAt: createdAtRaw,
     id,
   };
 }
@@ -384,8 +371,9 @@ function parseCheckRun(checkRun, index) {
 /**
  * Compare two parsed check runs for the same name and report which one is
  * the more recent attempt: `1` if `a` is strictly newer than `b`, `-1` if
- * `a` is strictly older, or `0` if the two tie (or, in principle, are
- * malformed enough that no comparison is possible -- see below).
+ * `a` is strictly older, or `0` if the two cannot be safely ordered from
+ * the data available (a genuine tie, or one/both sides carry no timestamp
+ * this function can use).
  *
  * Round-8 finding (Ripley and Vasquez, independently, same root cause):
  * an earlier version of this function decided recency via a set of
@@ -406,45 +394,99 @@ function parseCheckRun(checkRun, index) {
  *
  * The fix: stop deciding recency from ad hoc pairwise rules and instead
  * score each run independently, then compare the scores. Any comparison
- * built by comparing a single real-number score per input is transitive
- * by construction (it is just `<` on numbers) -- there is no way for it to
+ * built by comparing a real-number score per input is transitive by
+ * construction (it is just `<` on numbers) -- there is no way for it to
  * produce a cycle, no matter how the score is computed, as long as the
  * score is a pure function of one run alone (never of the pair being
  * compared).
  *
- * The score used here is `created_at`. Unlike `started_at`/`completed_at`,
- * every check run -- queued, in-progress, or completed -- is guaranteed a
- * `created_at`, set at the instant GitHub creates the run object, before
- * it is even scheduled (see `parseCheckRun`). A rerun of a check is,
- * definitionally, a *new* check-run object: GitHub creates it with a new
- * `created_at` no earlier than the run it supersedes. So "which run was
- * created most recently" directly answers "which run is the latest
- * attempt" -- correctly and uniformly, regardless of whether that attempt
- * has started or finished yet. This also directly resolves every case the
- * old bounded-pairwise rules were trying to handle piecemeal: a stale
- * queued/in-progress run created long before a later completed rerun
- * simply has an older `created_at` and loses; a genuinely new rerun --
- * queued, in-progress, or completed -- created after every other attempt
- * simply has the newest `created_at` and wins, with no special-casing
- * needed per state.
+ * A follow-up rewrite scored each run by a field called `created_at`,
+ * reasoning that every check run carries one from the moment it is
+ * created, regardless of status. That reasoning was wrong: `created_at`
+ * is not a field the Checks API actually puts on a check-run object at
+ * all (only on the run's `app` and `check_suite`, not the run itself --
+ * see GitHub's REST API reference for "Check Runs"). Requiring it in
+ * `parseCheckRun` made every real PR's check runs fail to parse ("invalid
+ * created_at"), confirmed by Ripley against this repo's own live Checks
+ * API response (every run, including completed ones, actually comes back
+ * with `created_at: null`, because the field simply is not there). That
+ * requirement is reverted; this function is back to using only
+ * `started_at`/`completed_at`, which the API genuinely documents and
+ * `parseCheckRun` genuinely validates.
  *
- * `created_at` is only second-resolution, so two runs can genuinely tie on
- * it (this repo's own live Checks API data has shown same-second
- * timestamps). An exact tie does not prove either run is newer, so this
- * returns `0` (unresolvable) rather than picking a side -- exactly as an
- * exact tie was already handled before this rewrite. `latestCheckRunsByName`
- * decides whether an unresolved `0` for a given pair is actually fatal to
- * the overall "latest run for this name" answer.
+ * The fix for the real (transitivity) bug does not require inventing a
+ * field, though -- it requires the same thing the round-8 finding asked
+ * for: a score that is a pure function of one run, not a rule that
+ * depends on which states the two runs being compared happen to be in.
+ * That score is a `(primary, secondary)` pair:
  *
+ *   primary   = `completed_at` if the run is completed, otherwise
+ *               `started_at` (which may be `null` for a run that has not
+ *               started yet).
+ *   secondary = `started_at`, used only to break an exact tie on
+ *               `primary` between two completed runs. `completed_at` is
+ *               only second-resolution, so two reruns of a fast job can
+ *               genuinely finish in the same reported second (this
+ *               repo's own live data has shown exactly that); `started_at`
+ *               is an independent signal not tied to that same-second
+ *               collision, since a later rerun was, definitionally,
+ *               started no earlier than the run it superseded.
+ *
+ * Comparing runs by this per-run score directly -- rather than by a rule
+ * that depends on which states the pair being compared are in -- is what
+ * makes the result transitive: it reduces to ordinary comparison of
+ * values that are each a pure function of one run alone, so it can never
+ * form a cycle no matter what order the runs are folded in.
+ *
+ * When `primary` is `null` on either side (a run that is still
+ * queued/waiting/requested and has not started yet, so the API gives it
+ * no timestamp at all), this returns `0` rather than guessing. There is
+ * no bound left to check such a run against, so treating it as either
+ * newer or older than another run would be an unfounded assumption.
+ * `latestCheckRunsByName` already fails closed (throws "cannot
+ * determine") on an unresolved `0` that survives to the end, which is the
+ * correct outcome here: confidently picking a side for a run the API
+ * gives no timestamp evidence for would be exactly the kind of
+ * "plausible-looking but wrong" misreporting this file exists to prevent.
+ *
+ * @param {ReturnType<typeof parseCheckRun>} run
+ * @returns {number | null}
+ */
+function primaryRecencyTime(run) {
+  const anchor = run.completedAt ?? run.startedAt;
+  return anchor === null ? null : Date.parse(anchor);
+}
+
+/**
+ * @param {ReturnType<typeof parseCheckRun>} run
+ * @returns {number | null}
+ */
+function secondaryRecencyTime(run) {
+  // Only meaningful as a tiebreaker between two completed runs (see
+  // compareCheckRunRecency's doc comment): for a run that is not
+  // completed, `startedAt` IS its `primary` score already (or null), so
+  // reusing it here would let a genuine primary-level tie between an open
+  // run and a completed run resolve via the open run's own started_at
+  // instead of correctly staying unresolved.
+  if (run.status !== 'completed' || run.startedAt === null) return null;
+  return Date.parse(run.startedAt);
+}
+
+/**
  * @param {ReturnType<typeof parseCheckRun>} a
  * @param {ReturnType<typeof parseCheckRun>} b
  * @returns {1 | -1 | 0}
  */
 function compareCheckRunRecency(a, b) {
-  const aCreatedAt = Date.parse(a.createdAt);
-  const bCreatedAt = Date.parse(b.createdAt);
-  if (aCreatedAt === bCreatedAt) return 0;
-  return aCreatedAt > bCreatedAt ? 1 : -1;
+  const aPrimary = primaryRecencyTime(a);
+  const bPrimary = primaryRecencyTime(b);
+  if (aPrimary === null || bPrimary === null) return 0;
+  if (aPrimary !== bPrimary) return aPrimary > bPrimary ? 1 : -1;
+  const aSecondary = secondaryRecencyTime(a);
+  const bSecondary = secondaryRecencyTime(b);
+  if (aSecondary === null || bSecondary === null) return 0;
+  if (aSecondary !== bSecondary) return aSecondary > bSecondary ? 1 : -1;
+  return 0;
 }
 
 /**
