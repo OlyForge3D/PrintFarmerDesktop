@@ -2238,6 +2238,206 @@ describe('an approxidate "N days ago" gc.reflogExpireUnreachable is also not mis
   });
 });
 
+describe('a set-but-rejected gc.reflogExpireUnreachable is not conflated with unset (#315)', () => {
+  // Review found the delegation-to-git fix above still had one gap: the
+  // typed lookup (`git config --type=expiry-date --get`) was wrapped in a
+  // single `catch` that returned the 30-day default, which cannot tell
+  // apart two different situations — the key is genuinely UNSET (nothing
+  // configured; falling back to git's own real default is CORRECT), versus
+  // the key IS set, but to something git's own parser rejects (a live
+  // misconfiguration, not an absence). Conflating the two risks silently
+  // substituting a default that could be far MORE permissive than whatever
+  // the actual (unparseable) intended value was — reopening the same
+  // false-negative shape a genuinely-unset key does not have.
+  //
+  // This fixture is the "15 days" describe block above with exactly one
+  // change: instead of a valid, differently-spelled value, the config is
+  // set to a value git's own parser rejects outright. If that were treated
+  // as "unset" and defaulted to 30 days, this 20-day-old genesis would
+  // still read as young enough to trust (20 < 30), reintroducing the
+  // healed-round-trip false negative for any REAL misconfiguration.
+  let root: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-expiryinvalid-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // Present, but a value git's own `--type=expiry-date` rejects outright
+    // — distinct from the key never having been set at all.
+    git(['config', 'gc.reflogExpireUnreachable', 'not-a-date'], work);
+
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    // Younger than the 30-day default a "treat rejected as unset" bug would
+    // wrongly fall back to, so that bug would misread this as complete.
+    const twentyDaysAgo = Math.floor(Date.now() / 1000) - 20 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(twentyDaysAgo);
+    const backdated = tokens.join(' ') + message;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('authoredHere() reports null when the config is present but rejected, not the false a fallback-to-default would give', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('a genuinely unset config on the same fixture age still resolves to the real 30-day default, not indeterminate', () => {
+    // Confirms the fix distinguishes the two cases rather than just making
+    // everything indeterminate: unsetting the key entirely (as opposed to
+    // setting it to a rejected value) on this same 20-day-old genesis
+    // SHOULD read as provably complete, because 20 days really is younger
+    // than git's real 30-day default.
+    git(['config', '--unset', 'gc.reflogExpireUnreachable'], work);
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBe(false);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+});
+
+describe('a set-but-rejected gc.reflogExpireUnreachable is not conflated with any plausible valid parse either (#315)', () => {
+  // Review found the previous fixture's 20-day-old genesis proves LESS than
+  // it looks like it proves: it only distinguishes "rejected config fails
+  // closed" from "rejected config treated as unset" (30-day default), because
+  // 20 days sits below BOTH the fail-closed value (0, always < 20) and the
+  // 30-day fallback (20 < 30). A regression that coalesced a rejected value
+  // into some OTHER plausible-looking positive number of days instead of the
+  // real fail-closed 0 -- for instance a slipped edit that turned `return 0`
+  // into `return 15`, mirroring a nearby valid configuration this same suite
+  // exercises elsewhere -- would ALSO read a 20-day-old genesis as younger
+  // than that number and still call it "provably complete", yet every test
+  // above would keep passing, because none of them probes a genesis young
+  // enough for that specific miscoalescing to matter.
+  //
+  // This fixture closes that gap by making the genesis only a few MINUTES
+  // old rather than weeks old. The true fail-closed answer (0 days) can
+  // never be exceeded by an age that is not itself negative, so the
+  // genesis-age check correctly reports "not provably complete" (age is
+  // never less than 0) no matter how small the age is. But ANY mutation
+  // that substitutes a positive number of days for the rejected config --
+  // 1, 15, 30, or otherwise -- would make this few-minutes-old genesis read
+  // as younger than that substituted threshold and flip the verdict to
+  // "provably complete", changing `authoredHere()`'s result from `null` to
+  // `false`. A test fixture aged in years could never catch that; only one
+  // aged in minutes can, since it must be younger than EVERY plausible wrong
+  // answer, not merely younger than the two specific ones (0 and 30) the
+  // previous fixture happened to bracket.
+  let root: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-expiryinvalid2-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // Present, but rejected by git's own `--type=expiry-date` parser --
+    // same misconfiguration shape as the fixture above, just paired with a
+    // much younger genesis this time.
+    git(['config', 'gc.reflogExpireUnreachable', 'not-a-date'], work);
+
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    // Minutes old, not days or weeks: young enough that it would read as
+    // "provably complete" under a fail-closed value coalesced to ANY
+    // positive number of days a plausible bug might substitute, not just
+    // the specific 0-vs-30 pair the fixture above happens to distinguish.
+    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 5 * 60;
+    tokens[tokens.length - 2] = String(fiveMinutesAgo);
+    const backdated = tokens.join(' ') + message;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('authoredHere() reports null even for a minutes-old genesis, ruling out any positive fail-closed miscoalescing', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+});
+
 describe('core.logAllRefUpdates=false does not disable an existing reflog', () => {
   // Not a test of the guard. A test of the assumption the fixture above was
   // resting on, kept because that assumption is wrong in the direction that
