@@ -913,14 +913,34 @@ const DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS = 30;
  * own way of saying no unreachable entry is ever pruned, so nothing here
  * can have decayed regardless of how old it is.
  *
+ * Review found that delegation itself needs to distinguish two different
+ * reasons the typed lookup can fail, which a single `catch` around it
+ * conflates: the key can be genuinely UNSET (nothing configured — falling
+ * back to git's real 30-day default is the CORRECT behaviour, since that
+ * default is exactly what git itself would use), or the key can be SET to
+ * something `--type=expiry-date` itself rejects (e.g. a typo'd value) —
+ * which is a live misconfiguration, not an absence, and treating it the
+ * same as "unset" risks silently substituting a default that could be far
+ * MORE permissive than whatever the (unknown, unparseable) intended value
+ * was. So presence is checked FIRST with a plain, untyped `--get`: only
+ * when THAT also fails (the key is not present in the config at all) is
+ * the 30-day default returned. A key that is present but rejected by the
+ * typed lookup fails closed to `0` days instead — the same "cannot be
+ * satisfied" value used below for other unsound results — so the
+ * genesis-age check this feeds reports indeterminate rather than guessing.
+ *
  * @returns {number}
  */
 function reflogExpireUnreachableDays() {
-  // `--get` fails (non-zero exit) when the key is unset at all, the same
-  // "absent" case the un-typed lookup used to detect — `--type=expiry-date`
-  // fails the same way, so a single call covers both "unset" and "set but
-  // unparseable by git itself" (which, unlike this function's own retired
-  // parser, should be vanishingly rare since it IS git's parser).
+  let isSet;
+  try {
+    git(['config', '--get', 'gc.reflogExpireUnreachable']);
+    isSet = true;
+  } catch {
+    isSet = false;
+  }
+  if (!isSet) return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+
   let canonical;
   try {
     canonical = git([
@@ -930,12 +950,15 @@ function reflogExpireUnreachableDays() {
       'gc.reflogExpireUnreachable',
     ]).trim();
   } catch {
-    return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+    // Present, but rejected by git's own parser: a live misconfiguration,
+    // not an absence. Fail closed rather than fall back to a default that
+    // could be more permissive than whatever was actually intended.
+    return 0;
   }
-  if (!canonical) return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+  if (!canonical) return 0;
   const expiryEpochSeconds = Number(canonical);
   if (!Number.isFinite(expiryEpochSeconds)) {
-    return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+    return 0;
   }
   if (expiryEpochSeconds === 0) return Infinity; // "never"
 
