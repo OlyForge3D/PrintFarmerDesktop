@@ -3144,6 +3144,175 @@ describe('CalibrationWorkspace', () => {
     ).not.toBeInTheDocument();
   });
 
+  /**
+   * Holds a gap-detected poll open so a test can observe the pre-transition
+   * DOM deterministically, then release it on demand. `mockResolvedValueOnce`
+   * resolves as soon as the polling loop calls it, which races any "before"
+   * assertion made after `openStepView` settles — this gives explicit control
+   * instead, mirroring `deferFirstPoll` above.
+   */
+  function deferGapPoll(api: ReturnType<typeof makeApi>): {
+    fire: () => void;
+  } {
+    const handle = { fire: undefined as unknown as () => void };
+    api.pollCalibrationQueueChanges.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          handle.fire = () =>
+            resolve({
+              status: 'ok',
+              afterSequence: 0,
+              nextSequence: 1,
+              hasMore: false,
+              gapDetected: true,
+              events: [],
+            });
+        }),
+    );
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 1,
+      nextSequence: 1,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+    return handle;
+  }
+
+  it('reorder guidance live region exists before there is any guidance to put in it (issue #344)', async () => {
+    // Same-node lifecycle proof for the reorder guidance container: capture
+    // the named, empty live region BEFORE the real production transition
+    // (gap-detected refetch returning a replacement calibrationAttemptId),
+    // then require the SAME captured node — not a re-query — to gain the
+    // message. Text presence alone would pass under the pre-#344 defect,
+    // where the <p> node and its text arrive in the same commit.
+    //
+    // Falsifier: re-wrap the container `<div>` itself in
+    // `{isReordered && (...)}` — the findByRole below fails naming the
+    // region it could not find, because under that arrangement no region
+    // exists until it already has content.
+    const api = makeApi(record(domainState()));
+
+    const originalFixture = queueJobFixture({
+      bedClearState: 'None',
+      calibrationAttemptId: 'attempt-original',
+      gcodeFileId: 'gcode-1',
+    });
+    const replacementFixture = queueJobFixture({
+      bedClearState: 'None',
+      calibrationAttemptId: 'attempt-replacement',
+      gcodeFileId: 'gcode-1',
+    });
+
+    let panelFetchCount = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    api.getCalibrationQueueState.mockImplementation((req: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (req.jobId != null) {
+        panelFetchCount += 1;
+        return Promise.resolve(
+          panelFetchCount <= 1 ? originalFixture : replacementFixture,
+        );
+      }
+      return Promise.resolve(originalFixture);
+    });
+
+    const poll = deferGapPoll(api);
+
+    await openStepView(api);
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+
+    const liveRegion = await within(panel).findByRole('status', {
+      name: 'Queue reorder guidance',
+    });
+    // Emptiness is the requirement: the reorder has not been detected yet.
+    expect(
+      liveRegion,
+      'the reorder guidance region already held content before any reorder was detected',
+    ).toBeEmptyDOMElement();
+
+    act(() => {
+      poll.fire();
+    });
+
+    // Same node, now populated: an announced change, not an insertion.
+    await waitFor(() => {
+      expect(liveRegion).toHaveTextContent(/Queue position changed/);
+    });
+    expect(liveRegion).toHaveTextContent(/Re-queue this job/);
+  });
+
+  it('bed-clear acknowledgement availability live region exists before there is anything to acknowledge (issue #344)', async () => {
+    // Same-node lifecycle proof for the acknowledgement-availability
+    // container. `canAcknowledge` becomes true as soon as the panel's
+    // initial job-scoped fetch resolves with an eligible job, so the "before"
+    // state is captured while that fetch is still pending — held open with a
+    // manually-resolved promise so the assertion cannot race the fetch.
+    //
+    // Falsifier: re-wrap the container `<div>` itself in
+    // `{canAcknowledge && (...)}` — the findByRole below fails naming the
+    // region it could not find, because under that arrangement no region
+    // exists until the fetch has already resolved with content to show.
+    const api = makeApi(record(domainState()));
+
+    let resolveFetch!: (value: ReturnType<typeof queueJobFixture>) => void;
+    const heldFetch = new Promise<ReturnType<typeof queueJobFixture>>(
+      (resolve) => {
+        resolveFetch = resolve;
+      },
+    );
+    const eligibleFixture = queueJobFixture({
+      bedClearState: 'None',
+      gcodeFileId: 'gcode-1',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    api.getCalibrationQueueState.mockImplementation((req: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (req.jobId != null) return heldFetch;
+      // Non-job-scoped call (workspace mount) sets `queueJob`, which feeds
+      // `computedBlockedReason` — it must already be gcode-eligible or a
+      // "G-code file unavailable" block would permanently suppress
+      // acknowledgement regardless of what the panel's own fetch returns.
+      return Promise.resolve(eligibleFixture);
+    });
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 0,
+      nextSequence: 0,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+
+    await openStepView(api);
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+
+    const liveRegion = await within(panel).findByRole('status', {
+      name: 'Bed-clear acknowledgement availability',
+    });
+    // Emptiness is the requirement: the job state has not loaded yet, so
+    // eligibility to acknowledge is not yet known.
+    expect(
+      liveRegion,
+      'the acknowledgement-availability region already held content before job state loaded',
+    ).toBeEmptyDOMElement();
+
+    act(() => {
+      resolveFetch(
+        queueJobFixture({ bedClearState: 'None', gcodeFileId: 'gcode-1' }),
+      );
+    });
+
+    // Same node, now populated: an announced change, not an insertion.
+    await waitFor(() => {
+      expect(liveRegion).toHaveTextContent(
+        /Bed-clear acknowledgement is available/,
+      );
+    });
+    expect(liveRegion).toHaveTextContent(/Confirm Bed Clear/);
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // Criterion 11 — provenance fields wired from real orchestration data
   // ─────────────────────────────────────────────────────────────────────────

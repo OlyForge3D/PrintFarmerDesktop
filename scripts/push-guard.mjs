@@ -182,7 +182,7 @@ function describe(commits, owned, attributable) {
  *   discarded: Array<{sha: string, subject?: string, sessions?: string[]}>,
  *   ownSessions?: Iterable<string>,
  *   ownCommits?: Iterable<string>,
- *   ownershipEvidence: boolean,
+ *   ownershipEvidence: boolean | null,
  *   ack?: string,
  *   ackForeign?: string,
  *   prState?: 'OPEN' | 'MERGED' | 'CLOSED' | null,
@@ -796,6 +796,54 @@ const RECORD = '\u001e';
 const FIELD = '\u001f';
 
 /**
+ * `gc.reflogExpireUnreachable` — the decay clock `authoredHere` depends on.
+ * Same value `scripts/check-census-freshness.mjs` names for the identical
+ * reason (#336): a commit under adjudication has, by construction, just
+ * become unreachable, and that is exactly the condition under which its
+ * `commit` reflog entry is eligible for pruning by this clock rather than the
+ * longer 90-day `gc.reflogExpire`.
+ */
+export const REFLOG_EVIDENCE_DECAY_DAYS = 30;
+
+/**
+ * Parses the absolute instant `%gd` names when the caller has requested
+ * `--date=iso-strict` — e.g. `HEAD@{2026-08-01T10:00:00-07:00}` — into a
+ * `Date`, or `null` when the selector carries no parseable instant (a
+ * malformed line, or a git version whose `%gd` shape has changed).
+ */
+function parseReflogSelectorDate(selector) {
+  if (typeof selector !== 'string') return null;
+  const match = selector.match(/@\{(.+)\}$/);
+  if (!match) return null;
+  const date = new Date(match[1]);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * How many days old the OLDEST entry still visible in a reflog is, or `null`
+ * when no entry carries a readable date (an empty reflog, or every date
+ * failed to parse). This is a coverage horizon, not an authorship signal: it
+ * answers "how far back can this reflog currently see", which is the fact
+ * `authoredHere` needs to tell a genuine negative (nothing to find, and the
+ * window is provably too young for anything to have been pruned) apart from
+ * an undecidable one (the window is old enough that a `commit` entry could
+ * already have expired under `gc.reflogExpireUnreachable`).
+ */
+function oldestReflogEntryAgeDays(entries) {
+  let oldest = null;
+  for (const entry of entries) {
+    if (entry.date instanceof Date && !oldest) oldest = entry.date;
+    else if (
+      entry.date instanceof Date &&
+      entry.date.getTime() < oldest.getTime()
+    )
+      oldest = entry.date;
+  }
+  if (!oldest) return null;
+  return (Date.now() - oldest.getTime()) / (24 * 60 * 60 * 1000);
+}
+
+/**
  * Sessions this worktree can account for having held — read from the reflog, which
  * is a direct observation of local provenance rather than a proxy for it.
  *
@@ -964,8 +1012,7 @@ const AMENDED_HERE = /^commit \(amend\):/;
  * direction for contamination and it is the only one available, since the
  * evidence that would settle it is the entry that is missing.
  */
-function creationEntries(ref) {
-  const entries = readReflogEntries(ref);
+function filterCreatedEntries(entries) {
   // `git log -g` is newest-first, so walking down the index walks backwards in
   // time, which is what lets an amend consult the entry it rewrote.
   const created = new Array(entries.length).fill(false);
@@ -976,6 +1023,10 @@ function creationEntries(ref) {
       created[i] = i + 1 < entries.length && created[i + 1];
   }
   return entries.filter((_, index) => created[index]);
+}
+
+function creationEntries(ref) {
+  return filterCreatedEntries(readReflogEntries(ref));
 }
 
 /**
@@ -1004,12 +1055,52 @@ function creationEntries(ref) {
  * a sibling worktree's authorship is not evidence that THIS session authored
  * anything, and treating it as such would license the strong two-writer claim
  * on somebody else's record.
+ *
+ * TRI-STATE (#315). "No creation entry found" is not one fact, it is two, and
+ * `git log -g` answers both with the same empty output: a ref whose reflog is
+ * genuinely empty of creations, and a ref whose creation entry once existed
+ * and has since aged out under `gc.reflogExpireUnreachable`. Collapsing those
+ * into `false` is exactly the defect #149 had to fix once already — an empty
+ * reflog read as "the recorder ran and saw nothing" when the true state was
+ * "the recorder never ran, or has since forgotten". The remedy there was to
+ * re-aim the question (ask about creation, not about the reflog being
+ * nonempty); the remaining gap, named by `census-ownership-evidence.mjs`
+ * against #336, is that a creation entry can decay AFTER it was written, and
+ * nothing here noticed. So a third value is added: `null` when the reflog's
+ * own visible coverage window is not provably younger than the decay clock,
+ * meaning "no creation entry" and "the creation entry already expired" cannot
+ * be told apart. Every caller here already treats `null` exactly like
+ * `false` for the push decision (`facts.ownershipEvidence === true` and
+ * `!facts.ownershipEvidence` both read `null` as "cannot attribute"), so this
+ * is strictly a refinement of the evidence reported to observers such as the
+ * ownership census — it fails no closed door open.
+ *
+ * @returns {boolean | null} `true` if a creation entry was found, `false` if
+ *   none was found and the reflog's coverage window rules out decay, `null`
+ *   if the reflog cannot be read at all or its coverage window cannot rule
+ *   out that a creation entry once existed and has since expired.
  */
 export function authoredHere() {
+  let entries;
   try {
-    return creationEntries('HEAD').length > 0;
+    entries = readReflogEntries('HEAD');
   } catch {
-    // No reflog at all; absence is handled by the caller, not read as a finding.
+    // No reflog at all — the instrument was never running over this
+    // interval, so its silence carries no information about authorship
+    // either way. This is `null`, not `false`: the caller must not read an
+    // absent instrument as a negative observation.
+    return null;
+  }
+  if (filterCreatedEntries(entries).length > 0) return true;
+  const coverageDays = oldestReflogEntryAgeDays(entries);
+  if (coverageDays === null || coverageDays >= REFLOG_EVIDENCE_DECAY_DAYS) {
+    // Either the reflog carries no dated entry to bound the window by (an
+    // empty reflog, indistinguishable from one whose only entries already
+    // expired), or the oldest entry still visible is old enough that
+    // `gc.reflogExpireUnreachable` could already have pruned a `commit`
+    // entry between it and now. Either way, "no creation found" is not a
+    // genuine negative here.
+    return null;
   }
   return false;
 }
@@ -1132,12 +1223,22 @@ export function readOwnedCommits() {
   return owned;
 }
 
+/**
+ * @returns {{sha: string, reflogSubject: string, date: Date | null, sessions: string[]}[]}
+ *   `date` is the reflog entry's OWN write time (`%gd` under
+ *   `--date=iso-strict`), not the commit's author/committer date — for a
+ *   `pull`/`rebase`/`cherry-pick` entry those differ, and it is the entry's
+ *   write time that bounds `gc.reflogExpireUnreachable`'s decay clock. `null`
+ *   when the selector could not be parsed, which `authoredHere` treats the
+ *   same as "no entries" for the purpose of bounding that window.
+ */
 export function readReflogEntries(ref) {
   const output = git([
     'log',
     '-g',
     '--max-count=1000',
-    `--format=%H${FIELD}%gs${FIELD}%(trailers:key=Copilot-Session,valueonly,separator=%x2c)${RECORD}`,
+    '--date=iso-strict',
+    `--format=%H${FIELD}%gs${FIELD}%gd${FIELD}%(trailers:key=Copilot-Session,valueonly,separator=%x2c)${RECORD}`,
     ref,
   ]);
   return output
@@ -1145,10 +1246,12 @@ export function readReflogEntries(ref) {
     .map((record) => record.trim())
     .filter((record) => record.length > 0)
     .map((record) => {
-      const [sha, reflogSubject, trailers] = record.split(FIELD);
+      const [sha, reflogSubject, reflogSelector, trailers] =
+        record.split(FIELD);
       return {
         sha: sha ?? '',
         reflogSubject: reflogSubject ?? '',
+        date: parseReflogSelectorDate(reflogSelector),
         sessions: (trailers ?? '')
           .split(',')
           .map((value) => value.trim())
