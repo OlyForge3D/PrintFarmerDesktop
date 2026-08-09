@@ -540,25 +540,41 @@ export const CalibrationQueueDispatchPanel: React.FC<
         )}
       </div>
 
-      {isReordered && (
-        <p
-          className="calibration-queue-dispatch__reordered"
-          role="status"
-          aria-live="polite"
-        >
-          Queue position changed. Re-queue this job to dispatch again.
-        </p>
-      )}
+      {/*
+       * issue #344: same defect class as #242/#272 — the container must be
+       * mounted unconditionally and named, with only the text gated on
+       * `isReordered`. Do not wrap this div itself in a conditional.
+       */}
+      <div
+        className="calibration-queue-dispatch__reordered-live"
+        role="status"
+        aria-live="polite"
+        aria-label="Queue reorder guidance"
+      >
+        {isReordered && (
+          <p className="calibration-queue-dispatch__reordered">
+            Queue position changed. Re-queue this job to dispatch again.
+          </p>
+        )}
+      </div>
 
-      {canAcknowledge && (
-        <p
-          className="calibration-queue-dispatch__ack-available"
-          aria-live="polite"
-        >
-          Bed-clear acknowledgement is available. Use the Confirm Bed Clear
-          button when the bed is ready.
-        </p>
-      )}
+      {/*
+       * issue #344: same requirement as above — gate only the text on
+       * `canAcknowledge`, never the container node.
+       */}
+      <div
+        className="calibration-queue-dispatch__ack-available-live"
+        role="status"
+        aria-live="polite"
+        aria-label="Bed-clear acknowledgement availability"
+      >
+        {canAcknowledge && (
+          <p className="calibration-queue-dispatch__ack-available">
+            Bed-clear acknowledgement is available. Use the Confirm Bed Clear
+            button when the bed is ready.
+          </p>
+        )}
+      </div>
     </div>
   );
 };
