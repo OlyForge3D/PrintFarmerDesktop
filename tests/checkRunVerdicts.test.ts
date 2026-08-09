@@ -273,6 +273,51 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
+  it('REGRESSION: refuses a queued run carrying a non-null conclusion instead of silently normalizing it away', () => {
+    // The inverse contract violation: GitHub only sets `conclusion` once a
+    // run reaches `status: "completed"`. A still-`queued` (or in-progress)
+    // run reporting a non-null conclusion such as "failure" should not
+    // happen per the documented API contract, but a malformed or buggy
+    // response could send it. The prior behaviour silently discarded the
+    // conclusion and normalized the run to `pending` -- exactly the kind
+    // of "plausible-looking but wrong" misreporting this file exists to
+    // prevent, since `main` would then exit clean instead of failing
+    // closed on a structurally invalid input.
+    const checkRuns = [
+      checkRun({
+        status: 'queued',
+        conclusion: 'failure',
+        started_at: null,
+        completed_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /has status "queued" but a non-null conclusion/,
+    );
+  });
+
+  it.each([
+    ['completed', null, /completed but has no conclusion/],
+    ['queued', 'failure', /has status "queued" but a non-null conclusion/],
+    ['queued', 'success', /has status "queued" but a non-null conclusion/],
+    [
+      'in_progress',
+      'cancelled',
+      /has status "in_progress" but a non-null conclusion/,
+    ],
+  ] as const)(
+    'REGRESSION (table-driven): rejects the impossible status=%s/conclusion=%s pairing rather than normalizing it to a plausible-looking verdict',
+    (status, conclusion, expectedMessage) => {
+      const overrides: Record<string, unknown> = { status, conclusion };
+      if (status !== 'completed') {
+        overrides.started_at = null;
+        overrides.completed_at = null;
+      }
+      const checkRuns = [checkRun(overrides)];
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(expectedMessage);
+    },
+  );
+
   it('REGRESSION: an in-progress rerun outranks an older completed run for the same name, even with a lower id', () => {
     // Live Checks API data showed the opposite of what id-ordering assumes:
     // a later-started rerun can carry a LOWER check-run id than an older,
@@ -675,6 +720,53 @@ describe('main', () => {
       ['--repo', 'o/r'],
       {},
       stub(() => ({ status: 0, stdout: pagePayload([], 0) })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a completed run with conclusion: null, rather than a clean exit', () => {
+    // This drives the real `main()` entry point rather than just
+    // `parseCheckRun`/`latestCheckRunsByName` in isolation -- the thing
+    // that was originally wrong was the *process-level* outcome (main
+    // exiting 0/clean on this malformed shape), not merely that a lower
+    // -level helper failed to throw.
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Malformed completed check',
+            status: 'completed',
+            conclusion: null,
+          }),
+        ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a queued run carrying a non-null conclusion, rather than a clean exit', () => {
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Malformed queued check',
+            status: 'queued',
+            conclusion: 'failure',
+            started_at: null,
+            completed_at: null,
+          }),
+        ]),
+      })),
       () => undefined,
     );
     expect(result).toBe(EXIT_UNDETERMINED);

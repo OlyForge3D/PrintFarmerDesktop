@@ -134,6 +134,21 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${name}) is completed but has no conclusion`,
     );
   }
+  // The inverse contract violation: GitHub only sets `conclusion` once a
+  // run's `status` becomes `completed` -- a run still `queued` or
+  // `in_progress` should always report `conclusion: null`. A malformed or
+  // buggy response that sends a non-null conclusion (e.g. "failure") on a
+  // still-open run is the same class of impossible status/conclusion
+  // pairing as the completed-with-null case above, and must fail the same
+  // way: silently normalizing it away (the prior behaviour) would let a
+  // structurally invalid response resolve to `pending` and let `main` exit
+  // clean, instead of surfacing that the input violated the API's own
+  // documented contract.
+  if (status !== 'completed' && conclusion !== null) {
+    throw new Error(
+      `check run ${index + 1} (${name}) has status ${JSON.stringify(status)} but a non-null conclusion ${JSON.stringify(conclusion)} -- only a completed run should carry one`,
+    );
+  }
   // A queued or in-progress run legitimately has not started yet, so GitHub
   // reports `started_at: null` for it -- that is not malformed input, it is
   // the normal shape of "pending". Only a completed run is required to carry
