@@ -134,6 +134,95 @@ If the head does move, do not silently merge the old verdict forward. Assess the
 
 Before reporting or acting on any PR state, **re-query the live endpoint**. A snapshot taken minutes ago may describe a head that no longer exists.
 
+## Re-derive state at the moment of use — before routing, holding, reviewing, or publishing
+
+**This applies to every role, not only merge review.** A backlog-routing pass, a held PR
+awaiting rework, a review verdict, and a publication step all reason from a SHA or a PR
+state — and each of those has an expiry the session cannot see. #568 recorded three
+participants (a routing session, a reviewer, and a PR's own author) who each acted within
+90 minutes of PR #561 merging, each anchored to a different, already-superseded head they
+had fetched earlier in their own session and never re-checked. Every one of them was
+accurate about the SHA they quoted; none of them re-fetched before acting. **Staleness has
+no local symptom** — a stale value is internally consistent and passes every check run
+against it, which is why nothing in any one of those sessions caught it.
+
+**Before routing, holding, reviewing, or publishing against a PR or branch:**
+
+1. `git fetch` and re-read the branch tip — do not reason from a value read earlier this
+   session.
+2. `gh pr view <n> --json state,mergedAt,mergeCommit` — a closed, merged PR needs no
+   further routing, holding, review, or publication step, regardless of what an earlier
+   round believed about it.
+3. Answer "did my work ship" with **content**, not ancestry — see below.
+
+### The `--is-ancestor` inversion on a squash-merge repo
+
+**This repo squash-merges** (§9.1 of `.squad/agents/ralph/loop.md`). A squash merge
+replays the branch's diff as a **new** commit on the target with no parent link back to
+the branch's own commits. So:
+
+```bash
+git merge-base --is-ancestor <held-sha> origin/development   # exit 1
+```
+
+reads as "never shipped" — and for a squash-merged branch it is **wrong every time**,
+because no commit from the branch is _ever_ an ancestor of the target, shipped or not.
+This is not a check that sometimes misses; it fails in one direction only, and that
+direction is a confident wrong answer, which is worse than an inconclusive one.
+
+**The two honest predicates instead:**
+
+- **Content diff** (preferred — answers "did my work ship" directly):
+  `git diff <held-sha> origin/<branch> -- <paths>`. Zero output on the paths you own means
+  your content is present at the tip. Scope it to the paths you actually touched — an
+  unscoped diff picks up unrelated churn elsewhere in the tree and answers a different
+  question.
+- **Ancestry against the pre-merge head** (works only if you diff the right pair): the
+  merge **commit** GitHub produced (`gh pr view --json mergeCommit`) — not the branch's own
+  pre-merge tip — genuinely is an ancestor of the target once merged, because it _is_ the
+  commit that landed on it. `git merge-base --is-ancestor <mergeCommit.oid> origin/development`
+  is honest; the same command given the branch's own last head is not. See §9.1 for this
+  distinction in full.
+
+**Negative-control requirement.** A check that always answers "not shipped" is
+indistinguishable, from a single reading, in either case above from a check with real
+discriminating power. Before trusting either predicate's result, run it once against a
+SHA or path you know for certain is unmerged, or against `git diff <held-sha> origin/<branch>`
+scoped to a path from a genuinely different, unrelated change — and confirm it reports
+"not shipped." If it doesn't, the check itself is broken and its "shipped" answer is not
+trustworthy either.
+
+### Worked example: PR #561 (squash-merged, `docs/CONTRIBUTING.md` and
+
+`scripts/safe-worktree-remove.*`)
+
+PR #561 merged `2026-08-06T19:04:41Z` as squash commit `9991065e`; its pre-merge branch
+tip was `14304447`.
+
+```bash
+# 1. Dishonest check on the branch's own pre-merge head — reads as "never shipped"
+git merge-base --is-ancestor 14304447 origin/development
+# exit 1  <-- WRONG: PR #561 shipped hours earlier
+
+# 2. Honest check: content diff of held head against the merge commit, scoped to owned paths
+git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
+# (no output) <-- squash reproduced the held content byte-for-byte
+
+# 3. Honest check: is the *merge commit* (not the branch tip) an ancestor of the target?
+git merge-base --is-ancestor 9991065e origin/development
+# exit 0  <-- correct: the squash commit itself is on development
+
+# 4. Negative control: same content-diff predicate against a path with no relation to #561
+git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 origin/development -- scripts/safe-worktree-remove.mjs
+# nonzero output <-- correctly reports "not shipped" for content that was never merged,
+# confirming the predicate in step 2 has real discriminating power rather than always
+# reporting "shipped"
+```
+
+Step 1 and step 3 name the same repository state and disagree only because one names the
+wrong SHA — the pre-merge branch tip instead of the merge commit GitHub actually produced.
+That is the entire defect: not a broken command, a command asked about the wrong object.
+
 ## Rejected commit revisions stay with their owner
 
 The rejection-lockout rule (requiring a _different_ author to revise rejected work) was **dismissed on 2026-07-24**. When a reviewer rejects a commit revision, its branch owner fixes it. Do not infer that owner from an issue or comment author field, and do not rotate the revision.
