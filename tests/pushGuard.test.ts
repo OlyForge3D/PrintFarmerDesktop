@@ -1736,7 +1736,7 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
   });
 });
 
-describe('a reflog old enough to have lost a creation entry is not read as a genuine negative (#315)', () => {
+describe('a reflog that cannot prove it is complete is not read as a genuine negative (#315)', () => {
   // `authoredHere` used to be two-valued: an empty result from
   // `filterCreatedEntries` meant `false`, full stop. That conflates two
   // different facts that `git log -g` reports identically — "nothing was ever
@@ -1746,16 +1746,29 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
   // line, so the old two-valued reading collapsed the second, undecidable case
   // into the first, decidable one.
   //
-  // This fixture reaches the undecidable case deterministically, without
-  // waiting 30 days: it clones a seeded remote (so the reflog is non-empty and
-  // has no creation entry — an ordinary "arrived by clone" worktree), then
-  // rewrites `.git/logs/HEAD`'s own timestamp field to 40 days in the past.
-  // That is the reflog's OWN write-time column (distinct from any commit's
-  // author/committer date), which is exactly the field `authoredHere` reads
-  // via `%gd` to decide whether decay could have happened.
+  // The first tri-state fix bounded that decay by the AGE of the oldest entry
+  // still visible: young window, no decay possible. Review for #315 found a
+  // repro that heuristic gets backwards: `gc.reflogExpireUnreachable` prunes
+  // each unreachable entry independently, so an OLD `commit:` entry can be
+  // pruned while a NEWER, unrelated entry survives right after where it used
+  // to sit — leaving every VISIBLE entry looking recent even though the
+  // creation entry that would have proven authorship is already gone.
+  //
+  // This fixture reaches exactly that shape, deterministically: `work`
+  // creates a commit (a genuine `commit:` reflog entry), that commit is made
+  // unreachable, a recent operation adds a fresh non-creation entry right
+  // after it, and then the `commit:` line is removed from the raw reflog
+  // file — simulating the prune `git reflog expire` performs on a real clock,
+  // without depending on real elapsed time or `gc.reflogExpireUnreachable`'s
+  // actual timing in CI. What survives is a reflog whose newest entries are
+  // all timestamped "now": an age-based check would call that young enough to
+  // trust, and would be wrong, because the entry it needed is the one that
+  // was removed.
   let root: string;
   let remote: string;
   let work: string;
+  let createdSha: string;
+  let survivingOldSha: string;
 
   beforeAll(() => {
     root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-decay-'));
@@ -1771,37 +1784,42 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
     commit(seed, 'seeded, to be discarded', 'session-other');
     git(['push', 'origin', 'feature'], seed);
 
-    // `work` clones AFTER both commits already exist on the remote, so
-    // neither one is ever created here — the reflog gets only a `clone:` and
-    // a `checkout:` entry, never a `commit:` line, whether or not the decay
-    // rewrite below happens.
     git(['clone', remote, work], root);
     configure(work);
     git(['checkout', 'feature'], work);
     git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
 
-    // Rewrite the reflog entry's own timestamp (the second-to-last
-    // whitespace-delimited field before the tab-separated subject) to 40 days
-    // ago, leaving the shas, author, and subject untouched. The clone entry's
-    // subject is `clone: from …`, never a `commit:` line, so this fixture has
-    // no creation entry either before or after the rewrite — only its AGE
-    // changes.
+    // A genuine creation entry, here — this is the one the fixture will make
+    // unreachable and then erase from the reflog, standing in for whatever
+    // `commit:` entry `gc.reflogExpireUnreachable` would eventually prune.
+    commit(work, 'created here, later orphaned', 'session-mine');
+    createdSha = git(['rev-parse', 'HEAD'], work);
+
+    // Orphan it and, in the same motion, write the RECENT non-creation entry
+    // that survives the prune below and masks the gap: `reset:`'s own OLD
+    // sha is `createdSha`, the very value the removed `commit:` line's NEW
+    // sha would have supplied. Once that line is gone, nothing visible
+    // supplies it any more. This also puts `work` back at the remote's
+    // actual tip (`seeded, to be discarded`), so the final test below still
+    // has a `session-other` commit left to discard.
+    git(['reset', '--hard', 'HEAD~1'], work);
+    survivingOldSha = createdSha;
+
     const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
     const original = readFileSync(reflogPath, 'utf8');
-    const fortyDaysAgo = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
-    const rewritten = original.replace(
-      /^(\S+ \S+ .+ <[^>]*>) \d+ ([+-]\d{4})(\t.*)$/m,
-      `$1 ${fortyDaysAgo} $2$3`,
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const withoutCreation = lines.filter(
+      (line) => !line.includes(`\tcommit: created here, later orphaned`),
     );
-    expect(rewritten).not.toBe(original);
-    writeFileSync(reflogPath, rewritten);
+    expect(withoutCreation.length).toBe(lines.length - 1);
+    writeFileSync(reflogPath, withoutCreation.join('\n') + '\n');
   });
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('has a non-empty reflog with no creation entry, forty days old', () => {
+  it('has a non-empty reflog, no creation entry, and every visible entry timestamped now', () => {
     // Pinned so a future change to this fixture cannot silently start
     // exercising a different one of the three cases while keeping this
     // describe block's name.
@@ -1810,12 +1828,30 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
       work,
     );
     expect(entries).not.toBe('');
-    expect(entries).not.toMatch(/^commit(?: \(initial\))?:/);
-    const [, selector] = entries.split('|');
-    expect(selector).toBeDefined();
-    const writeTime = new Date(selector!.match(/@\{(.+)\}$/)![1]!).getTime();
-    const ageDays = (Date.now() - writeTime) / (24 * 60 * 60 * 1000);
-    expect(ageDays).toBeGreaterThanOrEqual(30);
+    for (const line of entries.split('\n')) {
+      expect(line).not.toMatch(/^commit(?: \(initial\))?:/);
+      const [, selector] = line.split('|');
+      const writeTime = new Date(selector!.match(/@\{(.+)\}$/)![1]!).getTime();
+      const ageDays = (Date.now() - writeTime) / (24 * 60 * 60 * 1000);
+      // Every entry still visible is fresh — an age-based coverage check
+      // would call this reflog trustworthy. It is not: the entry proving
+      // completeness back to genesis was just removed above.
+      expect(ageDays).toBeLessThan(1);
+    }
+  });
+
+  it("the surviving entry's OLD sha is the removed creation entry's NEW sha, proving the gap", () => {
+    const rawLog = readFileSync(
+      path.join(work, '.git', 'logs', 'HEAD'),
+      'utf8',
+    );
+    const lastLine = rawLog
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .at(-1)!;
+    const [oldSha] = lastLine.split(' ');
+    expect(oldSha).toBe(survivingOldSha);
+    expect(oldSha).toBe(createdSha);
   });
 
   it('authoredHere() reports null, not false, once a creation entry could have decayed', () => {
@@ -1858,9 +1894,10 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
     // The whole point of the tri-state refinement is that it changes nothing
     // about the guard's own decision — only what it reports to observers like
     // the census. Proven here by driving a real discard through the real hook
-    // against this exact fixture: `work` never created anything (its
-    // `authoredHere()` is `null`, pinned above), and the commit it is about
-    // to discard was created by `session-other`, never by this worktree.
+    // against this exact fixture: `work`'s only visible reflog evidence of
+    // authorship was just erased (`authoredHere()` is `null`, pinned above,
+    // precisely because that is unprovable), and the commit it is about to
+    // discard was created by `session-other`, never by this worktree.
     git(['reset', '--hard', 'HEAD~1'], work);
 
     let stderr = '';
