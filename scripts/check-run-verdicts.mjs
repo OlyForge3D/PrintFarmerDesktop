@@ -210,6 +210,19 @@ function parseCheckRun(checkRun, index) {
  * (may still be null on both if neither has started; that case falls back
  * to id, the least-bad signal available when nothing has run yet).
  *
+ * `completed_at` is only second-resolution, so two reruns of a fast job can
+ * genuinely tie on it -- live Checks API data on this repo showed exactly
+ * that (two "Stacked base" completions in the same second), and falling
+ * back to `id` at that point is just as unsound as ordering by id
+ * everywhere: a rerun's id is not guaranteed to be higher than an earlier
+ * attempt's. `started_at` is a second, independent monotonic signal that is
+ * not tied to `completed_at`'s tie -- a later rerun was, definitionally,
+ * *started* no earlier than the run it superseded, even when both happen
+ * to finish in the same second. So a `completed_at` tie falls through to
+ * comparing `started_at` before ever falling back to id; id is used only
+ * when both timestamps are identical too, at which point the two runs are
+ * genuinely indistinguishable by any signal this API exposes.
+ *
  * @param {ReturnType<typeof parseCheckRun>} candidate
  * @param {ReturnType<typeof parseCheckRun>} current
  * @returns {boolean}
@@ -225,12 +238,22 @@ function isNewerCheckRun(candidate, current) {
   }
   if (!candidateOpen) {
     // Both completed: compare the timestamp every completed run is
-    // required to carry, falling back to id only if they are exactly equal
-    // (e.g. re-run so fast both share a timestamp resolution).
+    // required to carry. A tie on `completed_at` (only second-resolution)
+    // falls through to `started_at` -- still a monotonic, timestamp-based
+    // signal, not id -- before id is used as the absolute last resort.
     if (candidate.completedAt !== current.completedAt) {
       return (
         Date.parse(/** @type {string} */ (candidate.completedAt)) >
         Date.parse(/** @type {string} */ (current.completedAt))
+      );
+    }
+    if (candidate.startedAt !== current.startedAt) {
+      // Both completed, so both are guaranteed a non-null started_at by
+      // parseCheckRun -- no null-handling needed here, unlike the
+      // still-open branch below.
+      return (
+        Date.parse(/** @type {string} */ (candidate.startedAt)) >
+        Date.parse(/** @type {string} */ (current.startedAt))
       );
     }
     return candidate.id > current.id;

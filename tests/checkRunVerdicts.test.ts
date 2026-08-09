@@ -140,7 +140,7 @@ describe('latestCheckRunsByName', () => {
     expect(classifyConclusion(run!.conclusion)).not.toBe(VERDICT_FAILED);
   });
 
-  it('breaks a completed_at tie by the larger id', () => {
+  it('breaks a completed_at tie by the larger id when started_at is ALSO tied (genuinely indistinguishable)', () => {
     const checkRuns = [
       checkRun({
         id: 10,
@@ -157,6 +157,37 @@ describe('latestCheckRunsByName', () => {
     ];
     const latest = latestCheckRunsByName(checkRuns);
     expect(latest.get('some check')?.id).toBe(11);
+    expect(latest.get('some check')?.conclusion).toBe('success');
+  });
+
+  it('REGRESSION: breaks a completed_at tie by started_at, not id, when a later rerun has a LOWER id', () => {
+    // `completed_at` is only second-resolution, so two reruns of a fast job
+    // can genuinely finish in the same reported second. Live Checks API
+    // data on this repo showed exactly that (two "Stacked base" completions
+    // tied on completed_at) with the later rerun carrying a LOWER id than
+    // the earlier one -- falling back to id at the completed_at-tie point
+    // is exactly as unsound as ordering by id everywhere. started_at is an
+    // independent timestamp signal not tied to that same-second collision,
+    // and the later-started run is, definitionally, the later attempt.
+    const checkRuns = [
+      checkRun({
+        id: 42,
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
+        conclusion: 'failure',
+      }),
+      checkRun({
+        id: 7,
+        started_at: '2026-08-06T16:00:03Z',
+        completed_at: '2026-08-06T16:00:05Z',
+        conclusion: 'success',
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    // The lower-id run (7) started later, so it is the true latest attempt
+    // -- picking it means the earlier failure is correctly superseded
+    // rather than left standing as the reported verdict.
+    expect(latest.get('some check')?.id).toBe(7);
     expect(latest.get('some check')?.conclusion).toBe('success');
   });
 
