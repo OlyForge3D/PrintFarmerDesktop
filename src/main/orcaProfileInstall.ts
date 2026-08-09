@@ -38,7 +38,9 @@ import {
   lstat,
   mkdir,
   realpath,
+  open,
 } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -735,20 +737,133 @@ async function writeBackupMeta(
 }
 
 /**
- * Test-only hook invoked between the pre-read symlink check and the actual
- * file read inside `findBackupByOperationId`'s metadata read. Lets a
- * regression test deterministically simulate the TOCTOU race a reviewer
- * flagged (the metadata file being replaced with a symlink in the window
- * between the safety check and the read) without depending on real
- * scheduling/timing, which is inherently non-deterministic. No-op in
+ * Test-only hook invoked by `readFileWithIdentityPin`, once the initial
+ * `lstat` has confirmed a path is presently a regular (non-symlink) file,
+ * immediately before `open()` resolves that same path. Lets a regression
+ * test swap the path for a symlink at exactly the instant `open()` is
+ * about to run, deterministically simulating the race a reviewer
+ * identified rather than depending on real scheduling. No-op in
  * production; never set outside tests.
  */
-let backupMetaReadRaceHookForTests: (() => Promise<void> | void) | null = null;
+let identityPinPreOpenHookForTests:
+  ((filePath: string) => Promise<void> | void) | null = null;
 
-export function __setBackupMetaReadRaceHookForTests(
-  hook: (() => Promise<void> | void) | null,
+export function __setIdentityPinPreOpenHookForTests(
+  hook: ((filePath: string) => Promise<void> | void) | null,
 ): void {
-  backupMetaReadRaceHookForTests = hook;
+  identityPinPreOpenHookForTests = hook;
+}
+
+/**
+ * Test-only hook invoked by `readFileWithIdentityPin` immediately after
+ * `open()` succeeds — so a file descriptor already exists and its
+ * identity is permanently bound to whatever `open()` actually resolved —
+ * but before this function inspects that identity via `fstat`. Lets a
+ * regression test restore the path to its original, legitimate file at
+ * this exact point, proving that doing so cannot retroactively change
+ * what the already-open descriptor reports and therefore cannot un-poison
+ * a mismatch already captured at `open()` time. This is precisely the
+ * "swap in a symlink, let the read follow it, then swap back before the
+ * recheck notices" attack a reviewer identified against the previous
+ * lstat-before/read/lstat-after bracket: that approach re-resolved the
+ * path a second time, so restoring it before the second `lstat` defeated
+ * the check. Pinning identity to a file descriptor removes the second
+ * path resolution entirely, so there is nothing left for a swap-back to
+ * defeat. No-op in production; never set outside tests.
+ */
+let identityPinPostOpenHookForTests:
+  ((filePath: string) => Promise<void> | void) | null = null;
+
+export function __setIdentityPinPostOpenHookForTests(
+  hook: ((filePath: string) => Promise<void> | void) | null,
+): void {
+  identityPinPostOpenHookForTests = hook;
+}
+
+/**
+ * Read `filePath`'s bytes in a way that cannot be defeated by a symlink
+ * swapped in and back out again around the read (a "swap-in/swap-back"
+ * TOCTOU).
+ *
+ * Reviewer finding (Ripley, round 3): the previous approach used
+ * throughout this module — `lstat` the path, read it, `lstat` it again —
+ * only detects a symlink if one happens to be present at either `lstat`'s
+ * specific instant. An attacker who swaps the path to a symlink strictly
+ * *between* the two `lstat` calls, lets the read follow the symlink, then
+ * swaps the path back to the original, legitimate file before the second
+ * `lstat` runs, passes both checks while the actual read still went
+ * through the attacker's symlink. A path-based recheck can never close
+ * this, because the path alone carries no memory of what was true at the
+ * instant the read syscall itself executed — every recheck re-resolves
+ * the path fresh, so restoring it before the recheck erases all evidence
+ * of the swap.
+ *
+ * The fix pins identity to a file descriptor instead of a path: `lstat`
+ * the path once to confirm it is presently a regular (non-symlink) file
+ * and capture its device+inode, then `open()` that same path and `fstat`
+ * the resulting handle. A file descriptor's identity is bound permanently
+ * to whatever `open()` actually resolved to at the single instant it ran
+ * — no later path swap can change what that descriptor reports. If the
+ * path was a symlink at that instant, the descriptor is bound to the
+ * symlink's *target*, whose device+inode will not match what the initial
+ * `lstat` captured (barring the attacker also controlling a hard link
+ * with the legitimate file's exact device+inode, which they cannot,
+ * since they do not control the legitimate file). Comparing the two
+ * closes the swap-in/swap-back window entirely: the only thing that
+ * matters is what `open()` actually resolved to, not what the path
+ * looked like before or after — so restoring the path afterward, as in
+ * the attack above, changes nothing.
+ *
+ * `fstat` is checked *before* the bytes are read, so a mismatch is
+ * detected — and the descriptor closed without ever reading through it —
+ * before any attacker-controlled content is even retrieved.
+ *
+ * Used both for the durable backup-metadata record (`readBackupMetaFileSafely`)
+ * and for the backup file itself at restore time (`restoreOrcaProfileWindows`),
+ * since both were shown to have this exact class of gap.
+ */
+async function readFileWithIdentityPin(
+  filePath: string,
+): Promise<Buffer | null> {
+  let expectedDev: number;
+  let expectedIno: number;
+  try {
+    const before = await lstat(filePath);
+    if (before.isSymbolicLink() || !before.isFile()) {
+      return null;
+    }
+    expectedDev = before.dev;
+    expectedIno = before.ino;
+  } catch {
+    return null;
+  }
+
+  if (identityPinPreOpenHookForTests) {
+    await identityPinPreOpenHookForTests(filePath);
+  }
+
+  let handle: FileHandle;
+  try {
+    handle = await open(filePath, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    if (identityPinPostOpenHookForTests) {
+      await identityPinPostOpenHookForTests(filePath);
+    }
+    const opened = await handle.stat();
+    if (opened.dev !== expectedDev || opened.ino !== expectedIno) {
+      // open() resolved to a different file than the one lstat validated
+      // — whether via a symlink present at that instant (regardless of
+      // what the path looks like before or after) or any other
+      // substitution. Refuse without ever reading its content.
+      return null;
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -771,26 +886,30 @@ export function __setBackupMetaDirReadRaceHookForTests(
 }
 
 /**
- * Read `metaPath` back, refusing to trust the content if the path was (or
- * became) a symlink immediately before or immediately after the read, or
- * if the containing `metaDir` itself was (or became) a symlink/junction
- * around the read.
+ * Read `metaPath` back, refusing to trust the content if the leaf file's
+ * identity doesn't match what was validated immediately beforehand (via
+ * `readFileWithIdentityPin`), or if the containing `metaDir` itself was
+ * (or became) a symlink/junction around the read.
  *
- * This brackets the read with independent symlink checks at both the
- * leaf-file level and the containing-directory level, rather than relying
- * on a single check-then-use, closing (to the extent Node's cross-platform
- * fs API allows without `O_NOFOLLOW`, which libuv does not implement on
- * Windows, or directory-handle-relative opens, which Node does not expose
- * at all) the window in which an attacker could swap the metadata file —
- * or the directory containing it — between validation and use. Any
- * symlink observed at either level, on either side of the read, invalidates
- * the result: the record is treated as not found rather than trusted.
+ * This guards the read at both the leaf-file level (identity-pinned file
+ * descriptor, immune to swap-in/swap-back — see `readFileWithIdentityPin`)
+ * and the containing-directory level (re-validated immediately before and
+ * after, since Node exposes no directory-handle-relative open to pin that
+ * identity the same way), rather than relying on a single check-then-use.
+ * Any deviation at either level invalidates the result: the record is
+ * treated as not found rather than trusted.
  *
  * Round-2 reviewer finding (Vasquez): round 1 only bracketed the leaf file
  * (`metaPath`). A directory-level swap of `.pfd-backup-meta` itself is
  * invisible to those leaf checks, because the leaf file the read then
  * touches is a perfectly ordinary file sitting in the attacker's target
  * directory. Bracketing `metaDir` too closes that separate gap.
+ *
+ * Round-3 reviewer finding (Ripley): the leaf-file bracket itself (lstat
+ * before, read, lstat after) was a *path* recheck, which a swap-in then
+ * swap-back around the read could defeat. Replaced with
+ * `readFileWithIdentityPin`, which pins identity to a file descriptor
+ * instead of re-resolving the path a second time.
  */
 async function readBackupMetaFileSafely(
   metaDir: string,
@@ -805,27 +924,15 @@ async function readBackupMetaFileSafely(
     return null;
   }
 
-  try {
-    const before = await lstat(metaPath);
-    if (before.isSymbolicLink()) return null;
-  } catch {
-    return null; // No record at this path.
-  }
-
-  if (backupMetaReadRaceHookForTests) {
-    await backupMetaReadRaceHookForTests();
-  }
-
-  let raw: string;
-  try {
-    raw = await readFile(metaPath, 'utf8');
-  } catch {
-    return null;
+  // Leaf-file identity is pinned via `readFileWithIdentityPin` (see its
+  // doc comment): this closes the swap-in/swap-back bypass a reviewer
+  // found in the previous lstat-before/read/lstat-after bracket.
+  const bytes = await readFileWithIdentityPin(metaPath);
+  if (bytes === null) {
+    return null; // No record at this path, or the read was not safe to trust.
   }
 
   try {
-    const after = await lstat(metaPath);
-    if (after.isSymbolicLink()) return null; // Swapped mid-read; discard.
     // Re-verify the containing directory again immediately after the
     // read, in case it was swapped mid-read rather than beforehand.
     await assertBackupMetaDirNotSwapped(metaDir);
@@ -833,7 +940,7 @@ async function readBackupMetaFileSafely(
     return null;
   }
 
-  return raw;
+  return bytes.toString('utf8');
 }
 
 /**
@@ -903,6 +1010,18 @@ export async function findBackupByOperationId(
 /**
  * Restore a profile from a previously created backup file.
  * Verifies the backup hash before overwriting the target.
+ *
+ * Round-3 reviewer finding (Ripley): `backupPath` here comes from a
+ * separate, earlier call to `findBackupByOperationId`, which does its own
+ * lstat-based symlink check before returning it — but that check is not
+ * this function's to trust. Any time gap between that call returning and
+ * this function actually reading `backupPath` (however small in practice)
+ * is a window in which the path could be swapped for a symlink, and
+ * nothing here re-validated it. Rather than trust a previous check made
+ * at a distance, this reads `backupPath` via `readFileWithIdentityPin`,
+ * which performs its own fresh, atomically-consistent-at-the-syscall
+ * check immediately adjacent to the read — safe regardless of what any
+ * earlier caller observed or how long ago it observed it.
  */
 export async function restoreOrcaProfileWindows(
   backupPath: string,
@@ -916,11 +1035,11 @@ export async function restoreOrcaProfileWindows(
     );
   }
 
-  // Verify the backup file exists and has the expected hash.
-  let backupBytes: Buffer;
-  try {
-    backupBytes = await readFile(backupPath);
-  } catch {
+  // Verify the backup file exists, is not a symlink at the moment it is
+  // actually opened (identity-pinned; see `readFileWithIdentityPin`), and
+  // has the expected hash.
+  const backupBytes = await readFileWithIdentityPin(backupPath);
+  if (backupBytes === null) {
     throw makeError('pathRestricted', 'Backup file not found or unreadable.');
   }
   const actualBackupHash = sha256(backupBytes);

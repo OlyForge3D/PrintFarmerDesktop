@@ -331,10 +331,11 @@ import {
   installOrcaProfileWindows,
   restoreOrcaProfileWindows,
   findBackupByOperationId,
-  __setBackupMetaReadRaceHookForTests,
   __setBackupMetaWriteRaceHookForTests,
   __setBackupMetaDirWriteRaceHookForTests,
   __setBackupMetaDirReadRaceHookForTests,
+  __setIdentityPinPreOpenHookForTests,
+  __setIdentityPinPostOpenHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -902,37 +903,47 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'refuses to trust a metadata read that races a symlink swap mid-read (TOCTOU on read)',
+    'refuses to trust a metadata read that swaps in a symlink then swaps back before any recheck could notice (TOCTOU on read, swap-in/swap-back)',
     async () => {
-      // Reviewer finding (Vasquez, round 3): findBackupByOperationId used to
-      // check metaPath is not a symlink, then separately readFile(metaPath)
-      // — a real race window in which an attacker could swap metaPath for a
-      // symlink between the check and the read. Real timing races are not
-      // deterministically testable, so findBackupByOperationId exposes a
-      // test-only hook fired exactly between the pre-read check and the
-      // read call; this test uses it to perform the swap at the precise
-      // moment the race would occur and asserts the post-read symlink check
-      // catches it and the function refuses to trust the result, rather
-      // than returning attacker-influenced content.
-      const safeFilename = 'toctou_read_profile.json';
+      // Reviewer finding (Ripley, round 3): the previous lstat-before /
+      // read / lstat-after bracket only detects a symlink if one is
+      // present at either lstat's specific instant. An attacker who
+      // swaps metaPath to a symlink strictly between the two lstat
+      // calls, lets the read follow the symlink, then swaps metaPath
+      // back to the original file before the second lstat runs, passes
+      // both checks while the actual read still went through the
+      // attacker's symlink. This test simulates exactly that: the
+      // pre-open hook swaps metaPath to a symlink pointing at attacker
+      // content (so open() would follow it), and the post-open hook —
+      // fired after open() has already resolved and bound a file
+      // descriptor, but before this function inspects that descriptor's
+      // identity — restores metaPath to the original, legitimate file.
+      // If the implementation still relied on a path-based recheck, this
+      // restoration would erase all evidence of the swap and the read
+      // would wrongly be trusted. Because identity is pinned to the
+      // already-open file descriptor instead, restoring the path changes
+      // nothing: the descriptor's fstat still reflects whatever open()
+      // actually resolved to at the instant it ran.
+      const safeFilename = 'toctou_read_swap_back_profile.json';
       const operationId = randomUUID();
-      const original = '{"name":"v1-toctou-read"}';
+      const original = '{"name":"v1-toctou-swap-back"}';
 
       const installRoot = getWindowsOrcaInstallRoot();
-      const escapeDir = path.join(sandboxAppData, '..', 'read-race-escape');
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `read-swap-back-escape-${operationId}`,
+      );
       await mkdir(escapeDir, { recursive: true });
       const escapeTarget = path.join(escapeDir, 'attacker-record.json');
 
-      // Seed the destination, then overwrite it under operationId so a real
-      // metadata record legitimately exists at metaPath before the race
-      // hook fires — otherwise the pre-read check would find nothing there
-      // and short-circuit before ever reaching the hook. This also produces
-      // a real backup file, whose name the attacker record below points at
-      // — pointing at a name that genuinely exists under installRoot rules
-      // out the separate "backup file itself doesn't exist" check as the
-      // reason a bad read gets rejected, isolating this test to the
-      // mid-read-symlink-swap protection specifically.
-      const seed = '{"name":"v0-toctou-read-seed"}';
+      // Seed the destination, then overwrite it under operationId so a
+      // real metadata record legitimately exists at metaPath before the
+      // race hooks fire, and so a real backup file exists for the
+      // attacker record to (validly) point at — isolating this test to
+      // the swap-in/swap-back protection specifically, same rationale as
+      // the sibling mid-read test above.
+      const seed = '{"name":"v0-toctou-swap-back-seed"}';
       await installOrcaProfileWindows(
         seed,
         sha256(seed),
@@ -960,31 +971,127 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
 
       const metaDir = path.join(installRoot, '.pfd-backup-meta');
       const metaPath = path.join(metaDir, `${operationId}.json`);
+      const originalRecord = await readFile(metaPath, 'utf8');
 
       let raceSimulated = true;
-      __setBackupMetaReadRaceHookForTests(async () => {
+      __setIdentityPinPreOpenHookForTests(async (filePath) => {
+        if (filePath !== metaPath) return;
         await rm(metaPath, { force: true });
         raceSimulated = await tryMakeFileSymlink(escapeTarget, metaPath);
+      });
+      __setIdentityPinPostOpenHookForTests(async (filePath) => {
+        if (filePath !== metaPath || !raceSimulated) return;
+        // Swap back to the original, legitimate file *before* this
+        // function's own fstat-based identity check runs. A path-based
+        // recheck at this point would see a perfectly ordinary file and
+        // wrongly pass; the fd-based identity check never re-resolves
+        // the path, so this restoration is irrelevant to it.
+        await rm(metaPath, { force: true });
+        await writeFile(metaPath, originalRecord, 'utf8');
       });
       try {
         const located = await findBackupByOperationId(installRoot, operationId);
         if (!raceSimulated) {
           // This runner does not grant SeCreateSymbolicLinkPrivilege; the
-          // race could not be simulated, so there is nothing further to
-          // assert (the legitimate record was deleted by the hook, so a
-          // null result here is expected either way and not meaningful).
+          // race could not be simulated. Nothing further to assert.
           return;
         }
         expect(
           located,
-          'metadata read trusted content reached through a mid-read symlink swap',
+          'metadata read trusted content reached through a swap-in/swap-back around the read',
         ).toBeNull();
       } finally {
-        __setBackupMetaReadRaceHookForTests(null);
-        await rm(metaPath, { force: true });
+        __setIdentityPinPreOpenHookForTests(null);
+        __setIdentityPinPostOpenHookForTests(null);
         await rm(escapeDir, { recursive: true, force: true });
       }
     },
+    15_000, // extra installs + symlink race instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to restore through a symlink swapped in after findBackupByOperationId already validated the path (TOCTOU between locate and restore)',
+    async () => {
+      // Reviewer finding (Ripley, round 3): findBackupByOperationId does
+      // its own lstat-based symlink check on backupPath before returning
+      // it, but restoreOrcaProfileWindows used to just readFile(backupPath)
+      // directly — trusting a check some other, earlier call made, with no
+      // guarantee about how much time elapsed since. This test simulates
+      // an attacker swapping backupPath for a symlink in that gap, *after*
+      // findBackupByOperationId has already returned a validated path.
+      // The symlink even points at a file whose bytes are byte-identical
+      // to the real backup (so its hash matches expectedBackupHash) —
+      // proving this is a defense independent of hash verification: even
+      // content that would otherwise pass the hash check must still be
+      // rejected if it was reached through a symlink, because
+      // restoreOrcaProfileWindows now re-validates identity itself,
+      // immediately before it reads, rather than trusting any earlier
+      // caller's check.
+      const safeFilename = 'toctou_locate_restore_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-locate-restore"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `locate-restore-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+      const escapeTarget = path.join(escapeDir, 'attacker-copy.bak');
+
+      // A backup is only ever created when the destination already
+      // exists, so seed it first (matching the pattern used by the
+      // sibling TOCTOU tests above), then install again under the
+      // operationId this test cares about, producing a real backup and
+      // its durable metadata record.
+      const seed = '{"name":"v0-toctou-locate-restore-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+
+      // Plant a byte-identical copy of the real backup at an
+      // attacker-controlled location, then — simulating the gap between
+      // findBackupByOperationId returning and restoreOrcaProfileWindows
+      // using its result — swap the validated backupPath itself for a
+      // symlink pointing at that copy.
+      const realBytes = await readFile(backupPath);
+      await writeFile(escapeTarget, realBytes);
+      await rm(backupPath, { force: true });
+      const raceSimulated = await tryMakeFileSymlink(escapeTarget, backupPath);
+      try {
+        if (!raceSimulated) {
+          // This runner does not grant SeCreateSymbolicLinkPrivilege; the
+          // race could not be simulated. Nothing further to assert.
+          return;
+        }
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+      } finally {
+        await rm(backupPath, { force: true });
+        await writeFile(backupPath, realBytes);
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + symlink race instrumentation add I/O overhead
   );
 
   it.runIf(process.platform === 'win32')(
