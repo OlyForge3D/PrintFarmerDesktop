@@ -962,12 +962,22 @@ and `quick-xml` (including RUSTSEC-2026-0194/-0195 in the 3MF parser closure). T
 not waived: dependency remediation is outside this tooling slice and remains a human risk call
 rather than retroactively blocking unrelated changes.
 
-Note also that adding a job to `.github/workflows/ci.yml` does **not** make it a required check.
-As of this writing `development` has **no branch protection and no rulesets** (issue #111), so no
-status check is required and direct pushes are permitted. Every "CI green before merge" guarantee
-is therefore procedural — held up by the pre-merge re-read of the status rollup and by reviewers
-un-drafting rather than merging — not enforced. Making any check required, including the licence
-gate, is a separate administrative change tracked in #111.
+Note also that adding a job to `.github/workflows/ci.yml` does **not** by itself make it a
+required check — that is repository configuration, applied separately (issue #111, resolved).
+`development` now has classic branch protection: `strict: true`, and all eight contexts above
+(`Desktop`, `Sidecar`, `Release package` × 2 OSes, `Dependency advisories`, `Closing-reference
+declaration`) are required — confirmed live via
+`gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection`. Force pushes and
+branch deletion are blocked, linear history is required, and conversation resolution is required.
+
+The honest limit, recorded in #111 rather than left implicit: `enforce_admins` is `false`, and
+`jpapiez` is the sole collaborator on this repository, so the one account able to merge or push
+can still bypass every one of these checks — GitHub forbids requiring a review that only the
+sole collaborator could ever supply, so that specific control was deliberately declined rather
+than silently absent. "CI green before merge" is therefore an enforced control for any future
+non-admin collaborator or automation, but for the current single-admin account it remains
+procedural — held up by the pre-merge re-read of the status rollup and by reviewers un-drafting
+rather than merging, not by branch protection.
 
 ## 9. Open work derived from this model
 
