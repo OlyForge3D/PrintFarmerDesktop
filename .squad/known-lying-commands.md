@@ -57,8 +57,8 @@ present also came back negative — the control failed in a way that
 indicted the instrument, not the data.
 
 Every instance in this file folds a third state into the reassuring one, not
-the alarming one: `""` conclusion → *passed* (4), unknown ownership →
-*foreign* (5), rewritten-but-not-mine → *fine* (6, 8), `BEHIND` → *healthy*
+the alarming one: `""` conclusion → *passed* (4), any ancestor →
+*the tip* (5), rewritten-but-not-mine → *fine* (6, 8), `BEHIND` → *healthy*
 (10), empty `reviewDecision` → *not blocked* (11), stale exit code →
 *success* (9). The direction is not random — the reassuring reading is the
 one that lets the reader stop looking.
