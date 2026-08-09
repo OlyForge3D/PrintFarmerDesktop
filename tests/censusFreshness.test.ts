@@ -25,6 +25,7 @@ import {
   evaluateControls,
   formatResult,
   main,
+  normalizeInstant,
   parseArgs,
   parseCensusCitations,
   resolveNow,
@@ -57,6 +58,220 @@ describe('resolving "now"', () => {
 
   it('returns null for an unparseable string rather than falling back to Date.now()', () => {
     expect(resolveNow('not-a-timestamp')).toBeNull();
+  });
+});
+
+describe('normalizeInstant — timezone-explicitness', () => {
+  it('rejects a date-and-time string with no trailing Z or offset', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00')).toBeNull();
+  });
+
+  it('rejects a space-separated date-and-time string with no offset', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00')).toBeNull();
+  });
+
+  it('rejects a timezone-less date-and-time string even with sub-second precision', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00.123')).toBeNull();
+  });
+
+  it('rejects a timezone-less date-and-time string with no seconds', () => {
+    expect(normalizeInstant('2026-08-10T18:00')).toBeNull();
+  });
+
+  it('rejects a lowercase-t timezone-less datetime, the same as its uppercase-T equivalent', () => {
+    expect(normalizeInstant('2026-08-10t23:30:00')).toBeNull();
+  });
+
+  it('rejects a timezone-less RFC-2822-style datetime', () => {
+    expect(normalizeInstant('Mon, 10 Aug 2026 18:00:00')).toBeNull();
+  });
+
+  it('rejects a timezone-less slash-separated datetime', () => {
+    expect(normalizeInstant('2026/08/10 18:00:00')).toBeNull();
+  });
+
+  it('accepts a lowercase-t datetime once it carries an explicit Z', () => {
+    expect(normalizeInstant('2026-08-10t23:30:00Z')).toBe(
+      Date.parse('2026-08-10t23:30:00Z'),
+    );
+  });
+
+  it('accepts an RFC-2822-style datetime once it carries an explicit GMT zone', () => {
+    expect(normalizeInstant('Mon, 10 Aug 2026 18:00:00 GMT')).toBe(
+      Date.parse('Mon, 10 Aug 2026 18:00:00 GMT'),
+    );
+  });
+
+  it('accepts a slash-separated datetime once it carries an explicit numeric offset', () => {
+    expect(normalizeInstant('2026/08/10 18:00:00 +0000')).toBe(
+      Date.parse('2026/08/10 18:00:00 +0000'),
+    );
+  });
+
+  it('accepts a lowercase "gmt" zone suffix, since Date.parse treats zone names case-insensitively', () => {
+    expect(normalizeInstant('Mon, 10 Aug 2026 18:00:00 gmt')).toBe(
+      Date.parse('Mon, 10 Aug 2026 18:00:00 gmt'),
+    );
+  });
+
+  it('accepts a mixed-case "Utc" zone suffix, since Date.parse treats zone names case-insensitively', () => {
+    expect(normalizeInstant('2026/08/10 18:00:00 Utc')).toBe(
+      Date.parse('2026/08/10 18:00:00 Utc'),
+    );
+  });
+
+  it('accepts "GMT+0" (a named zone with a single-digit zero offset), since Date.parse resolves it as UTC', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+0')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+0'),
+    );
+  });
+
+  it('accepts "UTC+0" the same way', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 UTC+0')).toBe(
+      Date.parse('2026-08-10 18:00:00 UTC+0'),
+    );
+  });
+
+  it('accepts a bare "+00" two-digit offset with no minute part or colon', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 +00')).toBe(
+      Date.parse('2026-08-10 18:00:00 +00'),
+    );
+  });
+
+  it('accepts "GMT+00" (a named zone with a two-digit zero offset)', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+00')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+00'),
+    );
+  });
+
+  it('accepts "UTC+00" the same way', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 UTC+00')).toBe(
+      Date.parse('2026-08-10 18:00:00 UTC+00'),
+    );
+  });
+
+  it('accepts a named zone with a non-zero single-digit offset, e.g. "GMT+1"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+1')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+1'),
+    );
+  });
+
+  it('accepts a colon-separated offset with an unpadded single-digit minute, e.g. "+1:0"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 +1:0')).toBe(
+      Date.parse('2026-08-10 18:00:00 +1:0'),
+    );
+  });
+
+  it('accepts a named zone with a colon-separated unpadded-minute offset, e.g. "GMT+1:2"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+1:2')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+1:2'),
+    );
+  });
+
+  it('accepts the real-world boundary offsets +14:00 and +23:59', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00+14:00')).toBe(
+      Date.parse('2026-08-10T18:00:00+14:00'),
+    );
+    expect(normalizeInstant('2026-08-10T18:00:00+23:59')).toBe(
+      Date.parse('2026-08-10T18:00:00+23:59'),
+    );
+  });
+
+  it('rejects an out-of-range hour offset like "GMT+25", even though Date.parse tolerates it arithmetically', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+25')).toBeNull();
+  });
+
+  it('rejects an out-of-range hour offset like "UTC+99"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 UTC+99')).toBeNull();
+  });
+
+  it('rejects an out-of-range contiguous offset like "GMT+2400" (24 hours)', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+2400')).toBeNull();
+  });
+
+  it('rejects an out-of-range minute component like "GMT+2360" (60 minutes)', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+2360')).toBeNull();
+  });
+
+  it('demonstrates the bogus-offset spoof is closed: a garbled +25 offset does not classify FRESH', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    const withBogusOffset = classifyCensusFreshness({
+      measuredAt: '2026-08-10 18:00:00 GMT+25',
+      now,
+    });
+    expect(withBogusOffset.verdict).toBe(VERDICT_UNVERIFIABLE);
+  });
+
+  it('accepts the same instant written with an explicit Z', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00Z')).toBe(
+      Date.parse('2026-08-10T18:00:00Z'),
+    );
+  });
+
+  it('accepts the same instant written with an explicit numeric offset', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00+00:00')).toBe(
+      Date.parse('2026-08-10T18:00:00Z'),
+    );
+  });
+
+  it('accepts a non-UTC explicit offset without rejecting it as timezone-less', () => {
+    expect(normalizeInstant('2026-08-10T18:00:00-05:00')).toBe(
+      Date.parse('2026-08-10T18:00:00-05:00'),
+    );
+  });
+
+  it('accepts a bare date with no time-of-day, which ECMA-262 fixes to UTC midnight unambiguously', () => {
+    expect(normalizeInstant('2026-08-10')).toBe(
+      Date.parse('2026-08-10T00:00:00Z'),
+    );
+  });
+
+  it('accepts a finite epoch-ms number, which carries no timezone ambiguity', () => {
+    expect(normalizeInstant(T0)).toBe(T0);
+  });
+
+  it('demonstrates the exact spoof a caller could attempt: the same clock-face instant classifies FRESH with Z but UNVERIFIABLE without it', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    const withZone = classifyCensusFreshness({
+      measuredAt: '2026-08-10T18:00:00Z',
+      now,
+    });
+    const withoutZone = classifyCensusFreshness({
+      measuredAt: '2026-08-10T18:00:00',
+      now,
+    });
+    expect(withZone.verdict).toBe(VERDICT_FRESH);
+    expect(withoutZone.verdict).toBe(VERDICT_UNVERIFIABLE);
+  });
+
+  it('closes the lowercase-t variant of the same spoof', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    const withZone = classifyCensusFreshness({
+      measuredAt: '2026-08-10t18:00:00Z',
+      now,
+    });
+    const withoutZone = classifyCensusFreshness({
+      measuredAt: '2026-08-10t18:00:00',
+      now,
+    });
+    expect(withZone.verdict).toBe(VERDICT_FRESH);
+    expect(withoutZone.verdict).toBe(VERDICT_UNVERIFIABLE);
+  });
+
+  it('closes the RFC-2822-style and slash-separated variants of the same spoof', () => {
+    const now = Date.parse('2026-08-11T00:00:00Z');
+    expect(
+      classifyCensusFreshness({
+        measuredAt: 'Mon, 10 Aug 2026 18:00:00',
+        now,
+      }).verdict,
+    ).toBe(VERDICT_UNVERIFIABLE);
+    expect(
+      classifyCensusFreshness({
+        measuredAt: '2026/08/10 18:00:00',
+        now,
+      }).verdict,
+    ).toBe(VERDICT_UNVERIFIABLE);
   });
 });
 
@@ -544,6 +759,43 @@ describe('main — end-to-end verdicts driven through the CLI surface', () => {
     }
     expect(process.exitCode).toBe(EXIT_OK);
     expect(logs.join('\n')).toContain('FRESH');
+    process.exitCode = 0;
+  });
+
+  it('exits EXIT_UNVERIFIABLE for a --file citation whose measured_at has no timezone, rather than resolving it against the local clock', async () => {
+    const text = [
+      '```census-measured',
+      'worktrees: 24',
+      'true: 18',
+      'false: 6',
+      'accused: 0',
+      'measured_at: 2026-08-10T18:00:00',
+      '```',
+    ].join('\n');
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(['--file', 'fake-report.md'], {
+        readFile: () => text,
+      });
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    process.exitCode = 0;
+  });
+
+  it('exits EXIT_UNVERIFIABLE for --measured-at with no timezone passed directly on the CLI', async () => {
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(['--measured-at', '2026-08-10T18:00:00'], {});
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
     process.exitCode = 0;
   });
 
