@@ -69,6 +69,23 @@ const FAILED_CONCLUSIONS = new Set([
   'startup_failure',
 ]);
 const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
+// GitHub's documented Checks API status enum (create/get a check run):
+// https://docs.github.com/en/rest/checks/runs -- queued, in_progress, and
+// completed are the states this file's logic actually branches on; waiting,
+// requested, and pending are also documented values (used by deployment
+// protection-rule integrations) that could in principle appear on a check
+// run response. Anything outside this set is not a status GitHub documents
+// at all, so it must fail closed rather than being treated as "not
+// completed" (which is what an unrecognized string would silently become
+// by falling through every `status === 'completed'` check below).
+const KNOWN_STATUSES = new Set([
+  'queued',
+  'in_progress',
+  'completed',
+  'waiting',
+  'requested',
+  'pending',
+]);
 
 /**
  * Classify one check run's conclusion into a verdict.
@@ -109,6 +126,17 @@ function parseCheckRun(checkRun, index) {
   }
   if (typeof status !== 'string' || status === '') {
     throw new Error(`check run ${index + 1} (${name}) has no status`);
+  }
+  if (!KNOWN_STATUSES.has(status)) {
+    // A garbage/unrecognized status (typo, API-version drift, a malformed
+    // response) must not fall through the `status === 'completed'` checks
+    // below and be silently treated as "not completed" -- that is exactly
+    // how a structurally invalid response would resolve to `pending` and
+    // let `main` exit clean, the same failure mode the two invariant
+    // checks above already close for known-but-contradictory pairings.
+    throw new Error(
+      `check run ${index + 1} (${name}) has an unrecognized status ${JSON.stringify(status)}`,
+    );
   }
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new Error(

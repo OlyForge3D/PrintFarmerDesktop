@@ -324,6 +324,30 @@ describe('latestCheckRunsByName', () => {
     },
   );
 
+  it.each(['queued_up', 'started', 'done', 'COMPLETED', ''])(
+    'REGRESSION: rejects an unrecognized status %j instead of silently treating it as pending',
+    (status) => {
+      // GitHub documents a fixed set of status values (queued, in_progress,
+      // completed, waiting, requested, pending). A typo, API-version drift,
+      // or malformed response could send anything else. Prior behaviour let
+      // any string other than "completed" fall through the completed-only
+      // checks and resolve to a normal-looking `pending` run -- exactly the
+      // kind of structurally invalid input this file must fail closed on
+      // instead of reporting a plausible-looking verdict for.
+      const checkRuns = [
+        checkRun({
+          status,
+          conclusion: null,
+          started_at: null,
+          completed_at: null,
+        }),
+      ];
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+        status === '' ? /has no status/ : /has an unrecognized status/,
+      );
+    },
+  );
+
   it('REGRESSION: an in-progress rerun outranks an older completed run for the same name, even with a lower id', () => {
     // Live Checks API data showed the opposite of what id-ordering assumes:
     // a later-started rerun can carry a LOWER check-run id than an older,
@@ -819,6 +843,28 @@ describe('main', () => {
             name: 'Malformed queued check',
             status: 'queued',
             conclusion: 'failure',
+            started_at: null,
+            completed_at: null,
+          }),
+        ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for an unrecognized status value, rather than treating it as pending', () => {
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Malformed status check',
+            status: 'started', // not a status GitHub documents
+            conclusion: null,
             started_at: null,
             completed_at: null,
           }),
