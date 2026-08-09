@@ -3,9 +3,10 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ClosingIssuesIndeterminateError,
   EXPECTED_PROTECTED_GATE_ISSUE_COUNT,
   PROTECTED_GATE_ISSUES,
   PROTECTED_LABELS,
@@ -17,6 +18,8 @@ import {
   fetchPullRequestCommits,
   formatCommitViolations,
   formatViolations,
+  reportClosureScopeCliOutcome,
+  resolveClosingIssuesConfidently,
   resolvePullRequestNumber,
   resolveRepository,
 } from '../scripts/check-pr-closure-scope.mjs';
@@ -290,6 +293,239 @@ describe('fetchClosingIssues', () => {
         fetchImpl: respondWith({}, false, 502),
       }),
     ).rejects.toThrow(/502/);
+  });
+});
+
+describe('resolveClosingIssuesConfidently', () => {
+  // A synthetic clock and sleep so the tests run instantly and deterministically
+  // instead of waiting out a real 45-second floor.
+  function fakeClock() {
+    let elapsed = 0;
+    return {
+      now: () => elapsed,
+      sleep: (ms: number) => {
+        elapsed += ms;
+        return Promise.resolve();
+      },
+    };
+  }
+
+  const CHILD_ISSUES: ClosingIssue[] = [
+    { number: 161, title: 'child', labels: ['documentation'] },
+  ];
+
+  // "I read the field and it is empty" — a genuinely unarmed pull request
+  // must pass once the full read budget has been spent and the floor has
+  // been cleared. This deliberately spends the WHOLE budget rather than
+  // stopping the instant the floor is crossed (see the regression test
+  // below for why: stopping early can miss a read that populates later but
+  // still inside the same budget).
+  it('confirms empty only once the entire read budget is spent and the floor is cleared', async () => {
+    const clock = fakeClock();
+    let reads = 0;
+    const read = () => {
+      reads += 1;
+      return Promise.resolve([]);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(true);
+    expect(result.value).toEqual([]);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(45000);
+    // All 11 reads are spent: 10 delays of 5000ms land the last read at
+    // t=50000, not stopping the moment t=45000 is crossed.
+    expect(reads).toBe(11);
+  });
+
+  // The bug Hicks found in round 1: `resolveClosingIssuesConfidently` used to
+  // return `confirmedEmpty: true` the instant the elapsed floor was crossed,
+  // even though reads remained in the budget. Reproduced here exactly:
+  // `closingIssuesReferences` reads empty until t=50000 (the last read in an
+  // 11-read, 5s-interval budget) and only then populates. A resolver that
+  // stops at the floor (t=45000, read 10) would report "confirmed empty" and
+  // let an armed pull request pass. The fix must keep polling through the
+  // full budget and see the 11th read.
+  it('catches a field that populates after the floor but still inside the read budget', async () => {
+    const clock = fakeClock();
+    let reads = 0;
+    const read = () => {
+      reads += 1;
+      const value = clock.now() >= 50000 ? CHILD_ISSUES : [];
+      return Promise.resolve(value);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(false);
+    expect(result.value).toEqual(CHILD_ISSUES);
+    expect(reads).toBe(11);
+    expect(result.elapsedMs).toBe(50000);
+  });
+
+  // "I read the field and it has no value yet" — the exact #319 shape: the
+  // very first read is empty, but a later read (still inside the budget)
+  // reveals the pull request is armed. The early empty read must not be
+  // trusted, and the eventual non-empty read must be returned immediately
+  // rather than waited out further.
+  it('does not trust an early empty read and reports arming once it appears', async () => {
+    const clock = fakeClock();
+    const responses = [[], [], [], CHILD_ISSUES];
+    let reads = 0;
+    const read = () => {
+      const value = responses[reads] ?? CHILD_ISSUES;
+      reads += 1;
+      return Promise.resolve(value);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(false);
+    expect(result.value).toEqual(CHILD_ISSUES);
+    expect(reads).toBe(4);
+    // Returned well before the empty-floor budget would have elapsed: an
+    // armed pull request must never be masked by waiting for more reads.
+    expect(result.elapsedMs).toBeLessThan(45000);
+  });
+
+  // The distinction the issue names directly: an indeterminate read (never
+  // reaches the floor while empty, never sees a non-empty value either) must
+  // fail closed with a distinguishable error, not silently report a pass.
+  it('fails closed with a distinct error when the budget is exhausted before the floor', async () => {
+    const clock = fakeClock();
+    const read = () => Promise.resolve([]);
+
+    await expect(
+      resolveClosingIssuesConfidently(read, {
+        minEmptyFloorMs: 45000,
+        delayMs: 5000,
+        maxReads: 3, // 3 reads spans only 10s, short of the 45s floor.
+        now: clock.now,
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(ClosingIssuesIndeterminateError);
+  });
+
+  it('never resolves an indeterminate timeout to an empty, passing result', async () => {
+    const clock = fakeClock();
+    const read = () => Promise.resolve([]);
+
+    let caught: unknown;
+    try {
+      await resolveClosingIssuesConfidently(read, {
+        minEmptyFloorMs: 45000,
+        delayMs: 5000,
+        maxReads: 3,
+        now: clock.now,
+        sleep: clock.sleep,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ClosingIssuesIndeterminateError);
+    const error = caught as InstanceType<
+      typeof ClosingIssuesIndeterminateError
+    >;
+    expect(error.reads).toBe(3);
+    expect(error.elapsedMs).toBeLessThan(45000);
+    expect(error.message).toMatch(/not necessarily finished computing/);
+  });
+
+  it('trusts a non-empty first read immediately, with no polling at all', async () => {
+    const clock = fakeClock();
+    let reads = 0;
+    const read = () => {
+      reads += 1;
+      return Promise.resolve(CHILD_ISSUES);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(false);
+    expect(result.reads).toBe(1);
+    expect(result.elapsedMs).toBe(0);
+    expect(reads).toBe(1);
+  });
+});
+
+/**
+ * #321 (Vasquez, round 2): the CLI catch used to collapse a confirmed
+ * violation (`process.exitCode = 1`, set from inside `main` on a real
+ * arming) and an indeterminate read (`ClosingIssuesIndeterminateError`,
+ * thrown out of `resolveClosingIssuesConfidently` and only ever visible via
+ * this handler) onto the SAME exit code. `reportClosureScopeCliOutcome` is
+ * the exported handler the real CLI guard installs via `.catch`, so a test
+ * can exercise it directly -- the `import.meta.url === pathToFileURL(...)`
+ * guard is only ever true when this file is the process entry point, never
+ * under the test runner, so nothing else would ever call it.
+ */
+describe("reportClosureScopeCliOutcome: the CLI entry point's own rejection handler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('sets exit code 2 for an ordinary could-not-look failure, distinct from a violation', () => {
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    reportClosureScopeCliOutcome(new Error('GITHUB_TOKEN is not set'));
+
+    expect(process.exitCode).toBe(2);
+    expect(process.exitCode).not.toBe(1);
+    const printed = errorSpy.mock.calls.map((call) => String(call[0]));
+    expect(printed.some((line) => line.includes('Unable to verify'))).toBe(
+      true,
+    );
+    expect(printed.some((line) => line.includes('GITHUB_TOKEN'))).toBe(true);
+  });
+
+  // The exact case this fix adds: an indeterminate read must not exit with
+  // the same code as a confirmed violation.
+  it('sets exit code 2, not 1, for a ClosingIssuesIndeterminateError', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    reportClosureScopeCliOutcome(
+      new ClosingIssuesIndeterminateError({ reads: 3, elapsedMs: 10000 }),
+    );
+
+    expect(process.exitCode).toBe(2);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it('stringifies a non-Error rejection rather than throwing on error.message', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(() =>
+      reportClosureScopeCliOutcome('a bare string rejection'),
+    ).not.toThrow();
+    expect(process.exitCode).toBe(2);
   });
 });
 
