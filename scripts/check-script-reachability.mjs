@@ -69,9 +69,12 @@ export const UNENFORCED_CHECKS = {
     'every premise as data and fails if one is widened. Its main() reads ' +
     'branch protection, rulesets, protected branches and the collaborator set, ' +
     'and every one of those endpoints needs admin scope that the default ' +
-    'GITHUB_TOKEN does not carry — the same constraint recorded for ' +
-    'check:merge-queue-contexts above. Running it in CI would degrade to the ' +
-    'half the tests already cover, and would do it silently. ' +
+    'GITHUB_TOKEN does not carry, and that a `permissions:` grant cannot supply ' +
+    'either — GITHUB_TOKEN has no path to repo-admin read regardless of which ' +
+    'key is requested (#186, #661: `administration: read` is not a valid ' +
+    '`permissions:` key at all, and broke the workflow outright when tried). ' +
+    'Running it in CI would degrade to the half the tests already cover, and ' +
+    'would do it silently. ' +
     'STATE THE WEAKNESS PLAINLY: this makes it a tripwire that only fires when ' +
     'a human runs it, so #151 revisit trigger is faster to check but still not ' +
     'automatic. That is weaker than intended and better than the paragraph it ' +
@@ -79,13 +82,6 @@ export const UNENFORCED_CHECKS = {
     'scheduled workflow the moment a privileged token exists as a repository ' +
     'secret — at which point it should run on a schedule rather than per-PR, ' +
     'because it guards repository configuration and not any given change.',
-  'check:merge-queue-contexts':
-    'Its classification half IS enforced in CI: tests/mergeQueueReadiness.test.ts ' +
-    'exercises every exported rule under `npm run test`. Its main() additionally ' +
-    'compares the live required-context set, which needs a branch-protection read ' +
-    'that the default GITHUB_TOKEN does not carry, so running it in CI would ' +
-    'degrade to the half the tests already cover. Invoked by hand with a ' +
-    'privileged token when the queue configuration changes.',
   'check:required-contexts':
     'Its judgement IS enforced in CI: tests/requiredContexts.test.ts drives ' +
     'evaluateRequiredContexts, latestRunNamed and main over plain objects and ' +
