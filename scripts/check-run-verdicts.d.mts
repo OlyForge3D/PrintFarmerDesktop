@@ -26,6 +26,7 @@ export interface LatestCheckRun {
   conclusion: string | null;
   status: string;
   startedAt: string | null;
+  completedAt: string | null;
   id: number;
 }
 

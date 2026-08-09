@@ -40,6 +40,7 @@ function checkRun(overrides: Record<string, unknown>) {
     status: 'completed',
     conclusion: 'success',
     started_at: '2026-08-06T15:58:29Z',
+    completed_at: '2026-08-06T15:59:29Z',
     ...overrides,
   };
 }
@@ -102,26 +103,31 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 1,
         started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:58:35Z',
         conclusion: 'cancelled',
       }),
       checkRun({
         id: 2,
         started_at: '2026-08-06T15:58:30Z',
+        completed_at: '2026-08-06T15:58:40Z',
         conclusion: 'cancelled',
       }),
       checkRun({
         id: 3,
         started_at: '2026-08-06T15:59:53Z',
+        completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'success',
       }),
       checkRun({
         id: 4,
         started_at: '2026-08-06T16:00:16Z',
+        completed_at: '2026-08-06T16:00:30Z',
         conclusion: 'success',
       }),
       checkRun({
         id: 5,
         started_at: '2026-08-06T16:21:37Z',
+        completed_at: '2026-08-06T16:21:50Z',
         conclusion: 'cancelled',
       }),
     ].map((run) => ({ ...run, name: 'Sequencing hold' }));
@@ -134,16 +140,18 @@ describe('latestCheckRunsByName', () => {
     expect(classifyConclusion(run!.conclusion)).not.toBe(VERDICT_FAILED);
   });
 
-  it('breaks a started_at tie by the larger id', () => {
+  it('breaks a completed_at tie by the larger id', () => {
     const checkRuns = [
       checkRun({
         id: 10,
         started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'cancelled',
       }),
       checkRun({
         id: 11,
         started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'success',
       }),
     ];
@@ -154,7 +162,12 @@ describe('latestCheckRunsByName', () => {
 
   it('an in-progress run (status != completed) reports pending regardless of a stray conclusion field', () => {
     const checkRuns = [
-      checkRun({ id: 1, status: 'in_progress', conclusion: null }),
+      checkRun({
+        id: 1,
+        status: 'in_progress',
+        conclusion: null,
+        completed_at: null,
+      }),
     ];
     const latest = latestCheckRunsByName(checkRuns);
     expect(latest.get('some check')?.conclusion).toBeNull();
@@ -171,6 +184,7 @@ describe('latestCheckRunsByName', () => {
         status: 'queued',
         conclusion: null,
         started_at: null,
+        completed_at: null,
       }),
     ];
     expect(() => latestCheckRunsByName(checkRuns)).not.toThrow();
@@ -195,7 +209,52 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('the latest-by-id selection still works when the newest run for a name is queued with no started_at', () => {
+  it('still refuses a completed run that carries no completed_at at all, which is genuinely malformed', () => {
+    const checkRuns = [
+      checkRun({
+        status: 'completed',
+        conclusion: 'success',
+        completed_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /completed but has no completed_at/,
+    );
+  });
+
+  it('REGRESSION: an in-progress rerun outranks an older completed run for the same name, even with a lower id', () => {
+    // Live Checks API data showed the opposite of what id-ordering assumes:
+    // a later-started rerun can carry a LOWER check-run id than an older,
+    // already-completed run for the same name. An in-flight run is always
+    // the live state of that check regardless of id, so it must win here
+    // even though its id (2) is lower than the completed run's id (9).
+    const checkRuns = [
+      checkRun({
+        id: 9,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:05:00Z',
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T16:10:00Z',
+        completed_at: null,
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Desktop')?.id).toBe(2);
+    expect(latest.get('Desktop')?.conclusion).toBeNull();
+    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
+      VERDICT_PENDING,
+    );
+  });
+
+  it('the latest-run selection still works when the newest run for a name is queued with no started_at', () => {
     const checkRuns = [
       checkRun({
         id: 1,
@@ -209,6 +268,7 @@ describe('latestCheckRunsByName', () => {
         status: 'queued',
         conclusion: null,
         started_at: null,
+        completed_at: null,
       }),
     ];
     const latest = latestCheckRunsByName(checkRuns);

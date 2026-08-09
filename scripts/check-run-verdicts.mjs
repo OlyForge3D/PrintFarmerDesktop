@@ -95,12 +95,13 @@ export function classifyConclusion(conclusion) {
 /**
  * @param {unknown} checkRun
  * @param {number} index
- * @returns {{name: string, conclusion: string | null, status: string, startedAt: string | null, id: number}}
+ * @returns {{name: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, id: number}}
  */
 function parseCheckRun(checkRun, index) {
   const name = /** @type {any} */ (checkRun)?.name;
   const status = /** @type {any} */ (checkRun)?.status;
   const startedAtRaw = /** @type {any} */ (checkRun)?.started_at;
+  const completedAtRaw = /** @type {any} */ (checkRun)?.completed_at;
   const id = /** @type {any} */ (checkRun)?.id;
   const conclusion = /** @type {any} */ (checkRun)?.conclusion ?? null;
   if (typeof name !== 'string' || name === '') {
@@ -123,7 +124,7 @@ function parseCheckRun(checkRun, index) {
   // reports `started_at: null` for it -- that is not malformed input, it is
   // the normal shape of "pending". Only a completed run is required to carry
   // a valid timestamp; a completed run with none is the actually-malformed
-  // case.
+  // case. `completed_at` follows the identical rule.
   let startedAt = null;
   if (startedAtRaw !== null && startedAtRaw !== undefined) {
     if (
@@ -140,6 +141,22 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${name}) is completed but has no started_at`,
     );
   }
+  let completedAt = null;
+  if (completedAtRaw !== null && completedAtRaw !== undefined) {
+    if (
+      typeof completedAtRaw !== 'string' ||
+      Number.isNaN(Date.parse(completedAtRaw))
+    ) {
+      throw new Error(
+        `check run ${index + 1} (${name}) has an invalid completed_at`,
+      );
+    }
+    completedAt = completedAtRaw;
+  } else if (status === 'completed') {
+    throw new Error(
+      `check run ${index + 1} (${name}) is completed but has no completed_at`,
+    );
+  }
   // A run whose status is not yet 'completed' has not settled on a
   // conclusion regardless of what the field carries, so it is forced to
   // null here rather than trusted -- the same "don't trust a field the API
@@ -149,19 +166,84 @@ function parseCheckRun(checkRun, index) {
     conclusion: status === 'completed' ? conclusion : null,
     status,
     startedAt,
+    completedAt,
     id,
   };
 }
 
 /**
+ * Compare two parsed check runs for the same name and report whether
+ * `candidate` should replace `current` as "the latest attempt".
+ *
+ * Neither `id` ordering nor a single timestamp field is sound on its own:
+ *
+ * - `id` ordering (the prior approach) assumes a higher check-run id always
+ *   means a newer run. Live Checks API data on this repo disproves that: a
+ *   later-started rerun can carry a LOWER id than an older run for the same
+ *   name, so ordering by id alone can pick a stale run and reintroduce this
+ *   file's original bug through a different mechanism.
+ * - Ordering by `started_at` alone (the original approach, before id
+ *   ordering replaced it) breaks on a run that legitimately has not started
+ *   yet (`started_at: null` while queued).
+ *
+ * Instead: a run that is still open (`status !== 'completed'`) is always
+ * treated as more current than one that has already completed for the same
+ * name -- an in-flight attempt is definitionally the live state of that
+ * check, regardless of when either run was created. Between two runs in the
+ * same state (both completed, or both still open), compare the timestamp
+ * that state guarantees is present: `completed_at` for two completed runs
+ * (always non-null once completed), `started_at` for two still-open runs
+ * (may still be null on both if neither has started; that case falls back
+ * to id, the least-bad signal available when nothing has run yet).
+ *
+ * @param {ReturnType<typeof parseCheckRun>} candidate
+ * @param {ReturnType<typeof parseCheckRun>} current
+ * @returns {boolean}
+ */
+function isNewerCheckRun(candidate, current) {
+  const candidateOpen = candidate.status !== 'completed';
+  const currentOpen = current.status !== 'completed';
+  if (candidateOpen !== currentOpen) {
+    // Exactly one of the two is still open (in_progress/queued): the open
+    // one is the live state of this check, whichever id or timestamp it
+    // carries.
+    return candidateOpen;
+  }
+  if (!candidateOpen) {
+    // Both completed: compare the timestamp every completed run is
+    // required to carry, falling back to id only if they are exactly equal
+    // (e.g. re-run so fast both share a timestamp resolution).
+    if (candidate.completedAt !== current.completedAt) {
+      return (
+        Date.parse(/** @type {string} */ (candidate.completedAt)) >
+        Date.parse(/** @type {string} */ (current.completedAt))
+      );
+    }
+    return candidate.id > current.id;
+  }
+  // Both still open: prefer whichever has actually started over one still
+  // queued with no started_at, since that is strictly more information
+  // about progress; between two with comparable started_at, compare it
+  // directly, and fall back to id only when neither has started at all.
+  if (candidate.startedAt === null && current.startedAt === null) {
+    return candidate.id > current.id;
+  }
+  if (candidate.startedAt === null) return false;
+  if (current.startedAt === null) return true;
+  if (candidate.startedAt !== current.startedAt) {
+    return Date.parse(candidate.startedAt) > Date.parse(current.startedAt);
+  }
+  return candidate.id > current.id;
+}
+
+/**
  * Reduce every check run to the single most-recent run per name.
  *
- * Ordered by id rather than `started_at`: check-run ids are assigned in
- * creation order and are always present, while `started_at` is legitimately
- * `null` on a run that is still queued -- ordering by timestamp would have
- * no answer for that case. `gh pr checks` itself renders only the latest run
- * for a given name, so reporting anything else here would disagree with the
- * tool this replaces along a second axis the issue never raised.
+ * See `isNewerCheckRun` for why "most recent" cannot be determined by id
+ * ordering or by a single timestamp field alone. `gh pr checks` itself
+ * renders only the latest run for a given name, so reporting anything else
+ * here would disagree with the tool this replaces along a second axis the
+ * issue never raised.
  *
  * @param {readonly unknown[]} checkRuns
  * @returns {Map<string, ReturnType<typeof parseCheckRun>>}
@@ -173,7 +255,7 @@ export function latestCheckRunsByName(checkRuns) {
   const latest = new Map();
   for (const run of parsed) {
     const current = latest.get(run.name);
-    if (!current || run.id > current.id) {
+    if (!current || isNewerCheckRun(run, current)) {
       latest.set(run.name, run);
     }
   }
