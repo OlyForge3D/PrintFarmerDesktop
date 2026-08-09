@@ -12,8 +12,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import {
+  writeFile,
+  mkdtemp,
+  rm,
+  symlink,
+  readdir,
+  mkdir,
+  readFile,
+  lstat,
+} from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   computeInstallPath,
   getWindowsOrcaInstallRoot,
@@ -34,6 +43,56 @@ function sha256(content: string | Buffer): string {
 
 async function makeTempDir(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'pfd-install-test-'));
+}
+
+/**
+ * Create a reparse point at `link` pointing at directory `targetDir`.
+ *
+ * Windows junctions are directory-only and need no elevated privilege,
+ * which a CI runner may not grant for file symlinks. Mirrors the same
+ * helper in tests/calibrationMaliciousInputCorpus.test.ts so the
+ * backup-metadata directory hardening is exercised with the identical
+ * reparse-point fixture technique used for the existing install-path
+ * hardening (#158 / #208 follow-up).
+ */
+async function makeDirReparsePoint(
+  targetDir: string,
+  link: string,
+): Promise<void> {
+  if (process.platform === 'win32') {
+    await symlink(targetDir, link, 'junction');
+    return;
+  }
+  await symlink(targetDir, link, 'dir');
+}
+
+/**
+ * Create a file-type symlink at `link` pointing at `target`, returning
+ * false instead of throwing if the platform/runner does not grant the
+ * privilege file symlinks require on Windows (`SeCreateSymbolicLinkPrivilege`
+ * — junctions are directory-only, so unlike `makeDirReparsePoint` there is
+ * no non-privileged fallback for a single file). Tests using this treat a
+ * `false` return as "cannot exercise this fixture in this environment" and
+ * skip their assertions rather than failing for an unrelated reason.
+ */
+async function tryMakeFileSymlink(
+  target: string,
+  link: string,
+): Promise<boolean> {
+  try {
+    await symlink(target, link, 'file');
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code: string }).code === 'EPERM'
+    ) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +330,16 @@ describe('canonicalizeSaveTarget', () => {
 import {
   installOrcaProfileWindows,
   restoreOrcaProfileWindows,
+  findBackupByOperationId,
+  __setBackupMetaWriteRaceHookForTests,
+  __setIdentityPinPreOpenHookForTests,
+  __setIdentityPinPostOpenHookForTests,
+  __setFindBackupByOperationIdPreRevalidateHookForTests,
+  __setReadFileWithRootPinRaceHookForTests,
+  __setRestoreWriteRevalidateHookForTests,
+  __setRestoreWritePreRenameHookForTests,
+  __setRestoreWritePostFirstRevalidateHookForTests,
+  __setRestoreWritePostRenameHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -279,12 +348,22 @@ describe('installOrcaProfileWindows', () => {
     if (process.platform !== 'win32') {
       // Non-Windows: throws unsupportedPlatform before any other check
       await expect(
-        installOrcaProfileWindows(content, 'a'.repeat(64), 'test.json'),
+        installOrcaProfileWindows(
+          content,
+          'a'.repeat(64),
+          'test.json',
+          randomUUID(),
+        ),
       ).rejects.toMatchObject({ code: 'unsupportedPlatform' });
     } else {
       // Windows: rejects when hash does not match the provided content
       await expect(
-        installOrcaProfileWindows(content, 'b'.repeat(64), 'test_profile.json'),
+        installOrcaProfileWindows(
+          content,
+          'b'.repeat(64),
+          'test_profile.json',
+          randomUUID(),
+        ),
       ).rejects.toMatchObject({ code: 'verificationFailed' });
     }
   });
@@ -302,6 +381,1512 @@ describe('restoreOrcaProfileWindows', () => {
         ),
       ).rejects.toMatchObject({ code: 'unsupportedPlatform' });
     },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a backup whose actual content hash does not match expectedBackupHash',
+    async () => {
+      // restoreOrcaProfileWindows now re-validates that backupPath lives
+      // directly under the canonical install root (see the ancestor-
+      // directory TOCTOU fix below), so this must exercise a backup path
+      // that is genuinely under a (sandboxed) installRoot rather than an
+      // arbitrary tmp directory unrelated to APPDATA.
+      const sandboxAppData = await makeTempDir();
+      const originalAppData = process.env['APPDATA'];
+      process.env['APPDATA'] = sandboxAppData;
+      try {
+        const installRoot = getWindowsOrcaInstallRoot();
+        await mkdir(installRoot, { recursive: true });
+        const backupPath = path.join(
+          installRoot,
+          'profile.json.bak-2024-01-01T00-00-00-000Z',
+        );
+        await writeFile(backupPath, '{"name":"real"}');
+        await expect(
+          restoreOrcaProfileWindows(backupPath, 'f'.repeat(64), 'profile.json'),
+        ).rejects.toMatchObject({ code: 'verificationFailed' });
+      } finally {
+        if (originalAppData !== undefined) {
+          process.env['APPDATA'] = originalAppData;
+        } else {
+          delete process.env['APPDATA'];
+        }
+        await rm(sandboxAppData, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// findBackupByOperationId — durable, cache-independent backup identity (#208)
+//
+// Restore used to be gated on `getCachedProfile(operationId)`, an in-memory,
+// process-lifetime, 50-entry LRU cache. That made a durable, hash-verified
+// restore fail after a restart or after 50 subsequent installs evicted the
+// original entry, even though the backup file on disk was untouched.
+//
+// A first fix attempt widened the lookup to scan the install directory for
+// any backup file whose *content hash* matched what the caller supplied.
+// That was itself unsafe: two different profiles can have byte-identical
+// prior content (and therefore the same SHA-256 hash), which would let
+// restore silently pick the wrong profile's backup. Reverse-parsing
+// `safeFilename` back out of the backup's own filename was also unsafe: a
+// generated profile's filename can legitimately contain the literal
+// substring `.bak-` (see generateProfileIdentity), which corrupts that
+// parse.
+//
+// findBackupByOperationId instead resolves identity from a durable metadata
+// record written once, at backup-creation time, keyed by `operationId` —
+// never by content hash or filename parsing. The content hash remains the
+// separate safety check, enforced by restoreOrcaProfileWindows before any
+// write.
+// ---------------------------------------------------------------------------
+
+describe('findBackupByOperationId', () => {
+  let tmpDir: string;
+  beforeEach(async () => {
+    tmpDir = await makeTempDir();
+  });
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns null when the install directory does not exist', async () => {
+    const missing = path.join(tmpDir, 'does-not-exist');
+    expect(await findBackupByOperationId(missing, randomUUID())).toBeNull();
+  });
+
+  it('returns null when there is no metadata record for this operationId', async () => {
+    expect(await findBackupByOperationId(tmpDir, randomUUID())).toBeNull();
+  });
+
+  it('rejects a malformed (non-UUID) operationId rather than guessing', async () => {
+    expect(
+      await findBackupByOperationId(tmpDir, 'not-a-uuid; ../../escape'),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: restore survives restart and cache eviction (#208)
+//
+// These exercise the real install -> (simulated restart / cache eviction) ->
+// findBackupByOperationId -> restoreOrcaProfileWindows pipeline against a
+// sandboxed APPDATA so no real OrcaSlicer install directory is touched.
+// ---------------------------------------------------------------------------
+
+describe('restore pipeline is independent of profileCache state (#208)', () => {
+  let sandboxAppData: string;
+  const originalAppData = process.env['APPDATA'];
+
+  beforeEach(async () => {
+    sandboxAppData = await makeTempDir();
+    process.env['APPDATA'] = sandboxAppData;
+    clearProfileCache();
+  });
+
+  afterEach(async () => {
+    if (originalAppData !== undefined) {
+      process.env['APPDATA'] = originalAppData;
+    } else {
+      delete process.env['APPDATA'];
+    }
+    await rm(sandboxAppData, { recursive: true, force: true });
+    clearProfileCache();
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'restores after a simulated restart clears the in-memory cache',
+    async () => {
+      const operationId = randomUUID();
+      const safeFilename = 'restart_profile.json';
+      const original = '{"name":"v1"}';
+      const updated = '{"name":"v2"}';
+
+      // Install v1 (nothing to back up yet), then v2 over it (backs up v1).
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+      cacheGeneratedProfile(operationId, {
+        generatedJson: updated,
+        profileJsonHash: sha256(updated),
+        displayName: 'Restart Profile',
+        safeFilename,
+        cachedAt: Date.now(),
+      });
+      const installResult = await installOrcaProfileWindows(
+        updated,
+        sha256(updated),
+        safeFilename,
+        operationId,
+      );
+      expect(getCachedProfile(operationId)).toBeDefined();
+
+      // Simulate an app restart: the in-memory cache is gone, but the
+      // operationId the renderer still has is unchanged.
+      clearProfileCache();
+      expect(getCachedProfile(operationId)).toBeUndefined();
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      expect(located?.safeFilename).toBe(safeFilename);
+      const restoreResult = await restoreOrcaProfileWindows(
+        located!.backupPath,
+        installResult.backupHash,
+        located!.safeFilename,
+      );
+      expect(restoreResult.restoredHash).toBe(installResult.backupHash);
+    },
+    15_000, // multiple installs + restore add I/O overhead under full-suite load
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restores after 50+ installs evict the original cache entry',
+    async () => {
+      const operationId = randomUUID();
+      const safeFilename = 'evicted_profile.json';
+      const original = '{"name":"v1-evict"}';
+      const updated = '{"name":"v2-evict"}';
+
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+      cacheGeneratedProfile(operationId, {
+        generatedJson: updated,
+        profileJsonHash: sha256(updated),
+        displayName: 'Evicted Profile',
+        safeFilename,
+        cachedAt: Date.now(),
+      });
+      const installResult = await installOrcaProfileWindows(
+        updated,
+        sha256(updated),
+        safeFilename,
+        operationId,
+      );
+      expect(getCachedProfile(operationId)).toBeDefined();
+
+      // Fill the cache past MAX_CACHE_ENTRIES so the original entry is
+      // LRU-evicted, exactly as happens after 50 more installs in one
+      // still-running session (no restart required).
+      for (let i = 0; i < 60; i++) {
+        cacheGeneratedProfile(`filler-op-${i}`, {
+          generatedJson: `{"i":${i}}`,
+          profileJsonHash: 'a'.repeat(64),
+          displayName: `Filler ${i}`,
+          safeFilename: `filler_${i}.json`,
+          cachedAt: Date.now() + i + 1,
+        });
+      }
+      expect(getCachedProfile(operationId)).toBeUndefined();
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      expect(located?.safeFilename).toBe(safeFilename);
+      const restoreResult = await restoreOrcaProfileWindows(
+        located!.backupPath,
+        installResult.backupHash,
+        located!.safeFilename,
+      );
+      expect(restoreResult.restoredHash).toBe(installResult.backupHash);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'still refuses a tampered backup even when correctly located by operationId',
+    async () => {
+      const operationId = randomUUID();
+      const safeFilename = 'tamper_profile.json';
+      const original = '{"name":"v1-tamper"}';
+      const updated = '{"name":"v2-tamper"}';
+
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        updated,
+        sha256(updated),
+        safeFilename,
+        operationId,
+      );
+
+      // Tamper with the backup file on disk after it was created. Its
+      // content hash no longer matches what the caller (renderer) was
+      // originally given.
+      await writeFile(installResult.backupPath, '{"name":"tampered!"}');
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      // Identity resolution still finds the record — that part does not
+      // depend on content — but the hash-verifying write itself must still
+      // refuse, so widening past the cache never weakens the safety check.
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      await expect(
+        restoreOrcaProfileWindows(
+          located!.backupPath,
+          installResult.backupHash,
+          located!.safeFilename,
+        ),
+      ).rejects.toMatchObject({ code: 'verificationFailed' });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'resolves the correct profile by operationId even when two profiles share a backupHash (hash collision)',
+    async () => {
+      // This exercises 4 installs + 2 lookups + 2 restores, each now doing
+      // an extra per-segment reparse-point walk for the backup-metadata
+      // directory (#208 follow-up hardening); comfortably fast locally, but
+      // the default 5s test timeout is tight under CI I/O contention.
+      // Two different profiles whose *prior* on-disk content happens to be
+      // byte-identical — so their backups share the same SHA-256 hash. A
+      // hash-only lookup cannot distinguish which backup belongs to which
+      // profile; operationId must.
+      const sharedPriorContent = '{"name":"identical-prior-content"}';
+      const updatedA = '{"name":"profile-a-v2"}';
+      const updatedB = '{"name":"profile-b-v2"}';
+      const safeFilenameA = 'profile_a.json';
+      const safeFilenameB = 'profile_b.json';
+      const operationIdA = randomUUID();
+      const operationIdB = randomUUID();
+
+      await installOrcaProfileWindows(
+        sharedPriorContent,
+        sha256(sharedPriorContent),
+        safeFilenameA,
+        randomUUID(),
+      );
+      await installOrcaProfileWindows(
+        sharedPriorContent,
+        sha256(sharedPriorContent),
+        safeFilenameB,
+        randomUUID(),
+      );
+
+      const installResultA = await installOrcaProfileWindows(
+        updatedA,
+        sha256(updatedA),
+        safeFilenameA,
+        operationIdA,
+      );
+      const installResultB = await installOrcaProfileWindows(
+        updatedB,
+        sha256(updatedB),
+        safeFilenameB,
+        operationIdB,
+      );
+
+      // Both backups are byte-identical, so their hashes collide.
+      expect(installResultA.backupHash).toBe(installResultB.backupHash);
+      expect(installResultA.backupHash).toBe(sha256(sharedPriorContent));
+
+      const installRoot = getWindowsOrcaInstallRoot();
+
+      const locatedA = await findBackupByOperationId(installRoot, operationIdA);
+      const locatedB = await findBackupByOperationId(installRoot, operationIdB);
+      expect(locatedA).not.toBeNull();
+      expect(locatedB).not.toBeNull();
+      // Each operationId must resolve to its own profile's safeFilename and
+      // its own distinct backup file — not to whichever hash-matching file
+      // a scan happened to find first.
+      expect(locatedA?.safeFilename).toBe(safeFilenameA);
+      expect(locatedB?.safeFilename).toBe(safeFilenameB);
+      expect(locatedA?.backupPath).not.toBe(locatedB?.backupPath);
+
+      const restoredA = await restoreOrcaProfileWindows(
+        locatedA!.backupPath,
+        installResultA.backupHash,
+        locatedA!.safeFilename,
+      );
+      const restoredB = await restoreOrcaProfileWindows(
+        locatedB!.backupPath,
+        installResultB.backupHash,
+        locatedB!.safeFilename,
+      );
+      expect(restoredA.restoredHash).toBe(sha256(sharedPriorContent));
+      expect(restoredB.restoredHash).toBe(sha256(sharedPriorContent));
+
+      const destA = computeInstallPath(safeFilenameA, installRoot);
+      const destB = computeInstallPath(safeFilenameB, installRoot);
+      expect(await readFile(destA, 'utf8')).toBe(sharedPriorContent);
+      expect(await readFile(destB, 'utf8')).toBe(sharedPriorContent);
+    },
+    15_000,
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'resolves identity correctly even when safeFilename itself contains the literal substring ".bak-"',
+    async () => {
+      // generateProfileIdentity only strips path-reserved characters, so a
+      // base profile name containing ".bak-" produces a safeFilename that
+      // legitimately contains that substring too. Reverse-parsing the
+      // backup's own filename to recover safeFilename (the previous
+      // approach) breaks on names like this; reading it from durable
+      // metadata does not.
+      const safeFilename = 'PLA.bak-test_[PFD-abc12345].json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-bak-substring"}';
+      const updated = '{"name":"v2-bak-substring"}';
+
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        updated,
+        sha256(updated),
+        safeFilename,
+        operationId,
+      );
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      // The correct safeFilename is recovered whole, including the literal
+      // ".bak-" substring it contains — not truncated at the first
+      // occurrence of that substring.
+      expect(located?.safeFilename).toBe(safeFilename);
+
+      const restoreResult = await restoreOrcaProfileWindows(
+        located!.backupPath,
+        installResult.backupHash,
+        located!.safeFilename,
+      );
+      expect(restoreResult.restoredHash).toBe(installResult.backupHash);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to write/read backup metadata when the install root itself is a junctioned directory',
+    async () => {
+      // The durable backup-metadata record is now a plain leaf file
+      // directly inside installRoot (no separate `.pfd-backup-meta`
+      // subdirectory — see `BACKUP_META_FILE_PREFIX`'s doc comment), so it
+      // shares exactly the install-root validation
+      // (`ensureInstallRootSafe`) every real profile write/restore already
+      // goes through, rather than a directory-specific guard of its own.
+      // This proves that sharing: if the install root is itself a
+      // junction escaping APPDATA, both the profile write and the
+      // metadata record it would produce are refused identically.
+      const safeFilename = 'junction_root_meta_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-junction-root-meta"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(sandboxAppData, '..', 'root-meta-escape');
+      await mkdir(escapeDir, { recursive: true });
+
+      // Replace the install root itself with a junction pointing outside
+      // the sandboxed APPDATA tree, before any install has happened.
+      // `symlink()` requires the link's parent directory to exist, so
+      // ensure that (installRoot's own leaf directory must not exist yet).
+      await mkdir(path.dirname(installRoot), { recursive: true });
+      await rm(installRoot, { recursive: true, force: true });
+      await makeDirReparsePoint(escapeDir, installRoot);
+
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          safeFilename,
+          operationId,
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      expect(
+        await readdir(escapeDir),
+        'profile or metadata was written through a junctioned install root',
+      ).toEqual([]);
+
+      // A lookup against the same junctioned root must also refuse, not
+      // read whatever happens to be under escapeDir.
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).toBeNull();
+
+      await rm(installRoot, { recursive: true, force: true });
+      await rm(escapeDir, { recursive: true, force: true });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'metadata write survives a symlink planted at metaPath during the exact write race window (TOCTOU on write)',
+    async () => {
+      // Reviewer finding (Vasquez, round 3): the *file write itself* used
+      // to be a plain lstat-then-writeFile(metaPath) sequence — if an attacker
+      // replaced metaPath with a symlink in the gap between the check and
+      // the write, the write would follow it. writeBackupMeta now writes an
+      // unpredictably-named file with exclusive create (`wx`, so a
+      // pre-existing symlink at that name cannot be pre-empted) and
+      // atomically renames it over metaPath — rename() replaces whatever is
+      // at the destination (including a symlink) rather than following it.
+      // Real timing races are not deterministically testable, so
+      // writeBackupMeta exposes a test-only hook fired exactly between temp
+      // file validation and the rename; this test uses it to plant the
+      // symlink at the precise moment the race would occur, then asserts
+      // the record lands as a real file with the correct content and that
+      // nothing was written through the symlink to its target.
+      const safeFilename = 'toctou_write_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-write"}';
+      const updated = '{"name":"v2-toctou-write"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(sandboxAppData, '..', 'write-race-escape');
+      await mkdir(escapeDir, { recursive: true });
+      const escapeTarget = path.join(escapeDir, 'planted-by-attacker.json');
+      await writeFile(escapeTarget, 'untouched', 'utf8');
+
+      // Seed the destination file, then overwrite it once so a backup (and
+      // therefore a metadata record) actually gets created — the first
+      // install into an empty destination has nothing to back up.
+      const seed = '{"name":"v0-toctou-write-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+
+      let raceSimulated = true;
+      __setBackupMetaWriteRaceHookForTests(async (metaPath) => {
+        raceSimulated = await tryMakeFileSymlink(escapeTarget, metaPath);
+      });
+
+      let installResult;
+      try {
+        installResult = await installOrcaProfileWindows(
+          updated,
+          sha256(updated),
+          safeFilename,
+          operationId,
+        );
+      } finally {
+        __setBackupMetaWriteRaceHookForTests(null);
+      }
+
+      if (!raceSimulated) {
+        // This runner does not grant SeCreateSymbolicLinkPrivilege and there
+        // is no non-privileged fallback for a single-file reparse point
+        // (unlike directory junctions). Nothing to assert here.
+        return;
+      }
+
+      const metaPath = path.join(installRoot, `.pfd-op-${operationId}.json`);
+      // The symlink planted mid-race must have been replaced by a real
+      // file, not written through.
+      const metaPathInfo = await lstat(metaPath);
+      expect(metaPathInfo.isSymbolicLink()).toBe(false);
+      expect(await readFile(escapeTarget, 'utf8')).toBe('untouched');
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      expect(located?.safeFilename).toBe(safeFilename);
+      const restoreResult = await restoreOrcaProfileWindows(
+        located!.backupPath,
+        installResult.backupHash,
+        located!.safeFilename,
+      );
+      expect(restoreResult.restoredHash).toBe(installResult.backupHash);
+    },
+    15_000, // extra installs + symlink race instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to trust a metadata read that swaps in a symlink then swaps back before any recheck could notice (TOCTOU on read, swap-in/swap-back)',
+    async () => {
+      // Reviewer finding (Ripley, round 3): the previous lstat-before /
+      // read / lstat-after bracket only detects a symlink if one is
+      // present at either lstat's specific instant. An attacker who
+      // swaps metaPath to a symlink strictly between the two lstat
+      // calls, lets the read follow the symlink, then swaps metaPath
+      // back to the original file before the second lstat runs, passes
+      // both checks while the actual read still went through the
+      // attacker's symlink. This test simulates exactly that: the
+      // pre-open hook swaps metaPath to a symlink pointing at attacker
+      // content (so open() would follow it), and the post-open hook —
+      // fired after open() has already resolved and bound a file
+      // descriptor, but before this function inspects that descriptor's
+      // identity — restores metaPath to the original, legitimate file.
+      // If the implementation still relied on a path-based recheck, this
+      // restoration would erase all evidence of the swap and the read
+      // would wrongly be trusted. Because identity is pinned to the
+      // already-open file descriptor instead, restoring the path changes
+      // nothing: the descriptor's fstat still reflects whatever open()
+      // actually resolved to at the instant it ran.
+      const safeFilename = 'toctou_read_swap_back_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-swap-back"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `read-swap-back-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+      const escapeTarget = path.join(escapeDir, 'attacker-record.json');
+
+      // Seed the destination, then overwrite it under operationId so a
+      // real metadata record legitimately exists at metaPath before the
+      // race hooks fire, and so a real backup file exists for the
+      // attacker record to (validly) point at — isolating this test to
+      // the swap-in/swap-back protection specifically, same rationale as
+      // the sibling mid-read test above.
+      const seed = '{"name":"v0-toctou-swap-back-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+      const realBackupFileName = path.basename(installResult.backupPath);
+
+      await writeFile(
+        escapeTarget,
+        JSON.stringify({
+          safeFilename: 'attacker.json',
+          backupFileName: realBackupFileName,
+          backupHash: 'f'.repeat(64),
+          createdAt: Date.now(),
+        }),
+        'utf8',
+      );
+
+      const metaPath = path.join(installRoot, `.pfd-op-${operationId}.json`);
+      const metaFileName = `.pfd-op-${operationId}.json`;
+      const originalRecord = await readFile(metaPath, 'utf8');
+
+      // Match on basename, not the exact path string: `findBackupByOperationId`
+      // resolves the install root through `realpath()` before joining the
+      // metadata filename (closing an earlier, separate TOCTOU on the
+      // install root itself — see `ensureInstallRootSafe`), so the
+      // `filePath` this hook receives from production code can
+      // legitimately be a canonicalized form (e.g. a resolved 8.3 short
+      // name or drive-letter normalization on some Windows
+      // filesystems/runners) that differs as a *string* from this test's
+      // own non-canonicalized `metaPath`, even though both name the same
+      // file. `operationId` is a fresh UUID per test, so its filename is
+      // unique enough to identify the right call without depending on
+      // exact path-string equality.
+      let raceSimulated = true;
+      __setIdentityPinPreOpenHookForTests(async (filePath) => {
+        if (path.basename(filePath) !== metaFileName) return;
+        await rm(metaPath, { force: true });
+        raceSimulated = await tryMakeFileSymlink(escapeTarget, metaPath);
+      });
+      __setIdentityPinPostOpenHookForTests(async (filePath) => {
+        if (path.basename(filePath) !== metaFileName || !raceSimulated) return;
+        // Swap back to the original, legitimate file *before* this
+        // function's own fstat-based identity check runs. A path-based
+        // recheck at this point would see a perfectly ordinary file and
+        // wrongly pass; the fd-based identity check never re-resolves
+        // the path, so this restoration is irrelevant to it.
+        await rm(metaPath, { force: true });
+        await writeFile(metaPath, originalRecord, 'utf8');
+      });
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        if (!raceSimulated) {
+          // This runner does not grant SeCreateSymbolicLinkPrivilege; the
+          // race could not be simulated. Nothing further to assert.
+          return;
+        }
+        expect(
+          located,
+          'metadata read trusted content reached through a swap-in/swap-back around the read',
+        ).toBeNull();
+      } finally {
+        __setIdentityPinPreOpenHookForTests(null);
+        __setIdentityPinPostOpenHookForTests(null);
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + symlink race instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to restore through a symlink swapped in after findBackupByOperationId already validated the path (TOCTOU between locate and restore)',
+    async () => {
+      // Reviewer finding (Ripley, round 3): findBackupByOperationId does
+      // its own lstat-based symlink check on backupPath before returning
+      // it, but restoreOrcaProfileWindows used to just readFile(backupPath)
+      // directly — trusting a check some other, earlier call made, with no
+      // guarantee about how much time elapsed since. This test simulates
+      // an attacker swapping backupPath for a symlink in that gap, *after*
+      // findBackupByOperationId has already returned a validated path.
+      // The symlink even points at a file whose bytes are byte-identical
+      // to the real backup (so its hash matches expectedBackupHash) —
+      // proving this is a defense independent of hash verification: even
+      // content that would otherwise pass the hash check must still be
+      // rejected if it was reached through a symlink, because
+      // restoreOrcaProfileWindows now re-validates identity itself,
+      // immediately before it reads, rather than trusting any earlier
+      // caller's check.
+      const safeFilename = 'toctou_locate_restore_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-locate-restore"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `locate-restore-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+      const escapeTarget = path.join(escapeDir, 'attacker-copy.bak');
+
+      // A backup is only ever created when the destination already
+      // exists, so seed it first (matching the pattern used by the
+      // sibling TOCTOU tests above), then install again under the
+      // operationId this test cares about, producing a real backup and
+      // its durable metadata record.
+      const seed = '{"name":"v0-toctou-locate-restore-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+
+      // Plant a byte-identical copy of the real backup at an
+      // attacker-controlled location, then — simulating the gap between
+      // findBackupByOperationId returning and restoreOrcaProfileWindows
+      // using its result — swap the validated backupPath itself for a
+      // symlink pointing at that copy.
+      const realBytes = await readFile(backupPath);
+      await writeFile(escapeTarget, realBytes);
+      await rm(backupPath, { force: true });
+      const raceSimulated = await tryMakeFileSymlink(escapeTarget, backupPath);
+      try {
+        if (!raceSimulated) {
+          // This runner does not grant SeCreateSymbolicLinkPrivilege; the
+          // race could not be simulated. Nothing further to assert.
+          return;
+        }
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+      } finally {
+        await rm(backupPath, { force: true });
+        await writeFile(backupPath, realBytes);
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + symlink race instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to restore when installRoot itself is swapped for a junction after findBackupByOperationId already validated it (ancestor-directory TOCTOU between locate and restore)',
+    async () => {
+      // Reviewer finding (Ripley, round 4): the leaf-file identity pin
+      // above only re-validates `backupPath` itself. It says nothing
+      // about an *ancestor* directory being swapped in the same gap
+      // between findBackupByOperationId returning and
+      // restoreOrcaProfileWindows using its result — unlike
+      // installOrcaProfileWindows (which validates and uses installRoot
+      // within one function call), locate and restore are genuinely
+      // separate calls, so an attacker who swaps installRoot itself for
+      // a junction in that window would have both the leaf lstat and the
+      // identity-pinned open() transparently follow the junction, since
+      // the leaf file really is an ordinary file — just reached through
+      // the wrong directory. This proves restoreOrcaProfileWindows now
+      // re-validates installRoot itself (via ensureInstallRootSafe) and
+      // confirms backupPath's parent is exactly that freshly
+      // re-canonicalized root, immediately before trusting backupPath at
+      // all, rather than only trusting the leaf file.
+      const safeFilename = 'toctou_locate_restore_root_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-locate-restore-root"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `locate-restore-root-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-locate-restore-root-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      // Mirror the real backup's bytes into the escape directory under
+      // the same basename, so that if a junction swap were followed
+      // (i.e. if the fix were absent), the restore would still find a
+      // hash-matching file and could wrongly succeed — proving this test
+      // catches the ancestor-directory redirect itself, not merely a
+      // hash mismatch.
+      await writeFile(
+        path.join(escapeDir, path.basename(backupPath)),
+        realBackupBytes,
+      );
+
+      // Simulate the gap between findBackupByOperationId returning and
+      // restoreOrcaProfileWindows running: swap installRoot itself for a
+      // junction pointing outside the sandboxed APPDATA tree.
+      await rm(installRoot, { recursive: true, force: true });
+      await makeDirReparsePoint(escapeDir, installRoot);
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote/read through a junctioned install root',
+        ).toEqual([path.basename(backupPath)]);
+      } finally {
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to restore through an install root swapped in the narrowest possible window inside readFileWithRootPin itself (round-6 identity-based ancestor check)',
+    async () => {
+      // Reviewer finding (Vasquez, round 6): the round-4 fix validated
+      // the ancestor directory in restoreOrcaProfileWindows via a
+      // separately computed realpath(dirname(backupPath)) string
+      // comparison, then called readFileWithIdentityPin as an entirely
+      // distinct later step — leaving a small window between the two in
+      // which installRoot could be swapped again. This test targets that
+      // exact narrowest point: the ancestor check and the leaf's
+      // identity-pinned read are now fused into one function
+      // (readFileWithRootPin), and the swap is injected via a
+      // dedicated test hook immediately after that function captures
+      // installRoot's own identity but before it lstats backupPath's
+      // parent directory — the tightest gap the fused check has left,
+      // proving the device+inode ancestor comparison (not a path-string
+      // comparison) still catches a swap landing exactly there.
+      const safeFilename = 'toctou_root_pin_narrow_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-root-pin-narrow"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `root-pin-narrow-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-root-pin-narrow-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      // Mirror the real backup's bytes into the escape directory under
+      // the same basename, so a followed swap would still hash-match and
+      // could wrongly succeed if the identity check were absent.
+      await writeFile(
+        path.join(escapeDir, path.basename(backupPath)),
+        realBackupBytes,
+      );
+
+      __setReadFileWithRootPinRaceHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote/read through a mid-check-swapped install root',
+        ).toEqual([path.basename(backupPath)]);
+      } finally {
+        __setReadFileWithRootPinRaceHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to write through an install root swapped after the read succeeded but before the write-side re-validation (round-8 read-to-write TOCTOU)',
+    async () => {
+      // Reviewer finding (Ripley, round 8): every fix through round 7
+      // only re-validated installRoot on the *read* side of this
+      // function (fetching/hashing backupBytes). The write side —
+      // computing destPath, the symlink lstat on it, and the
+      // temp-write/rename sequence — still reused the read-side
+      // canonicalInstallRoot/raw installRoot from before
+      // readFileWithRootPin's own await, i.e. from before a genuine
+      // scheduling opportunity an attacker's swap could land in. This
+      // test injects the swap via a dedicated hook that fires exactly
+      // after the read+hash-verify succeed but before the new write-side
+      // ensureInstallRootSafeCanonical/verifyAncestorMatchesInstallRoot
+      // check runs, proving that check (not the earlier read-side one)
+      // is what catches this.
+      const safeFilename = 'toctou_write_revalidate_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-write-revalidate"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `write-revalidate-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-write-revalidate-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      __setRestoreWriteRevalidateHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote through an install root swapped after the read but before the write-side re-validation',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWriteRevalidateHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to write through an install root swapped mid-write-sequence and left in place (round-9 write-sequence TOCTOU)',
+    async () => {
+      // Reviewer finding (Vasquez, round 9): the round-8 fix only
+      // re-validated installRoot *once*, before the whole write sequence
+      // began — but that sequence still has several real, awaited I/O
+      // operations after that single check (the symlink lstat on
+      // destPath, the temp-file writeFile, the readback readFile, and the
+      // final rename), each a genuine scheduling point. A swap landing
+      // right after that one check, and left in place through the rest
+      // of the sequence, would previously go completely undetected: every
+      // later operation would resolve the *raw* installRoot/destPath/
+      // tempPath strings straight through the swapped junction, silently
+      // writing genuine, hash-verified backup bytes into the escape
+      // directory while restoreOrcaProfileWindows reported success. This
+      // test injects the swap immediately after the first write-side
+      // check succeeds (before the destPath symlink lstat) and does NOT
+      // swap back, proving the later per-operation re-validations (before
+      // the temp-file write, before the rename) — not the one upfront
+      // check — are what catch a swap that survives that long.
+      const safeFilename = 'toctou_write_sequence_revalidate_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-write-sequence-revalidate"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `write-sequence-revalidate-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-write-sequence-revalidate-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      __setRestoreWritePostFirstRevalidateHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+        // Deliberately does NOT swap back: this simulates a swap that
+        // survives for the rest of the write sequence, the scenario
+        // round-9's per-operation re-validations must catch on their own.
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote through an install root swapped mid-write-sequence and left swapped',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWritePostFirstRevalidateHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true }).catch(() => {});
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to rename through an install root swapped after the temp-file write succeeded but before the pre-rename re-validation (round-9 write-sequence TOCTOU)',
+    async () => {
+      // Reviewer finding (Vasquez, round 9): the round-8 fix above only
+      // re-validated installRoot *once*, immediately before the write
+      // sequence began — but that sequence still has several real,
+      // awaited I/O operations after that single check (the symlink
+      // lstat on destPath, the temp-file writeFile, the readback
+      // readFile, and the final rename). A swap landing after the one
+      // round-8 check but before any of those later operations went
+      // uncaught, because nothing re-validated again before actually
+      // touching installRoot-derived paths a second time. This test
+      // injects the swap via a dedicated hook that fires exactly after
+      // the temp-file write and readback-verify succeed (i.e. after a
+      // genuine, awaited I/O operation has already occurred since the
+      // last check) but before the new pre-rename re-validation runs,
+      // proving that check — not the earlier write-sequence-start one —
+      // is what catches this.
+      const safeFilename = 'toctou_prerename_revalidate_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-prerename-revalidate"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `prerename-revalidate-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-prerename-revalidate-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      __setRestoreWritePreRenameHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore renamed through an install root swapped after the temp write but before the pre-rename re-validation',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWritePreRenameHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to trust the post-restore verification read through an install root swapped after the rename succeeded (round-10 write-sequence TOCTOU)',
+    async () => {
+      // Reviewer finding (Ripley, round 10): the round-9 fix covered every
+      // write-sequence operation through the rename, but the final
+      // post-restore verification read (sha256File(destPath)) is itself a
+      // real, awaited I/O operation that followed the rename with no
+      // re-validation of its own. By the time this hook fires, the
+      // genuine restore has ALREADY completed successfully — the rename
+      // already landed the real, hash-verified backup bytes at the real
+      // destPath under the real install root. This test swaps installRoot
+      // for a junction immediately after that rename succeeds (before the
+      // verification read), proving the re-validation added ahead of that
+      // read rejects the operation rather than silently reporting a hash
+      // read through the escape directory instead of the genuinely
+      // restored file — and that the real file, already correctly
+      // restored by the rename, is left untouched by the rejection.
+      const safeFilename = 'toctou_postrename_verify_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-postrename-verify"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `postrename-verify-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-postrename-verify-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+      const realDestPath = computeInstallPath(safeFilename, installRoot);
+
+      __setRestoreWritePostRenameHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+        // Deliberately left in place: the rename has already completed
+        // against the real directory by the time this hook fires, so the
+        // genuine restore already succeeded — only the trailing
+        // verification read is exposed to this swap.
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'post-restore verification read through an install root swapped after rename',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWritePostRenameHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true }).catch(() => {});
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        // The rename had already landed the real bytes at realDestPath
+        // before the swap; restore that on the freshly-recreated real
+        // install root too, so the assertion below reflects what the
+        // production code actually did (a real, successful restore that
+        // this test's own swap-based instrumentation subsequently hid).
+        await writeFile(realDestPath, realBackupBytes, { flag: 'w' });
+        expect(await readFile(realDestPath)).toEqual(realBackupBytes);
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a safeFilename that collides with the reserved backup-metadata prefix',
+    async () => {
+      // The durable metadata record now lives as a plain leaf file
+      // directly in installRoot, named `.pfd-op-<operationId>.json` (see
+      // `BACKUP_META_FILE_PREFIX`). computeInstallPath must reject any
+      // profile safeFilename that could collide with this — or any other
+      // `.pfd-`-prefixed bookkeeping filename this module writes — outright,
+      // rather than relying solely on the (already-guaranteed) fact that
+      // generateProfileIdentity never produces such a name.
+      const original = '{"name":"v1-reserved-prefix"}';
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.pfd-op-not-a-real-uuid.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.pfd-tmp-anything.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a safeFilename colliding with the reserved prefix by case alone (NTFS is case-insensitive)',
+    async () => {
+      // Reviewer finding (Ripley, round 5): the reserved-prefix guard used
+      // to compare with a case-sensitive `startsWith`, but NTFS — the only
+      // filesystem this module ever targets — is case-insensitive but
+      // case-preserving, so `.PFD-op-<uuid>.json` and `.pfd-op-<uuid>.json`
+      // name the exact same file on disk despite differing as strings. A
+      // profile named with upper-case (or mixed-case) letters in the
+      // reserved prefix would have passed the old case-sensitive check yet
+      // still collided with real bookkeeping files at the filesystem level.
+      const original = '{"name":"v1-reserved-prefix-case"}';
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.PFD-op-not-a-real-uuid.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      await expect(
+        installOrcaProfileWindows(
+          original,
+          sha256(original),
+          '.Pfd-Tmp-Anything.json',
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'findBackupByOperationId refuses to trust a backup reached through installRoot swapped mid-lookup (validate-then-reuse window narrowed to its own last use)',
+    async () => {
+      // Reviewer finding (Vasquez, round 5): findBackupByOperationId used
+      // to validate installRoot once, at the very top (via
+      // resolveBackupMetaPath), and then reuse that same
+      // canonicalInstallRoot string to build/lstat backupPath several
+      // `await`s later (after reading and parsing the metadata file) — a
+      // materially wider validate-then-reuse window than the tight,
+      // back-to-back pattern used elsewhere in this file. This simulates a
+      // swap that happens after the metadata record has already been read
+      // (i.e. inside that wider window, not before the function starts),
+      // and confirms the fresh re-validation immediately before
+      // backupPath's construction still catches it.
+      const safeFilename = 'toctou_locate_root_swap_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-locate-root-swap"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `locate-root-swap-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-locate-root-swap-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+      void installResult;
+
+      // Find the metadata record's expected backup filename by reading it
+      // directly (bypassing findBackupByOperationId, which is under test),
+      // so the decoy under escapeDir can share the exact same basename.
+      const metaFileName = `.pfd-op-${operationId}.json`;
+      const metaPath = path.join(installRoot, metaFileName);
+      const rawRecord = JSON.parse(await readFile(metaPath, 'utf8')) as {
+        backupFileName: string;
+      };
+      const realBackupPath = path.join(installRoot, rawRecord.backupFileName);
+      const realBackupBytes = await readFile(realBackupPath);
+      await writeFile(
+        path.join(escapeDir, rawRecord.backupFileName),
+        realBackupBytes,
+      );
+
+      // Simulate the swap happening genuinely mid-execution: use the
+      // pre-revalidate test hook to swap installRoot for a junction at the
+      // exact point findBackupByOperationId has already read and parsed
+      // the metadata record but has not yet performed its final,
+      // immediately-before-use re-validation. Swapping any earlier than
+      // this (e.g. before calling the function at all) would only prove
+      // the top-of-function validation already caught it — which the old,
+      // insufficient code also did — so this must land inside the
+      // function's own window to be a meaningful regression test.
+      __setFindBackupByOperationIdPreRevalidateHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        expect(
+          located,
+          'located a backup reached through an install root swapped mid-lookup',
+        ).toBeNull();
+      } finally {
+        __setFindBackupByOperationIdPreRevalidateHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(metaPath, JSON.stringify(rawRecord));
+        await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'findBackupByOperationId refuses a metadata record read through an install root swapped mid-read, even when a later re-check would see the genuine root again (round-7: forged safeFilename via metadata-read TOCTOU)',
+    async () => {
+      // Reviewer finding (Vasquez, round 7): the round-5 fix above only
+      // re-validated installRoot immediately before findBackupByOperationId's
+      // own last use of it (building/lstat-ing backupPath). It did not
+      // protect the *metadata read* itself, which still went through
+      // readFileWithIdentityPin(metaPath) directly with no ancestor check of
+      // its own. That let an attacker: (1) swap installRoot for a junction
+      // right as the metadata read begins, serving a forged record with a
+      // genuine backupFileName (copied from the real record, so it still
+      // resolves to the real backup bytes) but an attacker-chosen
+      // safeFilename; (2) swap the real installRoot back before the later
+      // re-validation runs, so that check sees the legitimate root and
+      // passes — while the poisoned safeFilename had already been captured.
+      // The result: restoreOrcaProfileWindows would go on to write genuine,
+      // hash-verified backup bytes to the attacker's chosen destination
+      // filename instead of the real one.
+      //
+      // This test simulates the swap happening at the narrowest possible
+      // point — inside readFileWithRootPin's own race window, which is now
+      // where the metadata read's ancestor check happens (round-7 fix) —
+      // and confirms the metadata read itself refuses to trust a record
+      // reached through a swapped root, rather than only checking
+      // afterwards whether the root eventually looks fine again.
+      const safeFilename = 'toctou_meta_read_root_swap_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-meta-read-root-swap"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `meta-read-root-swap-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      // A backup (and its metadata record) is only produced when a prior
+      // file already exists at safeFilename, so seed one first.
+      const seed = '{"name":"v0-toctou-meta-read-root-swap-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const metaFileName = `.pfd-op-${operationId}.json`;
+      const metaPath = path.join(installRoot, metaFileName);
+      const rawRecord = JSON.parse(await readFile(metaPath, 'utf8')) as {
+        safeFilename: string;
+        backupFileName: string;
+      };
+      const realBackupPath = path.join(installRoot, rawRecord.backupFileName);
+      const realBackupBytes = await readFile(realBackupPath);
+
+      // Forged metadata: genuine backupFileName (so it still points at the
+      // real, hash-verifiable backup) but an attacker-chosen safeFilename —
+      // the exact combination Vasquez's repro used to redirect the restore
+      // destination.
+      const forgedRecord = {
+        ...rawRecord,
+        safeFilename: 'attacker.json',
+      };
+      await writeFile(
+        path.join(escapeDir, metaFileName),
+        JSON.stringify(forgedRecord),
+      );
+      await writeFile(
+        path.join(escapeDir, rawRecord.backupFileName),
+        realBackupBytes,
+      );
+
+      // Swap installRoot for the escape directory at the narrowest point:
+      // inside readFileWithRootPin's own race window, mid-read of the
+      // metadata file. Swap back to the genuine root right after the leaf
+      // file is opened (still through the swapped junction) but before its
+      // content is returned — reproducing the exact "swap in, read forged
+      // data through the open handle, swap back before the next check"
+      // pattern from Vasquez's report, so any *later* re-validation
+      // (backupPath's own check) sees the legitimate root again.
+      let swappedIn = false;
+      __setReadFileWithRootPinRaceHookForTests(async () => {
+        if (swappedIn) return; // Only swap once: the meta read's own call.
+        swappedIn = true;
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      __setIdentityPinPostOpenHookForTests(async (filePath) => {
+        // Match on basename, not exact path-string equality: production
+        // code constructs the actual `filePath` reaching this hook from
+        // `resolveBackupMetaPath`'s *canonical* (realpath'd) install root,
+        // not the raw `installRoot` this test computes `metaPath` from —
+        // on a runner where those two strings differ (drive-letter
+        // normalization, 8.3 short names, etc.), an exact-equality check
+        // here would silently never fire, so the swap-back would never
+        // happen and this test would only cover the easier
+        // "swap in and leave it swapped" case despite claiming to
+        // reproduce swap-back. Basename matching is immune to that,
+        // matching the pattern already used by the round-5/6 sibling
+        // tests above (see `metaFileName` comparisons).
+        if (path.basename(filePath) !== metaFileName) return;
+        // The file handle is already open against the escape directory's
+        // forged metadata; swapping back now does not change what that
+        // handle reads, but does make the *next* path-based check
+        // (findBackupByOperationId's later root re-validation) see the
+        // genuine root again.
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(metaPath, JSON.stringify(rawRecord));
+        await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });
+      });
+      try {
+        const located = await findBackupByOperationId(installRoot, operationId);
+        expect(
+          located?.safeFilename,
+          'returned an attacker-chosen safeFilename read through a mid-read install root swap',
+        ).not.toBe('attacker.json');
+      } finally {
+        __setReadFileWithRootPinRaceHookForTests(null);
+        __setIdentityPinPostOpenHookForTests(null);
+        // The hook itself already swapped the real root out; restore it
+        // regardless of whether the swap happened mid-test.
+        await rm(installRoot, { recursive: true, force: true }).catch(() => {});
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(metaPath, JSON.stringify(rawRecord));
+        await writeFile(realBackupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
   );
 });
 

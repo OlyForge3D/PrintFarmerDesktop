@@ -69,7 +69,7 @@ import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -657,6 +657,7 @@ async function installControlAccepted(ctx: CellContext): Promise<void> {
     INSTALL_CONTROL_JSON,
     sha256(INSTALL_CONTROL_JSON),
     'pfd-corpus-control.json',
+    randomUUID(),
   );
   expect(result.installedHash).toBe(sha256(INSTALL_CONTROL_JSON));
   expect(existsSync(path.join(root, 'pfd-corpus-control.json'))).toBe(true);
@@ -1334,6 +1335,7 @@ const CELLS: Cell[] = [
           oversized,
           sha256(oversized),
           'pfd-corpus-oversized.json',
+          randomUUID(),
         ),
       );
     },
@@ -1349,7 +1351,12 @@ const CELLS: Cell[] = [
     expect: EXCUSE_HOLDS,
     run: () => {
       const source = mainSource('orcaProfileInstall');
-      expect(source.match(/JSON\.parse\(/g) ?? []).toHaveLength(1);
+      // Two JSON.parse calls: (1) the readBack validity check below, whose
+      // result is discarded, and (2) findBackupByOperationId's read of its
+      // own durable backup-metadata sidecar file (#208) — not profile
+      // content, and not attacker-controlled input; it is written by this
+      // same module at backup-creation time.
+      expect(source.match(/JSON\.parse\(/g) ?? []).toHaveLength(2);
       expect(source).not.toMatch(/\bzod\b|safeParse/);
       return EXCUSE_HOLDS;
     },
@@ -1375,9 +1382,14 @@ const CELLS: Cell[] = [
     expect: EXCUSE_HOLDS,
     run: () => {
       const source = mainSource('orcaProfileInstall');
-      // The single JSON.parse is a validity check whose value is discarded.
+      // The install-path JSON.parse is a validity check whose value is
+      // discarded. The second JSON.parse (findBackupByOperationId) reads
+      // this module's own durable backup-metadata sidecar file, not
+      // untrusted profile content, and duplicate keys there resolve the
+      // same way as any other JS object literal — no key ever changes
+      // which file gets restored.
       expect(source).toMatch(/JSON\.parse\(readBack\);/);
-      expect(source.match(/JSON\.parse\(/g) ?? []).toHaveLength(1);
+      expect(source.match(/JSON\.parse\(/g) ?? []).toHaveLength(2);
       return EXCUSE_HOLDS;
     },
   },
@@ -1456,6 +1468,7 @@ const CELLS: Cell[] = [
             INSTALL_CONTROL_JSON,
             sha256(INSTALL_CONTROL_JSON),
             'pfd-corpus-root-escape.json',
+            randomUUID(),
           ),
         );
         expect(viaRoot).toEqual({
@@ -1479,6 +1492,7 @@ const CELLS: Cell[] = [
             INSTALL_CONTROL_JSON,
             sha256(INSTALL_CONTROL_JSON),
             'pfd-corpus-escape.json',
+            randomUUID(),
           ),
         );
       }
@@ -1506,6 +1520,7 @@ const CELLS: Cell[] = [
           payload,
           sha256(payload),
           'pfd-corpus-magic.json',
+          randomUUID(),
         ),
       );
       // Rejected *and* rolled back: no destination, no orphaned temp file.
@@ -1555,7 +1570,10 @@ const CELLS: Cell[] = [
     run: () => {
       const source = mainSource('orcaProfileInstall');
       expect(source).not.toMatch(/parseFloat|parseInt|Number\(/);
-      expect(source.match(/JSON\.parse\(/g) ?? []).toHaveLength(1);
+      // Two JSON.parse calls: profile validity check (discarded result) and
+      // the self-written backup-metadata sidecar read (#208) — neither
+      // interprets a number from profile content.
+      expect(source.match(/JSON\.parse\(/g) ?? []).toHaveLength(2);
       return EXCUSE_HOLDS;
     },
   },
@@ -1599,6 +1617,7 @@ const CELLS: Cell[] = [
           payload,
           sha256(payload),
           'pfd-corpus-gcode.json',
+          randomUUID(),
         ),
       );
       expect(existsSync(path.join(root, 'pfd-corpus-gcode.json'))).toBe(false);
@@ -2422,6 +2441,7 @@ describe('the bounds bite where they are declared', () => {
             overLimit,
             sha256(overLimit),
             'pfd-corpus-over.json',
+            randomUUID(),
           ),
         );
         expect(over).toEqual({
@@ -2437,6 +2457,7 @@ describe('the bounds bite where they are declared', () => {
           atLimit,
           sha256(atLimit),
           'pfd-corpus-at.json',
+          randomUUID(),
         );
         expect(result.installedHash).toBe(sha256(atLimit));
         expect(existsSync(path.join(root, 'pfd-corpus-at.json'))).toBe(true);

@@ -3384,6 +3384,7 @@ export function registerIpcHandlers(
           cached.generatedJson,
           cached.profileJsonHash,
           cached.safeFilename,
+          request.operationId,
         );
         return ipcSchemas[
           IpcChannel.CalibrationInstallOrcaProfile
@@ -3442,59 +3443,28 @@ export function registerIpcHandlers(
         });
       }
 
-      const cached = getCachedProfile(request.operationId);
-      if (!cached) {
-        return ipcSchemas[
-          IpcChannel.CalibrationRestoreOrcaProfile
-        ].response.parse({
-          status: 'error',
-          error: {
-            code: 'workspaceNotReady',
-            message:
-              'No install operation found for this operationId. Cannot locate backup.',
-            retryable: false,
-          },
-        });
-      }
-
       try {
-        const { getWindowsOrcaInstallRoot, computeInstallPath } =
+        const { getWindowsOrcaInstallRoot, findBackupByOperationId } =
           await import('./orcaProfileInstall.js');
         const installRoot = getWindowsOrcaInstallRoot();
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        // Reconstruct the backup path. The caller provides the expected hash;
-        // the handler verifies it before writing.
-        // We scan for the backup file with matching hash in the install dir.
-        const { readdir: readdirFs, readFile: readFileFs } =
-          await import('node:fs/promises');
-        const { createHash: createHashFs } = await import('node:crypto');
-        let backupPath: string | null = null;
-        try {
-          const entries = await readdirFs(installRoot, { withFileTypes: true });
-          for (const entry of entries) {
-            if (
-              entry.isFile() &&
-              entry.name.includes('.bak-') &&
-              entry.name.startsWith(cached.safeFilename)
-            ) {
-              const candidatePath = path.join(installRoot, entry.name);
-              try {
-                const bytes = await readFileFs(candidatePath);
-                const hash = createHashFs('sha256').update(bytes).digest('hex');
-                if (hash === request.backupHash) {
-                  backupPath = candidatePath;
-                  break;
-                }
-              } catch {
-                // Skip unreadable files.
-              }
-            }
-          }
-        } catch {
-          // Directory not accessible.
-        }
+        // Locate the backup this specific operation produced from its
+        // durable on-disk metadata record. This does not depend on
+        // profileCache/getCachedProfile — that in-memory, process-lifetime,
+        // MAX_CACHE_ENTRIES-bounded cache does not survive an app restart
+        // or later-install eviction (#208) — and it does not use the backup
+        // hash to resolve *identity* (two different profiles can share a
+        // backup hash if their prior bytes happened to be byte-identical),
+        // nor does it reverse-parse safeFilename out of the backup's own
+        // filename (which can legitimately contain the literal substring
+        // `.bak-`). The hash the caller supplies is still the safety check:
+        // it is re-verified inside restoreOrcaProfileWindows before
+        // anything is written.
+        const located = await findBackupByOperationId(
+          installRoot,
+          request.operationId,
+        );
 
-        if (!backupPath) {
+        if (!located) {
           return ipcSchemas[
             IpcChannel.CalibrationRestoreOrcaProfile
           ].response.parse({
@@ -3502,20 +3472,17 @@ export function registerIpcHandlers(
             error: {
               code: 'pathRestricted',
               message:
-                'Backup file with the specified hash not found in the OrcaSlicer user directory.',
+                'No backup record found for this operationId in the OrcaSlicer user directory. The backup may already have been restored, removed, or the install predates this metadata format.',
               retryable: false,
             },
           });
         }
 
-        const destPath = computeInstallPath(cached.safeFilename, installRoot);
         const restoreResult = await restoreOrcaProfileWindows(
-          backupPath,
+          located.backupPath,
           request.backupHash,
-          cached.safeFilename,
+          located.safeFilename,
         );
-        void destPath;
-        void ts;
         return ipcSchemas[
           IpcChannel.CalibrationRestoreOrcaProfile
         ].response.parse({
