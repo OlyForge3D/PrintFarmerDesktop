@@ -226,6 +226,25 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${name}) is completed but has no completed_at`,
     );
   }
+  if (
+    status === 'completed' &&
+    startedAt !== null &&
+    completedAt !== null &&
+    Date.parse(completedAt) < Date.parse(startedAt)
+  ) {
+    // A completed run's own two timestamps are internally contradictory --
+    // it claims to have finished before it started, a negative duration
+    // that cannot happen for a genuine run. This is the same class of
+    // corrupt-but-plausible-looking input as the other invariants checked
+    // above: silently accepting it wouldn't just misreport this one run's
+    // conclusion, it could feed a corrupt timestamp into
+    // `isNewerCheckRun`'s "latest attempt" comparison and cause it to pick
+    // the wrong run for a name entirely. Fail closed instead of trusting
+    // either timestamp on its own.
+    throw new Error(
+      `check run ${index + 1} (${name}) has completed_at (${completedAt}) earlier than started_at (${startedAt})`,
+    );
+  }
   // A run whose status is not yet 'completed' has not settled on a
   // conclusion regardless of what the field carries, so it is forced to
   // null here rather than trusted -- the same "don't trust a field the API

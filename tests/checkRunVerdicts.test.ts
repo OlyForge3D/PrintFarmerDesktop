@@ -289,6 +289,24 @@ describe('latestCheckRunsByName', () => {
     },
   );
 
+  it('REGRESSION: refuses a completed run whose completed_at is earlier than its started_at', () => {
+    // A completed run's own two timestamps are internally contradictory --
+    // it claims to have finished before it started, a negative duration
+    // that cannot happen for a genuine run. Silently accepting it wouldn't
+    // just misreport this one run: a corrupt completed_at could feed
+    // isNewerCheckRun's "latest attempt" comparison and cause it to pick
+    // the wrong run for a name entirely.
+    const checkRuns = [
+      checkRun({
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T15:00:00Z',
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /has completed_at .* earlier than started_at/,
+    );
+  });
+
   it('REGRESSION: refuses a completed run with conclusion: null instead of silently reporting it pending', () => {
     // GitHub documents `conclusion` as always set once a run's `status` is
     // `completed` -- `completed` with `conclusion: null` is not a real API
@@ -934,6 +952,26 @@ describe('main', () => {
       stub(() => ({
         status: 0,
         stdout: pagePayload([checkRun({ id: 1, name: '   ' })]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a completed run with completed_at earlier than started_at', () => {
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Malformed timestamp-order check',
+            started_at: '2026-08-06T16:00:00Z',
+            completed_at: '2026-08-06T15:00:00Z',
+          }),
+        ]),
       })),
       () => undefined,
     );
