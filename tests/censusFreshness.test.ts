@@ -120,6 +120,42 @@ describe('normalizeInstant — timezone-explicitness', () => {
     );
   });
 
+  it('accepts "GMT+0" (a named zone with a single-digit zero offset), since Date.parse resolves it as UTC', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+0')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+0'),
+    );
+  });
+
+  it('accepts "UTC+0" the same way', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 UTC+0')).toBe(
+      Date.parse('2026-08-10 18:00:00 UTC+0'),
+    );
+  });
+
+  it('accepts a bare "+00" two-digit offset with no minute part or colon', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 +00')).toBe(
+      Date.parse('2026-08-10 18:00:00 +00'),
+    );
+  });
+
+  it('accepts "GMT+00" (a named zone with a two-digit zero offset)', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+00')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+00'),
+    );
+  });
+
+  it('accepts "UTC+00" the same way', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 UTC+00')).toBe(
+      Date.parse('2026-08-10 18:00:00 UTC+00'),
+    );
+  });
+
+  it('accepts a named zone with a non-zero single-digit offset, e.g. "GMT+1"', () => {
+    expect(normalizeInstant('2026-08-10 18:00:00 GMT+1')).toBe(
+      Date.parse('2026-08-10 18:00:00 GMT+1'),
+    );
+  });
+
   it('accepts the same instant written with an explicit Z', () => {
     expect(normalizeInstant('2026-08-10T18:00:00Z')).toBe(
       Date.parse('2026-08-10T18:00:00Z'),

@@ -108,14 +108,18 @@ const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Matches a string that explicitly names its timezone at the end: a
- * trailing `Z`, a named zone abbreviation (`GMT`, `UTC`), or a numeric
- * offset (`+05:00`, `-0500`, ...). The named-zone forms are matched
- * case-insensitively (`gmt`, `Gmt`, `GMT`, `utc`, `UTC`, ... are all
- * accepted) because `Date.parse` itself treats zone names case-
- * insensitively -- `2026-08-10T18:00:00gmt` is exactly as unambiguous an
- * absolute instant as `...GMT`, so rejecting the lowercase form would be a
- * false positive (a genuinely fresh, correctly-timestamped citation wrongly
- * classified UNVERIFIABLE), not a security fix.
+ * trailing `Z`; a named zone abbreviation (`GMT`, `UTC`), bare or itself
+ * followed by a numeric offset (`GMT+1`, `UTC-05`, `GMT+01:30`, ...); or a
+ * standalone numeric offset (`+05:00`, `-0500`, `+0`, `-5`, ...). The
+ * offset digits may be one or two hour digits with an optional two-digit,
+ * colon-or-not-separated minute part, because that is the full range
+ * `Date.parse` itself accepts as an explicit, unambiguous offset --
+ * rejecting a shape `Date.parse` treats as absolute (e.g. `GMT+0`, `UTC+00`,
+ * bare `+00`) would be a false positive (a genuinely fresh,
+ * correctly-timestamped citation wrongly classified UNVERIFIABLE), not a
+ * security fix. The named-zone forms are also matched case-insensitively
+ * (`gmt`, `Gmt`, `utc`, ...) for the same reason: `Date.parse` treats zone
+ * names case-insensitively too.
  *
  * `normalizeInstant` requires every date-and-time string to match this (or
  * be a bare date, above) rather than trying to enumerate and reject every
@@ -132,7 +136,8 @@ const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * regardless of separator, case, or overall format, instead of requiring a
  * new negative pattern each time another shape turns up.
  */
-const EXPLICIT_TIMEZONE_SUFFIX_PATTERN = /(?:z|gmt|utc|[+-]\d{2}:?\d{2})$/i;
+const EXPLICIT_TIMEZONE_SUFFIX_PATTERN =
+  /(?:z|(?:gmt|utc)(?:[+-]\d{1,2}(?::?\d{2})?)?|[+-]\d{1,2}(?::?\d{2})?)$/i;
 
 /**
  * Normalizes a value that names one instant in time — a finite epoch-ms
