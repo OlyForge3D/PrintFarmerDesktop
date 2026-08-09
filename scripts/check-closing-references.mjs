@@ -73,6 +73,34 @@
  * but not with any PR that has. A PR migrates simply by adding its own file
  * under `PR_CLOSES_DIR`; nothing needs to delete the legacy file's content for
  * that PR, because the per-branch file is checked first and wins outright.
+ *
+ * #563. Exit code 1 used to mean two different things: "I looked, and the
+ * declaration does not match what GitHub armed" (a real defect in the PR),
+ * and "I never got far enough to compare the two at all" (no PR number could
+ * be resolved, `gh` failed outside a git/PR context, the declaration file was
+ * unreadable, or the API returned something this parser could not read as
+ * `{ body, refs }`). An agent -- or a human -- reading a red required check
+ * cannot tell those apart from the exit code alone, which risks "fixing" a
+ * PR body that this run never actually judged.
+ *
+ * This file now follows the exit-code convention already used elsewhere in
+ * this repo (`check-behind-base.mjs`, `check-citation-reachability.mjs`):
+ *
+ *   exit 0 -- looked, and the declaration matches what GitHub armed.
+ *   exit 1 -- looked, and found a genuine mismatch. A real defect in the PR.
+ *   exit 2 -- could not look at all. No verdict either way: not a pass, not
+ *             a fail. Covers no git-repository/PR context, an unresolvable
+ *             PR number, an unreadable declaration file, a `gh` failure, or
+ *             a response this parser could not read.
+ *
+ * Every exception that reaches `main`'s own `try`/`catch` is, by
+ * construction, a "could not look" failure: the two branches that decide a
+ * genuine mismatch (`!result.ok`) and an inconclusive-but-observed read
+ * (`!settled`) both `return` rather than `throw`, so nothing that represents
+ * an actual completed comparison ever reaches that `catch`. That is what
+ * makes a single, uniform `process.exitCode = 2` there correct rather than
+ * merely convenient: anything landing in it is -- unconditionally -- a
+ * failure to look, never a look that found a defect.
  */
 
 import { pathToFileURL } from 'node:url';
@@ -1000,6 +1028,15 @@ let failureEpoch = 0;
  * its two "handled" failure branches; the wrapper's `catch` only fires for a
  * genuine exception, but it always fires for one, and always bumps the same
  * counter the return branches already do.
+ *
+ * #563: the wrapper's `catch` sets `process.exitCode = 2`, not `1`. Nothing
+ * that reaches it is a completed comparison -- see the module header -- so
+ * every exception caught here is a "could not look" failure, distinct from
+ * both the exit-1 mismatch (`!result.ok`, below) and the exit-1 unsettled
+ * read (`!settled`, below), which are unchanged. The original error is
+ * rethrown unmodified: this is a classification of the catch site, not a
+ * transformation of the error, and callers (including the CLI entry point
+ * below) still see the exact failure that occurred.
  */
 export async function main(argv, deps = {}) {
   // Read before any `await` in this call so a concurrent failure that starts
@@ -1010,7 +1047,7 @@ export async function main(argv, deps = {}) {
     return await checkClosingReferences(argv, deps, epochAtStart);
   } catch (error) {
     failureEpoch += 1;
-    process.exitCode = 1;
+    process.exitCode = 2;
     throw error;
   }
 }
@@ -1175,7 +1212,12 @@ async function checkClosingReferences(argv, deps, epochAtStart) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   main(process.argv.slice(2)).catch((error) => {
+    console.error(
+      'NO VERDICT: could not determine whether closing references match the ' +
+        "declaration -- this is not a mismatch, the check never got to compare " +
+        'declared and armed closures.',
+    );
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    process.exitCode = 2;
   });
 }

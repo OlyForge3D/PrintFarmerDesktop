@@ -11,6 +11,7 @@ import {
   formatFailure,
   formatUnsettled,
   main,
+  MalformedClosingReferenceResponseError,
   parseBoundClosures,
   parseClosingReferenceResponse,
   parseCommitClosures,
@@ -1364,13 +1365,15 @@ describe('main', () => {
     };
 
     // Mirrors scripts/check-closing-references.mjs's own CLI entry point:
-    // `main(...).catch((error) => { console.error(...); process.exitCode = 1; })`.
-    // That assignment happens entirely outside `main`, after it has already
-    // rejected -- so it can only be correct here if `main` itself already
-    // recorded the failure against `failureEpoch` before this handler runs.
+    // `main(...).catch((error) => { console.error(...); process.exitCode = 2; })`
+    // (#563: a throw out of `main` is a "could not look" failure, so this is
+    // `2`, not `1`). That assignment happens entirely outside `main`, after
+    // it has already rejected -- so it can only be correct here if `main`
+    // itself already recorded the failure against `failureEpoch` before this
+    // handler runs.
     const rejectingCall = main(['231'], rejectingDeps).catch((error) => {
       expect(error).toBe(rejectionError);
-      process.exitCode = 1;
+      process.exitCode = 2;
     });
 
     const [, successResult] = await Promise.all([
@@ -1382,9 +1385,103 @@ describe('main', () => {
     // The real assertion: a rejection -- not just a `{ ok: false }` return --
     // must also survive a concurrent success. Before wrapping `main` in
     // try/catch, this was `undefined`.
-    expect(process.exitCode).toBe(1);
+    expect(process.exitCode).toBe(2);
     spies.error.mockRestore();
     spies.log.mockRestore();
+  });
+});
+
+/**
+ * #563. Before this fix, `main`'s own `catch` set `process.exitCode = 1` for
+ * every thrown error -- indistinguishable from a genuine declared-vs-armed
+ * mismatch. These pin exit code 2 for the two "could not look at all" shapes
+ * named in the issue: no resolvable PR/git context, and a `gh` response this
+ * parser cannot read as `{ body, refs }`.
+ *
+ * Each spec is a control on the OTHER exit-1 specs above: mutating `main`'s
+ * `catch` back to `process.exitCode = 1` flips only these two, never the
+ * mismatch or unsettled-read specs (which never throw), because those decide
+ * their exit code on a `return`, not via this `catch` at all. Mutating
+ * `resolvePullRequestNumber` to swallow its usage error (returning some
+ * fallback number instead of throwing) flips only the no-context spec, since
+ * the malformed-response spec never calls it -- argv already supplies a PR
+ * number. Mutating `parseClosingReferenceResponse`'s shape check to accept a
+ * response missing `body`/`refs` flips only the malformed-response spec.
+ */
+describe('main: exit code 2 for "could not look" failures', () => {
+  function silenced() {
+    return {
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('reports exit code 2, not 1, when no PR number can be resolved -- no git/PR context', async () => {
+    silenced();
+    // No argv PR number, no PR_NUMBER, no GITHUB_EVENT_PATH: exactly the
+    // shape of running this script outside a pull_request/merge_group
+    // workflow context, e.g. a bare local invocation outside a git repo.
+    let thrown: unknown;
+    try {
+      await main([], { environment: {} });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain(
+      'no pull request number available',
+    );
+    // Distinct from both the mismatch and the unsettled-read message: this
+    // is neither, and must not be read as either.
+    expect((thrown as Error).message).not.toContain(
+      'do not match its declaration',
+    );
+    expect((thrown as Error).message).not.toContain(
+      'Could not read the closing references',
+    );
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('reports exit code 2, not 1, when gh returns a response this parser cannot read as { body, refs }', async () => {
+    silenced();
+    const run = (args: string[]) => {
+      if (args[0] === 'api') {
+        // Zero commits, one page: keeps the commit-closure read from being
+        // the thing that fails, so this spec isolates the witness read.
+        return JSON.stringify([[]]);
+      }
+      // Valid JSON, but not the `{ body, refs }` shape this check requires --
+      // a non-body API payload, the other named "could not look" case.
+      return JSON.stringify({ foo: 'bar' });
+    };
+
+    let thrown: unknown;
+    try {
+      await main(['231'], {
+        run,
+        readDeclaration: () => ['```closes', '#231', '```'].join('\n'),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(MalformedClosingReferenceResponseError);
+    expect((thrown as Error).message).toContain(
+      'malformed closing-reference response',
+    );
+    expect((thrown as Error).message).not.toContain(
+      'do not match its declaration',
+    );
+    expect((thrown as Error).message).not.toContain(
+      'Could not read the closing references',
+    );
+    expect(process.exitCode).toBe(2);
   });
 });
 
