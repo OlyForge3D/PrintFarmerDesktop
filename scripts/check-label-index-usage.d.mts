@@ -43,6 +43,8 @@ export const ALLOWED_LABEL_INDEX_USAGE: Readonly<
 
 export function flattenGhArgvInvocations(contents: string): string;
 
+export function findGhWrapperNames(contents: string): Set<string>;
+
 export function scanLabelIndexUsage(input?: {
   files?: ScannedFile[];
   allowlist?: LabelIndexAllowlist;

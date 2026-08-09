@@ -5,6 +5,7 @@ import {
   LABEL_INDEX_PATTERNS,
   SCANNED_DIRECTORIES,
   collectScannedFiles,
+  findGhWrapperNames,
   flattenGhArgvInvocations,
   formatViolation,
   scanLabelIndexUsage,
@@ -42,6 +43,17 @@ const GH_PR_LIST_SEARCH_LABEL_SNIPPET =
 
 const GH_ISSUE_LIST_SEARCH_LABEL_SNIPPET =
   'gh issue list --repo owner/repo --search "label:hold:sequenced"';
+
+// Ripley (round 4): `gh search issues`/`gh search prs` are a third gh
+// subcommand family reading the same index directly -- `--label` is
+// documented by `gh search issues --help`/`gh search prs --help`, and the
+// bare `label:x` query keyword is the identical qualifier under the CLI's
+// own search syntax.
+const GH_SEARCH_ISSUES_LABEL_SNIPPET =
+  'gh search issues --repo owner/repo --label "hold:sequenced" --state open';
+
+const GH_SEARCH_PRS_LABEL_KEYWORD_SNIPPET =
+  'gh search prs --repo owner/repo label:hold:sequenced';
 
 // Vasquez (round 1): the same `gh pr list --label` shape, but built as an
 // argv array (execFileSync-style) rather than one contiguous string -- the
@@ -97,6 +109,40 @@ execFileSync('gh', ghArgs);
 const GH_PR_LIST_ARGV_SAFE_ONLY_SNIPPET = `
 let ghArgs = ['pr', 'list', '--repo', 'owner/repo', '--state', 'all'];
 execFileSync('gh', ghArgs);
+`;
+
+// Ripley (round 4): a local wrapper function that itself shells out to `gh`
+// -- named ARBITRARILY, not just the conventional `gh`/`invokeGh` -- must
+// not let a call through it evade detection just because the literal `'gh'`
+// string only appears inside the wrapper's own definition.
+const GH_WRAPPER_ARROW_BLOCK_BODY_SNIPPET = `
+const gh = (args) => {
+  return execFileSync('gh', args, { encoding: 'utf8' });
+};
+gh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+const GH_WRAPPER_ARROW_EXPRESSION_BODY_SNIPPET = `
+const invokeGh = (args) => execFileSync('gh', args);
+const wrapperArgs = ['issue', 'list', '--repo', 'owner/repo', '-l', 'hold:sequenced'];
+invokeGh(wrapperArgs);
+`;
+
+const GH_WRAPPER_FUNCTION_DECLARATION_SNIPPET = `
+function runGh(args) {
+  return execFileSync('gh', args);
+}
+runGh(['pr', 'list', '--search', '"label:hold:sequenced"']);
+`;
+
+// Negative control: a function that merely happens to be named like a
+// plausible wrapper, but whose body does NOT shell out to the real `gh`
+// binary, must not be treated as one -- detection is by behavior, not name.
+const NON_WRAPPER_SAME_NAME_SNIPPET = `
+function gh(message) {
+  console.log('not a wrapper: ' + message);
+}
+gh(['pr', 'list', '--label', 'hold:sequenced']);
 `;
 
 // The safe instrument: a per-object read. Must never be flagged, or every
@@ -198,6 +244,34 @@ describe('scanLabelIndexUsage', () => {
     expect(violations[0]!.matches).toContain(
       'gh pr/issue list --search label:',
     );
+  });
+
+  // Ripley (round 4): gh search issues/prs is a third gh subcommand family
+  // reading the same index, distinct from `pr list`/`issue list`.
+  it('flags gh search issues --label', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_SEARCH_ISSUES_LABEL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh search issues/prs --label');
+  });
+
+  it('flags gh search prs label:... (the bare query keyword)', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_SEARCH_PRS_LABEL_KEYWORD_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh search issues/prs --label');
   });
 
   // Vasquez: an argv-array invocation of the identical banned shape must be
@@ -470,6 +544,68 @@ describe('flattenGhArgvInvocations', () => {
     );
     expect(flattened).not.toContain('--label');
     expect(flattened).not.toContain('hold:sequenced');
+  });
+
+  // Ripley (round 4): a wrapper function's own `execFileSync('gh', ...)`
+  // must be traced through a call to the wrapper by name, for a
+  // block-bodied arrow, an expression-bodied arrow, and a plain function
+  // declaration -- three common shapes a repo helper might take.
+  it('resolves a call to a block-bodied arrow wrapper that shells out to gh', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_ARROW_BLOCK_BODY_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('resolves a call to an expression-bodied arrow wrapper, including its own argv variable', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_ARROW_EXPRESSION_BODY_SNIPPET,
+    );
+    expect(flattened).toContain('gh issue list');
+    expect(flattened).toContain('-l');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('resolves a call to a plain function-declaration wrapper', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_FUNCTION_DECLARATION_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--search');
+  });
+
+  it('does not treat a same-named function as a wrapper unless its body actually shells out to gh', () => {
+    const flattened = flattenGhArgvInvocations(NON_WRAPPER_SAME_NAME_SNIPPET);
+    expect(flattened).toBe('');
+  });
+});
+
+describe('findGhWrapperNames', () => {
+  it('finds a block-bodied arrow wrapper by behavior, not name', () => {
+    const names = findGhWrapperNames(GH_WRAPPER_ARROW_BLOCK_BODY_SNIPPET);
+    expect(names.has('gh')).toBe(true);
+  });
+
+  it('finds an expression-bodied arrow wrapper under an arbitrary name', () => {
+    const names = findGhWrapperNames(GH_WRAPPER_ARROW_EXPRESSION_BODY_SNIPPET);
+    expect(names.has('invokeGh')).toBe(true);
+  });
+
+  it('finds a plain function-declaration wrapper', () => {
+    const names = findGhWrapperNames(GH_WRAPPER_FUNCTION_DECLARATION_SNIPPET);
+    expect(names.has('runGh')).toBe(true);
+  });
+
+  it('does not report a same-named function whose body does not shell out to gh', () => {
+    const names = findGhWrapperNames(NON_WRAPPER_SAME_NAME_SNIPPET);
+    expect(names.has('gh')).toBe(false);
+  });
+
+  it('returns an empty set for a file with no function definitions at all', () => {
+    const names = findGhWrapperNames('const x = 1;');
+    expect(names.size).toBe(0);
   });
 });
 

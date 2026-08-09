@@ -90,6 +90,20 @@ export const LABEL_INDEX_PATTERNS = [
     pattern: /\bgh\s+(?:pr|issue)\s+list\b[^\n]*--search\b[^\n]*label:/,
   },
   {
+    // Ripley: `gh search issues`/`gh search prs` are a THIRD gh subcommand
+    // family (distinct from `gh pr list`/`gh issue list`) that reads the
+    // same search index directly -- `gh search issues --help` documents
+    // `--label` as "Filter on label" against the search endpoint, and the
+    // bare `label:x` query keyword (e.g. `gh search issues label:bug`) is
+    // the identical qualifier the search-API pattern below already catches
+    // when spelled as a URL query string. Neither `gh pr list`/`gh issue
+    // list` patterns above nor the URL-anchored REST/search patterns below
+    // would match `gh search issues --label hold:sequenced`, since it is
+    // neither `pr list`/`issue list` nor a URL.
+    name: 'gh search issues/prs --label',
+    pattern: /\bgh\s+search\s+(?:issues|prs)\b[^\n]*(?:--label\b|\blabel:)/,
+  },
+  {
     name: 'REST issues collection filtered by label',
     pattern: /\/issues\?[^\s'"]*\blabels=/,
   },
@@ -186,17 +200,36 @@ export const ALLOWED_LABEL_INDEX_USAGE = Object.freeze({
  *      the only ordering a text scan can use as a stand-in for control
  *      flow, but it is enough to catch the reassignment shape a reviewer
  *      demonstrated without becoming a real data-flow analysis.
+ *   3. A LOCAL WRAPPER FUNCTION that itself shells out to `gh` (matches
+ *      shape 1's generic `'gh', ...` text), called elsewhere in the file
+ *      with an argv array literal or variable: `const gh = (args) =>
+ *      execFileSync('gh', args); gh(['pr', 'list', '--label', name]);`.
+ *      Ripley (round 4): the lint only pattern-matched a `'gh'` string
+ *      literal at the call site itself, so indirection through ANY
+ *      differently-named helper -- `gh(...)`, `invokeGh(...)`, a repo's own
+ *      wrapper of whatever name -- bypassed it entirely, since the actual
+ *      `'gh'` string only ever appears inside the wrapper's own definition,
+ *      never at the call site the lint was reading. Resolved by first
+ *      finding every function/arrow definition in the file whose OWN BODY
+ *      contains shape 1's `'gh', ...` shape (i.e. it truly shells out to
+ *      the real binary, detected by behavior, not by guessing conventional
+ *      names like `gh` or `invokeGh`), then re-running shapes 1 and 2
+ *      against each such wrapper's own name in place of the literal `'gh'`
+ *      string.
  *
- * Deliberately narrow beyond these two shapes: an argv assembled through
+ * Deliberately narrow beyond these shapes: an argv assembled through
  * `.push()`, `.concat()`, spread from another variable, or any interpolated
  * (non-literal) token cannot be resolved by a text scan without executing
  * the program, so it remains unmatched -- the same limit
  * `LABEL_INDEX_PATTERNS` already has for any interpolated value, stated in
- * this file's own header comment. Widening indefinitely would turn this
- * lint into a JavaScript interpreter; the two shapes handled here are the
- * ones actually observed to matter -- the literal-at-call-site shape this
- * repo's own scripts use, and the variable-indirection (including
- * reassignment) evasions of it a reviewer demonstrated.
+ * this file's own header comment. A wrapper imported from another file (its
+ * definition not visible in the text this function is given) is equally out
+ * of reach for the same reason. Widening indefinitely would turn this lint
+ * into a JavaScript interpreter; the shapes handled here are the ones
+ * actually observed to matter -- the literal-at-call-site shape this repo's
+ * own scripts use, the variable-indirection (including reassignment)
+ * evasions of it, and the wrapper-function indirection a reviewer
+ * demonstrated.
  */
 export function flattenGhArgvInvocations(contents) {
   const flattened = [];
@@ -206,54 +239,168 @@ export function flattenGhArgvInvocations(contents) {
       (tokenMatch) => tokenMatch[1],
     );
 
-  // Shape 1: the array literal written directly at the call site.
-  const directCallPattern = /['"]gh['"]\s*,\s*\[([\s\S]*?)]/g;
-  let directCall;
-  while ((directCall = directCallPattern.exec(contents)) !== null) {
-    const tokens = tokensFromArrayBody(directCall[1]);
-    if (tokens.length > 0) {
-      flattened.push(`gh ${tokens.join(' ')}`);
+  // Resolves an array-literal argv passed either directly at a call site
+  // (`prefix[...]`) or by name (`prefix identifierName`, itself resolved to
+  // its most recent array-literal assignment BEFORE the call site -- the
+  // reassignment-aware logic Vasquez's round-3 finding required), for an
+  // arbitrary `prefix` regex source so it can be reused for the literal
+  // `'gh',` shape (shape 1/2) and for each discovered wrapper's `NAME(`
+  // shape (shape 3). The two callers below build `prefix` differently
+  // (`'gh'` is followed by a comma before its argv argument; a wrapper call
+  // like `gh([...])` has the argv as its FIRST argument, no comma before
+  // it) -- `prefix` already encodes that difference, so this helper only
+  // needs to match `prefix` followed directly by the argv shape.
+  const flattenArgvAfter = (prefix) => {
+    const directPattern = new RegExp(`${prefix}\\s*\\[([\\s\\S]*?)]`, 'g');
+    let directCall;
+    while ((directCall = directPattern.exec(contents)) !== null) {
+      const tokens = tokensFromArrayBody(directCall[1]);
+      if (tokens.length > 0) {
+        flattened.push(`gh ${tokens.join(' ')}`);
+      }
     }
-  }
 
-  // Shape 2: an identifier passed as the second argument, resolved back to
-  // its own array-literal assignment. `[),]` after the identifier requires
-  // it to end an argument (a bare call `execFileSync('gh', args)`) or be
-  // followed by another argument (an options object), not merely appear as
-  // a substring of a longer expression.
-  const variableCallPattern = /['"]gh['"]\s*,\s*([A-Za-z_$][\w$]*)\s*[),]/g;
-  let variableCall;
-  while ((variableCall = variableCallPattern.exec(contents)) !== null) {
-    const varName = variableCall[1];
-    const callIndex = variableCall.index;
-
-    // Vasquez (round 3): a binding can be declared safely and then
-    // REASSIGNED to a banned form before the call reads it. Scanning for
-    // the first (or only) `NAME = [...]` in the whole file would resolve to
-    // the original, safe declaration and miss the reassignment that
-    // actually feeds `execFileSync`. Instead, walk every `NAME = [...]`
-    // assignment in the file and keep the LAST one that appears before the
-    // call site -- source order is the only stand-in for control flow a
-    // text scan has, but it is enough to catch "declare safe, reassign
-    // unsafe, then call" without becoming a real data-flow analysis.
-    const assignmentPattern = new RegExp(
-      `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+    // `[),]` after the identifier requires it to end an argument (a bare
+    // call) or be followed by another argument (e.g. an options object),
+    // not merely appear as a substring of a longer expression.
+    const variablePattern = new RegExp(
+      `${prefix}\\s*([A-Za-z_$][\\w$]*)\\s*[),]`,
       'g',
     );
-    let assignment;
-    let mostRecentBeforeCall = null;
-    while ((assignment = assignmentPattern.exec(contents)) !== null) {
-      if (assignment.index >= callIndex) break;
-      mostRecentBeforeCall = assignment;
+    let variableCall;
+    while ((variableCall = variablePattern.exec(contents)) !== null) {
+      const varName = variableCall[1];
+      const callIndex = variableCall.index;
+
+      // Vasquez (round 3): a binding can be declared safely and then
+      // REASSIGNED to a banned form before the call reads it. Scanning for
+      // the first (or only) `NAME = [...]` in the whole file would resolve
+      // to the original, safe declaration and miss the reassignment that
+      // actually feeds the call. Instead, walk every `NAME = [...]`
+      // assignment in the file and keep the LAST one that appears before
+      // the call site -- source order is the only stand-in for control
+      // flow a text scan has, but it is enough to catch "declare safe,
+      // reassign unsafe, then call" without becoming a real data-flow
+      // analysis.
+      const assignmentPattern = new RegExp(
+        `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+        'g',
+      );
+      let assignment;
+      let mostRecentBeforeCall = null;
+      while ((assignment = assignmentPattern.exec(contents)) !== null) {
+        if (assignment.index >= callIndex) break;
+        mostRecentBeforeCall = assignment;
+      }
+      if (!mostRecentBeforeCall) continue;
+      const tokens = tokensFromArrayBody(mostRecentBeforeCall[1]);
+      if (tokens.length > 0) {
+        flattened.push(`gh ${tokens.join(' ')}`);
+      }
     }
-    if (!mostRecentBeforeCall) continue;
-    const tokens = tokensFromArrayBody(mostRecentBeforeCall[1]);
-    if (tokens.length > 0) {
-      flattened.push(`gh ${tokens.join(' ')}`);
-    }
+  };
+
+  // Shapes 1 and 2: the literal `'gh'` string at a direct execFile(Sync)/
+  // spawn(Sync)-style call site, where the argv is the SECOND argument
+  // (`'gh', [...]` / `'gh', varName`) -- a comma separates `'gh'` from it.
+  flattenArgvAfter(`['"]gh['"]\\s*,\\s*`);
+
+  // Shape 3: a local wrapper function whose own body shells out to `gh`
+  // (matches the same `'gh', ...` shape just handled above), called
+  // elsewhere by name with the argv as its FIRST argument (`NAME([...])` /
+  // `NAME(varName)`) -- no comma before it, since it is the whole argument
+  // list of the wrapper call, not the second argument of an inner call.
+  for (const wrapperName of findGhWrapperNames(contents)) {
+    const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    flattenArgvAfter(`\\b${escapedName}\\s*\\(\\s*`);
   }
 
   return flattened.join('\n');
+}
+
+/**
+ * Finds every function-like definition in `contents` -- `function NAME(...)
+ * { ... }`, `const NAME = (...) => { ... }`, `const NAME = (...) =>
+ * expression;`, `const NAME = function (...) { ... }` (with `const`
+ * replaceable by `let`/`var`) -- whose OWN BODY contains the generic
+ * `'gh', ...` shape `flattenGhArgvInvocations` already recognizes as "shells
+ * out to the real `gh` binary". Returns the set of such names.
+ *
+ * Ripley (round 4): a wrapper can be named ANYTHING -- `gh`, `invokeGh`,
+ * `runGh`, a repo-specific helper -- so detecting it by name would either
+ * miss real wrappers under unguessed names or (if the name list were
+ * widened speculatively) flag unrelated functions that merely share a
+ * common name. Detecting it by BEHAVIOR -- does its body actually invoke
+ * the real binary -- avoids both failure modes without parsing the file
+ * into a real AST: this is a text scan using balanced-brace/paren depth to
+ * find the definition's own body text, not a JavaScript interpreter.
+ *
+ * Deliberately narrow: a wrapper imported from another module (its
+ * definition not present in this file's text), or one that only calls the
+ * real `gh` binary through further indirection (a wrapper that calls
+ * ANOTHER wrapper) is not resolved -- the same one-hop, text-scan-only
+ * limit the rest of this file already documents.
+ */
+export function findGhWrapperNames(contents) {
+  const wrapperNames = new Set();
+
+  const definitionHeaderPattern =
+    /(?:function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*)|(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b[^(]*\([^)]*\)\s*|\([^)]*\)\s*=>\s*|[A-Za-z_$][\w$]*\s*=>\s*))/g;
+
+  let definition;
+  while ((definition = definitionHeaderPattern.exec(contents)) !== null) {
+    const name = definition[1] ?? definition[2];
+    if (!name) continue;
+
+    const body = extractDefinitionBody(
+      contents,
+      definition.index + definition[0].length,
+    );
+    if (/['"]gh['"]\s*,/.test(body)) {
+      wrapperNames.add(name);
+    }
+  }
+
+  return wrapperNames;
+}
+
+/**
+ * Reads one function/arrow definition's body starting just after its
+ * header (`function NAME(...)`, `NAME = (...) =>`, ...): a `{ ... }` block
+ * body is read out via brace-depth balancing; an expression-bodied arrow
+ * (`NAME = (...) => execFileSync('gh', args)`) is read out via paren/
+ * bracket/brace-depth balancing up to the first depth-0 statement
+ * terminator, since it may itself contain nested call parentheses.
+ */
+function extractDefinitionBody(contents, afterHeaderIndex) {
+  let index = afterHeaderIndex;
+  while (index < contents.length && /\s/.test(contents[index])) index++;
+
+  if (contents[index] === '{') {
+    let depth = 0;
+    for (let i = index; i < contents.length; i++) {
+      if (contents[i] === '{') depth++;
+      else if (contents[i] === '}') {
+        depth--;
+        if (depth === 0) return contents.slice(index + 1, i);
+      }
+    }
+    return contents.slice(index + 1);
+  }
+
+  let depth = 0;
+  const start = index;
+  for (; index < contents.length; index++) {
+    const character = contents[index];
+    if (character === '(' || character === '[' || character === '{') {
+      depth++;
+    } else if (character === ')' || character === ']' || character === '}') {
+      depth--;
+    } else if (depth === 0 && (character === ';' || character === '\n')) {
+      break;
+    }
+  }
+  return contents.slice(start, index);
 }
 
 /**
