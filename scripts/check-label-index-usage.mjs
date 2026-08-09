@@ -64,14 +64,25 @@
 // defense against deliberate obfuscation. It WILL NOT reliably catch: import
 // forms beyond direct/default/named/re-exported single-hop bindings (e.g.
 // namespace imports, `export * from` barrels); call forms beyond direct and
-// bracket/comma-operator indirection already handled (e.g. `.apply()`,
-// `.bind()`, computed calls through a freshly-constructed intermediate
-// object); string/URL construction beyond the patterns already matched (e.g.
-// an arbitrary-depth chain of variable reassignments before a `fetch()` call,
-// or non-`fetch` HTTP clients such as `axios`/`node-fetch`). Closing these
-// completely would need real interprocedural taint tracking over an AST with
-// scope/binding resolution (e.g. via `acorn`/`@babel/parser`), a materially
-// larger investment than a mechanical CI smoke test warrants for this issue.
+// bracket/comma-operator indirection already handled (e.g. `.call()`,
+// `.apply()`, `.bind()`, a freshly-constructed intermediate container --
+// object OR array literal -- indexed/called in the same expression, e.g.
+// `[runGh][0](...)`); a destructured LOCAL BINDING that keeps its original
+// name (`const { runGh } = helpers; runGh(...)` -- deliberately left
+// unresolved in round 12: closing it would require a method-classified
+// name's call-site scan to also accept a bare call, reintroducing the
+// round-9 false positive where an unrelated object's own same-named method,
+// `client.runGh(...)`, gets misidentified as the real wrapper); a computed
+// member-access key built from an expression rather than a plain variable
+// reference (e.g. string concatenation, `helpers['run' + 'Gh'](...)` --
+// distinct from the single-hop variable-key case round 15 already
+// resolves); string/URL construction beyond the patterns already matched
+// (e.g. an arbitrary-depth chain of variable reassignments before a
+// `fetch()` call, or non-`fetch` HTTP clients such as `axios`/`node-fetch`).
+// Closing these completely would need real interprocedural taint tracking
+// over an AST with scope/binding resolution (e.g. via `acorn`/
+// `@babel/parser`), a materially larger investment than a mechanical CI
+// smoke test warrants for this issue.
 // Code review remains the backstop for shapes this deliberately-scoped check
 // cannot see -- the same backstop every other lint in this repository relies
 // on for its own blind spots. Future reports of a NEW bypass shape falling
@@ -465,21 +476,27 @@ function resolveScalarVariableBefore(contents, varName, beforeIndex) {
 
 // Resolves an array LITERAL's own top-level elements into tokens: a
 // quoted string/template element resolves to its own inner text (same as
-// `tokensFromArrayBody`), but a BARE IDENTIFIER element additionally
-// resolves against a preceding SCALAR variable assignment via
-// `resolveScalarVariableBefore`. Hicks (round 9/13): the array literal
-// argument to a direct `gh` call (or a wrapper call) can be fully static
-// in SHAPE while mixing quoted elements with one bare-identifier element
-// whose VALUE is built from a separately-declared variable --
-// `const query = \`label:\${label}\`; execFileSync('gh', ['search',
-// 'issues', query]);` -- the array literal itself is never variable-
-// valued as a WHOLE (so `resolveVariableArrayBefore` never applies to
-// it), but its one non-literal element is exactly the shape that carries
-// the interesting `label:` text. Reproduced locally: this shape scanned
-// clean before this resolver existed. An element that resolves to
-// neither is simply omitted from the returned tokens (not guessed),
-// matching this file's existing conservative-omission convention for any
-// value it cannot statically pin down.
+// `tokensFromArrayBody`), a BARE IDENTIFIER element additionally resolves
+// against a preceding SCALAR variable assignment via
+// `resolveScalarVariableBefore`, and a SPREAD element (`...name`)
+// resolves against a preceding ARRAY variable assignment via
+// `resolveArrayVariableBefore`, splicing its tokens in place. Hicks
+// (round 9/13): the array literal argument to a direct `gh` call (or a
+// wrapper call) can be fully static in SHAPE while mixing quoted elements
+// with one bare-identifier element whose VALUE is built from a
+// separately-declared variable -- `const query = \`label:\${label}\`;
+// execFileSync('gh', ['search', 'issues', query]);` -- the array literal
+// itself is never variable-valued as a WHOLE (so
+// `resolveVariableArrayBefore` never applies to it), but its one
+// non-literal element is exactly the shape that carries the interesting
+// `label:` text. Ralph session ae252904 (round 16): a wrapper call's
+// argv can ALSO be spread from a separately-declared array variable --
+// `const parts = [...]; runGh([...parts]);` -- structurally the same
+// single-hop indirection, just via the spread operator instead of a bare
+// reference. An element that resolves to nothing is simply omitted from
+// the returned tokens (not guessed), matching this file's existing
+// conservative-omission convention for any value it cannot statically
+// pin down.
 function resolveArrayLiteralElementTokens(arrayBody, contents, beforeIndex) {
   const tokens = [];
   for (const rawElement of splitTopLevelArguments(arrayBody)) {
@@ -489,6 +506,17 @@ function resolveArrayLiteralElementTokens(arrayBody, contents, beforeIndex) {
     const stringLiteralMatch = /^['"`]([^'"`]*)['"`]$/.exec(element);
     if (stringLiteralMatch) {
       tokens.push(stringLiteralMatch[1]);
+      continue;
+    }
+
+    const spreadMatch = /^\.\.\.([A-Za-z_$][\w$]*)$/.exec(element);
+    if (spreadMatch) {
+      const resolved = resolveArrayVariableBefore(
+        contents,
+        spreadMatch[1],
+        beforeIndex,
+      );
+      if (resolved && resolved.length > 0) tokens.push(...resolved);
       continue;
     }
 
@@ -505,35 +533,45 @@ function resolveArrayLiteralElementTokens(arrayBody, contents, beforeIndex) {
   return tokens;
 }
 
+// Resolves an ARRAY-valued variable to its most recent array-literal
+// assignment (`NAME = [...]`) BEFORE `beforeIndex` in the file -- the
+// reassignment-aware logic Vasquez's round-3 finding required: scanning
+// for the first (or only) `NAME = [...]` in the whole file would resolve
+// to an original, safe declaration and miss a later reassignment that
+// actually feeds the call it is resolved for. Hoisted to module scope
+// (round 16) alongside `resolveScalarVariableBefore` so a SPREAD element
+// within an array literal (`[...parts]`) can resolve `parts` the same
+// way a wrapper call's own array-typed argument already does, without
+// duplicating this assignment-lookup logic in two places.
+function resolveArrayVariableBefore(contents, varName, beforeIndex) {
+  const assignmentPattern = new RegExp(
+    `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+    'g',
+  );
+  let assignment;
+  let mostRecentBefore = null;
+  while ((assignment = assignmentPattern.exec(contents)) !== null) {
+    if (assignment.index >= beforeIndex) break;
+    mostRecentBefore = assignment;
+  }
+  return mostRecentBefore
+    ? resolveArrayLiteralElementTokens(
+        mostRecentBefore[1],
+        contents,
+        mostRecentBefore.index,
+      )
+    : null;
+}
+
 export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
   const flattened = [];
   const contents = stripCommentsForWrapperBodyScan(rawContents);
 
-  // Resolves an identifier to its most recent array-literal assignment
-  // (`NAME = [...]`) BEFORE `beforeIndex` in the file -- the reassignment-
-  // aware logic Vasquez's round-3 finding required: scanning for the
-  // first (or only) `NAME = [...]` in the whole file would resolve to an
-  // original, safe declaration and miss a later reassignment that
-  // actually feeds the call it is resolved for.
-  const resolveVariableArrayBefore = (varName, beforeIndex) => {
-    const assignmentPattern = new RegExp(
-      `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
-      'g',
-    );
-    let assignment;
-    let mostRecentBefore = null;
-    while ((assignment = assignmentPattern.exec(contents)) !== null) {
-      if (assignment.index >= beforeIndex) break;
-      mostRecentBefore = assignment;
-    }
-    return mostRecentBefore
-      ? resolveArrayLiteralElementTokens(
-          mostRecentBefore[1],
-          contents,
-          mostRecentBefore.index,
-        )
-      : null;
-  };
+  // Thin wrapper over the module-level `resolveArrayVariableBefore` that
+  // closes over this call's own `contents`, keeping the many existing
+  // call sites below unchanged.
+  const resolveVariableArrayBefore = (varName, beforeIndex) =>
+    resolveArrayVariableBefore(contents, varName, beforeIndex);
 
   // Resolves an array-literal argv passed either directly at a call site
   // (`prefix[...]`) or by name (`prefix identifierName`, resolved via

@@ -498,6 +498,26 @@ const key = 'safeThing';
 obj[key](['not', 'a', 'gh', 'call', '--label']);
 `;
 
+// Ralph session ae252904 (round 16): a wrapper call's argv can be spread
+// from a separately-declared array variable -- const parts = [...];
+// runGh([...parts]); -- the same single-hop indirection already handled
+// for a bare-identifier array-literal ELEMENT, applied here via the
+// spread operator instead of a plain reference.
+const GH_WRAPPER_ARGV_ARRAY_SPREAD_SNIPPET = `
+function runGh(args) { return execFileSync('gh', args); }
+const parts = ['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced'];
+runGh([...parts]);
+`;
+
+// Negative control: the same spread shape, but the spread array variable
+// resolves to a SAFE argv (no banned pattern at all) -- must not be
+// flagged.
+const GH_WRAPPER_ARGV_ARRAY_SPREAD_SAFE_SNIPPET = `
+function runGh(args) { return execFileSync('gh', args); }
+const parts = ['repos', 'owner/repo', 'pulls', '5', 'labels'];
+runGh([...parts]);
+`;
+
 describe('scanLabelIndexUsage', () => {
   it('flags gh pr list --label as an unlisted violation', () => {
     const { violations, allowlisted } = scanLabelIndexUsage({
@@ -1373,6 +1393,36 @@ execFileSync('gh', [
         {
           path: 'scripts/example.mjs',
           contents: NON_WRAPPER_VARIABLE_KEY_BRACKET_CALL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  // Ralph session ae252904 (round 16): a wrapper call's argv spread from a
+  // separately-declared array variable must be resolved and scanned, the
+  // same as the already-handled bare-identifier array-literal element.
+  it('flags a wrapper call whose argv is spread from a preceding array variable', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_ARGV_ARRAY_SPREAD_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Negative control: the same spread shape resolving to a safe argv must
+  // not be flagged.
+  it('does not flag a wrapper call whose spread argv variable is safe', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_ARGV_ARRAY_SPREAD_SAFE_SNIPPET,
         },
       ],
     });
