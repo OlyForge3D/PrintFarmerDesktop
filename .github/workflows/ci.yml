@@ -6,8 +6,20 @@ name: CI
 # is the only class whose contexts may appear in a branch ruleset. See #122 for
 # what happens otherwise. scripts/check-merge-queue-contexts.mjs holds that
 # classification, enforced on every pull request by tests/mergeQueueReadiness.test.ts
-# under `npm run test`; its comparison against live branch protection needs a
-# token and is run by hand (#472).
+# under `npm run test`; its comparison against live branch protection is wired
+# into the "Check merge-queue required contexts against live branch
+# protection" step in the `advisories` job below (#186, #472 — that
+# comparison used to have no call site at all). That step only actually
+# compares once a MERGE_QUEUE_CONTEXTS_TOKEN secret with repo-admin read is
+# configured — GITHUB_TOKEN cannot read branch protection regardless of
+# `permissions:` grants — and reports that precondition plainly otherwise;
+# see the step's own comment for why. It also only ever runs on `push`, never
+# on `pull_request`/`merge_group`, because that secret is repo-admin-scoped
+# and this job checks out whatever triggered it with no `ref:` override — on
+# a pull_request/merge_group event that checkout is PR-authored content, and
+# handing it a repo-admin secret would let a PR redefine the very npm script
+# being invoked to exfiltrate that secret (Vasquez + Ripley, PR #661 review
+# round 4). See the step's own comment for the full reasoning.
 
 on:
   push:
@@ -407,3 +419,76 @@ jobs:
       - name: Audit shipped dependencies for known advisories
         if: steps.changes.outputs.docs_only != 'true'
         run: npm run audit:advisories
+
+      # #186 / #472: runs the live half of scripts/check-merge-queue-contexts.mjs
+      # — comparing the check-run names this workflow (and the two others
+      # that report under merge_group) emit against development's actual
+      # required branch-protection contexts. `evaluateWorkflowClassification`
+      # (the offline half, deterministic) already runs under `npm run test`
+      # via tests/mergeQueueReadiness.test.ts; before this step existed, four
+      # workflow header comments described the live half as enforced and
+      # nothing invoked it (measured exactly by
+      # tests/enforcementCitations.test.ts).
+      #
+      # GET /repos/{owner}/{repo}/branches/{branch}/protection requires the
+      # calling token to have repo-admin read access, and there is no
+      # `administration` key in the `permissions:` block available to
+      # GITHUB_TOKEN (`administration: read` was tried here and rejected the
+      # whole workflow at load time — Hicks, PR #661 review, run 31313684210
+      # — GITHUB_TOKEN cannot be granted this regardless of what the
+      # `permissions:` block says, since it isn't one of the scopes that
+      # block accepts).
+      #
+      # `github.event_name == 'push'` is load-bearing, not incidental: this
+      # step is the only one in this job that receives a repo-admin-scoped
+      # secret (MERGE_QUEUE_CONTEXTS_TOKEN), and `actions/checkout@v4` above
+      # (no `ref:` override) checks out whatever triggered the run. On a
+      # `pull_request` or `merge_group` event that is PR-authored content —
+      # `npm run check:merge-queue-contexts` resolves the `check:*` script
+      # name and scripts/check-merge-queue-contexts.mjs's contents from that
+      # checkout, so a PR could redefine either to exfiltrate the token
+      # (Vasquez + Ripley, PR #661 review round 4: same finding,
+      # independently). Restricting to `push` means this step only ever runs
+      # over already-merged, already-reviewed content on `development`/`main`
+      # — the same trust boundary `pull_request_target` vs `pull_request`
+      # exists to draw, achieved here by gating on event name instead of
+      # switching triggers for the whole job. The practical effect: this
+      # check no longer runs as a per-PR gate, only after merge — which
+      # matches how it is written (`continue-on-error: true`, a report, not a
+      # block) and is the same discharge path already named for
+      # check:protection-assumptions in check-script-reachability.mjs
+      # ("wire it into a scheduled workflow the moment a privileged token
+      # exists"); this is that token's job arriving with it, on push instead
+      # of a schedule, since one already had to exist for this job to run at
+      # all. Until MERGE_QUEUE_CONTEXTS_TOKEN is provisioned, the guard below
+      # still reports the precondition rather than silently succeeding.
+      # `continue-on-error` keeps either outcome from taking the required
+      # "Dependency advisories" context down with it.
+      #
+      # `github.ref == 'refs/heads/development'` is a second, independent gate
+      # on top of `event_name == 'push'` (Vasquez, PR #661 review round 5):
+      # the top-level `on.push.branches` trigger above (line 26) lists both
+      # `development` and `main`, but `main` does not currently exist in this
+      # repo (`gh api repos/OlyForge3D/PrintFarmerDesktop/branches/main` ->
+      # 404, confirmed live). Any actor with push access could create a
+      # `main` branch and push attacker-controlled content directly to it,
+      # bypassing PR review entirely — that push still satisfies
+      # `event_name == 'push'`, and `actions/checkout@v4` would check out
+      # exactly that unreviewed content, handing it the token. Pinning this
+      # step to `development` specifically closes that path: even if `main`
+      # is created later (with or without its own branch protection), this
+      # step will not run over a push to it until this condition is
+      # deliberately revisited. This is defense-in-depth, not a workaround —
+      # `development` is where this repo's actual review gate (this PR's own
+      # merge queue) lives.
+      - name: Check merge-queue required contexts against live branch protection
+        if: steps.changes.outputs.docs_only != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/development'
+        continue-on-error: true
+        env:
+          MERGE_QUEUE_CONTEXTS_TOKEN: ${{ secrets.MERGE_QUEUE_CONTEXTS_TOKEN }}
+        run: |
+          if [ -z "$MERGE_QUEUE_CONTEXTS_TOKEN" ]; then
+            echo "::warning::MERGE_QUEUE_CONTEXTS_TOKEN is not set, so the live half of scripts/check-merge-queue-contexts.mjs cannot run here. GITHUB_TOKEN cannot read branch protection (GitHub requires repo-admin read for that endpoint, and 'administration' is not a valid GITHUB_TOKEN permissions key). Add a PAT or GitHub App installation token with admin:read on this repo as the MERGE_QUEUE_CONTEXTS_TOKEN secret to make this step compare live required contexts."
+            exit 0
+          fi
+          GITHUB_TOKEN="$MERGE_QUEUE_CONTEXTS_TOKEN" npm run check:merge-queue-contexts

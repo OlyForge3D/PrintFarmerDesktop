@@ -7,7 +7,10 @@ name: Sequencing hold
 # required context. .squad/holds.md says so in prose; this line is the form a
 # check can read. scripts/check-merge-queue-contexts.mjs holds that
 # classification, enforced by tests/mergeQueueReadiness.test.ts under
-# `npm run test`; its live branch-protection comparison is run by hand (#472).
+# `npm run test`; its live branch-protection comparison is wired into a step
+# in ci.yml's `advisories` job (#186, #472 — that comparison used to have no
+# call site at all), though that step only actually compares once a
+# repo-admin-scoped token is configured there — see that step's own comment.
 
 # Deliberately a separate workflow rather than a job in ci.yml, for the same
 # reason pr-closure-scope.yml is: the check needs a pull request number and a
