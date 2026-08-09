@@ -397,6 +397,107 @@ export async function fetchClosingIssues({
   }));
 }
 
+/**
+ * Raised when polling exhausts its budget while `closingIssuesReferences`
+ * has stayed empty for less than the required floor.
+ *
+ * Deliberately a distinct type from every other error `main()` can throw:
+ * a caller must be able to tell "GitHub answered and the answer was empty"
+ * from "the read timed out before an empty answer could be trusted" without
+ * parsing prose. The CLI entry point maps this to its own exit code (see
+ * `reportClosureScopeCliOutcome`), distinct from both a clean pass and a
+ * confirmed violation, so the type still has to exist even though today it
+ * has exactly one caller.
+ */
+export class ClosingIssuesIndeterminateError extends Error {
+  constructor({ reads, elapsedMs }) {
+    super(
+      `closingIssuesReferences read empty ${reads} time(s) over ${elapsedMs}ms, ` +
+        'which is less than the population floor. GitHub had not necessarily ' +
+        'finished computing the field yet, so this is refusing to report ' +
+        '"nothing is armed" from a value that may simply not have arrived.',
+    );
+    this.name = 'ClosingIssuesIndeterminateError';
+    this.reads = reads;
+    this.elapsedMs = elapsedMs;
+  }
+}
+
+// Measured directly against this API: an edit to a pull request body takes
+// roughly 38-45 seconds to be reflected in `closingIssuesReferences` (see the
+// comment on `readSettled` in check-closing-references.mjs, which polled the
+// same field on this same repository to get that number). A freshly created
+// pull request exercises the same derivation path, so nothing here justifies
+// assuming the initial-population case is faster than the edit-settle case.
+// The floor is set at the measured worst case rather than the `opened`
+// event's incidental checkout/npm latency (~14s, and unowned by this script),
+// because that latency is not a guarantee: a faster runner or a cache hit
+// closes the window this check depends on.
+const DEFAULT_MIN_EMPTY_FLOOR_MS = 45000;
+const DEFAULT_POLL_DELAY_MS = 5000;
+const DEFAULT_MAX_READS = 11; // 11 reads * 5s = 50s of headroom over the 45s floor.
+
+/**
+ * Resolve `closingIssuesReferences` with the confidence the guard needs:
+ * distinguish "read the field and it is empty" from "read the field and it
+ * has no value yet".
+ *
+ * A non-empty read is trusted immediately and returned without waiting out
+ * the rest of the budget: GitHub does not populate a phantom reference, and
+ * the case this guard exists to catch (arming) must never be masked by
+ * polling for a later read that disagrees.
+ *
+ * An empty read is NEVER trusted mid-poll, even after `minEmptyFloorMs` of
+ * wall-clock time has elapsed. Reaching the floor proves only that the field
+ * has been empty for long enough to no longer be a coin flip on THAT READ;
+ * it says nothing about a read still to come within the same budget. A field
+ * that populates at, say, 50s must still be caught by a run whose budget
+ * extends to 50s -- returning "confirmed empty" the moment the floor is
+ * crossed, before the budget is exhausted, throws away exactly the reads
+ * bought to catch a late arrival. So this always polls through every
+ * `maxReads` attempt (short-circuiting only on a non-empty result), and only
+ * once the ENTIRE budget is spent does it consult the floor: empty and at or
+ * past the floor is a confirmed pass; empty and still short of the floor
+ * (a budget misconfigured to be narrower than the floor) is indeterminate.
+ *
+ * `read` is a zero-argument function returning a promise of the closing
+ * issues array, so this has no knowledge of GraphQL, fetch, or credentials
+ * and can be tested with a synthetic sequence of answers.
+ */
+export async function resolveClosingIssuesConfidently(read, options = {}) {
+  const {
+    maxReads = DEFAULT_MAX_READS,
+    delayMs = DEFAULT_POLL_DELAY_MS,
+    minEmptyFloorMs = DEFAULT_MIN_EMPTY_FLOOR_MS,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  } = options;
+
+  const start = now();
+  let reads = 0;
+  let lastValue = [];
+
+  for (let i = 0; i < maxReads; i += 1) {
+    if (i > 0) {
+      await sleep(delayMs);
+    }
+    reads += 1;
+    const value = await read();
+    lastValue = value;
+
+    if (value.length > 0) {
+      return { value, confirmedEmpty: false, reads, elapsedMs: now() - start };
+    }
+  }
+
+  const elapsedMs = now() - start;
+  if (elapsedMs >= minEmptyFloorMs) {
+    return { value: lastValue, confirmedEmpty: true, reads, elapsedMs };
+  }
+
+  throw new ClosingIssuesIndeterminateError({ reads, elapsedMs });
+}
+
 export async function fetchPullRequestCommits({
   owner,
   repo,
@@ -496,7 +597,7 @@ export async function fetchIssuesByNumber({
   return issues;
 }
 
-async function main() {
+export async function main() {
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
     throw new Error('GITHUB_TOKEN is not set');
@@ -504,18 +605,38 @@ async function main() {
 
   const { owner, repo } = resolveRepository(process.env);
   const prNumber = resolvePullRequestNumber(process.env);
-  const closingIssues = await fetchClosingIssues({
-    owner,
-    repo,
-    prNumber,
-    token,
-  });
+
+  // `closingIssuesReferences` is not populated synchronously when a pull
+  // request is created (see the class doc on `ClosingIssuesIndeterminateError`
+  // and `resolveClosingIssuesConfidently`). An empty read here can mean either
+  // "this pull request arms nothing" or "the field has not populated yet",
+  // and those two must not take the same code path: only the former is
+  // allowed to pass. `resolveClosingIssuesConfidently` throws
+  // `ClosingIssuesIndeterminateError` rather than returning in the second
+  // case, so it propagates out of `main` uncaught and is handled by
+  // `reportClosureScopeCliOutcome` below, exactly like every other
+  // could-not-look failure (a missing token, an unresolvable PR number, a
+  // GraphQL error).
+  const {
+    value: closingIssues,
+    confirmedEmpty,
+    reads,
+    elapsedMs,
+  } = await resolveClosingIssuesConfidently(() =>
+    fetchClosingIssues({ owner, repo, prNumber, token }),
+  );
 
   const { ok, violations } = evaluateClosureScope(closingIssues);
   const armed = closingIssues.map((issue) => `#${issue.number}`).join(', ');
   console.log(
     `Pull request #${prNumber} is armed to close: ${armed || '(nothing)'}`,
   );
+  if (confirmedEmpty) {
+    console.log(
+      `(confirmed empty across ${reads} read(s) spanning ${elapsedMs}ms, ` +
+        'clearing the population floor)',
+    );
+  }
 
   // Second channel. Checked unconditionally, not as an else-branch of the
   // first: the gate was closed by a pull request whose body channel was clean,
@@ -552,6 +673,9 @@ async function main() {
   }
 
   if (!ok || !commitScope.ok) {
+    // A confirmed violation: this run DID look, and found a real defect in
+    // the pull request. Distinct from the exit code below, which covers
+    // never having been able to look at all.
     process.exitCode = 1;
     return;
   }
@@ -559,17 +683,38 @@ async function main() {
   console.log('No gate issue is armed, in either channel.');
 }
 
+/**
+ * #321 (Vasquez, round 2): every exception that reaches this handler is, by
+ * construction, a "could not look" failure -- the branch that decides a
+ * genuine violation (`!ok || !commitScope.ok`) sets `process.exitCode = 1`
+ * and `return`s from `main` rather than throwing, so nothing that represents
+ * a completed comparison ever lands here. That includes
+ * `ClosingIssuesIndeterminateError`: an unsettled read is not a mismatch, it
+ * is the absence of a verdict, and collapsing it onto the SAME exit code as a
+ * confirmed violation (`1`) would make the two indistinguishable from the
+ * exit code alone -- exactly the defect #563 already fixed once in the
+ * sibling check (`check-closing-references.mjs`). This follows that same
+ * convention rather than inventing a third exit code no other check in this
+ * repository uses: 0 = looked and nothing armed, 1 = looked and found a
+ * violation, 2 = never got far enough to compare at all.
+ *
+ * Exported, not inlined in the CLI guard below, for the same reason
+ * `reportCliOutcome` is exported from `check-closing-references.mjs`: the
+ * `import.meta.url === pathToFileURL(process.argv[1]).href` guard is only
+ * ever true when this file is the process entry point, which it never is
+ * under the test runner, so a test has no way to exercise inline handler
+ * logic except by calling it directly.
+ */
+export function reportClosureScopeCliOutcome(error) {
+  console.error(
+    `Unable to verify pull request closure scope: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exitCode = 2;
+}
+
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  // An inability to run this check fails the job. A guard that cannot read the
-  // field must not report the same result as a guard that read it and found
-  // nothing armed.
-  main().catch((error) => {
-    console.error(
-      `Unable to verify pull request closure scope: ${error.message}`,
-    );
-    process.exitCode = 1;
-  });
+  main().catch(reportClosureScopeCliOutcome);
 }
