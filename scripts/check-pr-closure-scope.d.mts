@@ -54,6 +54,35 @@ export function fetchClosingIssues(options: {
   fetchImpl?: typeof fetch;
 }): Promise<ClosingIssue[]>;
 
+export interface ClosingIssuesIndeterminateErrorDetails {
+  readonly reads: number;
+  readonly elapsedMs: number;
+}
+
+export class ClosingIssuesIndeterminateError extends Error {
+  readonly reads: number;
+  readonly elapsedMs: number;
+  constructor(details: ClosingIssuesIndeterminateErrorDetails);
+}
+
+export interface ResolveClosingIssuesConfidentlyResult {
+  readonly value: ClosingIssue[];
+  readonly confirmedEmpty: boolean;
+  readonly reads: number;
+  readonly elapsedMs: number;
+}
+
+export function resolveClosingIssuesConfidently(
+  read: () => Promise<ClosingIssue[]>,
+  options?: {
+    maxReads?: number;
+    delayMs?: number;
+    minEmptyFloorMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  },
+): Promise<ResolveClosingIssuesConfidentlyResult>;
+
 export interface ArmedReference {
   readonly number: number;
   readonly keyword: string;
@@ -99,3 +128,7 @@ export function fetchIssuesByNumber(options: {
   token: string;
   fetchImpl?: typeof fetch;
 }): Promise<ClosingIssue[]>;
+
+export function main(): Promise<void>;
+
+export function reportClosureScopeCliOutcome(error: unknown): void;
