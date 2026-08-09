@@ -1,0 +1,60 @@
+name: Copilot-Session collisions
+
+# merge-queue: publication
+#
+# #670 mechanized the `Copilot-Session` trailer: instead of an agent typing it
+# into a `--trailer` flag from a prompt, it is written by a
+# `prepare-commit-msg` git hook at commit time (`.githooks/prepare-commit-msg`
+# -> `scripts/prepare-commit-msg.mjs`, unit-tested by
+# `tests/prepareCommitMsg.test.ts`, not something this workflow's own steps
+# invoke).
+#
+# This workflow is the audit that mechanization needed and did not have: it
+# runs `check:copilot-session-collisions` against `development` on a schedule
+# (not `pull_request`) because a collision is a property of the trailer's
+# HISTORY across many commits, not of any one PR's diff -- the measured
+# defect (74 commits, one value, 39h33m, `.squad/decisions.md` 2026-08-07)
+# was invisible to any per-PR check by construction.
+#
+# `--since` is mandatory here, not optional, and is the only reason this
+# workflow exists rather than the script hardcoding a policy value: #670
+# explicitly leaves the pre-existing collided history alone (acceptance
+# criterion 5), so an unbounded sweep would fail permanently on history this
+# check can never fix. The window below is sized to comfortably outlive the
+# `--max-hours` bound the script checks against (so a genuine violation cannot
+# start and end inside a single run's blind spot) while staying well clear of
+# any commit that predates this check's own introduction.
+on:
+  schedule:
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Lower bound passed to `git log --since` (git date expression)
+        required: false
+        default: '3 days ago'
+
+permissions:
+  contents: read
+
+jobs:
+  copilot-session-collisions:
+    name: Copilot-Session collisions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: development
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the check and its dependency
+      # (check-copilot-session-trailers.mjs) import nothing outside node:
+      # builtins.
+      - name: Assert Copilot-Session trailers are well-formed and non-colliding
+        env:
+          SINCE: ${{ inputs.since || '3 days ago' }}
+        run: npm run check:copilot-session-collisions -- --ref development --since "$SINCE"

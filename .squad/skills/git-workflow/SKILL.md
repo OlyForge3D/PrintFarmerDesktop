@@ -216,14 +216,21 @@ Each PowerShell call is a fresh process, so this must be repeated in **every** c
 
 ## Commit messages
 
-Use a conventional-commit style subject (`feat(model-core): ...`, `fix(viewer): ...`, `docs(squad): ...`) and a body explaining _why_. Append the required trailers without placing a parseable `Key: value` example at the end of documentation:
+Use a conventional-commit style subject (`feat(model-core): ...`, `fix(viewer): ...`, `docs(squad): ...`) and a body explaining _why_. Append the `Co-authored-by` trailer yourself:
 
 ```powershell
-git commit --trailer "Co-authored-by=Copilot App <223556219+Copilot@users.noreply.github.com>" `
-  --trailer "Copilot-Session=<cloud-copilot-session-uuid>"
+git commit --trailer "Co-authored-by=Copilot App <223556219+Copilot@users.noreply.github.com>"
 ```
 
-The `Copilot-Session` value is the full UUID from the **cloud Copilot-session namespace**. It is not the local session-state directory UUID or the project-session UUID used by cross-session messaging. Never abbreviate or reconstruct it.
+**Do not type `--trailer "Copilot-Session=..."` yourself.** The `Copilot-Session` trailer is mechanized (#670): a `prepare-commit-msg` git hook (`.githooks/prepare-commit-msg` → `scripts/prepare-commit-msg.mjs`, armed the same way as `pre-push` → `push-guard.mjs` — via `core.hooksPath=.githooks`, wired by the `prepare` npm script that `npm ci` runs) appends it for you at commit time, reading the value from the `COPILOT_AGENT_SESSION_ID` environment variable the CLI runtime sets for this process. That value can't be stale-copied the way a hand-typed one was measured to be: it isn't in this prompt at all, so there's nothing here to mistype, memorize, or paste from an old dispatch brief. See `scripts/prepare-commit-msg.mjs`'s header comment for the full reasoning, including why this is a different UUID namespace than the cloud Copilot-session id the instruction above used to name.
+
+The hook is a no-op — it does not block the commit — when `COPILOT_AGENT_SESSION_ID` is absent or malformed (e.g. a human committing from an ordinary terminal, or a CLI version that doesn't set it). Only in that fallback case, and only if a `Copilot-Session` trailer is genuinely required, type it by hand with the cloud Copilot-session UUID:
+
+```powershell
+git commit --trailer "Copilot-Session=<cloud-copilot-session-uuid>"
+```
+
+`scripts/check-copilot-session-collisions.mjs` (`npm run check:copilot-session-collisions`) audits `development` for commits missing the trailer, malformed values, and any one value repeating across a span wider than a configurable session-lifetime bound — the exact shape of the defect this mechanization exists to stop.
 
 ## Do not merge your own work
 
