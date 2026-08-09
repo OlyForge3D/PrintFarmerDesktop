@@ -25,6 +25,7 @@ import {
   readdirSync,
   realpathSync,
   rmdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -89,6 +90,43 @@ function resolveFilesystemPath(
   }
 }
 
+// `realpathSync.native` canonicalises a path within its own filesystem
+// namespace (drive letter, UNC, `\\?\` extended-length) but does not fold one
+// namespace onto another. Two spellings of the same physical directory — a
+// drive-letter path and its `\\localhost\<drive>$\...` UNC admin-share
+// equivalent — therefore canonicalise to different strings even though they
+// name the same device/inode. Comparing device and inode identity (already
+// used elsewhere in this module, e.g. the recovery receipt) is
+// namespace-independent, so it catches that case where string comparison
+// cannot. Returns null, rather than throwing, when identity cannot be read:
+// this is an additional check layered on top of the lexical comparison, so a
+// failure here must not mask the lexical result or newly refuse a caller the
+// lexical check would have allowed.
+function tryFilesystemIdentity(resolvedPath) {
+  try {
+    const stats = statSync(resolvedPath, { bigint: true });
+    return `${stats.dev.toString()}/${stats.ino.toString()}`;
+  } catch {
+    return null;
+  }
+}
+
+// Walks from `candidate` up to its filesystem root, comparing device/inode
+// identity against `parent` at each level. This mirrors `isPathInside` but is
+// robust to `candidate` and `parent` being canonicalised in different
+// namespaces (e.g. one is a UNC admin-share spelling and the other a drive
+// letter), where lexical prefix/ancestor comparison cannot detect containment.
+function isPathInsideByIdentity(candidate, parentIdentity) {
+  if (parentIdentity === null) return false;
+  let current = candidate;
+  for (;;) {
+    const ancestor = path.dirname(current);
+    if (ancestor === current) return false;
+    current = ancestor;
+    if (tryFilesystemIdentity(current) === parentIdentity) return true;
+  }
+}
+
 export function validateCallerLocation(
   cwd,
   target,
@@ -97,11 +135,27 @@ export function validateCallerLocation(
 ) {
   const resolvedCwd = resolveFilesystemPath(cwd, platform, realpathImpl);
   const resolvedTarget = resolveFilesystemPath(target, platform, realpathImpl);
-  if (
+  const lexicalEqual =
     normalizedPath(resolvedCwd, platform) ===
-      normalizedPath(resolvedTarget, platform) ||
-    isPathInside(resolvedCwd, resolvedTarget, platform)
-  ) {
+    normalizedPath(resolvedTarget, platform);
+  const lexicalInside =
+    !lexicalEqual && isPathInside(resolvedCwd, resolvedTarget, platform);
+  // Cross-namespace identity (UNC vs. drive letter) is a Windows-specific
+  // aliasing vector, so this extra check is scoped to platform === 'win32'
+  // to avoid statting synthetic/non-filesystem-backed paths used by
+  // cross-platform unit tests and callers on POSIX, where realpath already
+  // canonicalises to a single namespace.
+  let identityEqual = false;
+  let identityInside = false;
+  if (!lexicalEqual && !lexicalInside && platform === 'win32') {
+    const targetIdentity = tryFilesystemIdentity(resolvedTarget);
+    identityEqual =
+      targetIdentity !== null &&
+      tryFilesystemIdentity(resolvedCwd) === targetIdentity;
+    identityInside =
+      !identityEqual && isPathInsideByIdentity(resolvedCwd, targetIdentity);
+  }
+  if (lexicalEqual || lexicalInside || identityEqual || identityInside) {
     throw new Error(
       `${DIAGNOSTIC_PREFIX}: refusing because the current directory is inside the worktree being removed: ${cwd}`,
     );

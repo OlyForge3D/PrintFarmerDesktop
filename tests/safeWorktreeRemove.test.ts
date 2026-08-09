@@ -10,6 +10,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -186,6 +187,17 @@ function availableSubstDrive() {
     if (!existsSync(`${letter}:\\`)) return letter;
   }
   throw new Error('no free drive letter is available for the subst fixture');
+}
+
+// Builds the `\\localhost\<drive>$\...` UNC admin-share spelling of a local
+// drive-letter path. Returns null when the path is not drive-letter rooted
+// (e.g. already UNC), in which case the caller should skip.
+function uncAdminSharePath(target: string) {
+  const parsed = path.parse(target);
+  const driveLetter = parsed.root.replace(/[:\\]/g, '');
+  if (!/^[a-zA-Z]$/.test(driveLetter)) return null;
+  const rest = target.slice(parsed.root.length);
+  return `\\\\localhost\\${driveLetter}$\\${rest}`;
 }
 
 function windowsShortPath(target: string) {
@@ -734,6 +746,68 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it(
+    'refuses a UNC admin-share caller aliasing a registered worktree by ' +
+      'physical identity (#566)',
+    () => {
+      // `realpathSync.native` canonicalises within a filesystem namespace but
+      // does not fold the UNC admin-share namespace onto the drive-letter
+      // namespace for the same physical directory (issue #566, measured
+      // vector D). This exercises the real Windows filesystem and cannot be
+      // mocked: it needs the loopback SMB admin share (`\\localhost\<drive>$`)
+      // to actually resolve to the local volume. If that share is disabled or
+      // unreachable in this environment (e.g. a restricted CI runner without
+      // administrative shares, or SMB loopback blocked), the vector cannot be
+      // exercised here at all, so the test reports that capability gap
+      // explicitly rather than passing vacuously — see the environment-gap
+      // documentation convention in docs/security/THREAT_MODEL.md.
+      const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-unc-caller-'));
+      const target = path.join(root, 'worktree');
+      const unrelated = path.join(root, 'unrelated');
+      mkdirSync(target);
+      mkdirSync(unrelated);
+      const uncTarget = uncAdminSharePath(target);
+      const uncUnrelated = uncAdminSharePath(unrelated);
+      let uncAvailable = false;
+      if (uncTarget) {
+        try {
+          uncAvailable = statSync(uncTarget).isDirectory();
+        } catch {
+          uncAvailable = false;
+        }
+      }
+      try {
+        if (!uncAvailable || !uncTarget || !uncUnrelated) {
+          console.warn(
+            '[safe-worktree-remove #566 UNC regression] SKIPPED: the ' +
+              '\\\\localhost\\<drive>$ admin share did not resolve to the ' +
+              'local volume in this environment, so the cross-namespace ' +
+              'caller-location vector could not be exercised. This is an ' +
+              'environment capability gap, not a passing assertion of the ' +
+              'guard under test.',
+          );
+          return;
+        }
+
+        // Positive: the caller cwd is the same physical directory as the
+        // worktree being removed, spelled through the UNC admin share. The
+        // guard must still refuse, matching the drive-letter-spelled case.
+        expect(() =>
+          validateCallerLocation(uncTarget, target, 'win32'),
+        ).toThrow('current directory is inside the worktree being removed');
+
+        // Negative control: a genuinely unrelated directory, reached through
+        // the same UNC namespace, must still be allowed — the guard must not
+        // simply refuse every UNC-spelled caller.
+        expect(() =>
+          validateCallerLocation(uncUnrelated, target, 'win32'),
+        ).not.toThrow();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('verifies target survival after unlink and before git removal', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-junction-order-'));
