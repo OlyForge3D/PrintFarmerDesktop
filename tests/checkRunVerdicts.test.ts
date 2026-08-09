@@ -400,6 +400,12 @@ describe('latestCheckRunsByName', () => {
       // reported as a check with no visible label. Covers the C0/DEL
       // range, the C1 range (\x80-\x9f), and the Unicode bidi-control
       // overrides/embeddings (U+202A-U+202E) and isolates (U+2066-U+2069).
+      // (U+2028/U+2029 are deliberately not included here: unlike the other
+      // control characters, they are LineTerminator code points that
+      // String.prototype.trim already strips, so a name made up only of
+      // those two characters is caught by the earlier raw-name check
+      // instead -- see the dedicated forged-line regression test below for
+      // how they are actually exercised, embedded in real content.)
       const checkRuns = [checkRun({ name })];
       expect(() => latestCheckRunsByName(checkRuns)).toThrow(
         /has no non-empty name once control characters are stripped/,
@@ -1600,5 +1606,45 @@ describe('main', () => {
     const report = written.join('\n');
     expect(report).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);
     expect(report).toContain('Desktop (evil)');
+  });
+
+  it('REGRESSION: end-to-end, Unicode line/paragraph separators (U+2028, U+2029) in a check name are sanitized so they cannot forge an extra visual report row', () => {
+    // Vasquez (round 17): U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH
+    // SEPARATOR) are real newline-equivalent characters honored by many
+    // terminals/renderers, but sat outside the C0/C1/DEL/bidi ranges the
+    // sanitizer covered. A name embedding one -- e.g.
+    // "safe\u2028  passed     Desktop" -- could make a renderer display an
+    // apparent second, fabricated report line ("  passed     Desktop") that
+    // never came from `buildVerdicts`, the same "attacker name spoofs what
+    // is read" attack class the rest of this sanitization exists to close.
+    const maliciousName = 'safe\u2028  passed     Desktop';
+    const written: string[] = [];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([checkRun({ id: 1, name: maliciousName })]),
+      })),
+      (text) => {
+        written.push(text);
+      },
+    );
+    expect(result).toBe(EXIT_CLEAN);
+    const report = written.join('\n');
+    expect(report).not.toMatch(/[\u2028\u2029]/);
+    // The sanitized name still appears intact as ordinary printable text --
+    // this is sanitization (character removal), not corruption of the rest
+    // of the label.
+    expect(report).toContain('safe  passed     Desktop');
+    // Splitting the actual output on real newlines must not produce a
+    // fabricated extra line that looks like its own check result -- proving
+    // the report has exactly the one line this single check run should
+    // produce (plus the two-line header), not a forged second row.
+    const reportLines = report.split('\n');
+    const checkLines = reportLines.filter(
+      (line) => line.includes('safe') || line.includes('passed     Desktop'),
+    );
+    expect(checkLines).toHaveLength(1);
   });
 });

@@ -80,9 +80,18 @@ const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
 // prior lines) or otherwise corrupt the report a human or agent is reading.
 // Stripping every control byte removes the trigger for any such sequence
 // regardless of what follows it, without having to enumerate escape-sequence
-// grammars.
-// eslint-disable-next-line no-control-regex -- matching control characters is the point: strip every C0 control, DEL, C1 control byte (including ESC, which begins ANSI escape sequences, and \x9b, the single-byte CSI), and Unicode bidirectional-control character out of an attacker-controlled check-run name before it is ever printed. The bidi-control characters (U+202A-U+202E: LRE/RLE/PDF/LRO/RLO, and U+2066-U+2069: LRI/RLI/FSI/PDI) are not C0/C1/DEL bytes at all, but they let a name visually reorder or override the displayed order of surrounding text in any terminal or renderer that honors Unicode bidi controls -- the same "attacker-controlled name spoofs what a human or agent reads" attack this pattern exists to close, just via a different mechanism than ANSI escapes or 8-bit control codes.
-const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g;
+// grammars. Beyond that C0/C1/DEL byte range, two classes of Unicode
+// codepoints are stripped for the same reason: U+2028 (LINE SEPARATOR) and
+// U+2029 (PARAGRAPH SEPARATOR) are newline-equivalent characters honored by
+// many terminals/renderers, so a name embedding one could forge an apparent
+// extra row in printed report output, letting fabricated text masquerade as
+// a separate check result; U+202A-U+202E (bidi embeddings/overrides) and
+// U+2066-U+2069 (bidi isolates) let a name visually reorder or override the
+// displayed order of surrounding text in any renderer that honors Unicode
+// bidi controls -- the same "attacker name spoofs what is read" attack, via
+// a different mechanism than ANSI escapes or 8-bit control codes.
+// eslint-disable-next-line no-control-regex -- see comment above: strips C0/DEL/C1 control bytes, Unicode line/paragraph separators (U+2028/U+2029), and Unicode bidi-control characters (U+202A-U+202E, U+2066-U+2069) from an attacker-controlled check-run name before it is ever printed.
+const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g; // prettier-ignore
 // GitHub's Checks API always returns `started_at`/`completed_at` in strict
 // ISO 8601 with a literal `Z` suffix (e.g. "2026-08-06T16:00:00Z"), never
 // any other `Date.parse`-acceptable shape. `Date.parse` alone is too
