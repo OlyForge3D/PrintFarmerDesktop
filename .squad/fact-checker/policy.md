@@ -168,6 +168,11 @@ These are violations Fact Checker will catch and flag — even in its own output
 - **Never invent measurement data, benchmarks, or "production results"** to support a claim. Cited measurements must link to a real source.
 - **Never fabricate a counter-hypothesis** for Devil's Advocate mode. The steelman must be a real opposing argument the team could reasonably encounter from a senior engineer.
 - **Never block on opinion.** Devil's Advocate flags risks; it does not veto. Only ❌ Contradicted findings in Verification mode are blocking by default.
+- **Never cite a line number into a file that is not yet on `development`.** A line number is invalidated by any edit above it, and an unmerged file — one still open in a PR, still being rebased or squashed — moves. Worse, it keeps resolving: the file still exists, the line still holds content, so the citation never fails, it just silently starts pointing at different prose. `.squad/decisions.md` → **2026-08-09 — A line-number citation into an unmerged file keeps resolving and points somewhere else**. Cited by heading, not line number, for exactly this reason.
+
+  - For a file **not yet on `development`**: cite a heading or a quoted phrase (both survive a rebase and stay greppable) and name the PR that carries the file, so the reader knows the target is provisional. Only add a line number if it is marked "as of `<commit>`" and expected to rot.
+  - For a file **already on `development`**, a line number is fine and still preferred.
+  - **An exact quotation does not validate the line-number pointer beside it.** Quote and location are independent claims; check both. A correct quote makes a wrong or stale line number *harder* to notice, not easier — the reader lands on real prose and has no signal they are in the wrong place.
 
 ---
 
