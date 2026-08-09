@@ -406,22 +406,35 @@ function parseCheckRun(checkRun, index) {
  * But that preference is *bounded*, not unconditional:
  *
  * - An open run that has actually started (`started_at` non-null) only wins
- *   if it started at or after the completed run's own `started_at`. Without
- *   that bound, a genuinely stale `in_progress` run -- a runner that hung or
- *   never reported back, started well before some later completed rerun --
- *   would permanently mask that completed run's real verdict behind a
- *   `pending` reading forever.
+ *   if it started STRICTLY AFTER the completed run's own `started_at`.
+ *   Without that bound, a genuinely stale `in_progress` run -- a runner that
+ *   hung or never reported back, started well before some later completed
+ *   rerun -- would permanently mask that completed run's real verdict behind
+ *   a `pending` reading forever.
  * - A still-`queued` open run has no `started_at` to bound against, but it
  *   is guaranteed a `created_at` (set the moment GitHub creates the run,
  *   before it has even been scheduled -- see `parseCheckRun`). That bounds
- *   it the same way: the queued run only wins if it was created at or after
- *   the completed run's own `completed_at`. A queued run created BEFORE the
- *   completed run had even finished cannot be "the newer attempt" -- it is
- *   a stale/orphaned run sitting in the queue from before that completion,
- *   and letting it unconditionally win (the prior behaviour) would let such
- *   an orphaned queued entry mask a real, already-known `failure` behind a
- *   `pending` reading, which is exactly the false-pass this file exists to
- *   close.
+ *   it the same way: the queued run only wins if it was created STRICTLY
+ *   AFTER the completed run's own `completed_at`. A queued run created
+ *   BEFORE the completed run had even finished cannot be "the newer
+ *   attempt" -- it is a stale/orphaned run sitting in the queue from before
+ *   that completion, and letting it unconditionally win (the prior
+ *   behaviour) would let such an orphaned queued entry mask a real,
+ *   already-known `failure` behind a `pending` reading, which is exactly the
+ *   false-pass this file exists to close.
+ * - The bound is intentionally STRICT (`>`), not `>=`. GitHub's Checks API
+ *   only reports second-resolution timestamps, so an open run and a
+ *   completed run for the same name can genuinely tie to the second (this
+ *   repo's own live data shows same-second completions). An exact tie does
+ *   NOT prove the open run is newer -- it is equally consistent with the
+ *   open run being a stale artifact that merely happens to share a second
+ *   with the completed run's boundary timestamp. Resolving that tie in
+ *   favor of "open wins" would let a same-second stale queued/in-progress
+ *   run mask a real completed `failure` behind `pending`, silently bypassing
+ *   the merge gate. So an exact tie returns `0` (unresolvable) rather than
+ *   picking a side; `latestCheckRunsByName`'s undominated-set algorithm then
+ *   fails closed (throws "cannot determine") instead of ever reporting
+ *   `pending` off of a same-second tie.
  *
  * Between two runs in the same state (both completed, or both still open),
  * compare the timestamp that state guarantees is present: `completed_at` for
@@ -459,19 +472,23 @@ function compareCheckRunRecency(a, b) {
   if (aOpen !== bOpen) {
     const open = aOpen ? a : b;
     const completed = aOpen ? b : a;
-    let openWins;
+    let openTime;
+    let bound;
     if (open.startedAt !== null) {
-      openWins =
-        Date.parse(open.startedAt) >=
-        Date.parse(/** @type {string} */ (completed.startedAt));
+      openTime = Date.parse(open.startedAt);
+      bound = Date.parse(/** @type {string} */ (completed.startedAt));
     } else {
       // Still queued, never started: bound against the completed run's
       // completed_at using the one timestamp a queued run is guaranteed to
       // carry, created_at (see the doc comment above and parseCheckRun).
-      openWins =
-        Date.parse(open.createdAt) >=
-        Date.parse(/** @type {string} */ (completed.completedAt));
+      openTime = Date.parse(open.createdAt);
+      bound = Date.parse(/** @type {string} */ (completed.completedAt));
     }
+    // Strict comparison only -- an exact-second tie proves nothing about
+    // ordering (see the doc comment above) and must not resolve in favor of
+    // either side.
+    if (openTime === bound) return 0;
+    const openWins = openTime > bound;
     if (openWins) return aOpen ? 1 : -1;
     return aOpen ? -1 : 1;
   }

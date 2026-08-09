@@ -684,10 +684,16 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('REGRESSION: an in-progress run that started at the same instant as a completed run still outranks it (boundary, not strictly-before)', () => {
-    // The bound is "at or after", not "strictly after" -- an open run whose
-    // started_at exactly matches the completed run's started_at is not
-    // provably stale, so it still wins as the live state of the check.
+  it('REGRESSION: an in-progress run that started at the same instant as a completed run does not outrank it -- an exact-second tie is ambiguous, not a win for the open run (fails closed rather than reporting a possibly-wrong pending)', () => {
+    // Vasquez (round 8): the Checks API only reports second-resolution
+    // timestamps, so an in-progress run and a completed run for the same
+    // name can genuinely tie to the second. Treating that tie as "the open
+    // run wins" (the prior `>=` behaviour) is unsound -- it is equally
+    // consistent with the open run being a stale artifact that merely
+    // shares a second with the completed run's own started_at, and could
+    // mask a real completed `failure` behind a false `pending`. The bound
+    // must be strict (`>`): an exact tie is unresolvable, not a win, so
+    // this must fail closed (throw) rather than silently pick a side.
     const checkRuns = [
       checkRun({
         id: 9,
@@ -706,11 +712,109 @@ describe('latestCheckRunsByName', () => {
         completed_at: null,
       }),
     ];
-    const latest = latestCheckRunsByName(checkRuns);
-    expect(latest.get('Desktop')?.id).toBe(2);
-    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
-      VERDICT_PENDING,
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
     );
+  });
+
+  it('REGRESSION: main() exits undetermined (not a clean pass) when an in-progress run ties a completed run to the second', () => {
+    const checkRuns = [
+      checkRun({
+        id: 9,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:05:00Z',
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: null,
+      }),
+    ];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload(checkRuns),
+      })),
+      () => {},
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: a queued run created in the same second a completed failure finished does not mask that failure behind a false pending (Ralph round-8 repro: exact-second tie must not resolve in favor of the open run)', () => {
+    // Vasquez (round 8): `compareCheckRunRecency` still used `>=` when
+    // bounding a still-queued run's `created_at` against a completed run's
+    // `completed_at`. Since the Checks API only reports second-resolution
+    // timestamps, a queued run created in the exact same second a completed
+    // `failure` finished would unconditionally "win" under `>=`, printing
+    // `pending` and exiting clean (0) instead of surfacing the real
+    // failure -- a merge-gate bypass. The bound must be strict: an
+    // exact-second tie proves nothing about which run is actually newer,
+    // so it must be treated as ambiguous (fails closed) rather than
+    // resolved in the open run's favor.
+    const checkRuns = [
+      checkRun({
+        id: 1,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'failure',
+        created_at: '2026-08-06T15:58:00Z',
+        started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:59:29Z',
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        created_at: '2026-08-06T15:59:29Z',
+        started_at: null,
+        completed_at: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /cannot determine the latest attempt/,
+    );
+  });
+
+  it("REGRESSION (end-to-end): main() exits undetermined, not a clean pass, on Ralph round-8's exact-second queued-vs-completed-failure tie", () => {
+    const checkRuns = [
+      checkRun({
+        id: 1,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'failure',
+        created_at: '2026-08-06T15:58:00Z',
+        started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:59:29Z',
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        created_at: '2026-08-06T15:59:29Z',
+        started_at: null,
+        completed_at: null,
+      }),
+    ];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload(checkRuns),
+      })),
+      () => {},
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
   });
 
   it('the latest-run selection still works when the newest run for a name is queued with no started_at, created after the completed run finished', () => {
