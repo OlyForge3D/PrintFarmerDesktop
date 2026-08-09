@@ -246,3 +246,5 @@ export function main(
   argv: string[],
   deps?: MainDeps,
 ): Promise<{ ok: boolean; settled: boolean; stale: boolean }>;
+
+export function reportCliOutcome(error: unknown): void;

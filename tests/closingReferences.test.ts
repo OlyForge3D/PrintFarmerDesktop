@@ -22,6 +22,7 @@ import {
   readDeclarationForPullRequest,
   readPullRequestCommitClosures,
   readSettled,
+  reportCliOutcome,
   resolveDeclarationPath,
   resolveHeadBranchName,
   slugifyBranchName,
@@ -1456,9 +1457,13 @@ describe('main: exit code 2 for "could not look" failures', () => {
         // the thing that fails, so this spec isolates the witness read.
         return JSON.stringify([[]]);
       }
-      // Valid JSON, but not the `{ body, refs }` shape this check requires --
-      // a non-body API payload, the other named "could not look" case.
-      return JSON.stringify({ foo: 'bar' });
+      // Valid JSON, `refs` is well-formed, but `body` is not a string --
+      // isolates the `body`-shape check specifically. (`{foo:'bar'}` would
+      // also fail the `refs` check, so a mutation that relaxed only the
+      // `refs` check could leave that fixture failing for the wrong reason
+      // and still flip this spec red; this fixture only breaks if the
+      // `body` check itself is skipped.)
+      return JSON.stringify({ body: 42, refs: [231] });
     };
 
     let thrown: unknown;
@@ -1481,6 +1486,53 @@ describe('main: exit code 2 for "could not look" failures', () => {
     expect((thrown as Error).message).not.toContain(
       'Could not read the closing references',
     );
+    expect(process.exitCode).toBe(2);
+  });
+});
+
+/**
+ * #563 (Hicks & Vasquez, round 1): `import.meta.url === pathToFileURL(...)`
+ * is only `true` when this script is the process entry point, which it
+ * never is under the test runner -- so nothing above actually calls the
+ * CLI's own `.catch` handler, and a test that merely re-typed its logic
+ * would keep passing even if the real handler regressed (both reviewers
+ * demonstrated this independently: mutating the real handler to
+ * `exitCode = 1` and to `exitCode = 0` both left the suite green).
+ * `reportCliOutcome` is that handler, exported so it can be exercised
+ * directly, with no process spawn and no hand-copied logic to drift out of
+ * sync with the source of truth.
+ */
+describe('reportCliOutcome: the CLI entry point\'s own rejection handler', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('sets exit code 2 and prints a NO VERDICT message distinct from a mismatch or unsettled read', () => {
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    reportCliOutcome(new Error('no pull request number available: boom'));
+
+    expect(process.exitCode).toBe(2);
+    const printed = errorSpy.mock.calls.map((call) => String(call[0]));
+    expect(printed.some((line) => line.includes('NO VERDICT'))).toBe(true);
+    expect(
+      printed.some((line) => line.includes('no pull request number available')),
+    ).toBe(true);
+    expect(
+      printed.some((line) => line.includes('do not match its declaration')),
+    ).toBe(false);
+    expect(
+      printed.some((line) => line.includes('Could not read the closing references')),
+    ).toBe(false);
+  });
+
+  it('stringifies a non-Error rejection rather than throwing on error.message', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(() => reportCliOutcome('a bare string rejection')).not.toThrow();
     expect(process.exitCode).toBe(2);
   });
 });

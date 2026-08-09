@@ -1210,14 +1210,29 @@ async function checkClosingReferences(argv, deps, epochAtStart) {
   return { ok: true, settled: true, stale: suspect };
 }
 
+/**
+ * #563 (Hicks & Vasquez, round 1): the `import.meta.url === pathToFileURL(...)`
+ * guard below is `true` only when this file is the process entry point,
+ * which is never the case under the test runner (`process.argv[1]` is
+ * vitest's own entry, not this script) -- so nothing in
+ * `tests/closingReferences.test.ts` ever executed this handler. Both
+ * reviewers independently mutated it (`exitCode = 1` and `exitCode = 0`)
+ * and the suite stayed green either time. Pulling the handler out into an
+ * exported function lets a test invoke the *real* code directly, with no
+ * process spawn and no copy-of-the-logic drift, while the guard below
+ * stays the only thing that decides whether it runs unsolicited as a side
+ * effect of import.
+ */
+export function reportCliOutcome(error) {
+  console.error(
+    'NO VERDICT: could not determine whether closing references match the ' +
+      "declaration -- this is not a mismatch, the check never got to compare " +
+      'declared and armed closures.',
+  );
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 2;
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main(process.argv.slice(2)).catch((error) => {
-    console.error(
-      'NO VERDICT: could not determine whether closing references match the ' +
-        "declaration -- this is not a mismatch, the check never got to compare " +
-        'declared and armed closures.',
-    );
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 2;
-  });
+  main(process.argv.slice(2)).catch(reportCliOutcome);
 }
