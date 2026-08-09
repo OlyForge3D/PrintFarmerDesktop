@@ -380,7 +380,16 @@ describe('latestCheckRunsByName', () => {
     },
   );
 
-  it.each(['\x1b', '\x00\x1b', '\x7f\x07', '\x9b', '\x80\x9f'])(
+  it.each([
+    '\x1b',
+    '\x00\x1b',
+    '\x7f\x07',
+    '\x9b',
+    '\x80\x9f',
+    '\u202e',
+    '\u202a\u202b\u202c\u202d',
+    '\u2066\u2067\u2068\u2069',
+  ])(
     'REGRESSION: refuses a check name %j that is entirely control characters once sanitized',
     (name) => {
       // A name made up only of control characters (no printable content)
@@ -388,8 +397,9 @@ describe('latestCheckRunsByName', () => {
       // whitespace per String.prototype.trim -- but becomes an empty
       // string once the ANSI/control-character sanitization strips them.
       // That must still be rejected as an empty name, not silently
-      // reported as a check with no visible label. Covers both the C0/DEL
-      // range and the C1 range (\x80-\x9f).
+      // reported as a check with no visible label. Covers the C0/DEL
+      // range, the C1 range (\x80-\x9f), and the Unicode bidi-control
+      // overrides/embeddings (U+202A-U+202E) and isolates (U+2066-U+2069).
       const checkRuns = [checkRun({ name })];
       expect(() => latestCheckRunsByName(checkRuns)).toThrow(
         /has no non-empty name once control characters are stripped/,
@@ -1457,5 +1467,34 @@ describe('main', () => {
     // eslint-disable-next-line no-control-regex -- asserting the absence of control characters is the point of this regression test.
     expect(report).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
     expect(report).toContain('31mDANGER0m Desktop');
+  });
+
+  it('REGRESSION: end-to-end, a Unicode bidi-control character (U+202E RIGHT-TO-LEFT OVERRIDE) in a check name is sanitized before it reaches the report', () => {
+    // U+202A-U+202E (bidi embeddings/overrides) and U+2066-U+2069 (bidi
+    // isolates) are not C0/C1/DEL control bytes, so the byte-range-only
+    // sanitizer let them through -- an attacker-controlled name containing
+    // one can still visually reorder or override the displayed order of
+    // surrounding text in any terminal or renderer that honors Unicode
+    // bidi controls, the same class of "attacker name spoofs what is
+    // read" attack the ANSI/control-byte stripping above was added to
+    // close, just via a different mechanism.
+    const written: string[] = [];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({ id: 1, name: '\u202eDesktop (evil)\u202c' }),
+        ]),
+      })),
+      (text) => {
+        written.push(text);
+      },
+    );
+    expect(result).toBe(EXIT_CLEAN);
+    const report = written.join('\n');
+    expect(report).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);
+    expect(report).toContain('Desktop (evil)');
   });
 });
