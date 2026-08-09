@@ -606,14 +606,8 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
 
       const installRoot = getWindowsOrcaInstallRoot();
 
-      const locatedA = await findBackupByOperationId(
-        installRoot,
-        operationIdA,
-      );
-      const locatedB = await findBackupByOperationId(
-        installRoot,
-        operationIdB,
-      );
+      const locatedA = await findBackupByOperationId(installRoot, operationIdA);
+      const locatedB = await findBackupByOperationId(installRoot, operationIdB);
       expect(locatedA).not.toBeNull();
       expect(locatedB).not.toBeNull();
       // Each operationId must resolve to its own profile's safeFilename and
@@ -639,8 +633,8 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       const destA = computeInstallPath(safeFilenameA, installRoot);
       const destB = computeInstallPath(safeFilenameB, installRoot);
       const { readFile } = await import('node:fs/promises');
-      expect((await readFile(destA, 'utf8'))).toBe(sharedPriorContent);
-      expect((await readFile(destB, 'utf8'))).toBe(sharedPriorContent);
+      expect(await readFile(destA, 'utf8')).toBe(sharedPriorContent);
+      expect(await readFile(destB, 'utf8')).toBe(sharedPriorContent);
     },
   );
 

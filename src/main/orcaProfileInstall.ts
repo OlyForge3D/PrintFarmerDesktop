@@ -525,10 +525,7 @@ interface BackupMetaRecord {
 
 function backupMetaPath(installRoot: string, operationId: string): string {
   if (!OPERATION_ID_PATTERN.test(operationId)) {
-    throw makeError(
-      'pathRestricted',
-      'Invalid operationId; expected a UUID.',
-    );
+    throw makeError('pathRestricted', 'Invalid operationId; expected a UUID.');
   }
   return path.join(installRoot, BACKUP_META_DIR, `${operationId}.json`);
 }
