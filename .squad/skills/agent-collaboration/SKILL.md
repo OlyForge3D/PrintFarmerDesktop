@@ -232,7 +232,7 @@ git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-work
 # CAUTION, do not substitute origin/development for 9991065e above: as trunk keeps
 # evolving, the same diff against the *moving* tip instead of the fixed merge commit
 # eventually goes nonzero even though this work shipped intact and was never touched
-# again -- confirmed live, months after #561 merged:
+# again -- confirmed live, once other commits later touched these same paths:
 git diff 14304447 origin/development -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
 # nonzero output <-- MISLEADING: later, unrelated commits touched these same paths
 # after #561 merged; this is not evidence #561 didn't ship, it is evidence the target
