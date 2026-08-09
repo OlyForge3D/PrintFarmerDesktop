@@ -1,9 +1,19 @@
 /**
  * Reject malformed Copilot-Session trailers in pull request commits.
  *
- * The value belongs to the cloud Copilot-session identifier namespace. It is
- * not the local session-state directory id or the project-session messaging id,
- * even though all three use UUID-shaped values.
+ * This check only judges SHAPE (one canonical UUID per value) and is
+ * deliberately silent on namespace: before #670 the value was the cloud
+ * Copilot-session identifier, hand-typed into a `--trailer` flag from a
+ * dispatch brief; from #670 onward `scripts/prepare-commit-msg.mjs` writes it
+ * mechanically from `COPILOT_AGENT_SESSION_ID`, the CLI runtime's own
+ * per-process session id (see that script's header for why THAT source and
+ * not the cloud id — the short version is that the cloud id is not readable
+ * by any local process, so mechanizing "the trailer" necessarily means
+ * mechanizing a value the tooling can actually read). Both are canonical
+ * UUIDs and this check does not need to tell them apart; distinguishing "well
+ * formed" from "hand-transcribed and wrong" is
+ * `check-copilot-session-collisions.mjs`'s job, not this one's — see that
+ * script for the collision/repetition audit this defect actually requires.
  *
  * Git decides which lines are trailers. Delegating that classification to
  * `git interpret-trailers` preserves its trailer-block rules and avoids a
@@ -17,8 +27,12 @@ import process from 'node:process';
 
 import { resolvePullRequestNumber } from './check-pr-closure-scope.mjs';
 
-const COPILOT_SESSION_KEY = 'Copilot-Session';
-const COPILOT_SESSION_UUID =
+export const COPILOT_SESSION_KEY = 'Copilot-Session';
+// Exported so `scripts/prepare-commit-msg.mjs` (the mechanized source of this
+// value, #670) and `scripts/check-copilot-session-collisions.mjs` (the
+// companion collision audit, #670) validate against the exact same shape this
+// per-PR formedness check does, rather than a second regex that could drift.
+export const COPILOT_SESSION_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function run(command, args, options = {}) {
