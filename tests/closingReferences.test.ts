@@ -1502,7 +1502,7 @@ describe('main: exit code 2 for "could not look" failures', () => {
  * directly, with no process spawn and no hand-copied logic to drift out of
  * sync with the source of truth.
  */
-describe('reportCliOutcome: the CLI entry point\'s own rejection handler', () => {
+describe("reportCliOutcome: the CLI entry point's own rejection handler", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     process.exitCode = undefined;
@@ -1525,7 +1525,9 @@ describe('reportCliOutcome: the CLI entry point\'s own rejection handler', () =>
       printed.some((line) => line.includes('do not match its declaration')),
     ).toBe(false);
     expect(
-      printed.some((line) => line.includes('Could not read the closing references')),
+      printed.some((line) =>
+        line.includes('Could not read the closing references'),
+      ),
     ).toBe(false);
   });
 

@@ -1226,7 +1226,7 @@ async function checkClosingReferences(argv, deps, epochAtStart) {
 export function reportCliOutcome(error) {
   console.error(
     'NO VERDICT: could not determine whether closing references match the ' +
-      "declaration -- this is not a mismatch, the check never got to compare " +
+      'declaration -- this is not a mismatch, the check never got to compare ' +
       'declared and armed closures.',
   );
   console.error(error instanceof Error ? error.message : String(error));
