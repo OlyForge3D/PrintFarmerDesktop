@@ -356,9 +356,28 @@ export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
   // resolves EVERY argument that is itself an array literal or an
   // identifier resolving to a preceding array assignment -- wherever in
   // the parameter list it falls.
-  const flattenArgvAcrossCallArguments = (wrapperName) => {
+  // Vasquez (round 9): once a wrapper NAME is known, this scan must not
+  // conflate it with an UNRELATED call sharing the same bare identifier --
+  // e.g. an unrelated object's own method, `client.runGh(...)`, which has
+  // nothing to do with a real `function runGh(args) { execFileSync('gh',
+  // args); }` wrapper elsewhere in the same file. `matchMode` scopes the
+  // call-site pattern to the SHAPE the wrapper name was actually DEFINED
+  // with: `'bare'` requires the call NOT be preceded by `.` (a bare
+  // function/arrow wrapper is only ever legitimately called as a bare
+  // identifier); `'method'` requires the call BE preceded by `.` (a class/
+  // object method-shorthand wrapper is only ever legitimately called
+  // through property access); `'any'` keeps the original, unscoped match
+  // (used for `extraWrapperNames` -- nested/cross-file/aliased names this
+  // function cannot itself classify by definition shape, since they were
+  // resolved from a project-wide pass rather than this file's own text).
+  const flattenArgvAcrossCallArguments = (wrapperName, matchMode = 'any') => {
     const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const callHeaderPattern = new RegExp(`\\b${escapedName}\\s*\\(`, 'g');
+    const callHeaderPattern =
+      matchMode === 'bare'
+        ? new RegExp(`(?<!\\.)\\b${escapedName}\\s*\\(`, 'g')
+        : matchMode === 'method'
+          ? new RegExp(`\\.${escapedName}\\s*\\(`, 'g')
+          : new RegExp(`\\b${escapedName}\\s*\\(`, 'g');
     let header;
     while ((header = callHeaderPattern.exec(contents)) !== null) {
       const callIndex = header.index;
@@ -398,22 +417,116 @@ export function flattenGhArgvInvocations(contents, extraWrapperNames = []) {
     }
   };
 
+  // Ripley (round 9): a wrapper whose SOLE parameter is a REST parameter
+  // (`function runGh(...args) { execFileSync('gh', args); }`) never
+  // receives its argv as one array-typed argument at the call site at
+  // all -- the language itself builds `args` from however many individual
+  // positional arguments the call used (`runGh('issue', 'list', '--label',
+  // 'x')`). The per-argument scan above cannot find that shape (no single
+  // argument IS an array). This synthesizes ONE array from the wrapper
+  // call's ENTIRE argument list instead: each top-level argument is
+  // resolved as a plain string/template literal token, or (if itself an
+  // array literal or an array-valued variable) spread into the same
+  // token list. If ANY argument cannot be resolved this way, the whole
+  // call site is skipped rather than reconstructed partially -- guessing
+  // a half-formed command risks a false negative OR a misleading false
+  // positive, either worse than the narrow miss of skipping it.
+  const flattenArgvFromRestParams = (wrapperName) => {
+    const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callHeaderPattern = new RegExp(
+      `(?<!\\.)\\b${escapedName}\\s*\\(`,
+      'g',
+    );
+    let header;
+    while ((header = callHeaderPattern.exec(contents)) !== null) {
+      const callIndex = header.index;
+      const argsStart = header.index + header[0].length;
+
+      let depth = 1;
+      let index = argsStart;
+      for (; index < contents.length && depth > 0; index++) {
+        if (contents[index] === '(') depth++;
+        else if (contents[index] === ')') depth--;
+      }
+      if (depth !== 0) continue; // unbalanced -- do not guess.
+      const argsText = contents.slice(argsStart, index - 1);
+
+      const tokens = [];
+      let unresolved = false;
+      for (const rawArgument of splitTopLevelArguments(argsText)) {
+        const argument = rawArgument.trim();
+        if (argument === '') continue;
+
+        const stringLiteralMatch = /^['"`]([^'"`]*)['"`]$/.exec(argument);
+        if (stringLiteralMatch) {
+          tokens.push(stringLiteralMatch[1]);
+          continue;
+        }
+
+        const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
+        if (arrayLiteralMatch) {
+          tokens.push(...tokensFromArrayBody(arrayLiteralMatch[1]));
+          continue;
+        }
+
+        const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
+        if (identifierMatch) {
+          const resolved = resolveVariableArrayBefore(
+            identifierMatch[1],
+            callIndex,
+          );
+          if (resolved && resolved.length > 0) {
+            tokens.push(...resolved);
+            continue;
+          }
+        }
+
+        unresolved = true;
+      }
+
+      if (!unresolved && tokens.length > 0) {
+        flattened.push(`gh ${tokens.join(' ')}`);
+      }
+    }
+  };
+
   // Shapes 1 and 2: the literal `'gh'` string at a direct execFile(Sync)/
   // spawn(Sync)-style call site, where the argv is the SECOND argument
   // (`'gh', [...]` / `'gh', varName`) -- a comma separates `'gh'` from it.
   flattenArgvAfter(`['"]gh['"]\\s*,\\s*`);
 
-  // Shape 3: every wrapper this file's own text can find by behavior
-  // (`findGhWrapperNames`), PLUS every name a project-wide caller already
-  // resolved (nested-in-file wrappers found via fixed-point iteration, or
-  // wrappers imported from another scanned file) and passed in via
-  // `extraWrapperNames` -- see `collectProjectGhWrapperNames`.
-  const wrapperNames = new Set([
-    ...findGhWrapperNames(contents),
-    ...extraWrapperNames,
-  ]);
-  for (const wrapperName of wrapperNames) {
-    flattenArgvAcrossCallArguments(wrapperName);
+  // Shape 3: every wrapper this file's own text can find by behavior,
+  // classified by definition shape (`classifyGhWrapperDefinitionKinds`) so
+  // the call-site scan for each name is scoped to how it was actually
+  // defined, PLUS every name a project-wide caller already resolved
+  // (nested-in-file wrappers found via fixed-point iteration, wrappers
+  // imported/re-exported from another scanned file, or default-exported
+  // wrappers) and passed in via `extraWrapperNames` -- see
+  // `collectProjectGhWrapperNames`. The sentinel `'default'` entry
+  // `collectProjectGhWrapperNames` may add to a file's OWN set is never a
+  // real callable identifier, so it is excluded here.
+  const { bareNames, methodNames } = classifyGhWrapperDefinitionKinds(contents);
+  for (const wrapperName of bareNames) {
+    flattenArgvAcrossCallArguments(wrapperName, 'bare');
+  }
+  for (const wrapperName of methodNames) {
+    flattenArgvAcrossCallArguments(wrapperName, 'method');
+  }
+  for (const wrapperName of extraWrapperNames) {
+    if (wrapperName === 'default') continue;
+    if (bareNames.has(wrapperName) || methodNames.has(wrapperName)) continue;
+    flattenArgvAcrossCallArguments(wrapperName, 'any');
+  }
+
+  // Shape 4: rest-param wrappers, resolved only from THIS file's own text
+  // (a behavioral, same-file check like `findGhWrapperNames`) -- a
+  // rest-param wrapper name may ALSO appear in `bareNames` above (its
+  // definition matches the generic function/arrow pattern too), but the
+  // per-argument scan there simply finds nothing to resolve for a call
+  // site with no single array-typed argument, so the two passes do not
+  // double-count a call site that only one of them can actually resolve.
+  for (const wrapperName of findRestParamGhWrapperNames(contents)) {
+    flattenArgvFromRestParams(wrapperName);
   }
 
   return flattened.join('\n');
@@ -514,29 +627,88 @@ function stripCommentsForWrapperBodyScan(text) {
  * rather than widening this function itself into something that reads
  * more than one file's own text.
  */
-export function findGhWrapperNames(contents) {
-  const wrapperNames = new Set();
+const DIRECT_GH_CALL_PATTERN = /\(\s*['"]gh['"]\s*,/;
+
+/**
+ * Shared by `findGhWrapperNames` and `classifyGhWrapperDefinitionKinds`:
+ * scans `contents` for every function-like (or method-shorthand)
+ * definition whose own body directly shells out to `gh` (per
+ * `DIRECT_GH_CALL_PATTERN`), returning `{ name, kind }` entries where
+ * `kind` is `'method'` for a class/object method-shorthand definition
+ * (group 3 of `DEFINITION_HEADER_PATTERN_SOURCE`) or `'bare'` for a plain
+ * function declaration/arrow/function-expression assignment (groups 1/2).
+ * Kept as a single scan so the two callers cannot drift out of sync with
+ * each other about which definitions count.
+ */
+function collectDirectGhWrapperDefinitions(contents) {
+  const entries = [];
 
   const definitionHeaderPattern = new RegExp(
     DEFINITION_HEADER_PATTERN_SOURCE,
     'g',
   );
-  const directGhCallPattern = /\(\s*['"]gh['"]\s*,/;
 
   let definition;
   while ((definition = definitionHeaderPattern.exec(contents)) !== null) {
-    const name = definition[1] ?? definition[2] ?? definition[3];
+    const bareName = definition[1] ?? definition[2];
+    const methodName = definition[3];
+    const name = bareName ?? methodName;
     if (!name) continue;
 
     const body = stripCommentsForWrapperBodyScan(
       extractDefinitionBody(contents, definition.index + definition[0].length),
     );
-    if (directGhCallPattern.test(body)) {
-      wrapperNames.add(name);
+    if (DIRECT_GH_CALL_PATTERN.test(body)) {
+      entries.push({ name, kind: methodName ? 'method' : 'bare' });
     }
   }
 
+  return entries;
+}
+
+export function findGhWrapperNames(contents) {
+  const wrapperNames = new Set();
+  for (const { name } of collectDirectGhWrapperDefinitions(contents)) {
+    wrapperNames.add(name);
+  }
   return wrapperNames;
+}
+
+/**
+ * Classifies the names `findGhWrapperNames` would return by HOW each was
+ * defined -- a BARE function/arrow/function-expression definition versus a
+ * class/object METHOD SHORTHAND -- returning `{ bareNames, methodNames }`.
+ *
+ * Vasquez (round 9): once a name is known to be a wrapper,
+ * `flattenGhArgvInvocations`' call-site scan (`\bNAME\s*\(`) matched EVERY
+ * occurrence of that bare identifier immediately before `(` -- including
+ * an UNRELATED method of the same name on a completely different object
+ * (`client.runGh(...)`, where that `runGh` has nothing to do with an
+ * actual `function runGh(args) { execFileSync('gh', args); }` wrapper
+ * elsewhere in the same file). Reproduced locally: a same-file collision
+ * between a real bare wrapper and an unrelated same-named method produced
+ * an extra, wrong violation. A BARE wrapper can only ever be legitimately
+ * CALLED as a bare identifier, never through property access; a METHOD
+ * wrapper can only legitimately be called through property access, never
+ * as a bare identifier -- scoping each name's call-site scan to the shape
+ * matching how it was DEFINED closes that specific collision (see
+ * `flattenGhArgvInvocations`'s use of this). A same-named METHOD on a
+ * genuinely different, unrelated class remains a residual limitation
+ * this scoping does not resolve -- the same "shape, not semantics" limit
+ * this file states throughout -- and is deliberately not extended to
+ * `extraWrapperNames` (nested/cross-file/aliased names), which keep the
+ * older, unscoped call-site match to avoid missing those resolved calls.
+ */
+function classifyGhWrapperDefinitionKinds(contents) {
+  const bareNames = new Set();
+  const methodNames = new Set();
+
+  for (const { name, kind } of collectDirectGhWrapperDefinitions(contents)) {
+    if (kind === 'method') methodNames.add(name);
+    else bareNames.add(name);
+  }
+
+  return { bareNames, methodNames };
 }
 
 /**
@@ -621,19 +793,152 @@ function findAliasedGhWrapperNames(contents, knownWrapperNames) {
 }
 
 /**
- * Parses ES-module named-import bindings -- `import { a, b as c } from
+ * Matches an anonymous default-export whose OWN body directly shells out
+ * to `gh` -- `export default (args) => execFileSync('gh', args);`,
+ * `export default function (args) { execFileSync('gh', args); }`, `export
+ * default async (args) => { ... }` -- returning whether the module's
+ * default export is itself a gh-wrapper. Ripley (round 9): a wrapper
+ * exposed only as a module's DEFAULT export (`import invokeGh from
+ * './gh-utils.mjs'`) has no name of its own inside the defining module, so
+ * neither `findGhWrapperNames` (which requires a NAME to bind) nor a named
+ * import/re-export resolution sees it; this is a companion, name-less
+ * check for exactly that shape. See `collectProjectGhWrapperNames`, which
+ * folds a `true` result from this function into the sentinel `'default'`
+ * entry of that file's own wrapper-name set, and `findDefaultImportBindings`,
+ * which resolves an `import NAME from './path'` binding against that
+ * sentinel.
+ */
+function hasGhWrapperDefaultExportFunction(contents) {
+  const pattern = new RegExp(
+    'export\\s+default\\s+(?:async\\s+)?(?:function\\b[^(]*\\([^)]*\\)\\s*|' +
+      '\\([^)]*\\)\\s*=>\\s*|[A-Za-z_$][\\w$]*\\s*=>\\s*)',
+    'g',
+  );
+
+  let match;
+  while ((match = pattern.exec(contents)) !== null) {
+    const body = stripCommentsForWrapperBodyScan(
+      extractDefinitionBody(contents, match.index + match[0].length),
+    );
+    if (DIRECT_GH_CALL_PATTERN.test(body)) return true;
+  }
+  return false;
+}
+
+/**
+ * Matches a BARE-IDENTIFIER default export -- `export default NAME;`, no
+ * call, no definition, just re-exporting an existing binding under the
+ * default name -- returning that identifier, or `null` if the file has no
+ * such export. Used alongside `hasGhWrapperDefaultExportFunction` in
+ * `collectProjectGhWrapperNames`'s fixed-point loop: if `NAME` is already
+ * a known wrapper by the time this runs, the module's default export is
+ * one too. Deliberately distinct from the function-like case above --
+ * `export default function ...`/`export default (args) => ...` never
+ * matches this (an identifier immediately followed by `(` fails the
+ * `[;\n]`-or-end lookahead this requires), so the two checks cannot
+ * double-count the same export.
+ */
+function findDefaultExportAliasTarget(contents) {
+  const match = /export\s+default\s+([A-Za-z_$][\w$]*)\s*(?=[;\n]|$)/.exec(
+    contents,
+  );
+  return match ? match[1] : null;
+}
+
+/**
+ * Matches a DEFAULT import binding -- `import NAME from './relative/path'`
+ * -- returning `{ localName, specifier }` for each. Deliberately narrow,
+ * matching this file's other import-parsing limits: a NAMED import
+ * (`import { a } from ...`) never matches (`{` is not an identifier
+ * character), a namespace import (`import * as ns from ...`) never
+ * matches (`*` is not an identifier character), and a combined
+ * default-plus-named import (`import Default, { Named } from ...`) is
+ * left unrecognized too (`from` does not immediately follow the default
+ * identifier there) -- out of scope, the same way `findImportedBindings`
+ * only recognizes a pure named-import form.
+ */
+function findDefaultImportBindings(contents) {
+  const bindings = [];
+  const pattern = /import\s+([A-Za-z_$][\w$]*)\s*from\s*['"]([^'"]+)['"]/g;
+
+  let match;
+  while ((match = pattern.exec(contents)) !== null) {
+    bindings.push({ localName: match[1], specifier: match[2] });
+  }
+
+  return bindings;
+}
+
+/**
+ * Matches a wrapper whose SOLE parameter is a rest parameter --
+ * `function runGh(...args) { execFileSync('gh', args); }`, `const runGh =
+ * (...args) => execFileSync('gh', args)` -- and whose own body directly
+ * shells out to `gh`. Ripley (round 9): a rest-param wrapper's argv is not
+ * passed to it as a single array value at the call site at all -- it is
+ * reconstructed BY THE LANGUAGE from however many individual positional
+ * arguments the call actually used (`runGh('issue', 'list', '--label',
+ * 'x')`), never as one array literal/variable argument the existing
+ * per-argument scan (`flattenArgvAcrossCallArguments`) looks for. Returns
+ * the set of such names so `flattenGhArgvInvocations` can apply a
+ * different resolution shape for them -- synthesizing one array from the
+ * ENTIRE call-argument list, rather than looking for a single array-typed
+ * argument within it (see `flattenArgvFromRestParams`).
+ */
+function findRestParamGhWrapperNames(contents) {
+  const names = new Set();
+
+  const pattern = new RegExp(
+    '(?:function\\s+([A-Za-z_$][\\w$]*)\\s*\\(\\s*\\.\\.\\.[A-Za-z_$][\\w$]*\\s*\\)\\s*)|' +
+      '(?:(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s+)?' +
+      '(?:function\\b[^(]*\\(\\s*\\.\\.\\.[A-Za-z_$][\\w$]*\\s*\\)\\s*|' +
+      '\\(\\s*\\.\\.\\.[A-Za-z_$][\\w$]*\\s*\\)\\s*=>\\s*))',
+    'g',
+  );
+
+  let match;
+  while ((match = pattern.exec(contents)) !== null) {
+    const name = match[1] ?? match[2];
+    if (!name) continue;
+
+    const body = stripCommentsForWrapperBodyScan(
+      extractDefinitionBody(contents, match.index + match[0].length),
+    );
+    if (DIRECT_GH_CALL_PATTERN.test(body)) names.add(name);
+  }
+
+  return names;
+}
+
+/**
+ * Parses ES-module named-import AND named-RE-EXPORT bindings -- `import {
+ * a, b as c } from './relative/path'` and `export { a, b as c } from
  * './relative/path'` -- returning `{ localName, importedName, specifier }`
- * for each named specifier. Deliberately narrow: only named imports
- * (`{ ... }`) of a quoted specifier are recognized; default imports,
- * namespace imports (`import * as ns from ...`), and dynamic `import(...)`
- * are out of scope, matching this file's stated one-hop/text-scan limits
- * elsewhere. `specifier` is returned UNRESOLVED (as written in the source)
+ * for each named specifier. A re-export is treated identically to an
+ * import for this file's purposes: `export { invokeGh } from
+ * './gh-utils.mjs'` gives the RE-EXPORTING file its own local binding
+ * named `invokeGh`, resolved against the same source file, the same way an
+ * `import` would -- Vasquez/Ripley (round 9): a wrapper re-exported
+ * through an intermediate "barrel" file (`export { invokeGh } from
+ * './gh-utils.mjs';` in an index module, then `import { invokeGh } from
+ * './index.mjs'` elsewhere) was invisible, since only the `import` form
+ * was recognized. Folding the re-export form into this same function lets
+ * `collectProjectGhWrapperNames`'s existing fixed-point loop chain through
+ * a barrel file automatically -- the barrel's OWN entry in
+ * `wrapperNamesByPath` gains `invokeGh` (as if it had imported and never
+ * used it) in one pass, and the second file's `import` of it from the
+ * barrel resolves in the following pass, with no additional wiring.
+ * Deliberately narrow, matching this file's other import-parsing limits:
+ * only a named list (`{ ... }`) of a quoted RELATIVE specifier is
+ * recognized; a default import/re-export, a namespace
+ * (`export * from ...`) re-export, and dynamic `import(...)` remain out
+ * of scope. `specifier` is returned UNRESOLVED (as written in the source)
  * -- resolving it against the scanned file set is `resolveRelativeModulePath`'s
  * job, kept separate so this function stays a pure syntax read.
  */
 function findImportedBindings(contents) {
   const bindings = [];
-  const importPattern = /import\s*\{([^}]*)}\s*from\s*['"]([^'"]+)['"]/g;
+  const importPattern =
+    /(?:import|export)\s*\{([^}]*)}\s*from\s*['"]([^'"]+)['"]/g;
 
   let importMatch;
   while ((importMatch = importPattern.exec(contents)) !== null) {
@@ -704,8 +1009,8 @@ function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
  * as wrappers, beyond what it can already find unaided by reading only its
  * own text via `findGhWrapperNames`.
  *
- * Extends single-file, single-hop wrapper detection in THREE directions,
- * found across rounds 6 and 8 review (Vasquez/Ripley):
+ * Extends single-file, single-hop wrapper detection in FOUR directions,
+ * found across rounds 6, 8, and 9 review (Vasquez/Ripley):
  *   1. NESTED wrappers: a wrapper that calls another already-known wrapper
  *      rather than `gh` directly, resolved to a FIXED POINT so a chain of
  *      any depth is eventually found, not just one hop.
@@ -714,22 +1019,52 @@ function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
  *      called under the new name (`myGh([...])`) -- a name-to-name binding
  *      neither of the other two passes recognizes on its own.
  *   3. CROSS-FILE wrappers: a wrapper defined in one scanned file and
- *      imported (by name, with an optional alias) into another --
- *      `import { invokeGh } from './gh-utils.mjs'; invokeGh([...])` -- is
- *      invisible to a per-file scan that only reads its own text, since
+ *      imported OR RE-EXPORTED (by name, with an optional alias) into
+ *      another -- `import { invokeGh } from './gh-utils.mjs';
+ *      invokeGh([...])`, or the same wrapper re-exported through an
+ *      intermediate barrel file (`export { invokeGh } from
+ *      './gh-utils.mjs';` in an index module) and imported from THAT --
+ *      is invisible to a per-file scan that only reads its own text, since
  *      the wrapper's defining body never appears in the importing file.
+ *      `findImportedBindings` treats both forms identically, so the SAME
+ *      fixed-point loop below chains through any number of re-export hops
+ *      without extra plumbing.
+ *   4. DEFAULT-EXPORTED wrappers: `export default (args) =>
+ *      execFileSync('gh', args);`, imported as `import invokeGh from
+ *      './gh-utils.mjs'`. A default export has no name of its own inside
+ *      the defining module, so it cannot be folded into the same
+ *      name-keyed `Set` the other three cases use directly -- it is
+ *      tracked via the sentinel entry `'default'` in that file's own
+ *      wrapper-name `Set` instead (added at INIT time if the default
+ *      export shells out to `gh` directly, per
+ *      `hasGhWrapperDefaultExportFunction`, or during the fixed-point loop
+ *      if it is a bare-identifier re-export of an already-known wrapper,
+ *      per `findDefaultExportAliasTarget`), and a default IMPORT resolves
+ *      against that sentinel via `findDefaultImportBindings`. The literal
+ *      string `'default'` is never itself scanned as a callable identifier
+ *      by `flattenGhArgvInvocations` (`default(...)` is not valid call
+ *      syntax in JavaScript), so leaving the sentinel in a file's own
+ *      `Set` alongside real names is harmless.
  *
  * Still deliberately narrow beyond these: a wrapper imported from a file
  * OUTSIDE `SCANNED_DIRECTORIES` (this function only knows about the paths
- * it is given), a namespace/default import, a getter/setter method, or an
- * argv threaded through anything past what `flattenGhArgvInvocations`
- * itself can resolve (`.push()`, spread, a computed/interpolated call)
- * remains out of reach -- the same limits stated throughout this file.
+ * it is given), a namespace import/re-export (`import * as ns`/`export *
+ * from`), a combined default-plus-named import, a getter/setter method, or
+ * an argv threaded through anything past what `flattenGhArgvInvocations`
+ * itself can resolve (`.push()`, `.concat()`, a computed/interpolated
+ * call) remains out of reach -- the same limits stated throughout this
+ * file.
  */
 export function collectProjectGhWrapperNames(files) {
   const knownPaths = new Set(files.map((file) => file.path));
   const wrapperNamesByPath = new Map(
-    files.map((file) => [file.path, findGhWrapperNames(file.contents)]),
+    files.map((file) => {
+      const names = findGhWrapperNames(file.contents);
+      if (hasGhWrapperDefaultExportFunction(file.contents)) {
+        names.add('default');
+      }
+      return [file.path, names];
+    }),
   );
 
   let changed = true;
@@ -756,6 +1091,18 @@ export function collectProjectGhWrapperNames(files) {
         }
       }
 
+      const defaultExportAliasTarget = findDefaultExportAliasTarget(
+        file.contents,
+      );
+      if (
+        defaultExportAliasTarget &&
+        known.has(defaultExportAliasTarget) &&
+        !known.has('default')
+      ) {
+        known.add('default');
+        changed = true;
+      }
+
       for (const { localName, importedName, specifier } of findImportedBindings(
         file.contents,
       )) {
@@ -768,6 +1115,23 @@ export function collectProjectGhWrapperNames(files) {
         if (!resolvedPath) continue;
         const sourceWrapperNames = wrapperNamesByPath.get(resolvedPath);
         if (sourceWrapperNames?.has(importedName)) {
+          known.add(localName);
+          changed = true;
+        }
+      }
+
+      for (const { localName, specifier } of findDefaultImportBindings(
+        file.contents,
+      )) {
+        if (known.has(localName)) continue;
+        const resolvedPath = resolveRelativeModulePath(
+          file.path,
+          specifier,
+          knownPaths,
+        );
+        if (!resolvedPath) continue;
+        const sourceWrapperNames = wrapperNamesByPath.get(resolvedPath);
+        if (sourceWrapperNames?.has('default')) {
           known.add(localName);
           changed = true;
         }

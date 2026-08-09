@@ -239,6 +239,61 @@ const myGh = invokeGh;
 myGh(['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
 `;
 
+// Vasquez/Ripley (round 9): a wrapper re-exported through an intermediate
+// "barrel" file -- `export { invokeGh } from './gh-utils.mjs';` in an
+// index module, then imported from THAT index rather than the original
+// module -- must still resolve, chained through any number of hops.
+const GH_WRAPPER_BARREL_INDEX_SNIPPET = `
+export { invokeGh } from './gh-utils.mjs';
+`;
+const GH_WRAPPER_BARREL_CONSUMER_SNIPPET = `
+import { invokeGh } from './index.mjs';
+invokeGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Ripley (round 9): a wrapper exposed only as a module's DEFAULT export --
+// `export default (args) => execFileSync('gh', args);` -- imported with
+// `import invokeGh from './gh-utils.mjs'` (no braces) -- must resolve too,
+// even though the defining module never gives the wrapper a name of its
+// own.
+const GH_WRAPPER_DEFAULT_EXPORT_MODULE_SNIPPET = `
+export default (args) => execFileSync('gh', args);
+`;
+const GH_WRAPPER_DEFAULT_IMPORT_CONSUMER_SNIPPET = `
+import invokeGh from './gh-utils.mjs';
+invokeGh(['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Ripley (round 9): a wrapper whose SOLE parameter is a rest parameter --
+// its argv is reconstructed by the language from however many individual
+// positional arguments the call actually used, never passed as one
+// array-typed argument the ordinary per-argument scan looks for.
+const GH_WRAPPER_REST_PARAM_SNIPPET = `
+function runGh(...args) {
+  return execFileSync('gh', args);
+}
+runGh('issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced');
+`;
+
+// Vasquez (round 9): a REAL wrapper (bare function `runGh`) coexisting, in
+// the SAME file, with an UNRELATED object method that happens to share the
+// bare identifier `runGh` -- the unrelated method must NOT be conflated
+// with the real wrapper just because the call-site scan matches on name
+// alone.
+const GH_WRAPPER_NAME_COLLISION_SNIPPET = `
+function runGh(args) {
+  return execFileSync('gh', args);
+}
+runGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+
+const client = {
+  runGh(tag, list) {
+    return safeLog(tag, list);
+  }
+};
+client.runGh('safe', ['issue', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
 // The safe instrument: a per-object read. Must never be flagged, or every
 // script that reads labels correctly (check-sequencing-hold.mjs,
 // lift-hold-on-close.mjs's fetchPullRequest) would fail this check.
@@ -718,6 +773,87 @@ execFileSync('gh', [
     });
     expect(violations).toHaveLength(0);
   });
+
+  // Vasquez/Ripley (round 9): end-to-end, a wrapper re-exported through an
+  // intermediate barrel file must be flagged in the file that imports it
+  // from the barrel, through the real scanning entrypoint.
+  it('flags a call through a wrapper re-exported through a barrel file', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/gh-utils.mjs',
+          contents: GH_WRAPPER_DEFINITION_MODULE_SNIPPET,
+        },
+        {
+          path: 'scripts/index.mjs',
+          contents: GH_WRAPPER_BARREL_INDEX_SNIPPET,
+        },
+        {
+          path: 'scripts/consumer.mjs',
+          contents: GH_WRAPPER_BARREL_CONSUMER_SNIPPET,
+        },
+      ],
+    });
+    const consumerViolation = violations.find(
+      (violation) => violation.path === 'scripts/consumer.mjs',
+    );
+    expect(consumerViolation).toBeDefined();
+    expect(consumerViolation!.matches).toContain('gh pr list --label');
+  });
+
+  // Ripley (round 9): end-to-end, a wrapper exposed only as a module's
+  // default export, imported with `import NAME from './path'` (no
+  // braces), must be flagged in the importing file.
+  it('flags a call through a default-exported wrapper imported without braces', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/gh-utils.mjs',
+          contents: GH_WRAPPER_DEFAULT_EXPORT_MODULE_SNIPPET,
+        },
+        {
+          path: 'scripts/consumer2.mjs',
+          contents: GH_WRAPPER_DEFAULT_IMPORT_CONSUMER_SNIPPET,
+        },
+      ],
+    });
+    const consumerViolation = violations.find(
+      (violation) => violation.path === 'scripts/consumer2.mjs',
+    );
+    expect(consumerViolation).toBeDefined();
+    expect(consumerViolation!.matches).toContain('gh issue list --label');
+  });
+
+  // Ripley (round 9): end-to-end, a rest-param wrapper's argv, spread
+  // across the wrapper call's entire argument list, must be flagged.
+  it('flags a call through a rest-param wrapper', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_REST_PARAM_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh issue list --label');
+  });
+
+  // Vasquez (round 9): end-to-end negative control -- an unrelated method
+  // call sharing a bare wrapper's name must produce exactly one
+  // violation (the real bare-wrapper call), not two.
+  it('does not conflate an unrelated method call with a same-named bare wrapper', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_NAME_COLLISION_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toEqual(['gh pr list --label']);
+  });
 });
 
 describe('flattenGhArgvInvocations', () => {
@@ -855,6 +991,32 @@ describe('flattenGhArgvInvocations', () => {
     const flattened = flattenGhArgvInvocations(GH_NESTED_WRAPPER_SNIPPET);
     expect(flattened).not.toContain('--label');
   });
+
+  // Ripley (round 9): a rest-param wrapper's argv must be reconstructed
+  // from its ENTIRE call argument list, not just a single array-typed
+  // argument.
+  it('resolves a rest-param wrapper by reconstructing its entire call argument list', () => {
+    const flattened = flattenGhArgvInvocations(GH_WRAPPER_REST_PARAM_SNIPPET);
+    expect(flattened).toContain('gh issue list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  // Vasquez (round 9): an unrelated method call sharing a bare wrapper's
+  // name (e.g. `client.runGh('safe', [...])` on some unrelated object)
+  // must NOT be conflated with the real bare-defined wrapper -- exactly
+  // one match, from the genuine `runGh([...])` call, should be produced.
+  it('does not conflate an unrelated method call with a same-named bare wrapper', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_NAME_COLLISION_SNIPPET,
+    );
+    const matches = flattened
+      .split('\n')
+      .filter((line) => line.includes('--label'));
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toContain('gh pr list');
+    expect(flattened).not.toContain('gh issue list');
+  });
 });
 
 describe('findGhWrapperNames', () => {
@@ -972,6 +1134,54 @@ describe('collectProjectGhWrapperNames', () => {
     const names = wrapperNamesByPath.get('scripts/example.mjs')!;
     expect(names.has('invokeGh')).toBe(true);
     expect(names.has('myGh')).toBe(true);
+  });
+
+  // Vasquez/Ripley (round 9): a wrapper re-exported through an
+  // intermediate barrel file must resolve chained through any number of
+  // re-export/import hops, via the same fixed-point loop.
+  it('resolves a wrapper re-exported through a barrel file and imported from it', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      {
+        path: 'scripts/gh-utils.mjs',
+        contents: GH_WRAPPER_DEFINITION_MODULE_SNIPPET,
+      },
+      {
+        path: 'scripts/index.mjs',
+        contents: GH_WRAPPER_BARREL_INDEX_SNIPPET,
+      },
+      {
+        path: 'scripts/consumer.mjs',
+        contents: GH_WRAPPER_BARREL_CONSUMER_SNIPPET,
+      },
+    ]);
+    expect(wrapperNamesByPath.get('scripts/index.mjs')!.has('invokeGh')).toBe(
+      true,
+    );
+    expect(
+      wrapperNamesByPath.get('scripts/consumer.mjs')!.has('invokeGh'),
+    ).toBe(true);
+  });
+
+  // Ripley (round 9): a wrapper exposed only as a DEFAULT export, imported
+  // with `import NAME from './path'` (no braces), must resolve via the
+  // `'default'` sentinel entry.
+  it('resolves a default-exported wrapper imported without braces', () => {
+    const wrapperNamesByPath = collectProjectGhWrapperNames([
+      {
+        path: 'scripts/gh-utils.mjs',
+        contents: GH_WRAPPER_DEFAULT_EXPORT_MODULE_SNIPPET,
+      },
+      {
+        path: 'scripts/consumer2.mjs',
+        contents: GH_WRAPPER_DEFAULT_IMPORT_CONSUMER_SNIPPET,
+      },
+    ]);
+    expect(wrapperNamesByPath.get('scripts/gh-utils.mjs')!.has('default')).toBe(
+      true,
+    );
+    expect(
+      wrapperNamesByPath.get('scripts/consumer2.mjs')!.has('invokeGh'),
+    ).toBe(true);
   });
 });
 
