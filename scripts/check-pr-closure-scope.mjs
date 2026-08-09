@@ -404,9 +404,10 @@ export async function fetchClosingIssues({
  * Deliberately a distinct type from every other error `main()` can throw:
  * a caller must be able to tell "GitHub answered and the answer was empty"
  * from "the read timed out before an empty answer could be trusted" without
- * parsing prose. Both fail closed identically today (`process.exitCode = 1`
- * from the catch in `main()`'s invocation), but the distinction still has to
- * exist in the type so a future caller does not have to reintroduce it.
+ * parsing prose. The CLI entry point maps this to its own exit code (see
+ * `reportClosureScopeCliOutcome`), distinct from both a clean pass and a
+ * confirmed violation, so the type still has to exist even though today it
+ * has exactly one caller.
  */
 export class ClosingIssuesIndeterminateError extends Error {
   constructor({ reads, elapsedMs }) {
@@ -444,15 +445,20 @@ const DEFAULT_MAX_READS = 11; // 11 reads * 5s = 50s of headroom over the 45s fl
  * A non-empty read is trusted immediately and returned without waiting out
  * the rest of the budget: GitHub does not populate a phantom reference, and
  * the case this guard exists to catch (arming) must never be masked by
- * polling for a later read that disagrees. An empty read is trusted only
- * once it has held for at least `minEmptyFloorMs` of elapsed wall-clock time,
- * because a value that has not arrived yet is indistinguishable, on a single
- * read, from a value that arrived and is genuinely empty — only elapsed time
- * against a measured settling window separates "not yet" from "never".
+ * polling for a later read that disagrees.
  *
- * If the budget is exhausted while still under the floor, this throws
- * `ClosingIssuesIndeterminateError` rather than returning an empty result:
- * fail closed, do not report a guess as a verdict.
+ * An empty read is NEVER trusted mid-poll, even after `minEmptyFloorMs` of
+ * wall-clock time has elapsed. Reaching the floor proves only that the field
+ * has been empty for long enough to no longer be a coin flip on THAT READ;
+ * it says nothing about a read still to come within the same budget. A field
+ * that populates at, say, 50s must still be caught by a run whose budget
+ * extends to 50s -- returning "confirmed empty" the moment the floor is
+ * crossed, before the budget is exhausted, throws away exactly the reads
+ * bought to catch a late arrival. So this always polls through every
+ * `maxReads` attempt (short-circuiting only on a non-empty result), and only
+ * once the ENTIRE budget is spent does it consult the floor: empty and at or
+ * past the floor is a confirmed pass; empty and still short of the floor
+ * (a budget misconfigured to be narrower than the floor) is indeterminate.
  *
  * `read` is a zero-argument function returning a promise of the closing
  * issues array, so this has no knowledge of GraphQL, fetch, or credentials
@@ -469,6 +475,7 @@ export async function resolveClosingIssuesConfidently(read, options = {}) {
 
   const start = now();
   let reads = 0;
+  let lastValue = [];
 
   for (let i = 0; i < maxReads; i += 1) {
     if (i > 0) {
@@ -476,21 +483,19 @@ export async function resolveClosingIssuesConfidently(read, options = {}) {
     }
     reads += 1;
     const value = await read();
+    lastValue = value;
 
     if (value.length > 0) {
       return { value, confirmedEmpty: false, reads, elapsedMs: now() - start };
     }
-
-    const elapsedMs = now() - start;
-    if (elapsedMs >= minEmptyFloorMs) {
-      return { value, confirmedEmpty: true, reads, elapsedMs };
-    }
   }
 
-  throw new ClosingIssuesIndeterminateError({
-    reads,
-    elapsedMs: now() - start,
-  });
+  const elapsedMs = now() - start;
+  if (elapsedMs >= minEmptyFloorMs) {
+    return { value: lastValue, confirmedEmpty: true, reads, elapsedMs };
+  }
+
+  throw new ClosingIssuesIndeterminateError({ reads, elapsedMs });
 }
 
 export async function fetchPullRequestCommits({
@@ -592,7 +597,7 @@ export async function fetchIssuesByNumber({
   return issues;
 }
 
-async function main() {
+export async function main() {
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
     throw new Error('GITHUB_TOKEN is not set');
@@ -606,7 +611,12 @@ async function main() {
   // and `resolveClosingIssuesConfidently`). An empty read here can mean either
   // "this pull request arms nothing" or "the field has not populated yet",
   // and those two must not take the same code path: only the former is
-  // allowed to pass.
+  // allowed to pass. `resolveClosingIssuesConfidently` throws
+  // `ClosingIssuesIndeterminateError` rather than returning in the second
+  // case, so it propagates out of `main` uncaught and is handled by
+  // `reportClosureScopeCliOutcome` below, exactly like every other
+  // could-not-look failure (a missing token, an unresolvable PR number, a
+  // GraphQL error).
   const {
     value: closingIssues,
     confirmedEmpty,
@@ -663,6 +673,9 @@ async function main() {
   }
 
   if (!ok || !commitScope.ok) {
+    // A confirmed violation: this run DID look, and found a real defect in
+    // the pull request. Distinct from the exit code below, which covers
+    // never having been able to look at all.
     process.exitCode = 1;
     return;
   }
@@ -670,17 +683,38 @@ async function main() {
   console.log('No gate issue is armed, in either channel.');
 }
 
+/**
+ * #321 (Vasquez, round 2): every exception that reaches this handler is, by
+ * construction, a "could not look" failure -- the branch that decides a
+ * genuine violation (`!ok || !commitScope.ok`) sets `process.exitCode = 1`
+ * and `return`s from `main` rather than throwing, so nothing that represents
+ * a completed comparison ever lands here. That includes
+ * `ClosingIssuesIndeterminateError`: an unsettled read is not a mismatch, it
+ * is the absence of a verdict, and collapsing it onto the SAME exit code as a
+ * confirmed violation (`1`) would make the two indistinguishable from the
+ * exit code alone -- exactly the defect #563 already fixed once in the
+ * sibling check (`check-closing-references.mjs`). This follows that same
+ * convention rather than inventing a third exit code no other check in this
+ * repository uses: 0 = looked and nothing armed, 1 = looked and found a
+ * violation, 2 = never got far enough to compare at all.
+ *
+ * Exported, not inlined in the CLI guard below, for the same reason
+ * `reportCliOutcome` is exported from `check-closing-references.mjs`: the
+ * `import.meta.url === pathToFileURL(process.argv[1]).href` guard is only
+ * ever true when this file is the process entry point, which it never is
+ * under the test runner, so a test has no way to exercise inline handler
+ * logic except by calling it directly.
+ */
+export function reportClosureScopeCliOutcome(error) {
+  console.error(
+    `Unable to verify pull request closure scope: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exitCode = 2;
+}
+
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  // An inability to run this check fails the job. A guard that cannot read the
-  // field must not report the same result as a guard that read it and found
-  // nothing armed.
-  main().catch((error) => {
-    console.error(
-      `Unable to verify pull request closure scope: ${error.message}`,
-    );
-    process.exitCode = 1;
-  });
+  main().catch(reportClosureScopeCliOutcome);
 }

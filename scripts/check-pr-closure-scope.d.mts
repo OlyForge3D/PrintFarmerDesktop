@@ -128,3 +128,7 @@ export function fetchIssuesByNumber(options: {
   token: string;
   fetchImpl?: typeof fetch;
 }): Promise<ClosingIssue[]>;
+
+export function main(): Promise<void>;
+
+export function reportClosureScopeCliOutcome(error: unknown): void;
