@@ -38,13 +38,17 @@
 // something whose reflog entry expired" — the two-valued-answer-to-a-
 // three-valued-question gap #336 named via #315. `push-guard.mjs`'s
 // `authoredHere()` is now tri-state (`true` / `false` / `null`): `null` means
-// the reflog cannot be read at all, or its own visible coverage window is not
-// provably younger than `gc.reflogExpireUnreachable`, so "no creation entry"
-// and "the creation entry already expired" cannot be told apart. This census
-// reports that third value as its own bucket (`indeterminate`) rather than
-// folding it into `false`, so a population drifting out of the reflog's
-// coverage window is visible as a widening `indeterminate` count instead of a
-// silent slide from `true` into `false`.
+// the reflog cannot be read at all, or it cannot be proven complete back to
+// the ref's genesis (a chain-of-object-ids check across every reflog entry's
+// old/new sha, not an age heuristic — an age-based check was tried first and
+// found unsound by review, since `gc.reflogExpireUnreachable` prunes each
+// unreachable entry independently and can drop an old one while a newer,
+// unrelated entry survives right after it), so "no creation entry" and "the
+// creation entry already expired" cannot be told apart. This census reports
+// that third value as its own bucket (`indeterminate`) rather than folding it
+// into `false`, so a population whose reflogs are losing provable continuity
+// is visible as a widening `indeterminate` count instead of a silent slide
+// from `true` into `false`.
 //
 // `formatReport` (and `runCensus`) now also append a `` ```census-measured ``
 // fenced citation block naming this run's numbers and a `measured_at`
@@ -80,13 +84,12 @@ export function listWorktreePaths(cwd = process.cwd()) {
  * missing or unreadable (a stale entry `git worktree list` did not prune).
  *
  * `ownershipEvidence` is tri-state (#315): `true` a creation entry was found,
- * `false` none was found and the reflog's coverage window rules out decay,
- * `null` the reflog cannot be read at all or the coverage window cannot rule
- * out that a creation entry once existed and has since expired under
- * `gc.reflogExpireUnreachable`. A worktree this function itself could not
- * read (`ok: false`) reports `false` here as a filler value only — it is
- * excluded from every bucket by `summarizeCensus`, which counts strictly over
- * `ok: true` entries.
+ * `false` none was found and the reflog is provably complete back to the
+ * ref's genesis (so no entry could have been pruned), `null` the reflog
+ * cannot be read at all or cannot be proven complete. A worktree this
+ * function itself could not read (`ok: false`) reports `false` here as a
+ * filler value only — it is excluded from every bucket by `summarizeCensus`,
+ * which counts strictly over `ok: true` entries.
  *
  * @param {string} worktreePath
  * @returns {{

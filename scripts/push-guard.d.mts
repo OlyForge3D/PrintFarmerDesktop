@@ -145,12 +145,11 @@ export function readReflogSessions(): Set<string>;
 export function readOwnedCommits(): Set<string>;
 /**
  * Tri-state (#315): `true` a creation entry was found, `false` none was
- * found and the reflog's coverage window rules out `gc.reflogExpireUnreachable`
- * decay, `null` the reflog cannot be read at all or its coverage window
- * cannot rule out that a creation entry once existed and has since expired.
+ * found and the reflog is provably complete back to the ref's genesis (a
+ * chain-of-object-ids check, not an age heuristic — see the implementation),
+ * `null` the reflog cannot be read at all or cannot be proven complete.
  */
 export function authoredHere(): boolean | null;
-export const REFLOG_EVIDENCE_DECAY_DAYS: number;
 
 /**
  * Canonical home of the origin label. `safe-force-push.mjs` re-exports this

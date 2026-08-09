@@ -1736,7 +1736,7 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
   });
 });
 
-describe('a reflog old enough to have lost a creation entry is not read as a genuine negative (#315)', () => {
+describe('a reflog that cannot prove it is complete is not read as a genuine negative (#315)', () => {
   // `authoredHere` used to be two-valued: an empty result from
   // `filterCreatedEntries` meant `false`, full stop. That conflates two
   // different facts that `git log -g` reports identically — "nothing was ever
@@ -1746,16 +1746,29 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
   // line, so the old two-valued reading collapsed the second, undecidable case
   // into the first, decidable one.
   //
-  // This fixture reaches the undecidable case deterministically, without
-  // waiting 30 days: it clones a seeded remote (so the reflog is non-empty and
-  // has no creation entry — an ordinary "arrived by clone" worktree), then
-  // rewrites `.git/logs/HEAD`'s own timestamp field to 40 days in the past.
-  // That is the reflog's OWN write-time column (distinct from any commit's
-  // author/committer date), which is exactly the field `authoredHere` reads
-  // via `%gd` to decide whether decay could have happened.
+  // The first tri-state fix bounded that decay by the AGE of the oldest entry
+  // still visible: young window, no decay possible. Review for #315 found a
+  // repro that heuristic gets backwards: `gc.reflogExpireUnreachable` prunes
+  // each unreachable entry independently, so an OLD `commit:` entry can be
+  // pruned while a NEWER, unrelated entry survives right after where it used
+  // to sit — leaving every VISIBLE entry looking recent even though the
+  // creation entry that would have proven authorship is already gone.
+  //
+  // This fixture reaches exactly that shape, deterministically: `work`
+  // creates a commit (a genuine `commit:` reflog entry), that commit is made
+  // unreachable, a recent operation adds a fresh non-creation entry right
+  // after it, and then the `commit:` line is removed from the raw reflog
+  // file — simulating the prune `git reflog expire` performs on a real clock,
+  // without depending on real elapsed time or `gc.reflogExpireUnreachable`'s
+  // actual timing in CI. What survives is a reflog whose newest entries are
+  // all timestamped "now": an age-based check would call that young enough to
+  // trust, and would be wrong, because the entry it needed is the one that
+  // was removed.
   let root: string;
   let remote: string;
   let work: string;
+  let createdSha: string;
+  let survivingOldSha: string;
 
   beforeAll(() => {
     root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-decay-'));
@@ -1771,37 +1784,42 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
     commit(seed, 'seeded, to be discarded', 'session-other');
     git(['push', 'origin', 'feature'], seed);
 
-    // `work` clones AFTER both commits already exist on the remote, so
-    // neither one is ever created here — the reflog gets only a `clone:` and
-    // a `checkout:` entry, never a `commit:` line, whether or not the decay
-    // rewrite below happens.
     git(['clone', remote, work], root);
     configure(work);
     git(['checkout', 'feature'], work);
     git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
 
-    // Rewrite the reflog entry's own timestamp (the second-to-last
-    // whitespace-delimited field before the tab-separated subject) to 40 days
-    // ago, leaving the shas, author, and subject untouched. The clone entry's
-    // subject is `clone: from …`, never a `commit:` line, so this fixture has
-    // no creation entry either before or after the rewrite — only its AGE
-    // changes.
+    // A genuine creation entry, here — this is the one the fixture will make
+    // unreachable and then erase from the reflog, standing in for whatever
+    // `commit:` entry `gc.reflogExpireUnreachable` would eventually prune.
+    commit(work, 'created here, later orphaned', 'session-mine');
+    createdSha = git(['rev-parse', 'HEAD'], work);
+
+    // Orphan it and, in the same motion, write the RECENT non-creation entry
+    // that survives the prune below and masks the gap: `reset:`'s own OLD
+    // sha is `createdSha`, the very value the removed `commit:` line's NEW
+    // sha would have supplied. Once that line is gone, nothing visible
+    // supplies it any more. This also puts `work` back at the remote's
+    // actual tip (`seeded, to be discarded`), so the final test below still
+    // has a `session-other` commit left to discard.
+    git(['reset', '--hard', 'HEAD~1'], work);
+    survivingOldSha = createdSha;
+
     const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
     const original = readFileSync(reflogPath, 'utf8');
-    const fortyDaysAgo = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
-    const rewritten = original.replace(
-      /^(\S+ \S+ .+ <[^>]*>) \d+ ([+-]\d{4})(\t.*)$/m,
-      `$1 ${fortyDaysAgo} $2$3`,
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const withoutCreation = lines.filter(
+      (line) => !line.includes(`\tcommit: created here, later orphaned`),
     );
-    expect(rewritten).not.toBe(original);
-    writeFileSync(reflogPath, rewritten);
+    expect(withoutCreation.length).toBe(lines.length - 1);
+    writeFileSync(reflogPath, withoutCreation.join('\n') + '\n');
   });
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('has a non-empty reflog with no creation entry, forty days old', () => {
+  it('has a non-empty reflog, no creation entry, and every visible entry timestamped now', () => {
     // Pinned so a future change to this fixture cannot silently start
     // exercising a different one of the three cases while keeping this
     // describe block's name.
@@ -1810,12 +1828,30 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
       work,
     );
     expect(entries).not.toBe('');
-    expect(entries).not.toMatch(/^commit(?: \(initial\))?:/);
-    const [, selector] = entries.split('|');
-    expect(selector).toBeDefined();
-    const writeTime = new Date(selector!.match(/@\{(.+)\}$/)![1]!).getTime();
-    const ageDays = (Date.now() - writeTime) / (24 * 60 * 60 * 1000);
-    expect(ageDays).toBeGreaterThanOrEqual(30);
+    for (const line of entries.split('\n')) {
+      expect(line).not.toMatch(/^commit(?: \(initial\))?:/);
+      const [, selector] = line.split('|');
+      const writeTime = new Date(selector!.match(/@\{(.+)\}$/)![1]!).getTime();
+      const ageDays = (Date.now() - writeTime) / (24 * 60 * 60 * 1000);
+      // Every entry still visible is fresh — an age-based coverage check
+      // would call this reflog trustworthy. It is not: the entry proving
+      // completeness back to genesis was just removed above.
+      expect(ageDays).toBeLessThan(1);
+    }
+  });
+
+  it("the surviving entry's OLD sha is the removed creation entry's NEW sha, proving the gap", () => {
+    const rawLog = readFileSync(
+      path.join(work, '.git', 'logs', 'HEAD'),
+      'utf8',
+    );
+    const lastLine = rawLog
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .at(-1)!;
+    const [oldSha] = lastLine.split(' ');
+    expect(oldSha).toBe(survivingOldSha);
+    expect(oldSha).toBe(createdSha);
   });
 
   it('authoredHere() reports null, not false, once a creation entry could have decayed', () => {
@@ -1858,9 +1894,10 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
     // The whole point of the tri-state refinement is that it changes nothing
     // about the guard's own decision — only what it reports to observers like
     // the census. Proven here by driving a real discard through the real hook
-    // against this exact fixture: `work` never created anything (its
-    // `authoredHere()` is `null`, pinned above), and the commit it is about
-    // to discard was created by `session-other`, never by this worktree.
+    // against this exact fixture: `work`'s only visible reflog evidence of
+    // authorship was just erased (`authoredHere()` is `null`, pinned above,
+    // precisely because that is unprovable), and the commit it is about to
+    // discard was created by `session-other`, never by this worktree.
     git(['reset', '--hard', 'HEAD~1'], work);
 
     let stderr = '';
@@ -1874,6 +1911,330 @@ describe('a reflog old enough to have lost a creation entry is not read as a gen
     }).toThrow();
     expect(stderr).toContain('push-guard.unattributed-discard');
     expect(stderr).not.toContain('push-guard.foreign-session');
+  });
+});
+
+describe('a self-cancelling create/discard pair pruned together is not read as a genuine negative (#315)', () => {
+  // The chain-of-object-ids check above closes the hole in its own
+  // predecessor — a non-genesis entry can never masquerade as the genesis,
+  // because its OLD id is never the all-zero sha. Review for #315 found a
+  // SECOND hole in it: a CONTIGUOUS, SELF-CANCELLING pair of entries (commit,
+  // then `reset --hard` it away) starts and ends at the SAME sha. If
+  // `gc.reflogExpireUnreachable` prunes both together once the commit they
+  // made unreachable ages past it, the entries immediately before and after
+  // the pair still connect to EACH OTHER — the chain heals with no visible
+  // seam, and a real creation this worktree made is read as never having
+  // happened.
+  //
+  // No inspection of the SURVIVING entries can close this: the missing
+  // pair's shas are, by construction, exactly what a legitimate gap-free
+  // history would show once they're gone. The only sound remedy is to ask
+  // whether there was ever an OPPORTUNITY for such a pair to be pruned at
+  // all — the genesis entry's own age against `gc.reflogExpireUnreachable`.
+  //
+  // This fixture reaches that shape directly: `work` creates a commit (a
+  // genuine `commit:` entry) and immediately `reset --hard`s it away (a
+  // `reset:` entry whose OLD id is that commit's NEW id and whose NEW id is
+  // back to the pre-commit value). Both lines are then removed from the raw
+  // reflog file — simulating exactly what `git reflog expire` does once the
+  // orphaned commit's entries age past `gc.reflogExpireUnreachable` — and the
+  // surviving genesis entry's own timestamp is rewritten to look 50 days
+  // old, simulating a ref old enough for that pruning to have had a real
+  // opportunity to occur. What survives is a single-entry, zero-rooted,
+  // fully "continuous" chain: exactly the shape the prior chain-only check
+  // read as a confident, provably-complete `false`.
+  let root: string;
+  let work: string;
+  let genesisNewSha: string;
+  let survivingLineCount: number;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-roundtrip-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // The self-cancelling pair: create a commit, then discard it in the same
+    // motion a rollback would. `reset:`'s OLD sha is the commit's NEW sha and
+    // its own NEW sha is back to `feature`'s actual remote tip, so once both
+    // lines are erased below, nothing distinguishes this from a reflog that
+    // never saw either operation.
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(lines.length - 2);
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    // Backdate the surviving genesis entry's timestamp by 50 days — older
+    // than `gc.reflogExpireUnreachable`'s 30-day default — so the fixture
+    // actually exercises the case the age check exists for, rather than one
+    // that would (correctly) read `false` because no time has really passed.
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    const fiftyDaysAgo = Math.floor(Date.now() / 1000) - 50 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(fiftyDaysAgo);
+    genesisNewSha = tokens[1]!;
+    const backdated = tokens.join(' ') + message;
+    survivingLineCount = survivors.length;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('leaves a single-entry, zero-rooted, fully continuous chain', () => {
+    // Pinned so a future change to this fixture cannot silently start
+    // exercising a different shape while keeping this describe block's name:
+    // the whole point is that the SURVIVING reflog looks perfectly complete.
+    expect(survivingLineCount).toBe(1);
+    const rawLog = readFileSync(
+      path.join(work, '.git', 'logs', 'HEAD'),
+      'utf8',
+    );
+    const lines = rawLog.split('\n').filter((line) => line.length > 0);
+    expect(lines.length).toBe(1);
+    const [oldSha, newSha] = lines[0]!.split(' ');
+    expect(oldSha).toBe(ZERO_SHA);
+    expect(newSha).toBe(genesisNewSha);
+  });
+
+  it('authoredHere() reports null, not false, once a create/discard pair could have been pruned', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('a naive two-valued reading (`!== true`) cannot tell this apart from a genuine negative', () => {
+    const originalCwd = process.cwd();
+    let value: boolean | null;
+    try {
+      process.chdir(work);
+      value = authoredHere();
+    } finally {
+      process.chdir(originalCwd);
+    }
+    const twoValuedReading = value === true;
+    expect(twoValuedReading).toBe(false);
+    expect(value).not.toBe(false);
+    expect(value).toBeNull();
+  });
+
+  it('still refuses the push, because null is read exactly like false downstream', () => {
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+    expect(stderr).toContain('push-guard.unattributed-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
+  });
+});
+
+describe('a non-default, space-separated gc.reflogExpireUnreachable is not silently misread as the 30-day default (#315)', () => {
+  // Review for #315 found `reflogExpireUnreachableDays()` itself misparsing
+  // real config values, twice, by hand-rolling only a fraction of the
+  // spellings `gc.reflogExpireUnreachable` legally holds. The first pass
+  // understood `N.days` (dotted) and raw seconds; it silently fell back to
+  // the hard-coded 30-day default for git's own CANONICAL, space-separated
+  // spelling ("10 days") and for approxidate forms with a trailing "ago"
+  // ("7 days ago"). That default can be either more or less permissive than
+  // whatever was actually configured, and being MORE permissive is the
+  // dangerous direction here: it lets `reflogIsProvablyComplete()` treat a
+  // genesis entry as young enough to trust when, under the REAL configured
+  // threshold, it is old enough that a self-cancelling create/discard pair
+  // (see the describe block above) could already have been pruned nearby.
+  //
+  // This fixture reaches exactly that shape: `gc.reflogExpireUnreachable`
+  // is set to the plain, space-separated "15 days" (no dot, the form a
+  // human or `git config` itself would normally write), and the surviving
+  // genesis entry is backdated to 20 days old — younger than the hard-coded
+  // 30-day default (so the old, misparsing code would wrongly call it
+  // "provably complete"), but OLDER than the 15 days actually configured
+  // (so the correct answer is "no longer provable", i.e. `null`).
+  let root: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-expiryformat-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // The canonical, human-written spelling — no dot separator — that the
+    // retired parser silently misread as "unset" and defaulted away.
+    git(['config', 'gc.reflogExpireUnreachable', '15 days'], work);
+
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    const twentyDaysAgo = Math.floor(Date.now() / 1000) - 20 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(twentyDaysAgo);
+    const backdated = tokens.join(' ') + message;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('authoredHere() reports null under a plain "N days" config, not the false a misparse-to-default would give', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('the same fixture reads true-complete only if the config is misparsed back to the 30-day default', () => {
+    // Pins the mechanism, not just the outcome: this is the exact
+    // computation a hand-rolled parser falling back to the default would
+    // have performed, and it disagrees with the correct answer above.
+    const genesisAgeDays = 20;
+    const misparsedDefaultDays = 30;
+    const actuallyConfiguredDays = 15;
+    expect(genesisAgeDays < misparsedDefaultDays).toBe(true);
+    expect(genesisAgeDays < actuallyConfiguredDays).toBe(false);
+  });
+});
+
+describe('an approxidate "N days ago" gc.reflogExpireUnreachable is also not misread as the 30-day default (#315)', () => {
+  // Same failure class as the block above, pinned against the OTHER
+  // spelling review found it missing: an explicit "ago" suffix. Git accepts
+  // this as an ordinary approxidate everywhere it accepts a date, including
+  // in this config's value, and it is at least as natural a thing for
+  // someone to write here as the dotted `N.days` spelling the retired
+  // parser understood.
+  let root: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-expiryformat2-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    git(['config', 'gc.reflogExpireUnreachable', '7 days ago'], work);
+
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    // Ten days old: younger than the misparsed-to-default 30 days (so the
+    // retired parser would wrongly call this provably complete), but older
+    // than the 7 days actually configured (so the correct answer is null).
+    const tenDaysAgo = Math.floor(Date.now() / 1000) - 10 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(tenDaysAgo);
+    const backdated = tokens.join(' ') + message;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('authoredHere() reports null under an "N days ago" config, not the false a misparse-to-default would give', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 });
 

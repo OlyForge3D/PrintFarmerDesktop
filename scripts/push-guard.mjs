@@ -796,16 +796,6 @@ const RECORD = '\u001e';
 const FIELD = '\u001f';
 
 /**
- * `gc.reflogExpireUnreachable` — the decay clock `authoredHere` depends on.
- * Same value `scripts/check-census-freshness.mjs` names for the identical
- * reason (#336): a commit under adjudication has, by construction, just
- * become unreachable, and that is exactly the condition under which its
- * `commit` reflog entry is eligible for pruning by this clock rather than the
- * longer 90-day `gc.reflogExpire`.
- */
-export const REFLOG_EVIDENCE_DECAY_DAYS = 30;
-
-/**
  * Parses the absolute instant `%gd` names when the caller has requested
  * `--date=iso-strict` — e.g. `HEAD@{2026-08-01T10:00:00-07:00}` — into a
  * `Date`, or `null` when the selector carries no parseable instant (a
@@ -820,27 +810,219 @@ function parseReflogSelectorDate(selector) {
 }
 
 /**
- * How many days old the OLDEST entry still visible in a reflog is, or `null`
- * when no entry carries a readable date (an empty reflog, or every date
- * failed to parse). This is a coverage horizon, not an authorship signal: it
- * answers "how far back can this reflog currently see", which is the fact
- * `authoredHere` needs to tell a genuine negative (nothing to find, and the
- * window is provably too young for anything to have been pruned) apart from
- * an undecidable one (the window is old enough that a `commit` entry could
- * already have expired under `gc.reflogExpireUnreachable`).
+ * Reads a ref's reflog straight off disk, oldest entry first, and — unlike
+ * `readReflogEntries` — keeps each line's OLD object id and timestamp.
+ *
+ * `git log -g` cannot answer either. Its reflog placeholders are `%gd`/`%gD`
+ * (selector), `%gs` (subject), and `%gn`/`%gN`/`%ge`/`%gE` (identity); `%H`
+ * names the entry's resulting ("new") commit. None of them exposes the value
+ * the ref held immediately BEFORE that entry — the fact needed to tell
+ * whether the visible reflog chains back to the ref's creation or has a gap
+ * in it somewhere — or lets a timestamp be read without dragging the
+ * (locale- and TZ-dependent) formatted date back through a parser. So this
+ * reads the raw file instead: each line is `<old-sha> <new-sha> <name>
+ * <email> <timestamp> <tz>\t<message>`, where `<timestamp>` is a Unix epoch
+ * integer. The name can itself contain spaces ("Jeff Papiez"), so the
+ * timestamp and tz are read as the LAST two whitespace-separated tokens of
+ * the header rather than by position from the front. `git rev-parse
+ * --git-path logs/<ref>` names that file and resolves correctly for a linked
+ * worktree too, whose per-worktree reflogs live under
+ * `.git/worktrees/<id>/logs/` rather than beside a shared `.git`.
+ *
+ * Returns `[]` when the file cannot be resolved or read — no reflog, same as
+ * `readReflogEntries` throwing for that case — rather than throwing, since
+ * every caller here already needs to treat "no reflog" as "no evidence of
+ * completeness" and an empty array does that without a second code path.
  */
-function oldestReflogEntryAgeDays(entries) {
-  let oldest = null;
-  for (const entry of entries) {
-    if (entry.date instanceof Date && !oldest) oldest = entry.date;
-    else if (
-      entry.date instanceof Date &&
-      entry.date.getTime() < oldest.getTime()
-    )
-      oldest = entry.date;
+function readRawReflogEntries(ref) {
+  let logPath;
+  try {
+    logPath = git(['rev-parse', '--git-path', `logs/${ref}`]).trim();
+  } catch {
+    return [];
   }
-  if (!oldest) return null;
-  return (Date.now() - oldest.getTime()) / (24 * 60 * 60 * 1000);
+  let content;
+  try {
+    content = readFileSync(logPath, 'utf8');
+  } catch {
+    return [];
+  }
+  return content
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const tabIndex = line.indexOf('\t');
+      const header = tabIndex === -1 ? line : line.slice(0, tabIndex);
+      const tokens = header.split(/ +/).filter((token) => token.length > 0);
+      const [oldSha, newSha] = tokens;
+      const epochSeconds = Number(tokens[tokens.length - 2]);
+      return {
+        oldSha: oldSha ?? '',
+        newSha: newSha ?? '',
+        epochSeconds: Number.isFinite(epochSeconds) ? epochSeconds : null,
+      };
+    });
+}
+
+/** git's own documented default for `gc.reflogExpireUnreachable`. */
+const DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS = 30;
+
+/**
+ * How many days an UNREACHABLE reflog entry may survive before `git gc` (or
+ * an explicit `git reflog expire`) is allowed to remove it — i.e. how much
+ * time has to pass before an entry that recorded a commit which later became
+ * unreachable can vanish. Deliberately the UNREACHABLE threshold, not the
+ * (longer) REACHABLE one: the round-trip `reflogIsProvablyComplete` guards
+ * against (see there) makes the discarded commit's own reflog entries
+ * unreachable the moment the discard lands, so unreachable-expiry is the
+ * clock actually racing against them, whatever the ref's own age.
+ *
+ * Reads `gc.reflogExpireUnreachable` and falls back to git's documented
+ * default (30 days) when it is unset or its value cannot be parsed — the
+ * conservative direction, since a value this cannot parse could in fact be
+ * MORE permissive than the default and treating it as absent would then
+ * under-count the risk window.
+ *
+ * TWO rounds of review found this function itself misparsing valid values,
+ * each time by hand-rolling a small subset of the spellings Git actually
+ * accepts for this setting: a first pass only understood `N.days` (dotted
+ * unit) or raw seconds, so a perfectly ordinary `10 days` (space-separated,
+ * git's own canonical spelling — see `git help config`) or `7 days ago`
+ * (approxidate, also accepted here) silently fell through to the
+ * hard-coded 30-day default. Depending on the REAL configured threshold,
+ * that default can be either more or less permissive than intended, and
+ * either direction is a correctness bug: too permissive lets a healed
+ * round-trip (see `reflogIsProvablyComplete`) pass as complete when it
+ * should be indeterminate; too restrictive claims indeterminate when the
+ * ref genuinely is young enough to trust. Any hand-rolled subset of Git's
+ * date grammar is destined to keep missing some valid spelling, because
+ * that grammar (`parse_expiry_date` / approxidate in Git's own C source)
+ * accepts far more than a fixed set of regexes can enumerate: relative
+ * units with or without a trailing "ago", plural or singular, with or
+ * without a dot separator, absolute dates, RFC 2822, ISO 8601, and more.
+ *
+ * So this delegates entirely to Git's own parser instead of re-implementing
+ * any part of it: `git config --type=expiry-date --get` (Git 2.18+)
+ * canonicalizes ANY value that setting can legally hold — including ones
+ * this function will never need to enumerate — into an absolute Unix
+ * timestamp, resolved relative to the moment the command runs. Subtracting
+ * that from "now" (captured on this side of the call, not git's) yields
+ * the number of days in the threshold without this function ever needing
+ * to understand the input grammar itself. `never` canonicalizes to the
+ * Unix epoch (`0`), which is treated as `Infinity`: that setting is git's
+ * own way of saying no unreachable entry is ever pruned, so nothing here
+ * can have decayed regardless of how old it is.
+ *
+ * @returns {number}
+ */
+function reflogExpireUnreachableDays() {
+  // `--get` fails (non-zero exit) when the key is unset at all, the same
+  // "absent" case the un-typed lookup used to detect — `--type=expiry-date`
+  // fails the same way, so a single call covers both "unset" and "set but
+  // unparseable by git itself" (which, unlike this function's own retired
+  // parser, should be vanishingly rare since it IS git's parser).
+  let canonical;
+  try {
+    canonical = git([
+      'config',
+      '--type=expiry-date',
+      '--get',
+      'gc.reflogExpireUnreachable',
+    ]).trim();
+  } catch {
+    return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+  }
+  if (!canonical) return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+  const expiryEpochSeconds = Number(canonical);
+  if (!Number.isFinite(expiryEpochSeconds)) {
+    return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+  }
+  if (expiryEpochSeconds === 0) return Infinity; // "never"
+
+  const nowSeconds = Date.now() / 1000;
+  const days = (nowSeconds - expiryEpochSeconds) / 86400;
+  // A non-positive result means the canonicalized cutoff is not actually in
+  // the past relative to here (an unexpected value this function has no
+  // sound way to interpret as a threshold) — fail closed with 0 rather than
+  // the (possibly far more permissive) default, so the genesis-age check
+  // this feeds cannot be satisfied by anything and reports indeterminate
+  // instead of risking a false "provably complete".
+  return days > 0 ? days : 0;
+}
+
+/**
+ * Whether the reflog visible right now for `ref` is PROVABLY the entire
+ * reflog it has ever had — i.e. nothing was ever pruned from it, at the
+ * front, in the middle, or as a matched pair that leaves no trace — rather
+ * than merely "old enough that nothing looks obviously missing" or "the
+ * visible chain of ids doesn't show a break".
+ *
+ * TWO predecessors of this check have been disproven, in the SAME direction
+ * both times: each looked sufficient and each turned out to have a case that
+ * heals itself back to looking complete once the missing entries are gone.
+ *
+ * The FIRST predecessor asked how old the OLDEST visible entry was, on the
+ * reasoning that a young-looking window is one nothing could have decayed
+ * out of yet. That breaks because `gc.reflogExpireUnreachable` decides each
+ * entry independently rather than truncating the log from the front: an
+ * old, unreachable `commit` entry can be pruned while a NEWER, unrelated
+ * entry (a recent checkout, reset, or amend, reachable or not) survives
+ * right next to where the pruned one used to be — so "the oldest entry I can
+ * see is recent" says nothing about whether an OLDER one, including the true
+ * genesis, was already removed, leaving a non-genesis entry looking like the
+ * start of history.
+ *
+ * The SECOND predecessor (this function's own prior form) fixed that by
+ * checking the chain of OLD/NEW object ids every reflog line carries: entry
+ * N's OLD id must equal entry N-1's NEW id, all the way back to a genesis
+ * entry whose OLD id is the all-zero sha. That closes the first hole — a
+ * non-genesis entry can never masquerade as the genesis, because its OLD id
+ * will not be all-zero — but it has its own gap, found on review: a
+ * CONTIGUOUS, SELF-CANCELLING pair of entries (create a commit, then
+ * `reset --hard` it away) starts and ends at the SAME sha. If both entries
+ * are pruned TOGETHER once the commit they made unreachable ages past
+ * `gc.reflogExpireUnreachable`, the entries immediately before and after the
+ * pair still connect to EACH OTHER, because the pair's own OLD id equalled
+ * its own NEW id's predecessor — the chain heals with no visible seam, and a
+ * real creation this worktree made is read as never having happened.
+ * Reproduced directly: clone, commit locally, `reset --hard` it away with
+ * both operations' reflog timestamps backdated 40 days, run `git reflog
+ * expire` with this repo's OWN configured thresholds (no `--expire=now`
+ * override), and the surviving reflog is just the original clone entry —
+ * a single-entry, zero-rooted, fully "continuous" chain that
+ * `authoredHere()` then read as a confident `false`.
+ *
+ * No amount of inspecting the SURVIVING entries can close that hole, because
+ * the missing pair's shas are, by construction, exactly what a legitimate
+ * gap-free history would show once they're gone — the information is
+ * genuinely destroyed, not merely hidden. The only sound remedy is to ask
+ * whether there was ever an OPPORTUNITY for such a pair to be pruned at all,
+ * which is answered by the genesis entry's own age: if the ref itself was
+ * created more recently than `gc.reflogExpireUnreachable` allows an
+ * unreachable entry to survive, then EVERY entry this reflog has ever held
+ * (genesis included, since nothing can predate a ref's own creation) is
+ * younger than that threshold too, so nothing could have become eligible for
+ * unreachable-pruning yet — no matter how the visible chain looks, there is
+ * nothing it could be hiding. When the genesis entry is older than that, the
+ * chain-of-ids check is kept as a (still useful, but no longer sufficient by
+ * itself) second line of defence, and completeness is no longer claimed.
+ *
+ * An empty reflog (no entries at all) proves nothing either way, so it
+ * counts as incomplete rather than as a vacuously complete chain.
+ *
+ * @returns {boolean}
+ */
+function reflogIsProvablyComplete(ref) {
+  const entries = readRawReflogEntries(ref);
+  if (entries.length === 0) return false;
+  if (entries[0].oldSha !== ZERO_SHA) return false;
+  for (let i = 1; i < entries.length; i += 1) {
+    if (entries[i].oldSha !== entries[i - 1].newSha) return false;
+  }
+  const genesisEpochSeconds = entries[0].epochSeconds;
+  if (genesisEpochSeconds === null) return false;
+  const genesisAgeDays = (Date.now() / 1000 - genesisEpochSeconds) / 86400;
+  return genesisAgeDays < reflogExpireUnreachableDays();
 }
 
 /**
@@ -1066,19 +1248,39 @@ function creationEntries(ref) {
  * re-aim the question (ask about creation, not about the reflog being
  * nonempty); the remaining gap, named by `census-ownership-evidence.mjs`
  * against #336, is that a creation entry can decay AFTER it was written, and
- * nothing here noticed. So a third value is added: `null` when the reflog's
- * own visible coverage window is not provably younger than the decay clock,
- * meaning "no creation entry" and "the creation entry already expired" cannot
- * be told apart. Every caller here already treats `null` exactly like
- * `false` for the push decision (`facts.ownershipEvidence === true` and
- * `!facts.ownershipEvidence` both read `null` as "cannot attribute"), so this
- * is strictly a refinement of the evidence reported to observers such as the
- * ownership census — it fails no closed door open.
+ * nothing here noticed.
+ *
+ * The first fix for #336 tried to bound that decay by the AGE of the oldest
+ * entry still visible, reasoning that a young-looking window is one nothing
+ * could have aged out of yet. Review for #315 found that reasoning unsound
+ * and gave the counterexample: `gc.reflogExpireUnreachable` prunes each
+ * unreachable entry independently rather than truncating the log from the
+ * front, so an old `commit` entry can be pruned while a newer, unrelated
+ * entry (say a recent checkout or reset) survives right where the pruned one
+ * used to be — leaving a reflog whose visible entries all look recent even
+ * though something older is missing from it. A second review pass for #315
+ * found the FIX for that also unsound in a further way: a chain-of-ids check
+ * closes the "non-genesis entry looks recent" hole, but not a CONTIGUOUS,
+ * SELF-CANCELLING pair (commit, then `reset --hard` it away) pruned
+ * together, which heals the visible chain with no seam at all — see
+ * `reflogIsProvablyComplete` for the direct reproduction. So a third value
+ * is added, and it is now decided by `reflogIsProvablyComplete`, which
+ * requires BOTH an unbroken chain of object ids back to the ref's genesis
+ * AND that the genesis entry itself is too young for `gc.reflogExpireUnreachable`
+ * to have had any opportunity to prune anything from this reflog yet: `null`
+ * when either fails, meaning "no creation entry" and "the creation entry (or
+ * a create/discard pair) already expired" cannot be told apart. Every caller
+ * here already treats `null` exactly like `false` for the push decision
+ * (`facts.ownershipEvidence === true` and `!facts.ownershipEvidence` both
+ * read `null` as "cannot attribute"), so this is strictly a refinement of the
+ * evidence reported to observers such as the ownership census — it fails no
+ * closed door open.
  *
  * @returns {boolean | null} `true` if a creation entry was found, `false` if
- *   none was found and the reflog's coverage window rules out decay, `null`
- *   if the reflog cannot be read at all or its coverage window cannot rule
- *   out that a creation entry once existed and has since expired.
+ *   none was found and the reflog is provably complete back to the ref's
+ *   genesis with no opportunity for anything to have been pruned (so no
+ *   entry, and no self-cancelling pair, could have been removed), `null` if
+ *   the reflog cannot be read at all or cannot be proven complete.
  */
 export function authoredHere() {
   let entries;
@@ -1092,13 +1294,10 @@ export function authoredHere() {
     return null;
   }
   if (filterCreatedEntries(entries).length > 0) return true;
-  const coverageDays = oldestReflogEntryAgeDays(entries);
-  if (coverageDays === null || coverageDays >= REFLOG_EVIDENCE_DECAY_DAYS) {
-    // Either the reflog carries no dated entry to bound the window by (an
-    // empty reflog, indistinguishable from one whose only entries already
-    // expired), or the oldest entry still visible is old enough that
-    // `gc.reflogExpireUnreachable` could already have pruned a `commit`
-    // entry between it and now. Either way, "no creation found" is not a
+  if (!reflogIsProvablyComplete('HEAD')) {
+    // No creation entry is visible, but the visible reflog cannot be proven
+    // to chain back to the ref's genesis without a gap, so a creation entry
+    // could have existed and since been pruned. "No creation found" is not a
     // genuine negative here.
     return null;
   }
@@ -1227,10 +1426,8 @@ export function readOwnedCommits() {
  * @returns {{sha: string, reflogSubject: string, date: Date | null, sessions: string[]}[]}
  *   `date` is the reflog entry's OWN write time (`%gd` under
  *   `--date=iso-strict`), not the commit's author/committer date — for a
- *   `pull`/`rebase`/`cherry-pick` entry those differ, and it is the entry's
- *   write time that bounds `gc.reflogExpireUnreachable`'s decay clock. `null`
- *   when the selector could not be parsed, which `authoredHere` treats the
- *   same as "no entries" for the purpose of bounding that window.
+ *   `pull`/`rebase`/`cherry-pick` entry those differ. `null` when the
+ *   selector could not be parsed.
  */
 export function readReflogEntries(ref) {
   const output = git([

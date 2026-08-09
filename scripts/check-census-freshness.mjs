@@ -59,9 +59,10 @@
 //   ```
 //
 // `indeterminate` (#315) counts worktrees whose `authoredHere()` reading was
-// tri-state's third value -- reflog unreadable, or its coverage window
-// cannot rule out a creation entry having already decayed under
-// `gc.reflogExpireUnreachable` -- rather than a genuine `false`. It is
+// tri-state's third value -- reflog unreadable, or not provably complete
+// back to the ref's genesis, so a creation entry cannot be ruled out as
+// having already decayed under `gc.reflogExpireUnreachable` -- rather than a
+// genuine `false`. It is
 // OPTIONAL here on purpose: a citation taken before that change shipped has
 // no such count, and treating its absence as an incomplete citation would
 // retroactively invalidate every pre-existing report for a distinction that
