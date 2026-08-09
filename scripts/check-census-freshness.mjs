@@ -100,14 +100,121 @@ export const SAMPLE_TIMESTAMP_FOR_CONTROLS = '2024-01-01T00:00:00Z';
 export const FABRICATED_ANCIENT_TIMESTAMP = '2000-01-01T00:00:00Z';
 
 /**
+ * A bare calendar date with no time-of-day component (`2026-08-10`).
+ * ECMA-262 fixes this exact shape to UTC midnight, so it is unambiguous
+ * even without an explicit zone -- the one exemption to the rule below.
+ */
+const BARE_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Matches a bare zone abbreviation at the end of a string with no numeric
+ * offset attached: a trailing `Z`, `GMT`, or `UTC` (any case). Used as the
+ * first, simplest check in `hasExplicitZoneSuffix` below.
+ */
+const BARE_ZONE_ABBREVIATION_PATTERN = /(?:z|gmt|utc)$/i;
+
+/**
+ * Matches a numeric zone offset at the end of a string, optionally preceded
+ * by a named zone abbreviation (`GMT+1`, `UTC-05:00`, ...), capturing its
+ * digits so `hasExplicitZoneSuffix` can validate the resulting hour/minute
+ * are in-range rather than accepting any digit shape `Date.parse` happens
+ * to tolerate.
+ *
+ * Two capture shapes:
+ *   - colon form: sign + 1-2 hour digits + `:` + 1-2 minute digits
+ *     (`+1:30`, `-05:00`, `GMT+1:2`, ...)
+ *   - contiguous form: sign + 1-4 digits with no colon (`+0`, `+00`,
+ *     `+0000`, `+130`, ...), whose hour/minute split depends on digit
+ *     count -- see `hasExplicitZoneSuffix`.
+ */
+const ZONE_OFFSET_SUFFIX_PATTERN =
+  /(?:gmt|utc)?([+-])(?:(\d{1,2}):(\d{1,2})|(\d{1,4}))$/i;
+
+/**
+ * Returns whether `trimmed` demonstrably carries absolute-instant
+ * information via an explicit zone/offset suffix: a bare `Z`/`GMT`/`UTC`
+ * abbreviation, or a numeric offset within a real, in-range hour (0-23) and
+ * minute (0-59).
+ *
+ * `Date.parse` itself is lenient about the *shape* of a numeric offset --
+ * it will parse `GMT+25`, `UTC+99`, or `GMT+2400` as if they were valid
+ * offsets, arithmetically shifting the instant by 25 hours, 99 hours, or
+ * 24 hours respectively, rather than rejecting them. Treating "the regex
+ * matched *a* sign-and-digits shape" as sufficient (as an earlier version
+ * of this check did) would accept these syntactically-offset-shaped but
+ * semantically bogus values as FRESH -- a citation with a garbled offset
+ * could still spoof freshness even though it nominally "has a zone". This
+ * function closes that gap by validating the captured hour/minute are in
+ * range *after* the regex captures them, rather than trying to constrain
+ * the pattern to only match a fixed set of literal digit-count shapes
+ * (which previously caused legitimate forms like `GMT+0`/`+1:0`/`GMT+1:2`
+ * to be missed one at a time as new bug reports surfaced).
+ *
+ * The non-colon digit-count-dependent split (1-2 digits = hour only, 3
+ * digits = 1 hour digit + 2 minute digits, 4 digits = 2 hour digits + 2
+ * minute digits) mirrors the actual behavior of `Date.parse`, confirmed by
+ * direct experimentation (e.g. `Date.parse('...GMT+130')` resolves as a
+ * +01:30 offset, not +13:00).
+ */
+function hasExplicitZoneSuffix(trimmed) {
+  if (BARE_ZONE_ABBREVIATION_PATTERN.test(trimmed)) {
+    return true;
+  }
+  const match = ZONE_OFFSET_SUFFIX_PATTERN.exec(trimmed);
+  if (!match) {
+    return false;
+  }
+  let hour;
+  let minute;
+  if (match[2] !== undefined) {
+    hour = Number(match[2]);
+    minute = Number(match[3]);
+  } else {
+    const digits = match[4];
+    if (digits.length <= 2) {
+      hour = Number(digits);
+      minute = 0;
+    } else if (digits.length === 3) {
+      hour = Number(digits.slice(0, 1));
+      minute = Number(digits.slice(1));
+    } else {
+      hour = Number(digits.slice(0, 2));
+      minute = Number(digits.slice(2));
+    }
+  }
+  return (
+    Number.isInteger(hour) &&
+    hour >= 0 &&
+    hour <= 23 &&
+    Number.isInteger(minute) &&
+    minute >= 0 &&
+    minute <= 59
+  );
+}
+
+/**
  * Normalizes a value that names one instant in time — a finite epoch-ms
- * number or a parseable ISO string — to epoch-ms, or null if it names no
- * usable instant. Unlike `resolveNow`, this never defaults an omitted value
- * to the real clock: `measured_at` has no meaningful "unset means now".
+ * number or a parseable, timezone-explicit string — to epoch-ms, or null
+ * if it names no usable instant. Unlike `resolveNow`, this never defaults
+ * an omitted value to the real clock: `measured_at` has no meaningful
+ * "unset means now". A string that is neither a bare ISO date nor
+ * explicitly zoned is rejected (returns null) rather than silently
+ * resolved against the local timezone of whatever machine happens to run
+ * this check -- see `hasExplicitZoneSuffix` and `BARE_ISO_DATE_PATTERN`.
  */
 export function normalizeInstant(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (
+      trimmed !== '' &&
+      !BARE_ISO_DATE_PATTERN.test(trimmed) &&
+      !hasExplicitZoneSuffix(trimmed)
+    ) {
+      return null;
+    }
   }
   return normalizeTimestamp(value);
 }
