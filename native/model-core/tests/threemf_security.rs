@@ -285,20 +285,31 @@ fn self_closing_elements_do_not_accumulate_depth() {
 
 // --- XML event budget ------------------------------------------------------
 //
-// `MAX_XML_EVENTS` had no coverage through any public entry point (#127): the
-// only thing holding it was a unit test driving `XmlGuard::observe` with
-// hand-made events, so disabling the cap in `limits.rs` left every integration
-// suite green. It has none for a structural reason — reaching 200,000,000
-// events needs a document averaging under ~2.7 bytes per event, which against
-// the 512 MB `MAX_MODEL_XML_BYTES` ceiling means a ~500 MB model part. That is
-// not a fixture anyone will author.
+// `MAX_XML_EVENTS` originally had no coverage through any public entry point
+// (#127): the only thing holding it was a unit test driving `XmlGuard::observe`
+// with hand-made events, so disabling the cap in `limits.rs` left every
+// integration suite green. At the time this had a structural cause — reaching
+// the then-shipped 200,000,000 needed a document averaging under ~2.7 bytes
+// per event, which against the 512 MB `MAX_MODEL_XML_BYTES` ceiling meant a
+// ~500 MB model part, not a fixture anyone would author.
 //
-// So these tests reduce `ParseLimits::max_xml_events` and drive real packages
-// through `parse_bytes_with_limits`. **They do not test the shipped value.**
-// What they test is that the budget is wired to the public path for each
-// document the reader parses, which is the regression that would otherwise be
-// invisible: every `xml_guard()` call site builds its own `XmlGuard`, so a new
-// reader that forgets to `observe` is uncapped and nothing would notice.
+// #165 re-sized the constant from real fixture-corpus density (see the doc
+// comment on `MAX_XML_EVENTS` in `limits.rs` for the measurement) down to
+// 50,000,000, small enough that the densest construct quick-xml emits
+// (`<a/>x`, 2.5 bytes/event) reaches it at ~119 MiB —
+// `the_shipped_budget_rejects_and_admits_at_the_exact_line` below drives that
+// real, shipped value end-to-end.
+//
+// The tests immediately below still reduce `ParseLimits::max_xml_events`
+// rather than use the shipped value, and that remains deliberate: they exist
+// to prove the budget is *wired* to every public entry point (each
+// `xml_guard()` call site builds its own `XmlGuard`, so a reader that forgets
+// to `observe` is uncapped and nothing would notice), which does not need the
+// real ceiling and is cheaper to run at a reduced one. The vendor plate layout
+// path (`charges_the_vendor_plate_layout_part_without_swallowing_the_violation`)
+// still cannot reach the shipped value even after this change —
+// `MAX_METADATA_XML_BYTES` caps that part around 3.2M events regardless of
+// what `MAX_XML_EVENTS` is — so it keeps testing wiring only.
 
 /// Default limits with only the event budget moved, and the deadline removed so
 /// a slow machine cannot masquerade as a budget rejection.
@@ -519,6 +530,57 @@ fn charges_the_vendor_plate_layout_part_without_swallowing_the_violation() {
     let scene = threemf::parse_bytes_with_limits(&data, events_limits(budget))
         .expect("exactly the budget the package needs must parse");
     assert_eq!(scene.plates.len(), 2);
+}
+
+/// Builds the package the same way `package` does, but stores the model part
+/// uncompressed rather than deflating it.
+///
+/// A filler-heavy document at this scale — tens of millions of repetitions of
+/// the same six bytes — compresses at a ratio deflate reaches trivially,
+/// which would trip `MAX_COMPRESSION_RATIO` before the reader ever gets to
+/// count events. Storing the part keeps the ratio at 1:1, so the test below
+/// isolates the control it means to exercise instead of tripping a different
+/// one first.
+fn package_with_stored_model(model_xml: &str) -> Vec<u8> {
+    zip_parts(&[
+        Part::text(CONTENT_TYPES_PART, CONTENT_TYPES_XML),
+        Part::text(RELATIONSHIPS_PART, RELS_XML),
+        Part::text(DEFAULT_MODEL_PART, model_xml).stored(),
+    ])
+}
+
+#[test]
+fn the_shipped_budget_rejects_and_admits_at_the_exact_line() {
+    // #165 re-sized `MAX_XML_EVENTS` from real fixture-corpus density down to
+    // 50,000,000 (from 200,000,000) specifically so the shipped value itself
+    // would become end-to-end testable — the wiring tests above still reduce
+    // the budget because that is all a legitimate document could exercise at
+    // the old value, but this one drives the real, shipped default all the
+    // way through `parse_bytes_with_limits`.
+    //
+    // `model_with_filler_elements(0)` fixes how many events the baseline
+    // (unpadded) document needs; each `<pad/>` after that costs exactly one
+    // more event, pinned by
+    // `charges_every_xml_document_the_reader_walks_against_the_event_budget`.
+    // Subtracting the baseline from `MAX_XML_EVENTS` gives the exact filler
+    // count that makes this document need precisely the shipped budget, so
+    // no bisection is needed at this scale — only two parses of the ~300 MB
+    // result, at the line and one event past it.
+    let baseline = smallest_event_budget_that_parses(&package_with_stored_model(
+        &model_with_filler_elements(0),
+    ));
+    let filler = (MAX_XML_EVENTS - baseline) as usize;
+    let data = package_with_stored_model(&model_with_filler_elements(filler));
+
+    let error = threemf::parse_bytes_with_limits(&data, events_limits(MAX_XML_EVENTS - 1))
+        .expect_err("one event past the shipped budget must be refused");
+    assert_eq!(error.code(), "limit.xml_events", "{error}");
+
+    // The passing side asserts real geometry survived, not merely that
+    // parsing returned `Ok` on an empty scene.
+    let mesh = threemf::parse_bytes_with_limits(&data, events_limits(MAX_XML_EVENTS))
+        .expect("exactly the shipped budget must parse");
+    assert_eq!(mesh.triangle_count(), 1);
 }
 
 #[test]
