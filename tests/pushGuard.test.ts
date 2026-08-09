@@ -37,6 +37,7 @@ import {
   ACK_FOREIGN_ENV,
   PROTECTED_REFS,
   ZERO_SHA,
+  authoredHere,
   evaluateRefUpdate,
   isAncestor,
   parseStdin,
@@ -1732,6 +1733,149 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
       root,
     );
     expect(tip).not.toBe(git(['rev-parse', 'HEAD'], work));
+  });
+});
+
+describe('a reflog old enough to have lost a creation entry is not read as a genuine negative (#315)', () => {
+  // `authoredHere` used to be two-valued: an empty result from
+  // `filterCreatedEntries` meant `false`, full stop. That conflates two
+  // different facts that `git log -g` reports identically — "nothing was ever
+  // created here" and "something was created here, but that entry has since
+  // aged out under `gc.reflogExpireUnreachable` (30 days)". Both leave the
+  // reflog non-empty (arrival entries survive) but with no surviving `commit:`
+  // line, so the old two-valued reading collapsed the second, undecidable case
+  // into the first, decidable one.
+  //
+  // This fixture reaches the undecidable case deterministically, without
+  // waiting 30 days: it clones a seeded remote (so the reflog is non-empty and
+  // has no creation entry — an ordinary "arrived by clone" worktree), then
+  // rewrites `.git/logs/HEAD`'s own timestamp field to 40 days in the past.
+  // That is the reflog's OWN write-time column (distinct from any commit's
+  // author/committer date), which is exactly the field `authoredHere` reads
+  // via `%gd` to decide whether decay could have happened.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-decay-'));
+    remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    // `work` clones AFTER both commits already exist on the remote, so
+    // neither one is ever created here — the reflog gets only a `clone:` and
+    // a `checkout:` entry, never a `commit:` line, whether or not the decay
+    // rewrite below happens.
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // Rewrite the reflog entry's own timestamp (the second-to-last
+    // whitespace-delimited field before the tab-separated subject) to 40 days
+    // ago, leaving the shas, author, and subject untouched. The clone entry's
+    // subject is `clone: from …`, never a `commit:` line, so this fixture has
+    // no creation entry either before or after the rewrite — only its AGE
+    // changes.
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const fortyDaysAgo = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
+    const rewritten = original.replace(
+      /^(\S+ \S+ .+ <[^>]*>) \d+ ([+-]\d{4})(\t.*)$/m,
+      `$1 ${fortyDaysAgo} $2$3`,
+    );
+    expect(rewritten).not.toBe(original);
+    writeFileSync(reflogPath, rewritten);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('has a non-empty reflog with no creation entry, forty days old', () => {
+    // Pinned so a future change to this fixture cannot silently start
+    // exercising a different one of the three cases while keeping this
+    // describe block's name.
+    const entries = git(
+      ['log', '-g', '--date=iso-strict', '--format=%gs|%gd', 'HEAD'],
+      work,
+    );
+    expect(entries).not.toBe('');
+    expect(entries).not.toMatch(/^commit(?: \(initial\))?:/);
+    const [, selector] = entries.split('|');
+    expect(selector).toBeDefined();
+    const writeTime = new Date(
+      selector!.match(/@\{(.+)\}$/)![1]!,
+    ).getTime();
+    const ageDays = (Date.now() - writeTime) / (24 * 60 * 60 * 1000);
+    expect(ageDays).toBeGreaterThanOrEqual(30);
+  });
+
+  it('authoredHere() reports null, not false, once a creation entry could have decayed', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('a naive two-valued reading (`!== true`) cannot tell this apart from a genuine negative', () => {
+    // The falsifier: the OLD, two-valued way of consuming this exact signal
+    // — "anything that is not `true` is `false`" — erases the distinction
+    // this fix exists to preserve. Demonstrated directly against the tri-state
+    // value itself, not against a re-implementation, so this fails the moment
+    // `authoredHere` stops returning `null` here for any reason.
+    const originalCwd = process.cwd();
+    let value: boolean | null;
+    try {
+      process.chdir(work);
+      value = authoredHere();
+    } finally {
+      process.chdir(originalCwd);
+    }
+    const twoValuedReading = value === true;
+    expect(twoValuedReading).toBe(false);
+    // The naive reading and the correct one agree on ALLOW/REFUSE only by the
+    // accident that both `false` and `null` currently refuse in
+    // `evaluateRefUpdate`. What the naive reading loses is visible instead in
+    // the census: `census-ownership-evidence.mjs` needs `=== null` to report
+    // "cannot determine" rather than "authored nothing", and a two-valued
+    // reading has already destroyed the information it would need to do that.
+    expect(value).not.toBe(false);
+    expect(value).toBeNull();
+  });
+
+  it('still refuses the push, because null is read exactly like false downstream', () => {
+    // The whole point of the tri-state refinement is that it changes nothing
+    // about the guard's own decision — only what it reports to observers like
+    // the census. Proven here by driving a real discard through the real hook
+    // against this exact fixture: `work` never created anything (its
+    // `authoredHere()` is `null`, pinned above), and the commit it is about
+    // to discard was created by `session-other`, never by this worktree.
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+    expect(stderr).toContain('push-guard.unattributed-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
   });
 });
 

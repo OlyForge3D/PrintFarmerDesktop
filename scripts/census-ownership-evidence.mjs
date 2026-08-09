@@ -34,15 +34,20 @@
 //      recomputes that check every run instead of asserting it as an
 //      invariant, which is the only way a real regression would be caught.
 //
-// This intentionally does NOT distinguish "never authored anything" from
-// "authored something whose reflog entry expired" — that is the two-valued-
-// answer-to-a-three-valued-question gap #336 names via #315, and resolving it
-// needs a change to `push-guard.mjs` itself, not to this census. This script
-// only re-takes the same measurement the issue's baseline used, so successive
-// runs are comparable.
+// This USED TO NOT distinguish "never authored anything" from "authored
+// something whose reflog entry expired" — the two-valued-answer-to-a-
+// three-valued-question gap #336 named via #315. `push-guard.mjs`'s
+// `authoredHere()` is now tri-state (`true` / `false` / `null`): `null` means
+// the reflog cannot be read at all, or its own visible coverage window is not
+// provably younger than `gc.reflogExpireUnreachable`, so "no creation entry"
+// and "the creation entry already expired" cannot be told apart. This census
+// reports that third value as its own bucket (`indeterminate`) rather than
+// folding it into `false`, so a population drifting out of the reflog's
+// coverage window is visible as a widening `indeterminate` count instead of a
+// silent slide from `true` into `false`.
 //
 // `formatReport` (and `runCensus`) now also append a `` ```census-measured ``
-// fenced citation block naming this run's four numbers and a `measured_at`
+// fenced citation block naming this run's numbers and a `measured_at`
 // timestamp. This is the durable half of the #336 fix: the census itself
 // already self-re-derives on every run, but a *citation* of a past run
 // (pasted into an issue or PR) does not carry any signal of its own age.
@@ -74,11 +79,20 @@ export function listWorktreePaths(cwd = process.cwd()) {
  * see if it ran there. Restores the original cwd even when the worktree is
  * missing or unreadable (a stale entry `git worktree list` did not prune).
  *
+ * `ownershipEvidence` is tri-state (#315): `true` a creation entry was found,
+ * `false` none was found and the reflog's coverage window rules out decay,
+ * `null` the reflog cannot be read at all or the coverage window cannot rule
+ * out that a creation entry once existed and has since expired under
+ * `gc.reflogExpireUnreachable`. A worktree this function itself could not
+ * read (`ok: false`) reports `false` here as a filler value only — it is
+ * excluded from every bucket by `summarizeCensus`, which counts strictly over
+ * `ok: true` entries.
+ *
  * @param {string} worktreePath
  * @returns {{
  *   path: string,
  *   ok: boolean,
- *   ownershipEvidence: boolean,
+ *   ownershipEvidence: boolean | null,
  *   ownCommits: string[],
  *   error?: string,
  * }}
@@ -113,17 +127,29 @@ export function measureWorktree(worktreePath) {
 }
 
 /**
- * The four census numbers, plus which worktrees landed in each bucket and
+ * The census numbers, plus which worktrees landed in each bucket and
  * which shas (if any) were claimed as "created here" by more than one
  * worktree — the collision that would make `ownershipEvidence` untrustworthy
  * rather than merely decayed.
+ *
+ * `ownershipEvidence` is tri-state (#315): entries are split strictly by
+ * `=== true`, `=== false`, and `=== null` so a worktree whose reflog cannot
+ * rule out decay lands in `indeterminateEntries`, never silently folded into
+ * `falseEntries` the way a `!ownershipEvidence` test would fold it.
  *
  * @param {ReturnType<typeof measureWorktree>[]} measurements
  */
 export function summarizeCensus(measurements) {
   const evaluable = measurements.filter((entry) => entry.ok);
-  const trueEntries = evaluable.filter((entry) => entry.ownershipEvidence);
-  const falseEntries = evaluable.filter((entry) => !entry.ownershipEvidence);
+  const trueEntries = evaluable.filter(
+    (entry) => entry.ownershipEvidence === true,
+  );
+  const falseEntries = evaluable.filter(
+    (entry) => entry.ownershipEvidence === false,
+  );
+  const indeterminateEntries = evaluable.filter(
+    (entry) => entry.ownershipEvidence === null,
+  );
 
   const claimants = new Map();
   for (const entry of trueEntries) {
@@ -143,10 +169,12 @@ export function summarizeCensus(measurements) {
     unreadable: measurements.length - evaluable.length,
     ownershipEvidenceTrue: trueEntries.length,
     ownershipEvidenceFalse: falseEntries.length,
+    ownershipEvidenceIndeterminate: indeterminateEntries.length,
     wronglyAccused: accusedWorktrees.size,
     collisions,
     trueEntries,
     falseEntries,
+    indeterminateEntries,
     unreadableEntries: measurements.filter((entry) => !entry.ok),
   };
 }
@@ -167,6 +195,7 @@ export function formatCensusCitation(summary, { measuredAt } = {}) {
     `true: ${summary.ownershipEvidenceTrue}`,
     `false: ${summary.ownershipEvidenceFalse}`,
     `accused: ${summary.wronglyAccused}`,
+    `indeterminate: ${summary.ownershipEvidenceIndeterminate}`,
     `measured_at: ${timestamp}`,
     '```',
   ].join('\n');
@@ -178,13 +207,14 @@ export function formatReport(summary, { measuredAt } = {}) {
     `worktrees total          ${summary.worktreesTotal}`,
     `ownershipEvidence = true  ${summary.ownershipEvidenceTrue}`,
     `ownershipEvidence = false ${summary.ownershipEvidenceFalse}`,
+    `ownershipEvidence = null (indeterminate) ${summary.ownershipEvidenceIndeterminate}`,
     `wrongly ACCUSED           ${summary.wronglyAccused}`,
   ];
   if (summary.unreadable > 0) {
     lines.push(
       '',
       `${summary.unreadable} worktree(s) could not be measured (stale entries or unreadable ` +
-        'reflogs) and are excluded from the true/false split above but counted in the total:',
+        'reflogs) and are excluded from the true/false/indeterminate split above but counted in the total:',
     );
     for (const entry of summary.unreadableEntries) {
       lines.push(`  ${entry.path} — ${entry.error}`);

@@ -61,7 +61,7 @@ export interface PushFacts {
    * to record. Deliberately not optional: a caller that omits it would silently
    * get the over-claiming behaviour this field was added to remove.
    */
-  ownershipEvidence: boolean;
+  ownershipEvidence: boolean | null;
   ack?: string | undefined;
   ackForeign?: string | undefined;
   /**
@@ -143,7 +143,14 @@ export function readEquivalentCommits(
 ): Set<string>;
 export function readReflogSessions(): Set<string>;
 export function readOwnedCommits(): Set<string>;
-export function authoredHere(): boolean;
+/**
+ * Tri-state (#315): `true` a creation entry was found, `false` none was
+ * found and the reflog's coverage window rules out `gc.reflogExpireUnreachable`
+ * decay, `null` the reflog cannot be read at all or its coverage window
+ * cannot rule out that a creation entry once existed and has since expired.
+ */
+export function authoredHere(): boolean | null;
+export const REFLOG_EVIDENCE_DECAY_DAYS: number;
 
 /**
  * Canonical home of the origin label. `safe-force-push.mjs` re-exports this
@@ -161,7 +168,12 @@ export function originLabel(
 ): string;
 export function readReflogEntries(
   ref: string,
-): { sha: string; reflogSubject: string; sessions: string[] }[];
+): {
+  sha: string;
+  reflogSubject: string;
+  date: Date | null;
+  sessions: string[];
+}[];
 export function gatherFacts(
   update: RefUpdate,
   remote: string,

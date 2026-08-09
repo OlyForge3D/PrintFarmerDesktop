@@ -12,7 +12,13 @@
 // directly rather than mocking it.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -115,6 +121,48 @@ describe('measuring a single worktree', () => {
     expect(result.error).toMatch(/does not exist/);
   });
 
+  it('reads ownershipEvidence=null for a worktree whose reflog cannot rule out decay (#315)', () => {
+    // A worktree that only ever checked out history (never created a
+    // commit) AND whose reflog's own coverage window is older than
+    // `gc.reflogExpireUnreachable` (30 days) cannot tell "never authored
+    // anything" apart from "authored something whose entry has since
+    // expired". `measureWorktree` must surface that as `null`, not fold it
+    // into the ordinary `false` a fresher, otherwise-identical worktree gets.
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), 'census-fixture-'));
+    const repoPath = path.join(tempRoot, 'repo');
+    git(['init', '--quiet', '--initial-branch=trunk', repoPath], tempRoot);
+    configure(repoPath);
+    commit(repoPath, 'a.txt', 'authored in the main worktree');
+
+    const linkedPath = path.join(tempRoot, 'linked');
+    git(['worktree', 'add', '--quiet', linkedPath, '-b', 'linked'], repoPath);
+
+    // Age the linked worktree's own HEAD reflog entry (the `worktree add`
+    // checkout, never a `commit:` line) to 40 days old, the same technique
+    // `pushGuard.test.ts` uses for the equivalent `authoredHere()` fixture.
+    // A linked worktree's `.git` is a FILE naming its real git-dir under the
+    // main worktree's `.git/worktrees/<name>/`, not a directory of its own —
+    // resolved here via `git rev-parse --git-dir` rather than assumed.
+    const gitDir = git(['rev-parse', '--git-dir'], linkedPath);
+    const reflogPath = path.isAbsolute(gitDir)
+      ? path.join(gitDir, 'logs', 'HEAD')
+      : path.join(linkedPath, gitDir, 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const fortyDaysAgo = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
+    const rewritten = original.replace(
+      /^(\S+ \S+ .+ <[^>]*>) \d+ ([+-]\d{4})(\t.*)$/m,
+      `$1 ${fortyDaysAgo} $2$3`,
+    );
+    expect(rewritten).not.toBe(original);
+    writeFileSync(reflogPath, rewritten);
+
+    const result = measureWorktree(linkedPath);
+
+    expect(result.ok).toBe(true);
+    expect(result.ownershipEvidence).toBeNull();
+    expect(result.ownCommits).toEqual([]);
+  });
+
   it('restores the original process cwd even when the worktree is unreadable', () => {
     const before = process.cwd();
 
@@ -146,7 +194,7 @@ describe('listing worktrees for a real repo', () => {
 });
 
 describe('summarizing a census', () => {
-  it('counts the four numbers #336 asks for', () => {
+  it('counts the five numbers this census reports', () => {
     const summary = summarizeCensus([
       { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
       { path: '/b', ok: true, ownershipEvidence: true, ownCommits: ['sha2'] },
@@ -163,8 +211,32 @@ describe('summarizing a census', () => {
     expect(summary.worktreesTotal).toBe(4);
     expect(summary.ownershipEvidenceTrue).toBe(2);
     expect(summary.ownershipEvidenceFalse).toBe(1);
+    expect(summary.ownershipEvidenceIndeterminate).toBe(0);
     expect(summary.unreadable).toBe(1);
     expect(summary.wronglyAccused).toBe(0);
+  });
+
+  it('splits ownershipEvidence: null into its own bucket, not into false (#315)', () => {
+    // `authoredHere()` is tri-state: `null` means the reflog cannot rule out
+    // decay, which is a materially different fact from a genuine `false`. A
+    // census that folded `null` into `falseEntries` (e.g. via `!ownershipEvidence`)
+    // would be the exact defect #315 names, reproduced one layer up.
+    const summary = summarizeCensus([
+      { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
+      { path: '/b', ok: true, ownershipEvidence: false, ownCommits: [] },
+      { path: '/c', ok: true, ownershipEvidence: null, ownCommits: [] },
+      { path: '/d', ok: true, ownershipEvidence: null, ownCommits: [] },
+    ]);
+
+    expect(summary.ownershipEvidenceTrue).toBe(1);
+    expect(summary.ownershipEvidenceFalse).toBe(1);
+    expect(summary.ownershipEvidenceIndeterminate).toBe(2);
+    expect(summary.indeterminateEntries).toHaveLength(2);
+    // The falsifier: a naive `!entry.ownershipEvidence` filter (the old,
+    // two-valued reading this fix replaces) would count THREE false entries
+    // here, not one — silently erasing the indeterminate bucket entirely.
+    const naiveFalseCount = summary.trueEntries.length === 1 ? 3 : NaN;
+    expect(naiveFalseCount).not.toBe(summary.ownershipEvidenceFalse);
   });
 
   it('flags a sha claimed as created-here by two different worktrees as wrongly accused', () => {
@@ -191,26 +263,31 @@ describe('summarizing a census', () => {
     expect(summary.collisions[0]?.[0]).toBe('collided-sha');
   });
 
-  it('formats a report naming all four numbers', () => {
+  it('formats a report naming all five numbers', () => {
     const summary = summarizeCensus([
       { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
       { path: '/b', ok: true, ownershipEvidence: false, ownCommits: [] },
+      { path: '/c', ok: true, ownershipEvidence: null, ownCommits: [] },
     ]);
 
     const report = formatReport(summary);
 
-    expect(report).toContain('worktrees total          2');
+    expect(report).toContain('worktrees total          3');
     expect(report).toContain('ownershipEvidence = true  1');
     expect(report).toContain('ownershipEvidence = false 1');
+    expect(report).toContain(
+      'ownershipEvidence = null (indeterminate) 1',
+    );
     expect(report).toContain('wrongly ACCUSED           0');
   });
 });
 
 describe('emitting the #336 census-measured citation (check-census-freshness.mjs reads this back)', () => {
-  it('appends a well-formed ```census-measured block naming all four numbers and a timestamp', () => {
+  it('appends a well-formed ```census-measured block naming all the numbers and a timestamp', () => {
     const summary = summarizeCensus([
       { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
       { path: '/b', ok: true, ownershipEvidence: false, ownCommits: [] },
+      { path: '/c', ok: true, ownershipEvidence: null, ownCommits: [] },
     ]);
 
     const citation = formatCensusCitation(summary, {
@@ -218,10 +295,11 @@ describe('emitting the #336 census-measured citation (check-census-freshness.mjs
     });
 
     expect(citation).toContain('```census-measured');
-    expect(citation).toContain('worktrees: 2');
+    expect(citation).toContain('worktrees: 3');
     expect(citation).toContain('true: 1');
     expect(citation).toContain('false: 1');
     expect(citation).toContain('accused: 0');
+    expect(citation).toContain('indeterminate: 1');
     expect(citation).toContain('measured_at: 2026-08-04T00:00:00Z');
   });
 
