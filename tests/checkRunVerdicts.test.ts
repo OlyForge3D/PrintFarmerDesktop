@@ -259,6 +259,36 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
+  it('REGRESSION: refuses a still-open run carrying a non-null completed_at instead of silently accepting it', () => {
+    // The same contradiction as a non-null conclusion on a still-open run,
+    // just on the timestamp instead of the verdict field: GitHub only sets
+    // `completed_at` once `status` becomes `completed`. A queued/in_progress
+    // run reporting one anyway is not a real API shape, and silently
+    // accepting it risks a caller inferring the run has finished (from
+    // completed_at) when status says otherwise.
+    const checkRuns = [
+      checkRun({
+        status: 'in_progress',
+        conclusion: null,
+        started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:59:29Z',
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /has status "in_progress" but a non-null completed_at/,
+    );
+  });
+
+  it.each(['', '   ', '\t', '\n'])(
+    'REGRESSION: refuses a whitespace-only check name %j instead of silently accepting it',
+    (name) => {
+      const checkRuns = [checkRun({ name })];
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+        /has no non-empty name/,
+      );
+    },
+  );
+
   it('REGRESSION: refuses a completed run with conclusion: null instead of silently reporting it pending', () => {
     // GitHub documents `conclusion` as always set once a run's `status` is
     // `completed` -- `completed` with `conclusion: null` is not a real API
@@ -869,6 +899,41 @@ describe('main', () => {
             completed_at: null,
           }),
         ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a still-open run carrying a non-null completed_at', () => {
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Malformed in-progress check',
+            status: 'in_progress',
+            conclusion: null,
+            started_at: '2026-08-06T15:58:29Z',
+            completed_at: '2026-08-06T15:59:29Z',
+          }),
+        ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a whitespace-only check name', () => {
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([checkRun({ id: 1, name: '   ' })]),
       })),
       () => undefined,
     );

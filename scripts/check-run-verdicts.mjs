@@ -121,7 +121,7 @@ function parseCheckRun(checkRun, index) {
   const completedAtRaw = /** @type {any} */ (checkRun)?.completed_at;
   const id = /** @type {any} */ (checkRun)?.id;
   const conclusion = /** @type {any} */ (checkRun)?.conclusion ?? null;
-  if (typeof name !== 'string' || name === '') {
+  if (typeof name !== 'string' || name.trim() === '') {
     throw new Error(`check run ${index + 1} has no non-empty name`);
   }
   if (typeof status !== 'string' || status === '') {
@@ -206,6 +206,18 @@ function parseCheckRun(checkRun, index) {
     ) {
       throw new Error(
         `check run ${index + 1} (${name}) has an invalid completed_at`,
+      );
+    }
+    if (status !== 'completed') {
+      // The same contradiction as a non-null conclusion on a still-open
+      // run, just on the timestamp instead of the verdict field: GitHub
+      // only sets `completed_at` once a run's status becomes `completed`.
+      // A queued/in_progress run reporting one anyway is not a real API
+      // shape, and silently accepting it (the prior behaviour) risks a
+      // caller inferring the run has finished when `status` says
+      // otherwise -- fail closed instead of trusting either field alone.
+      throw new Error(
+        `check run ${index + 1} (${name}) has status ${JSON.stringify(status)} but a non-null completed_at -- only a completed run should carry one`,
       );
     }
     completedAt = completedAtRaw;
