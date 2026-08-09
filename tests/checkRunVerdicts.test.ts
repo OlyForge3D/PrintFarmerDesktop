@@ -39,6 +39,7 @@ function checkRun(overrides: Record<string, unknown>) {
     name: 'some check',
     status: 'completed',
     conclusion: 'success',
+    created_at: '2026-08-06T15:58:00Z',
     started_at: '2026-08-06T15:58:29Z',
     completed_at: '2026-08-06T15:59:29Z',
     ...overrides,
@@ -164,6 +165,83 @@ describe('latestCheckRunsByName', () => {
     expect(() => latestCheckRunsByName(checkRuns)).toThrow(
       /cannot determine the latest attempt/,
     );
+  });
+
+  it("REGRESSION: a later, unambiguously-newer run resolves an earlier ambiguous tie between two now-superseded runs (doesn't throw)", () => {
+    // Ripley (round 7): the prior reduce-based implementation compared
+    // pairwise against only the single "current best" and threw as soon as
+    // it saw an ambiguous tie -- even if a later run in the input array was
+    // unambiguously newer than both tied candidates. Two OLDER completed
+    // runs that tie on both started_at and completed_at, followed by a
+    // THIRD, later, completed run that clearly started and finished after
+    // both of them: the third run is the real answer, and its existence
+    // means the earlier tie between the first two never needed to be
+    // resolved at all. This must not throw, and must report run 3's own
+    // verdict (a genuine failure, not masked as undetermined).
+    const checkRuns = [
+      checkRun({
+        id: 20,
+        name: 'Desktop',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
+        conclusion: 'cancelled',
+      }),
+      checkRun({
+        id: 21,
+        name: 'Desktop',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
+        conclusion: 'success',
+      }),
+      checkRun({
+        id: 22,
+        name: 'Desktop',
+        started_at: '2026-08-06T17:00:00Z',
+        completed_at: '2026-08-06T17:00:05Z',
+        conclusion: 'failure',
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Desktop')?.id).toBe(22);
+    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
+      VERDICT_FAILED,
+    );
+  });
+
+  it('REGRESSION (end-to-end): main() correctly reports the real verdict when an earlier ambiguous tie is resolved by a later unambiguous run', () => {
+    const checkRuns = [
+      checkRun({
+        id: 20,
+        name: 'Desktop',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
+        conclusion: 'cancelled',
+      }),
+      checkRun({
+        id: 21,
+        name: 'Desktop',
+        started_at: '2026-08-06T16:00:00Z',
+        completed_at: '2026-08-06T16:00:05Z',
+        conclusion: 'success',
+      }),
+      checkRun({
+        id: 22,
+        name: 'Desktop',
+        started_at: '2026-08-06T17:00:00Z',
+        completed_at: '2026-08-06T17:00:05Z',
+        conclusion: 'failure',
+      }),
+    ];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload(checkRuns),
+      })),
+      () => {},
+    );
+    expect(result).toBe(EXIT_FAILED);
   });
 
   it('REGRESSION: breaks a completed_at tie by started_at, not id, when a later rerun has a LOWER id', () => {
@@ -625,7 +703,7 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('the latest-run selection still works when the newest run for a name is queued with no started_at', () => {
+  it('the latest-run selection still works when the newest run for a name is queued with no started_at, created after the completed run finished', () => {
     const checkRuns = [
       checkRun({
         id: 1,
@@ -638,6 +716,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'queued',
         conclusion: null,
+        created_at: '2026-08-06T16:00:00Z',
         started_at: null,
         completed_at: null,
       }),
@@ -648,6 +727,76 @@ describe('latestCheckRunsByName', () => {
     expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
       VERDICT_PENDING,
     );
+  });
+
+  it("REGRESSION: a stale queued run created before a completed run finished does not mask that completed run's real (failed) verdict", () => {
+    // Vasquez (round 7): a same-name `queued` run with `started_at: null`
+    // was unconditionally treated as newer than any completed run for that
+    // name, with no bound at all. That is a false-pass vector: an orphaned
+    // queued run -- created and left behind before a later, completed
+    // `failure` for the same check -- would mask that real failure behind
+    // a `pending` reading, letting `main` exit clean (0) when a real check
+    // actually failed. Bound the queued run the same way an in_progress
+    // run is already bounded: it only wins if it was created at or after
+    // the completed run's own completed_at.
+    const checkRuns = [
+      checkRun({
+        id: 1,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        created_at: '2026-08-06T10:00:00Z',
+        started_at: null,
+        completed_at: null,
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'failure',
+        created_at: '2026-08-06T15:58:00Z',
+        started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:59:29Z',
+      }),
+    ];
+    const latest = latestCheckRunsByName(checkRuns);
+    expect(latest.get('Desktop')?.id).toBe(2);
+    expect(classifyConclusion(latest.get('Desktop')!.conclusion)).toBe(
+      VERDICT_FAILED,
+    );
+  });
+
+  it('REGRESSION (end-to-end): main() reports the real failure instead of a false pass when a stale queued run masks a completed failure', () => {
+    const checkRuns = [
+      checkRun({
+        id: 1,
+        name: 'Desktop',
+        status: 'queued',
+        conclusion: null,
+        created_at: '2026-08-06T10:00:00Z',
+        started_at: null,
+        completed_at: null,
+      }),
+      checkRun({
+        id: 2,
+        name: 'Desktop',
+        status: 'completed',
+        conclusion: 'failure',
+        created_at: '2026-08-06T15:58:00Z',
+        started_at: '2026-08-06T15:58:29Z',
+        completed_at: '2026-08-06T15:59:29Z',
+      }),
+    ];
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload(checkRuns),
+      })),
+      () => {},
+    );
+    expect(result).toBe(EXIT_FAILED);
   });
 
   it('REGRESSION: fails closed (throws) when two still-open runs for the same name have neither started yet', () => {

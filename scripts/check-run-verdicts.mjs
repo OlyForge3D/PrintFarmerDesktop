@@ -179,13 +179,14 @@ export function classifyConclusion(conclusion) {
 /**
  * @param {unknown} checkRun
  * @param {number} index
- * @returns {{name: string, displayName: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, id: number}}
+ * @returns {{name: string, displayName: string, conclusion: string | null, status: string, startedAt: string | null, completedAt: string | null, createdAt: string, id: number}}
  */
 function parseCheckRun(checkRun, index) {
   const name = /** @type {any} */ (checkRun)?.name;
   const status = /** @type {any} */ (checkRun)?.status;
   const startedAtRaw = /** @type {any} */ (checkRun)?.started_at;
   const completedAtRaw = /** @type {any} */ (checkRun)?.completed_at;
+  const createdAtRaw = /** @type {any} */ (checkRun)?.created_at;
   const id = /** @type {any} */ (checkRun)?.id;
   const conclusion = /** @type {any} */ (checkRun)?.conclusion ?? null;
   if (typeof name !== 'string' || name.trim() === '') {
@@ -339,6 +340,22 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${sanitizedName}) has completed_at (${completedAt}) earlier than started_at (${startedAt})`,
     );
   }
+  // Unlike `started_at`/`completed_at`, GitHub sets `created_at` the moment
+  // a check run is created and never leaves it null, regardless of status
+  // -- it is the one timestamp every run, however early in its lifecycle,
+  // is guaranteed to carry. That makes it the only available signal for
+  // bounding a still-`queued` run (no `started_at` yet) against a
+  // `completed` run for the same name: see `isNewerCheckRun`'s use of it
+  // below. Missing or malformed `created_at` is therefore rejected the
+  // same way the other timestamps are, for every run regardless of status.
+  if (
+    typeof createdAtRaw !== 'string' ||
+    !isValidGitHubTimestamp(createdAtRaw)
+  ) {
+    throw new Error(
+      `check run ${index + 1} (${sanitizedName}) has an invalid created_at`,
+    );
+  }
   // A run whose status is not yet 'completed' has not settled on a
   // conclusion regardless of what the field carries, so it is forced to
   // null here rather than trusted -- the same "don't trust a field the API
@@ -350,13 +367,27 @@ function parseCheckRun(checkRun, index) {
     status,
     startedAt,
     completedAt,
+    createdAt: createdAtRaw,
     id,
   };
 }
 
 /**
- * Compare two parsed check runs for the same name and report whether
- * `candidate` should replace `current` as "the latest attempt".
+ * Compare two parsed check runs for the same name and report which one is
+ * the more recent attempt: `1` if `a` is strictly newer than `b`, `-1` if
+ * `a` is strictly older, or `0` if the two cannot be safely ordered from
+ * the data available (a genuine tie, or two runs neither of which can be
+ * proven newer than the other).
+ *
+ * This never throws -- unlike an earlier version of this comparator, an
+ * unresolvable pair here does not necessarily mean the whole "latest
+ * attempt for this name" question is unresolvable. A later run elsewhere
+ * in the list can still unambiguously outrank both members of an earlier
+ * ambiguous pair (see `latestCheckRunsByName`, which is what actually
+ * decides whether an unresolved `0` is fatal). Deciding that here, per
+ * pair, in isolation, was the bug: it threw as soon as it observed the
+ * first ambiguous pair for a name, even when a run appearing later in the
+ * input array would have unambiguously resolved which run is truly latest.
  *
  * Neither `id` ordering nor a single timestamp field is sound on its own:
  *
@@ -372,23 +403,31 @@ function parseCheckRun(checkRun, index) {
  * Instead: a run that is still open (`status !== 'completed'`) is ordinarily
  * treated as more current than one that has already completed for the same
  * name -- an in-flight attempt is usually the live state of that check.
- * But that preference is *bounded*, not unconditional: an open run that has
- * actually started (`started_at` non-null) only wins if it started at or
- * after the completed run's own `started_at`. Without that bound, a genuinely
- * stale `in_progress` run -- a runner that hung or never reported back,
- * started well before some later completed rerun -- would permanently mask
- * that completed run's real verdict behind a `pending` reading forever,
- * which is exactly the kind of "signal reads as something other than what
- * actually happened" defect this file exists to close. A still-`queued` run
- * with no `started_at` yet carries no timestamp to bound against, so it is
- * still treated as the newer attempt (the same "not yet started is still
- * more current" reasoning as before) -- the malformed/adversarial case this
- * file cannot yet observe is a hung `in_progress` run, not a queued one.
+ * But that preference is *bounded*, not unconditional:
+ *
+ * - An open run that has actually started (`started_at` non-null) only wins
+ *   if it started at or after the completed run's own `started_at`. Without
+ *   that bound, a genuinely stale `in_progress` run -- a runner that hung or
+ *   never reported back, started well before some later completed rerun --
+ *   would permanently mask that completed run's real verdict behind a
+ *   `pending` reading forever.
+ * - A still-`queued` open run has no `started_at` to bound against, but it
+ *   is guaranteed a `created_at` (set the moment GitHub creates the run,
+ *   before it has even been scheduled -- see `parseCheckRun`). That bounds
+ *   it the same way: the queued run only wins if it was created at or after
+ *   the completed run's own `completed_at`. A queued run created BEFORE the
+ *   completed run had even finished cannot be "the newer attempt" -- it is
+ *   a stale/orphaned run sitting in the queue from before that completion,
+ *   and letting it unconditionally win (the prior behaviour) would let such
+ *   an orphaned queued entry mask a real, already-known `failure` behind a
+ *   `pending` reading, which is exactly the false-pass this file exists to
+ *   close.
+ *
  * Between two runs in the same state (both completed, or both still open),
  * compare the timestamp that state guarantees is present: `completed_at` for
  * two completed runs (always non-null once completed), `started_at` for two
  * still-open runs (may still be null on both if neither has started; that
- * case throws below rather than guessing).
+ * case returns `0` rather than guessing).
  *
  * `completed_at` is only second-resolution, so two reruns of a fast job can
  * genuinely tie on it -- live Checks API data on this repo showed exactly
@@ -406,99 +445,91 @@ function parseCheckRun(checkRun, index) {
  * there is no timestamp left this API guarantees is monotonic, and id is
  * not a safe way to break that tie either (the entire reason id ordering
  * was abandoned as this file's primary signal in the first place). Rather
- * than trust id as a last resort, this throws: an unresolvable tie means
- * "which run is truly latest" cannot be determined from the data available,
- * and guessing risks silently picking the stale run -- exactly the failure
- * mode this file exists to close. Callers (`buildVerdicts`/`main`) already
- * treat a thrown error as undetermined, so this fails closed rather than
- * reporting a possibly-wrong verdict as authoritative.
+ * than trust id as a last resort, this returns `0`: the pair is genuinely
+ * unresolvable, and it is `latestCheckRunsByName`'s job to decide whether
+ * that unresolved pair actually matters for the final answer.
  *
- * @param {ReturnType<typeof parseCheckRun>} candidate
- * @param {ReturnType<typeof parseCheckRun>} current
- * @returns {boolean}
+ * @param {ReturnType<typeof parseCheckRun>} a
+ * @param {ReturnType<typeof parseCheckRun>} b
+ * @returns {1 | -1 | 0}
  */
-function isNewerCheckRun(candidate, current) {
-  const candidateOpen = candidate.status !== 'completed';
-  const currentOpen = current.status !== 'completed';
-  if (candidateOpen !== currentOpen) {
-    // Exactly one of the two is still open (in_progress/queued/etc). It is
-    // ordinarily the live state of this check -- but only if it is not
-    // provably stale relative to the completed run. If the open run has
-    // actually started, bound the preference by comparing its started_at to
-    // the completed run's started_at (completed runs always have a non-null
-    // started_at, enforced by parseCheckRun): the open run only wins if it
-    // began at or after the completed run did. An open run that started
-    // BEFORE the completed run's own started_at cannot be "the newer
-    // attempt" -- the completed run started later and has already finished,
-    // so it is the real latest state, and the open run is a stale/hung
-    // leftover that must not mask it. A still-queued open run with no
-    // started_at yet has no timestamp to bound against, so it keeps the
-    // prior "not yet started is still more current" treatment.
-    const open = candidateOpen ? candidate : current;
-    const completed = candidateOpen ? current : candidate;
+function compareCheckRunRecency(a, b) {
+  const aOpen = a.status !== 'completed';
+  const bOpen = b.status !== 'completed';
+  if (aOpen !== bOpen) {
+    const open = aOpen ? a : b;
+    const completed = aOpen ? b : a;
+    let openWins;
     if (open.startedAt !== null) {
-      const openStartedAtOrAfterCompleted =
+      openWins =
         Date.parse(open.startedAt) >=
         Date.parse(/** @type {string} */ (completed.startedAt));
-      if (!openStartedAtOrAfterCompleted) {
-        return !candidateOpen;
-      }
+    } else {
+      // Still queued, never started: bound against the completed run's
+      // completed_at using the one timestamp a queued run is guaranteed to
+      // carry, created_at (see the doc comment above and parseCheckRun).
+      openWins =
+        Date.parse(open.createdAt) >=
+        Date.parse(/** @type {string} */ (completed.completedAt));
     }
-    return candidateOpen;
+    if (openWins) return aOpen ? 1 : -1;
+    return aOpen ? -1 : 1;
   }
-  if (!candidateOpen) {
+  if (!aOpen) {
     // Both completed: compare the timestamp every completed run is
     // required to carry. A tie on `completed_at` (only second-resolution)
     // falls through to `started_at` -- still a monotonic, timestamp-based
     // signal, not id.
-    if (candidate.completedAt !== current.completedAt) {
-      return (
-        Date.parse(/** @type {string} */ (candidate.completedAt)) >
-        Date.parse(/** @type {string} */ (current.completedAt))
-      );
+    if (a.completedAt !== b.completedAt) {
+      return Date.parse(/** @type {string} */ (a.completedAt)) >
+        Date.parse(/** @type {string} */ (b.completedAt))
+        ? 1
+        : -1;
     }
-    if (candidate.startedAt !== current.startedAt) {
+    if (a.startedAt !== b.startedAt) {
       // Both completed, so both are guaranteed a non-null started_at by
       // parseCheckRun -- no null-handling needed here, unlike the
       // still-open branch below.
-      return (
-        Date.parse(/** @type {string} */ (candidate.startedAt)) >
-        Date.parse(/** @type {string} */ (current.startedAt))
-      );
+      return Date.parse(/** @type {string} */ (a.startedAt)) >
+        Date.parse(/** @type {string} */ (b.startedAt))
+        ? 1
+        : -1;
     }
-    throw new Error(
-      `cannot determine the latest attempt for check "${candidate.displayName}" -- runs ${candidate.id} and ${current.id} have identical started_at and completed_at, and no other signal this API provides is a safe way to order them`,
-    );
+    return 0;
   }
   // Both still open: prefer whichever has actually started over one still
   // queued with no started_at, since that is strictly more information
   // about progress; between two with comparable started_at, compare it
   // directly. If neither has started at all, there is no timestamp signal
-  // to compare -- fail closed the same way as the completed/completed tie
-  // above rather than trusting id.
-  if (candidate.startedAt === null && current.startedAt === null) {
-    throw new Error(
-      `cannot determine the latest attempt for check "${candidate.displayName}" -- runs ${candidate.id} and ${current.id} have neither started yet, and no other signal this API provides is a safe way to order them`,
-    );
+  // to compare.
+  if (a.startedAt === null && b.startedAt === null) return 0;
+  if (a.startedAt === null) return -1;
+  if (b.startedAt === null) return 1;
+  if (a.startedAt !== b.startedAt) {
+    return Date.parse(a.startedAt) > Date.parse(b.startedAt) ? 1 : -1;
   }
-  if (candidate.startedAt === null) return false;
-  if (current.startedAt === null) return true;
-  if (candidate.startedAt !== current.startedAt) {
-    return Date.parse(candidate.startedAt) > Date.parse(current.startedAt);
-  }
-  throw new Error(
-    `cannot determine the latest attempt for check "${candidate.displayName}" -- runs ${candidate.id} and ${current.id} share the same started_at with neither completed, and no other signal this API provides is a safe way to order them`,
-  );
+  return 0;
 }
 
 /**
  * Reduce every check run to the single most-recent run per name.
  *
- * See `isNewerCheckRun` for why "most recent" cannot be determined by id
- * ordering or by a single timestamp field alone. `gh pr checks` itself
- * renders only the latest run for a given name, so reporting anything else
- * here would disagree with the tool this replaces along a second axis the
- * issue never raised.
+ * `compareCheckRunRecency` can return "unresolvable" (`0`) for a given pair
+ * without that meaning the name's overall latest run is unresolvable --  a
+ * later run in the input can still unambiguously outrank both members of an
+ * earlier ambiguous pair. So this cannot simply fold the list with a single
+ * "current best" and bail out on the first ambiguous pair it meets (that
+ * was the prior, buggy behaviour): it tracks every run *not yet proven
+ * older than some other run seen so far* (the "undominated" set) and only
+ * commits to a verdict once the whole list has been seen. If more than one
+ * run remains undominated at the end, that ambiguity is real and
+ * unresolvable, and only then does this throw -- callers (`buildVerdicts`/
+ * `main`) already treat a thrown error as undetermined, so this fails
+ * closed rather than reporting a possibly-wrong verdict as authoritative.
+ *
+ * `gh pr checks` itself renders only the latest run for a given name, so
+ * reporting anything else here would disagree with the tool this replaces
+ * along a second axis the issue never raised.
  *
  * @param {readonly unknown[]} checkRuns
  * @returns {Map<string, ReturnType<typeof parseCheckRun>>}
@@ -507,12 +538,35 @@ export function latestCheckRunsByName(checkRuns) {
   const parsed = checkRuns.map((checkRun, index) =>
     parseCheckRun(checkRun, index),
   );
-  const latest = new Map();
+  const groups = new Map();
   for (const run of parsed) {
-    const current = latest.get(run.name);
-    if (!current || isNewerCheckRun(run, current)) {
-      latest.set(run.name, run);
+    const group = groups.get(run.name);
+    if (group) {
+      group.push(run);
+    } else {
+      groups.set(run.name, [run]);
     }
+  }
+  const latest = new Map();
+  for (const runs of groups.values()) {
+    /** @type {ReturnType<typeof parseCheckRun>[]} */
+    let undominated = [runs[0]];
+    for (const run of runs.slice(1)) {
+      const dominatedByExisting = undominated.some(
+        (other) => compareCheckRunRecency(other, run) === 1,
+      );
+      if (dominatedByExisting) continue;
+      undominated = undominated.filter(
+        (other) => compareCheckRunRecency(run, other) !== 1,
+      );
+      undominated.push(run);
+    }
+    if (undominated.length > 1) {
+      throw new Error(
+        `cannot determine the latest attempt for check "${undominated[0].displayName}" -- runs ${undominated.map((run) => run.id).join(', ')} cannot be safely ordered relative to each other, and no other signal this API provides is a safe way to order them`,
+      );
+    }
+    latest.set(undominated[0].name, undominated[0]);
   }
   return latest;
 }
