@@ -263,9 +263,12 @@ describe('an enforcement citation names a mechanism that runs', () => {
   it('separates what workflows run from what tests import', () => {
     const invoked = runInvokedScripts(workflows, npmScripts);
     const imported = testImportedScripts(testFiles);
-    // The measurement #472 rests on: imported, never executed.
+    // #472 measured this as imported, never executed. #186 wired the live
+    // half into ci.yml's `advisories` job ("Check merge-queue required
+    // contexts against live branch protection", `npm run
+    // check:merge-queue-contexts`), so it is now both.
     expect(imported.has('check-merge-queue-contexts.mjs')).toBe(true);
-    expect(invoked.has('check-merge-queue-contexts.mjs')).toBe(false);
+    expect(invoked.has('check-merge-queue-contexts.mjs')).toBe(true);
     // Control: a script that genuinely is run by a workflow.
     expect(invoked.has('npm-ci-strict.mjs')).toBe(true);
   });

@@ -6,8 +6,10 @@ name: CI
 # is the only class whose contexts may appear in a branch ruleset. See #122 for
 # what happens otherwise. scripts/check-merge-queue-contexts.mjs holds that
 # classification, enforced on every pull request by tests/mergeQueueReadiness.test.ts
-# under `npm run test`; its comparison against live branch protection needs a
-# token and is run by hand (#472).
+# under `npm run test`; its comparison against live branch protection runs in
+# CI too, as the "Check merge-queue required contexts against live branch
+# protection" step in the `advisories` job below (#186, #472 — that
+# comparison used to run only by hand).
 
 on:
   push:
@@ -347,6 +349,15 @@ jobs:
   advisories:
     name: Dependency advisories
     runs-on: ubuntu-latest
+    # `administration: read` is the one job-level permission that differs
+    # from the top-level `contents: read` above. It exists for the new step
+    # below alone: reading `branches/{branch}/protection` is documented by
+    # GitHub as requiring repo-administration read access, not just
+    # `contents`. Scoped to this job rather than added top-level so no other
+    # job's token carries it.
+    permissions:
+      contents: read
+      administration: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -407,3 +418,24 @@ jobs:
       - name: Audit shipped dependencies for known advisories
         if: steps.changes.outputs.docs_only != 'true'
         run: npm run audit:advisories
+
+      # #186 / #472: runs the live half of scripts/check-merge-queue-contexts.mjs
+      # — comparing the check-run names this workflow (and the two others
+      # that report under merge_group) emit against development's actual
+      # required branch-protection contexts. `evaluateWorkflowClassification`
+      # (the offline half, deterministic) already runs under `npm run test`
+      # via tests/mergeQueueReadiness.test.ts; this step is what was missing —
+      # before it existed, four workflow header comments described this
+      # comparison as enforced and nothing invoked it (measured exactly by
+      # tests/enforcementCitations.test.ts). `continue-on-error` because this
+      # is the first CI run asking GITHUB_TOKEN's `administration: read`
+      # scope to read branch protection here — if that scope turns out to be
+      # insufficient, this step goes red on its own without taking the
+      # required "Dependency advisories" context down with it, and the exact
+      # reason is in this step's own log rather than silent.
+      - name: Check merge-queue required contexts against live branch protection
+        if: steps.changes.outputs.docs_only != 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run check:merge-queue-contexts
