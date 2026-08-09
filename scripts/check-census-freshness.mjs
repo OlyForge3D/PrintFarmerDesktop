@@ -100,14 +100,42 @@ export const SAMPLE_TIMESTAMP_FOR_CONTROLS = '2024-01-01T00:00:00Z';
 export const FABRICATED_ANCIENT_TIMESTAMP = '2000-01-01T00:00:00Z';
 
 /**
+ * Matches an ISO-8601-shaped date-and-time string (a date, a `T` or space
+ * separator, and a time-of-day) that has no trailing `Z` or numeric UTC
+ * offset. `Date.parse` resolves such a string in the *host machine's local
+ * timezone*, not UTC — so the very same instant, written with and without
+ * an explicit offset, parses to two different epoch-ms values depending on
+ * where this check happens to run. A citation or `--now` value in this
+ * shape lets a caller spoof freshness simply by omitting the offset (e.g.
+ * `2026-08-10T18:00:00` reads as fresher or staler than
+ * `2026-08-10T18:00:00Z` depending on the runner's TZ), which defeats the
+ * entire point of a check whose answer must not depend on who runs it or
+ * where. A bare date with no time-of-day (`2026-08-10`) is exempt: the ISO
+ * 8601 / ECMA-262 spec fixes that form to UTC midnight, so it carries no
+ * such ambiguity.
+ */
+const TIMEZONELESS_DATETIME_PATTERN =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+/**
  * Normalizes a value that names one instant in time — a finite epoch-ms
- * number or a parseable ISO string — to epoch-ms, or null if it names no
- * usable instant. Unlike `resolveNow`, this never defaults an omitted value
- * to the real clock: `measured_at` has no meaningful "unset means now".
+ * number or a parseable, timezone-explicit ISO string — to epoch-ms, or
+ * null if it names no usable instant. Unlike `resolveNow`, this never
+ * defaults an omitted value to the real clock: `measured_at` has no
+ * meaningful "unset means now". A date-and-time string with no explicit
+ * `Z`/offset is rejected (returns null) rather than silently resolved
+ * against the local timezone of whatever machine happens to run this
+ * check -- see `TIMEZONELESS_DATETIME_PATTERN`.
  */
 export function normalizeInstant(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;
+  }
+  if (
+    typeof value === 'string' &&
+    TIMEZONELESS_DATETIME_PATTERN.test(value.trim())
+  ) {
+    return null;
   }
   return normalizeTimestamp(value);
 }
