@@ -90,6 +90,25 @@
 // over an AST with scope/binding resolution (e.g. via `acorn`/
 // `@babel/parser`), a materially larger investment than a mechanical CI
 // smoke test warrants for this issue.
+//
+// A related, OPPOSITE-direction limitation (Vasquez, round 16 review):
+// because `'method'`-mode call-site matching scopes by NAME only once a
+// same-named wrapper is behaviorally confirmed somewhere in the file/
+// project, it can OVER-flag -- `client.invokeGh(...)`,
+// `client['invokeGh'](...)`, and `client[key](...)` are all flagged even
+// when `client` is a genuinely unrelated object whose own `invokeGh`
+// method has nothing to do with `gh` (it never calls `execFileSync('gh',
+// ...)` at all). Distinguishing the real wrapper's receiver from an
+// unrelated same-named one would need real object-identity/binding
+// resolution, not just name matching -- the same class of investment
+// already ruled out above. This is a deliberate, ACCEPTED bias: unlike a
+// false NEGATIVE (which silently lets a real #299-shaped bug through), a
+// false POSITIVE here is safely remediable with a one-line allowlist
+// entry explaining why the specific occurrence is not a real `gh` call --
+// exactly the mechanism this file already provides for confirmed-safe
+// cases. Erring toward over-flagging an unrelated same-named method is
+// the safer failure mode for a lint whose entire purpose is guarding
+// against a silently-missed stale-index read.
 // Code review remains the backstop for shapes this deliberately-scoped check
 // cannot see -- the same backstop every other lint in this repository relies
 // on for its own blind spots. Future reports of a NEW bypass shape falling
