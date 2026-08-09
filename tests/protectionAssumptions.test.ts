@@ -728,8 +728,9 @@ describe('#491: the public tier needs no protection object at all', () => {
 describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
   it('requests only the two public endpoints and no authorization header', async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
-    const fetchImpl = async (url: string, init: { headers: Record<string, string> }) => {
-      calls.push({ url, headers: init.headers });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
       const body = url.includes('/rulesets') ? [] : [{ name: 'development' }];
       return { ok: true, json: async () => body } as Response;
     };
@@ -768,8 +769,9 @@ describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
 describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', () => {
   it('requests the two privileged endpoints with the given token', async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
-    const fetchImpl = async (url: string, init: { headers: Record<string, string> }) => {
-      calls.push({ url, headers: init.headers });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
       const body = url.includes('/collaborators')
         ? [{ login: 'jpapiez', role_name: 'admin' }]
         : { enforce_admins: { enabled: false } };
