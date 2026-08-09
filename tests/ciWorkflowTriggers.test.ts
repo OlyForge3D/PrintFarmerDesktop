@@ -12,7 +12,16 @@ const workflowsDir = path.resolve(
 );
 
 function readWorkflow(file: string): string {
-  return readFileSync(path.join(workflowsDir, file), 'utf8');
+  // Normalised because topLevelSection below anchors on '\n'. A workflow
+  // written on Windows can be CRLF throughout, and an un-normalized read
+  // then reports "workflow has no top-level ... block" for a well-formed
+  // file -- see tests/sequencingHold.test.ts for the same normalization and
+  // reasoning, and tests/prClosureScope.test.ts for the same fix applied
+  // there.
+  return readFileSync(path.join(workflowsDir, file), 'utf8').replace(
+    /\r\n/g,
+    '\n',
+  );
 }
 
 const ciWorkflow = readWorkflow('ci.yml');

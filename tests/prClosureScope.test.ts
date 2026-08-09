@@ -531,10 +531,15 @@ describe("reportClosureScopeCliOutcome: the CLI entry point's own rejection hand
 
 describe('the two closure checks publish independent contexts', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
+  // Normalised because triggersOf/typesOf below anchor on '\n'. A workflow
+  // written on Windows can be CRLF throughout, and an un-normalized read
+  // then reports "workflow has no top-level 'on:' block" for a well-formed
+  // file -- see tests/sequencingHold.test.ts and tests/ciWorkflowTriggers.test.ts
+  // for the same normalization and reasoning.
   const workflow = readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'pr-closure-scope.yml'),
     'utf8',
-  );
+  ).replace(/\r\n/g, '\n');
   const generalWorkflow = readFileSync(
     path.join(
       repositoryRoot,
@@ -543,11 +548,11 @@ describe('the two closure checks publish independent contexts', () => {
       'closing-reference-declaration.yml',
     ),
     'utf8',
-  );
+  ).replace(/\r\n/g, '\n');
   const ciWorkflow = readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
     'utf8',
-  );
+  ).replace(/\r\n/g, '\n');
   const manifest = JSON.parse(
     readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
   ) as { scripts: Record<string, string> };
