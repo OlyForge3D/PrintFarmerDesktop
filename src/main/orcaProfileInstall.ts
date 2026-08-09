@@ -818,6 +818,16 @@ export function __setIdentityPinPostOpenHookForTests(
  * detected — and the descriptor closed without ever reading through it —
  * before any attacker-controlled content is even retrieved.
  *
+ * Device and inode are compared as `bigint` (via `{ bigint: true }` on
+ * both `lstat` and the descriptor's `stat`), not the default `number`.
+ * Windows NTFS/ReFS file indices are 64-bit and can exceed
+ * `Number.MAX_SAFE_INTEGER`; representing them as plain JS numbers can
+ * silently lose precision, which could make two genuinely different
+ * files round-trip to the *same* JS number and defeat this comparison
+ * entirely on a volume where that precision loss occurs. `bigint` stats
+ * carry the full 64-bit value with no rounding, so the comparison stays
+ * exact regardless of the underlying volume's file-index magnitude.
+ *
  * Used both for the durable backup-metadata record (`readBackupMetaFileSafely`)
  * and for the backup file itself at restore time (`restoreOrcaProfileWindows`),
  * since both were shown to have this exact class of gap.
@@ -825,10 +835,10 @@ export function __setIdentityPinPostOpenHookForTests(
 async function readFileWithIdentityPin(
   filePath: string,
 ): Promise<Buffer | null> {
-  let expectedDev: number;
-  let expectedIno: number;
+  let expectedDev: bigint;
+  let expectedIno: bigint;
   try {
-    const before = await lstat(filePath);
+    const before = await lstat(filePath, { bigint: true });
     if (before.isSymbolicLink() || !before.isFile()) {
       return null;
     }
@@ -852,7 +862,7 @@ async function readFileWithIdentityPin(
     if (identityPinPostOpenHookForTests) {
       await identityPinPostOpenHookForTests(filePath);
     }
-    const opened = await handle.stat();
+    const opened = await handle.stat({ bigint: true });
     if (opened.dev !== expectedDev || opened.ino !== expectedIno) {
       // open() resolved to a different file than the one lstat validated
       // — whether via a symlink present at that instant (regardless of
