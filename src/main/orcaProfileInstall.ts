@@ -913,6 +913,97 @@ async function readFileWithIdentityPin(
 }
 
 /**
+ * Test-only hook invoked by `readBackupFileWithRootPin` immediately after
+ * it captures `canonicalInstallRoot`'s device+inode, but before it lstats
+ * `backupPath`'s parent directory. Lets a regression test swap the parent
+ * for a junction at exactly this point, deterministically simulating the
+ * narrowest possible ancestor-directory race (see that function's doc
+ * comment). No-op in production; never set outside tests.
+ */
+let readBackupFileWithRootPinRaceHookForTests:
+  (() => Promise<void> | void) | null = null;
+
+export function __setReadBackupFileWithRootPinRaceHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  readBackupFileWithRootPinRaceHookForTests = hook;
+}
+
+/**
+ * Read `backupPath`'s bytes, refusing to trust them unless (a) the
+ * directory that actually contains `backupPath` has the same on-disk
+ * identity (device+inode) as `canonicalInstallRoot` at the moment this
+ * function runs, and (b) the leaf file's own identity survives a
+ * swap-in/swap-back around the read (`readFileWithIdentityPin`).
+ *
+ * Round-6 reviewer finding (Vasquez): the previous approach validated the
+ * ancestor directory in the *caller* — via a separately computed
+ * `realpath(dirname(backupPath))` string compared against
+ * `canonicalInstallRoot` — and only then called `readFileWithIdentityPin`
+ * as an entirely distinct step. Folding both checks into one function
+ * closes two things at once: it removes any chance of unrelated logic
+ * being interposed between the ancestor check and the leaf read by a
+ * caller that does other work around this call (a real risk in a function
+ * like `restoreOrcaProfileWindows`), and it switches the ancestor check
+ * itself from a resolved-*path-string* comparison to a device+inode
+ * *identity* comparison — the same primitive the OS itself uses to decide
+ * whether two opens reference the same object, and strictly stronger than
+ * comparing canonicalized path strings (which can be fooled by anything
+ * that normalizes two different strings to the same text, the exact class
+ * of surprise a Windows CI runner's 8.3/short-name behavior already
+ * produced once in this file's history for a legitimate, non-attacked
+ * path).
+ *
+ * This does **not** — and, using only Node's public, portable `fs` API on
+ * Windows, cannot — eliminate the residual window between this function's
+ * ancestor `lstat` and its leaf `lstat` a few lines later: Node has no
+ * `openat`-equivalent (opening a file relative to an already-held
+ * directory handle), so there is no way to *pin* the ancestor's identity
+ * the same way `readFileWithIdentityPin` pins the leaf's identity via an
+ * open file descriptor. Every other TOCTOU window this module has closed
+ * (rounds 1-5) spanned one or more real, awaited I/O operations — genuine
+ * scheduling points an attacker's already-issued swap could land in. This
+ * one does not: the ancestor `lstat` and the leaf `lstat` are issued
+ * back-to-back with no other `await` in between, so any further reduction
+ * of this specific window would require Windows-specific native code
+ * (e.g. an addon calling `NtCreateFile` against a held directory handle),
+ * not anything expressible through portable Node.
+ */
+async function readBackupFileWithRootPin(
+  canonicalInstallRoot: string,
+  backupPath: string,
+): Promise<Buffer | null> {
+  let rootStat: { dev: bigint; ino: bigint };
+  try {
+    const stat = await lstat(canonicalInstallRoot, { bigint: true });
+    if (stat.isSymbolicLink()) return null;
+    rootStat = { dev: stat.dev, ino: stat.ino };
+  } catch {
+    return null;
+  }
+
+  if (readBackupFileWithRootPinRaceHookForTests) {
+    await readBackupFileWithRootPinRaceHookForTests();
+  }
+
+  let parentStat: { dev: bigint; ino: bigint };
+  try {
+    const stat = await lstat(path.dirname(backupPath), { bigint: true });
+    if (stat.isSymbolicLink()) return null;
+    parentStat = { dev: stat.dev, ino: stat.ino };
+  } catch {
+    return null;
+  }
+  if (parentStat.dev !== rootStat.dev || parentStat.ino !== rootStat.ino) {
+    // backupPath's actual parent is not, in fact, the validated install
+    // root — whether due to a swap or a miscomputed backupPath. Refuse
+    // without ever touching the leaf file.
+    return null;
+  }
+  return await readFileWithIdentityPin(backupPath);
+}
+
+/**
  * Read `metaPath` back, refusing to trust the content unless the leaf
  * file's identity matches what was validated immediately beforehand (via
  * `readFileWithIdentityPin`, which is immune to a swap-in/swap-back around
@@ -1048,6 +1139,17 @@ export async function findBackupByOperationId(
  * inventing a directory-identity bracket (a leaf-file bracket of that
  * shape was already shown, in this file's history, to be defeatable by a
  * swap-in-then-swap-back around the single operation it brackets).
+ *
+ * Round-6 reviewer finding (Vasquez): the round-4 fix above validated the
+ * ancestor directory *here*, in this function, via a separately computed
+ * `realpath(dirname(backupPath))` string comparison, and only called
+ * `readFileWithIdentityPin` as a distinct, later step — leaving a small
+ * but real window between the two in which the install root could be
+ * swapped again. Both checks now happen inside `readBackupFileWithRootPin`
+ * (see its doc comment for the full reasoning): the ancestor check is
+ * identity-based (device+inode) rather than string-based, and it is
+ * issued immediately before the leaf's own identity-pinned read with no
+ * caller logic able to run in between.
  */
 export async function restoreOrcaProfileWindows(
   backupPath: string,
@@ -1068,33 +1170,16 @@ export async function restoreOrcaProfileWindows(
   // swapped for a junction in the gap since that call returned.
   const canonicalInstallRoot =
     await ensureInstallRootSafeCanonical(installRoot);
-  // Compare canonicalized forms on both sides, not raw path strings: a
-  // legitimate installRoot and backupPath can differ as strings (e.g. an
-  // 8.3 short name or drive-letter normalization a Windows filesystem
-  // applies to one path but not the other) while still naming the same
-  // directory. The actual symlink/junction detection that catches a
-  // swapped ancestor happens above, in `ensureInstallRootSafe`'s
-  // per-segment `lstat` walk (re-run fresh on every call, so a swap that
-  // happened since `findBackupByOperationId` returned is caught there);
-  // this check only guards against `backupPath` pointing somewhere
-  // outside `installRoot` entirely.
-  let canonicalBackupDir: string | null;
-  try {
-    canonicalBackupDir = await realpath(path.dirname(backupPath));
-  } catch {
-    canonicalBackupDir = null;
-  }
-  if (canonicalBackupDir !== canonicalInstallRoot) {
-    throw makeError(
-      'pathRestricted',
-      'Backup path is outside the canonical install root; refused.',
-    );
-  }
 
-  // Verify the backup file exists, is not a symlink at the moment it is
-  // actually opened (identity-pinned; see `readFileWithIdentityPin`), and
-  // has the expected hash.
-  const backupBytes = await readFileWithIdentityPin(backupPath);
+  // Verify the backup file's parent directory is genuinely the validated
+  // install root (identity-based, not a path-string comparison), that the
+  // backup file itself is not a symlink at the moment it is actually
+  // opened (identity-pinned; see `readFileWithIdentityPin`), and that its
+  // content matches the expected hash.
+  const backupBytes = await readBackupFileWithRootPin(
+    canonicalInstallRoot,
+    backupPath,
+  );
   if (backupBytes === null) {
     throw makeError('pathRestricted', 'Backup file not found or unreadable.');
   }

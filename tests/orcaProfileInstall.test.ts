@@ -335,6 +335,7 @@ import {
   __setIdentityPinPreOpenHookForTests,
   __setIdentityPinPostOpenHookForTests,
   __setFindBackupByOperationIdPreRevalidateHookForTests,
+  __setReadBackupFileWithRootPinRaceHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -1187,6 +1188,89 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
           'restore wrote/read through a junctioned install root',
         ).toEqual([path.basename(backupPath)]);
       } finally {
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to restore through an install root swapped in the narrowest possible window inside readBackupFileWithRootPin itself (round-6 identity-based ancestor check)',
+    async () => {
+      // Reviewer finding (Vasquez, round 6): the round-4 fix validated
+      // the ancestor directory in restoreOrcaProfileWindows via a
+      // separately computed realpath(dirname(backupPath)) string
+      // comparison, then called readFileWithIdentityPin as an entirely
+      // distinct later step — leaving a small window between the two in
+      // which installRoot could be swapped again. This test targets that
+      // exact narrowest point: the ancestor check and the leaf's
+      // identity-pinned read are now fused into one function
+      // (readBackupFileWithRootPin), and the swap is injected via a
+      // dedicated test hook immediately after that function captures
+      // installRoot's own identity but before it lstats backupPath's
+      // parent directory — the tightest gap the fused check has left,
+      // proving the device+inode ancestor comparison (not a path-string
+      // comparison) still catches a swap landing exactly there.
+      const safeFilename = 'toctou_root_pin_narrow_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-root-pin-narrow"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `root-pin-narrow-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-root-pin-narrow-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      // Mirror the real backup's bytes into the escape directory under
+      // the same basename, so a followed swap would still hash-match and
+      // could wrongly succeed if the identity check were absent.
+      await writeFile(
+        path.join(escapeDir, path.basename(backupPath)),
+        realBackupBytes,
+      );
+
+      __setReadBackupFileWithRootPinRaceHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote/read through a mid-check-swapped install root',
+        ).toEqual([path.basename(backupPath)]);
+      } finally {
+        __setReadBackupFileWithRootPinRaceHookForTests(null);
         await rm(installRoot, { recursive: true, force: true });
         await mkdir(installRoot, { recursive: true });
         await writeFile(backupPath, realBackupBytes, { flag: 'w' });
