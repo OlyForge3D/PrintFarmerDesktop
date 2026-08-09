@@ -344,6 +344,7 @@ export function parseCensusCitations(text) {
 export function parseArgs(argv) {
   const FLAG_NAMES = new Set(['--measured-at', '--now', '--file']);
   const args = {};
+  const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!FLAG_NAMES.has(arg)) {
@@ -352,6 +353,15 @@ export function parseArgs(argv) {
           '(--measured-at <iso> | --file <path>) [--now <iso>]',
       );
     }
+    // A flag repeated more than once names two different values for the
+    // same input with no rule for which wins. Silently keeping only the
+    // last occurrence is the same shape of bug as the missing-value and
+    // mutually-exclusive cases below: ambiguous input treated as if it
+    // were unambiguous. Refuse it instead of picking one arbitrarily.
+    if (seen.has(arg)) {
+      throw new Error(`${arg} was given more than once`);
+    }
+    seen.add(arg);
     const value = argv[index + 1];
     // A flag given with no following token, or immediately followed by
     // another recognized flag, has no value. Treating that as "value

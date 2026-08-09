@@ -541,6 +541,36 @@ describe('parseArgs — strict CLI argument validation', () => {
     });
   });
 
+  it('rejects --now given twice rather than silently keeping only the last value', () => {
+    expect(() =>
+      parseArgs([
+        '--measured-at',
+        '2026-08-04T00:00:00Z',
+        '--now',
+        '2026-08-05T00:00:00Z',
+        '--now',
+        '2026-08-06T00:00:00Z',
+      ]),
+    ).toThrow(/--now was given more than once/);
+  });
+
+  it('rejects --measured-at given twice rather than silently keeping only the last value', () => {
+    expect(() =>
+      parseArgs([
+        '--measured-at',
+        '2026-08-04T00:00:00Z',
+        '--measured-at',
+        '2026-08-05T00:00:00Z',
+      ]),
+    ).toThrow(/--measured-at was given more than once/);
+  });
+
+  it('rejects --file given twice rather than silently keeping only the last value', () => {
+    expect(() => parseArgs(['--file', 'a.md', '--file', 'b.md'])).toThrow(
+      /--file was given more than once/,
+    );
+  });
+
   it('propagates the --now-with-no-value rejection through main() as EXIT_UNVERIFIABLE rather than a false-green wall-clock fallback', async () => {
     const errors: string[] = [];
     const originalError = console.error;
@@ -569,6 +599,30 @@ describe('parseArgs — strict CLI argument validation', () => {
     }
     expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
     expect(errors.join('\n')).toContain('mutually exclusive');
+    process.exitCode = 0;
+  });
+
+  it('propagates the duplicate-flag rejection through main() as EXIT_UNVERIFIABLE rather than silently using the last value', async () => {
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      await main(
+        [
+          '--measured-at',
+          '2026-08-04T00:00:00Z',
+          '--now',
+          '2026-08-05T00:00:00Z',
+          '--now',
+          '2026-08-06T00:00:00Z',
+        ],
+        {},
+      );
+    } finally {
+      console.error = originalError;
+    }
+    expect(process.exitCode).toBe(EXIT_UNVERIFIABLE);
+    expect(errors.join('\n')).toContain('--now was given more than once');
     process.exitCode = 0;
   });
 });
