@@ -26,6 +26,18 @@ Three instances from a single review session (issue #361), each with a control t
 
 **Corollary: an unsound-operationalisation zero is worse than an uncontrolled one.** An uncontrolled zero at least advertises its own uncertainty. A controlled zero over the wrong artifact reads as diligence — it ran the extra step, it has a passing control to point to — and that apparent rigor is exactly what stops the next reader from asking whether the artifact could ever have shown the signal. The control should raise your confidence in the _instrument_; it must never be read as raising your confidence in the _mapping_ between the claim and what you searched.
 
+### The positive control itself must be aimed at the question's axis, not merely its corpus
+
+The two questions above are about whether the searched artifact is the right place to look. A separate failure survives even when the artifact is right: **the positive control that is supposed to validate the instrument (question 1) can itself be aimed at the wrong axis of the same file, and passing it then certifies nothing about the axis the question actually turns on.**
+
+**When a zero result is load-bearing, the positive control must be aimed at the same axis as the question, not merely at the same corpus.** Concretely, for a search:
+
+- state the question in words before writing the pattern;
+- ask what shape the answer would take **if the claim were false**, and confirm the pattern could match it;
+- prefer a control that would fail if the pattern were misaimed — a known instance of the thing being denied, not an unrelated string that merely happens to share the file.
+
+**Worked instance (#197).** Claim: no CI job named `package` exists. Instrument: enumerate `name:` lines in `ci.yml`, using a pattern shaped like `name: <label>`. Result: zero hits for `package`. Positive control: the same `name:`-line pattern matched `advisories` elsewhere in the file, four hits — the control fired, so the instrument was declared sound. The conclusion was still wrong: `ci.yml` declares `jobs.package:` as a job **key**, and job keys are not on `name:` lines at all. The control and the original query shared a corpus (the same file) and even a mechanism (grep for a string), but they sampled the **same wrong axis** — rendered display names — while the question was about job keys. A control aimed at the right axis, `git grep -n '^  package:' ci.yml`, returns the job key directly and refutes the claim; the control that was actually run could never have, no matter how many times it was rerun. Confirming that a query fires on *some* known-present string in the file is not the same as confirming it fires on a known-present instance of **the thing being asked about** — only the latter licenses trusting the zero.
+
 ## TypeScript / renderer / main
 
 ```powershell
