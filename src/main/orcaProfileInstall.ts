@@ -128,6 +128,7 @@ async function walkDirSafe(
   relativeSubdir: string,
 ): Promise<string> {
   let current = baseRoot;
+  let canonicalCurrent: string | null = null;
   for (const segment of relativeSubdir.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment);
     try {
@@ -153,11 +154,18 @@ async function walkDirSafe(
       }
     }
 
-    if (!isUnderRoot(await realpath(current), canonicalBaseRoot)) {
+    // Compute this segment's canonical path exactly once and reuse it both
+    // for the escape check below and, on the final iteration, as this
+    // function's return value — rather than a second, later, independent
+    // `realpath` call on the same path (see round-8 finding on
+    // `ensureInstallRootSafeCanonical`, which used to do exactly that at
+    // the caller level).
+    canonicalCurrent = await realpath(current);
+    if (!isUnderRoot(canonicalCurrent, canonicalBaseRoot)) {
       throw makeError('pathRestricted', 'Path escapes canonical root.');
     }
   }
-  return realpath(current);
+  return canonicalCurrent ?? realpath(current);
 }
 
 /**
@@ -172,7 +180,7 @@ async function walkDirSafe(
  * #158 asks about and which the destination-file symlink check does not cover,
  * because the destination file itself was never a link.
  */
-async function ensureInstallRootSafe(installRoot: string): Promise<void> {
+async function ensureInstallRootSafe(installRoot: string): Promise<string> {
   const appData = process.env['APPDATA'];
   if (!appData || !isUnderRoot(installRoot, appData)) {
     throw makeError('pathRestricted', 'Install root is outside APPDATA.');
@@ -185,7 +193,7 @@ async function ensureInstallRootSafe(installRoot: string): Promise<void> {
     throw makeError('pathRestricted', 'APPDATA is inaccessible.');
   }
 
-  await walkDirSafe(
+  return walkDirSafe(
     appData,
     canonicalAppData,
     path.relative(appData, installRoot),
@@ -638,16 +646,25 @@ function validateOperationId(operationId: string): void {
  * `installRoot` to be swapped in. Every caller of this function now
  * re-validates immediately before its own last use of the canonical root,
  * rather than trusting a validation an arbitrary number of `await`s earlier.
+ *
+ * Round-8 reviewer finding (Vasquez, stale-head report against `a9bbc15c`,
+ * but this internal gap was genuinely still present at the live head):
+ * this function itself used to validate via `ensureInstallRootSafe` and
+ * then perform a *second, independent* `realpath(installRoot)` call
+ * afterward to obtain the canonical path — an `await` boundary between
+ * "validated" and "canonicalized" that a swap could land in, so the
+ * "canonical root" this returned could reflect a different directory than
+ * the one `ensureInstallRootSafe` actually just walked and checked.
+ * `ensureInstallRootSafe` already computes this exact realpath internally
+ * as the last step of its component-by-component walk (see
+ * `walkDirSafe`'s return value) — it just used to discard it. Now it
+ * returns that value directly, so there is exactly one realpath
+ * computation, not two, and nothing for a second, later swap to target.
  */
 async function ensureInstallRootSafeCanonical(
   installRoot: string,
 ): Promise<string> {
-  await ensureInstallRootSafe(installRoot);
-  try {
-    return await realpath(installRoot);
-  } catch {
-    throw makeError('pathRestricted', 'Install root is inaccessible.');
-  }
+  return ensureInstallRootSafe(installRoot);
 }
 
 /**
