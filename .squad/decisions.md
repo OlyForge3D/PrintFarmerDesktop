@@ -682,7 +682,7 @@ Any of those sources removes the dialog-derived-path premise and requires reject
 
 **By:** Fact Checker, filed as #420; recorded here so a sibling session does not adopt it.
 
-**What was proposed.** A sibling session was about to use the Copilot session store's `session_files` table (`session_id, file_path, tool_name, turn_index, first_seen_at`) as evidence for *who changed a file*. Measured `2026-08-05T03:41Z` against the local session store (the default cloud/local union arm drops the local member silently on this query shape, a separate problem).
+**What was proposed.** A sibling session was about to use the Copilot session store's `session_files` table (`session_id, file_path, tool_name, turn_index, first_seen_at`) as evidence for _who changed a file_. Measured `2026-08-05T03:41Z` against the local session store (the default cloud/local union arm drops the local member silently on this query shape, a separate problem).
 
 **It is not sound.** Three `create` rows in one session name throwaway probe files (`tests/zzProbe*.test.ts`) that were written, read once, and deleted — never reached a branch, never existed on disk at measurement time, zero matching commits across all refs. An audit keyed on this table reports authorship of files that do not exist.
 
@@ -690,7 +690,7 @@ Any of those sources removes the dialog-derived-path premise and requires reject
 
 **`first_seen_at` fires once and cannot indicate volume.** A witness that fires once is indistinguishable from a witness that fires never, for any n ≥ 1: presence of a row says nothing about how many edits followed, and absence of a second row is not evidence a second edit didn't happen. A concrete instance: a Python mutation-testing harness rewrote one file **ten times** in one session (five fixtures × two code states) via `Set-Content`; `session_files` holds exactly **one** row for that path, from hours earlier.
 
-**It logs tool invocations, not writes.** `edit`/`create` calls from this agent's own tools populate the table. `Set-Content`, raw `python`/PowerShell scripts, `git checkout`, and every other ordinary way to write a file are invisible to it — not an evasion path, the *normal* case for a scripted mutation battery.
+**It logs tool invocations, not writes.** `edit`/`create` calls from this agent's own tools populate the table. `Set-Content`, raw `python`/PowerShell scripts, `git checkout`, and every other ordinary way to write a file are invisible to it — not an evasion path, the _normal_ case for a scripted mutation battery.
 
 **The key is a worktree-absolute path, so one tracked file is many rows.** `.squad/skills/testing/SKILL.md` — a single file in this repo — appeared under six distinct worktree-prefixed paths in the local store. A per-file audit under-reports by however many worktrees touched the file, and "who has edited `<repo-relative path>`?" cannot be expressed against this table at all.
 
