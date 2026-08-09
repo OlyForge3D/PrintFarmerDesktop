@@ -94,8 +94,16 @@ assertion actually establishes the claim, and that the reader can watch it
 run. This PR's companion change
 (wiring `check-merge-queue-contexts.mjs`'s live half into
 `.github/workflows/ci.yml`'s `advisories` job) closes that specific gap so a
-future citation to "the required-contexts check" points at something that
-genuinely runs on every pull request, not at a script nothing calls.
+future citation to "the required-contexts check" points at a step that
+genuinely runs on a pull request, not at a script nothing calls. It runs on
+the same terms as the rest of that job, no more and no less: gated behind
+`steps.changes.outputs.docs_only != 'true'`, the same docs-only fast path the
+job's SBOM and `cargo-audit` steps already stand down under (ci.yml:80-102
+documents why — a job-level or workflow-level skip would leave the required
+context unreported instead). A citation to this step should say "runs on any
+pull request that touches more than documentation," not "every pull
+request" — the two are different claims, and this file exists because that
+distinction is exactly the kind that gets lost in restatement.
 
 ## AC2 (unchanged)
 
