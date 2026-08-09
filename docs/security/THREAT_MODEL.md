@@ -967,20 +967,20 @@ gate, is a separate administrative change tracked in #111.
 
 ## 9. Open work derived from this model
 
-| Threat     | Gap                                                                            | Where       |
-| ---------- | ------------------------------------------------------------------------------ | ----------- |
-| T4.1       | Licence policy, advisory gates and enumerated third-party notices              | PR B2 (#21) |
-| T4.2       | Deterministic vs live-database gate split; branch protection                   | PR B2 (#21) |
-| T1.2       | Owner teardown on `webContents` destroy (`ipc.ts:338-344`) still unproven      | PR C2 (#21) |
-| T1.3, T3.3 | Credential non-egress asserted nowhere                                         | PR C2 (#21) |
-| T1.5       | Packaged fuses (`forge.config.ts:92-100`) unasserted                           | PR C2 (#21) |
-| T2.2       | No fuzzing; parser coverage is example-based                                   | PR D (#21)  |
-| T1.7       | Five persisted JSON stores; malformed-input handling untested                  | PR C2 (#21) |
-| T1.1       | E2E dialog seeding: nothing asserts the branch is absent from a release bundle | PR C2 (#21) |
-| T1.7       | `0o700`/`0o600` modes are a control no test asserts, on any store              | PR C2 (#21) |
-| T2.5       | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded | PR D (#21)  |
-| T2.6       | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested      | PR D (#21)  |
-| T1.4       | Full sender validation — ruled: residual accepted, default now pinned by CI    | closed      |
+| Threat     | Gap                                                                                                                    | Where                  |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| T4.1       | Licence policy, advisory gates and enumerated third-party notices                                                      | PR B2 (#21)            |
+| T4.2       | Deterministic vs live-database gate split; branch protection                                                           | PR B2 (#21)            |
+| T1.2       | Owner teardown on `webContents` destroy (`ipc.ts:338-344`) still unproven                                              | PR C2 (#21)            |
+| T1.3, T3.3 | Credential non-egress asserted nowhere                                                                                 | PR C2 (#21)            |
+| T1.5       | Packaged fuses (`forge.config.ts:92-100`) unasserted                                                                   | PR C2 (#21)            |
+| T2.2       | No fuzzing; parser coverage is example-based                                                                           | PR D (#21)             |
+| T1.7       | Five persisted JSON stores; malformed-input handling untested                                                          | PR C2 (#21)            |
+| T1.1       | E2E dialog seeding: nothing asserts the branch is absent from a release bundle                                         | PR C2 (#21)            |
+| T1.7       | `0o700`/`0o600` modes are a control no test asserts, on any store                                                      | PR C2 (#21)            |
+| T2.5       | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded                                         | PR D (#21)             |
+| T2.6       | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested                                              | PR D (#21)             |
+| T1.4       | Full sender validation — ruled: residual accepted, default now pinned by CI                                            | closed                 |
 | T1.8       | `readFileWithRootPin` ancestor-to-leaf gap — ruled: residual accepted, needs native `openat`-equivalent to close fully | closed (#208, PR #644) |
 
 Discharged by slice 2 (`tests/ipc.authz.test.ts`, `tests/security.test.ts`,
