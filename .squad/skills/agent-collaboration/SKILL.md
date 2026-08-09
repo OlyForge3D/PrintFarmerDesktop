@@ -14,6 +14,11 @@ description: How PrintFarmer Desktop squad members hand work to each other, revi
 
 Charters live in `.squad/agents/<name>/charter.md`. Standing decisions live in `.squad/decisions.md` and **override** anything here.
 
+Before writing any verification or matching command — a substring check, a
+reachability check, a status comparison — read `.squad/known-lying-commands.md`
+first. It catalogues commands that answer a plausible neighbouring question
+instead of the one asked, with no error to distinguish the two.
+
 ## The merge gate
 
 A PR merges only with **unanimous reviewer approval** plus **green CI**. The author never merges their own work.
