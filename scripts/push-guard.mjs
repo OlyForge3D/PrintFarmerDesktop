@@ -881,28 +881,73 @@ const DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS = 30;
  * default (30 days) when it is unset or its value cannot be parsed — the
  * conservative direction, since a value this cannot parse could in fact be
  * MORE permissive than the default and treating it as absent would then
- * under-count the risk window. `never` (any case) returns `Infinity`: that
- * setting is git's own way of saying no unreachable entry is ever pruned, so
- * nothing here can have decayed regardless of how old it is.
+ * under-count the risk window.
+ *
+ * TWO rounds of review found this function itself misparsing valid values,
+ * each time by hand-rolling a small subset of the spellings Git actually
+ * accepts for this setting: a first pass only understood `N.days` (dotted
+ * unit) or raw seconds, so a perfectly ordinary `10 days` (space-separated,
+ * git's own canonical spelling — see `git help config`) or `7 days ago`
+ * (approxidate, also accepted here) silently fell through to the
+ * hard-coded 30-day default. Depending on the REAL configured threshold,
+ * that default can be either more or less permissive than intended, and
+ * either direction is a correctness bug: too permissive lets a healed
+ * round-trip (see `reflogIsProvablyComplete`) pass as complete when it
+ * should be indeterminate; too restrictive claims indeterminate when the
+ * ref genuinely is young enough to trust. Any hand-rolled subset of Git's
+ * date grammar is destined to keep missing some valid spelling, because
+ * that grammar (`parse_expiry_date` / approxidate in Git's own C source)
+ * accepts far more than a fixed set of regexes can enumerate: relative
+ * units with or without a trailing "ago", plural or singular, with or
+ * without a dot separator, absolute dates, RFC 2822, ISO 8601, and more.
+ *
+ * So this delegates entirely to Git's own parser instead of re-implementing
+ * any part of it: `git config --type=expiry-date --get` (Git 2.18+)
+ * canonicalizes ANY value that setting can legally hold — including ones
+ * this function will never need to enumerate — into an absolute Unix
+ * timestamp, resolved relative to the moment the command runs. Subtracting
+ * that from "now" (captured on this side of the call, not git's) yields
+ * the number of days in the threshold without this function ever needing
+ * to understand the input grammar itself. `never` canonicalizes to the
+ * Unix epoch (`0`), which is treated as `Infinity`: that setting is git's
+ * own way of saying no unreachable entry is ever pruned, so nothing here
+ * can have decayed regardless of how old it is.
  *
  * @returns {number}
  */
 function reflogExpireUnreachableDays() {
-  let raw;
+  // `--get` fails (non-zero exit) when the key is unset at all, the same
+  // "absent" case the un-typed lookup used to detect — `--type=expiry-date`
+  // fails the same way, so a single call covers both "unset" and "set but
+  // unparseable by git itself" (which, unlike this function's own retired
+  // parser, should be vanishingly rare since it IS git's parser).
+  let canonical;
   try {
-    raw = git(['config', '--get', 'gc.reflogExpireUnreachable']).trim();
+    canonical = git([
+      'config',
+      '--type=expiry-date',
+      '--get',
+      'gc.reflogExpireUnreachable',
+    ]).trim();
   } catch {
     return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
   }
-  if (!raw) return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
-  if (/^never$/i.test(raw)) return Infinity;
-  const unitMatch = raw.match(/^(\d+(?:\.\d+)?)\.(day|week|month|year)s?$/i);
-  if (unitMatch) {
-    const perDay = { day: 1, week: 7, month: 30, year: 365 };
-    return Number(unitMatch[1]) * perDay[unitMatch[2].toLowerCase()];
+  if (!canonical) return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+  const expiryEpochSeconds = Number(canonical);
+  if (!Number.isFinite(expiryEpochSeconds)) {
+    return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
   }
-  if (/^\d+$/.test(raw)) return Number(raw) / 86400; // plain seconds
-  return DEFAULT_REFLOG_EXPIRE_UNREACHABLE_DAYS;
+  if (expiryEpochSeconds === 0) return Infinity; // "never"
+
+  const nowSeconds = Date.now() / 1000;
+  const days = (nowSeconds - expiryEpochSeconds) / 86400;
+  // A non-positive result means the canonicalized cutoff is not actually in
+  // the past relative to here (an unexpected value this function has no
+  // sound way to interpret as a threshold) — fail closed with 0 rather than
+  // the (possibly far more permissive) default, so the genesis-age check
+  // this feeds cannot be satisfied by anything and reports indeterminate
+  // instead of risking a false "provably complete".
+  return days > 0 ? days : 0;
 }
 
 /**

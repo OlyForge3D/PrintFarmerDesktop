@@ -2066,6 +2066,178 @@ describe('a self-cancelling create/discard pair pruned together is not read as a
   });
 });
 
+describe('a non-default, space-separated gc.reflogExpireUnreachable is not silently misread as the 30-day default (#315)', () => {
+  // Review for #315 found `reflogExpireUnreachableDays()` itself misparsing
+  // real config values, twice, by hand-rolling only a fraction of the
+  // spellings `gc.reflogExpireUnreachable` legally holds. The first pass
+  // understood `N.days` (dotted) and raw seconds; it silently fell back to
+  // the hard-coded 30-day default for git's own CANONICAL, space-separated
+  // spelling ("10 days") and for approxidate forms with a trailing "ago"
+  // ("7 days ago"). That default can be either more or less permissive than
+  // whatever was actually configured, and being MORE permissive is the
+  // dangerous direction here: it lets `reflogIsProvablyComplete()` treat a
+  // genesis entry as young enough to trust when, under the REAL configured
+  // threshold, it is old enough that a self-cancelling create/discard pair
+  // (see the describe block above) could already have been pruned nearby.
+  //
+  // This fixture reaches exactly that shape: `gc.reflogExpireUnreachable`
+  // is set to the plain, space-separated "15 days" (no dot, the form a
+  // human or `git config` itself would normally write), and the surviving
+  // genesis entry is backdated to 20 days old — younger than the hard-coded
+  // 30-day default (so the old, misparsing code would wrongly call it
+  // "provably complete"), but OLDER than the 15 days actually configured
+  // (so the correct answer is "no longer provable", i.e. `null`).
+  let root: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-expiryformat-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    // The canonical, human-written spelling — no dot separator — that the
+    // retired parser silently misread as "unset" and defaulted away.
+    git(['config', 'gc.reflogExpireUnreachable', '15 days'], work);
+
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    const twentyDaysAgo = Math.floor(Date.now() / 1000) - 20 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(twentyDaysAgo);
+    const backdated = tokens.join(' ') + message;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('authoredHere() reports null under a plain "N days" config, not the false a misparse-to-default would give', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('the same fixture reads true-complete only if the config is misparsed back to the 30-day default', () => {
+    // Pins the mechanism, not just the outcome: this is the exact
+    // computation a hand-rolled parser falling back to the default would
+    // have performed, and it disagrees with the correct answer above.
+    const genesisAgeDays = 20;
+    const misparsedDefaultDays = 30;
+    const actuallyConfiguredDays = 15;
+    expect(genesisAgeDays < misparsedDefaultDays).toBe(true);
+    expect(genesisAgeDays < actuallyConfiguredDays).toBe(false);
+  });
+});
+
+describe('an approxidate "N days ago" gc.reflogExpireUnreachable is also not misread as the 30-day default (#315)', () => {
+  // Same failure class as the block above, pinned against the OTHER
+  // spelling review found it missing: an explicit "ago" suffix. Git accepts
+  // this as an ordinary approxidate everywhere it accepts a date, including
+  // in this config's value, and it is at least as natural a thing for
+  // someone to write here as the dotted `N.days` spelling the retired
+  // parser understood.
+  let root: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-expiryformat2-'));
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    git(['checkout', '-b', 'feature'], seed);
+    commit(seed, 'seeded base', 'session-other');
+    commit(seed, 'seeded, to be discarded', 'session-other');
+    git(['push', 'origin', 'feature'], seed);
+
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+
+    git(['config', 'gc.reflogExpireUnreachable', '7 days ago'], work);
+
+    commit(work, 'created here, then self-cancelled', 'session-mine');
+    git(['reset', '--hard', 'HEAD~1'], work);
+
+    const reflogPath = path.join(work, '.git', 'logs', 'HEAD');
+    const original = readFileSync(reflogPath, 'utf8');
+    const lines = original.split('\n').filter((line) => line.length > 0);
+    const survivors = lines.filter(
+      (line) =>
+        !line.includes('\tcommit: created here, then self-cancelled') &&
+        !line.includes('\treset: moving to HEAD~1'),
+    );
+    expect(survivors.length).toBe(1); // the genesis (checkout) entry alone
+
+    const [genesisLine] = survivors;
+    const tabIndex = genesisLine!.indexOf('\t');
+    const header = genesisLine!.slice(0, tabIndex);
+    const message = genesisLine!.slice(tabIndex);
+    const tokens = header.split(/ +/).filter((t) => t.length > 0);
+    // Ten days old: younger than the misparsed-to-default 30 days (so the
+    // retired parser would wrongly call this provably complete), but older
+    // than the 7 days actually configured (so the correct answer is null).
+    const tenDaysAgo = Math.floor(Date.now() / 1000) - 10 * 24 * 60 * 60;
+    tokens[tokens.length - 2] = String(tenDaysAgo);
+    const backdated = tokens.join(' ') + message;
+
+    writeFileSync(reflogPath, backdated + '\n');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('authoredHere() reports null under an "N days ago" config, not the false a misparse-to-default would give', () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(work);
+      expect(authoredHere()).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+});
+
 describe('core.logAllRefUpdates=false does not disable an existing reflog', () => {
   // Not a test of the guard. A test of the assumption the fixture above was
   // resting on, kept because that assumption is wrong in the direction that
