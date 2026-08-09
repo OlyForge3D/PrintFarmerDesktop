@@ -957,6 +957,25 @@ export async function findBackupByOperationId(
  * which performs its own fresh, atomically-consistent-at-the-syscall
  * check immediately adjacent to the read — safe regardless of what any
  * earlier caller observed or how long ago it observed it.
+ *
+ * Round-4 reviewer finding (Ripley): the leaf-file fix above does not
+ * cover an ancestor-directory swap. `findBackupByOperationId` and
+ * `restoreOrcaProfileWindows` are invoked as two genuinely separate IPC
+ * round-trips (unlike `installOrcaProfileWindows`, where validation and
+ * use happen within one function call), so the gap between them is not
+ * bounded to a single syscall the way the rest of this file's TOCTOU
+ * windows are — an attacker who swaps `installRoot` itself for a
+ * junction in that window would have both `readFileWithIdentityPin`'s
+ * `lstat` and its `open()` transparently follow the junction, since the
+ * leaf file really is a plain file, just reached through the wrong
+ * directory. This re-validates `installRoot` (via `ensureInstallRootSafe`,
+ * the same one-time check `installOrcaProfileWindows` already relies on)
+ * and confirms `backupPath`'s parent is exactly that freshly-canonicalized
+ * root *before* trusting `backupPath` at all — matching this file's
+ * existing "validate once, immediately before use" convention rather than
+ * inventing a directory-identity bracket (a leaf-file bracket of that
+ * shape was already shown, in this file's history, to be defeatable by a
+ * swap-in-then-swap-back around the single operation it brackets).
  */
 export async function restoreOrcaProfileWindows(
   backupPath: string,
@@ -967,6 +986,25 @@ export async function restoreOrcaProfileWindows(
     throw makeError(
       'unsupportedPlatform',
       'Profile restore is only supported on Windows.',
+    );
+  }
+
+  const installRoot = getWindowsOrcaInstallRoot();
+  // Re-validate installRoot now, immediately before trusting backupPath —
+  // backupPath was computed by an earlier, separate call
+  // (findBackupByOperationId), so the install root could have been
+  // swapped for a junction in the gap since that call returned.
+  await ensureInstallRootSafe(installRoot);
+  let canonicalInstallRoot: string;
+  try {
+    canonicalInstallRoot = await realpath(installRoot);
+  } catch {
+    throw makeError('pathRestricted', 'Install root is inaccessible.');
+  }
+  if (path.dirname(backupPath) !== canonicalInstallRoot) {
+    throw makeError(
+      'pathRestricted',
+      'Backup path is outside the canonical install root; refused.',
     );
   }
 
@@ -985,9 +1023,7 @@ export async function restoreOrcaProfileWindows(
     );
   }
 
-  const installRoot = getWindowsOrcaInstallRoot();
   const destPath = computeInstallPath(safeFilename, installRoot);
-  await ensureInstallRootSafe(installRoot);
 
   // Reject if destination is a symlink.
   try {

@@ -380,10 +380,19 @@ describe('restoreOrcaProfileWindows', () => {
   it.runIf(process.platform === 'win32')(
     'rejects a backup whose actual content hash does not match expectedBackupHash',
     async () => {
-      const tmpDir = await makeTempDir();
+      // restoreOrcaProfileWindows now re-validates that backupPath lives
+      // directly under the canonical install root (see the ancestor-
+      // directory TOCTOU fix below), so this must exercise a backup path
+      // that is genuinely under a (sandboxed) installRoot rather than an
+      // arbitrary tmp directory unrelated to APPDATA.
+      const sandboxAppData = await makeTempDir();
+      const originalAppData = process.env['APPDATA'];
+      process.env['APPDATA'] = sandboxAppData;
       try {
+        const installRoot = getWindowsOrcaInstallRoot();
+        await mkdir(installRoot, { recursive: true });
         const backupPath = path.join(
-          tmpDir,
+          installRoot,
           'profile.json.bak-2024-01-01T00-00-00-000Z',
         );
         await writeFile(backupPath, '{"name":"real"}');
@@ -391,7 +400,12 @@ describe('restoreOrcaProfileWindows', () => {
           restoreOrcaProfileWindows(backupPath, 'f'.repeat(64), 'profile.json'),
         ).rejects.toMatchObject({ code: 'verificationFailed' });
       } finally {
-        await rm(tmpDir, { recursive: true, force: true });
+        if (originalAppData !== undefined) {
+          process.env['APPDATA'] = originalAppData;
+        } else {
+          delete process.env['APPDATA'];
+        }
+        await rm(sandboxAppData, { recursive: true, force: true });
       }
     },
   );
@@ -521,6 +535,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       );
       expect(restoreResult.restoredHash).toBe(installResult.backupHash);
     },
+    15_000, // multiple installs + restore add I/O overhead under full-suite load
   );
 
   it.runIf(process.platform === 'win32')(
@@ -1090,6 +1105,94 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       }
     },
     15_000, // extra installs + symlink race instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to restore when installRoot itself is swapped for a junction after findBackupByOperationId already validated it (ancestor-directory TOCTOU between locate and restore)',
+    async () => {
+      // Reviewer finding (Ripley, round 4): the leaf-file identity pin
+      // above only re-validates `backupPath` itself. It says nothing
+      // about an *ancestor* directory being swapped in the same gap
+      // between findBackupByOperationId returning and
+      // restoreOrcaProfileWindows using its result — unlike
+      // installOrcaProfileWindows (which validates and uses installRoot
+      // within one function call), locate and restore are genuinely
+      // separate calls, so an attacker who swaps installRoot itself for
+      // a junction in that window would have both the leaf lstat and the
+      // identity-pinned open() transparently follow the junction, since
+      // the leaf file really is an ordinary file — just reached through
+      // the wrong directory. This proves restoreOrcaProfileWindows now
+      // re-validates installRoot itself (via ensureInstallRootSafe) and
+      // confirms backupPath's parent is exactly that freshly
+      // re-canonicalized root, immediately before trusting backupPath at
+      // all, rather than only trusting the leaf file.
+      const safeFilename = 'toctou_locate_restore_root_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-locate-restore-root"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `locate-restore-root-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-locate-restore-root-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      // Mirror the real backup's bytes into the escape directory under
+      // the same basename, so that if a junction swap were followed
+      // (i.e. if the fix were absent), the restore would still find a
+      // hash-matching file and could wrongly succeed — proving this test
+      // catches the ancestor-directory redirect itself, not merely a
+      // hash mismatch.
+      await writeFile(
+        path.join(escapeDir, path.basename(backupPath)),
+        realBackupBytes,
+      );
+
+      // Simulate the gap between findBackupByOperationId returning and
+      // restoreOrcaProfileWindows running: swap installRoot itself for a
+      // junction pointing outside the sandboxed APPDATA tree.
+      await rm(installRoot, { recursive: true, force: true });
+      await makeDirReparsePoint(escapeDir, installRoot);
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote/read through a junctioned install root',
+        ).toEqual([path.basename(backupPath)]);
+      } finally {
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
   );
 
   it.runIf(process.platform === 'win32')(
