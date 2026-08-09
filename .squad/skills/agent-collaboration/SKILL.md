@@ -144,6 +144,130 @@ If the head does move, do not silently merge the old verdict forward. Assess the
 
 Before reporting or acting on any PR state, **re-query the live endpoint**. A snapshot taken minutes ago may describe a head that no longer exists.
 
+## Re-derive state at the moment of use — before routing, holding, reviewing, or publishing
+
+**This applies to every role, not only merge review.** A backlog-routing pass, a held PR
+awaiting rework, a review verdict, and a publication step all reason from a SHA or a PR
+state — and each of those has an expiry the session cannot see. #568 recorded three
+participants (a routing session, a reviewer, and a PR's own author) who each acted within
+90 minutes of PR #561 merging, each anchored to a different, already-superseded head they
+had fetched earlier in their own session and never re-checked. Every one of them was
+accurate about the SHA they quoted; none of them re-fetched before acting. **Staleness has
+no local symptom** — a stale value is internally consistent and passes every check run
+against it, which is why nothing in any one of those sessions caught it.
+
+**Before routing, holding, reviewing, or publishing against a PR or branch:**
+
+1. `git fetch` and re-read the branch tip — do not reason from a value read earlier this
+   session.
+2. `gh pr view <n> --json state,mergedAt,mergeCommit` — a closed, merged PR needs no
+   further routing, holding, review, or publication step, regardless of what an earlier
+   round believed about it.
+3. Answer "did my work ship" against the **merge commit**, not the branch's moving tip —
+   see below.
+
+### The `--is-ancestor` inversion on a squash-merge repo
+
+**This repo squash-merges** (§9.1 of `.squad/agents/ralph/loop.md`). A squash merge
+replays the branch's diff as a **new** commit on the target with no parent link back to
+the branch's own commits. So:
+
+```bash
+git merge-base --is-ancestor <held-sha> origin/development   # exit 1
+```
+
+reads as "never shipped" — and for a squash-merged branch it is **wrong every time**,
+because no commit from the branch is _ever_ an ancestor of the target, shipped or not.
+This is not a check that sometimes misses; it fails in one direction only, and that
+direction is a confident wrong answer, which is worse than an inconclusive one.
+
+**The two honest predicates instead — both anchored to the merge commit, never to the
+branch's moving tip:**
+
+- **Ancestry against the merge commit** (primary — durable forever once merged): the
+  merge **commit** GitHub produced (`gh pr view --json mergeCommit`) — not the branch's own
+  pre-merge tip — genuinely is an ancestor of the target once merged, because it _is_ the
+  commit that landed on it, and stays one permanently (barring a revert).
+  `git merge-base --is-ancestor <mergeCommit.oid> origin/development` is honest; the same
+  command given the branch's own last head is not. See §9.1 for this distinction in full.
+- **Content diff against the merge commit** (use to confirm exactly what landed, e.g. that
+  a squash reproduced your held content byte-for-byte):
+  `git diff <held-sha> <mergeCommit.oid> -- <paths>`, scoped to the paths you actually
+  touched. Zero output means the squash reproduced your held content exactly. **This must
+  target the merge commit, not `origin/<branch>`.** Diffing against the branch's moving
+  tip answers a different, time-limited question — "are these exact bytes still current at
+  trunk" — and will produce a false "not shipped" the moment any later, unrelated commit
+  touches the same paths, even though the original work landed intact and unmodified. The
+  merge commit is a fixed point; diffing against it never decays as trunk keeps evolving.
+
+**Negative-control requirement.** A check that always answers "not shipped" is
+indistinguishable, from a single reading, in either case above from a check with real
+discriminating power. Before trusting either predicate's result, run it once against a
+SHA or path you know for certain is unmerged, or against `git diff <held-sha> <mergeCommit.oid>`
+scoped to a path from a genuinely different, unrelated change — and confirm it reports
+"not shipped." If it doesn't, the check itself is broken and its "shipped" answer is not
+trustworthy either.
+
+### Worked example: PR #561 (squash-merged, `docs/CONTRIBUTING.md` and `scripts/safe-worktree-remove.*`)
+
+PR #561 merged `2026-08-06T19:04:41Z` as squash commit `9991065e`; its pre-merge branch
+tip was `14304447`.
+
+```bash
+# 1. Dishonest check on the branch's own pre-merge head — reads as "never shipped"
+git merge-base --is-ancestor 14304447 origin/development
+# exit 1  <-- WRONG: PR #561 shipped hours earlier
+
+# 2. Honest check: content diff of held head against the merge commit, scoped to owned paths
+git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md package.json
+# `package.json` is non-empty (adds one line, `probe:silent-success`) -- this is NOT
+# the squash failing to reproduce held content. PR #500 landed that entry on
+# development at 11:53 on merge day, after #561's branch tip (14304447, 11:24) was
+# last synced but ~11 minutes before #561 itself was squash-merged (19:04). The squash
+# necessarily lands on top of development's *then-current* tip, so a file also
+# touched by an intervening, unrelated PR picks up that PR's change too -- this is
+# base drift at merge time, distinct from the moving-tip decay described below.
+# Isolate #561's *own* contribution to a shared file by diffing against the squash's
+# immediate parent instead of the held branch tip:
+git diff 9991065e^ 9991065e -- package.json
+# adds exactly one line, `worktree:remove` -- matches `gh pr diff 561`'s own
+# package.json diff exactly; this is the honest per-PR content check for a file
+# also touched by other work landing around the same time.
+# The other four paths are exclusively owned by #561 and diff empty against the
+# held tip directly:
+git diff 14304447 9991065e -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
+# (no output) <-- squash reproduced the held content byte-for-byte on paths #561
+# alone owns; no other PR touched these before the squash landed
+
+# CAUTION, do not substitute origin/development for 9991065e above: as trunk keeps
+# evolving, the same diff against the *moving* tip instead of the fixed merge commit
+# eventually goes nonzero even though this work shipped intact and was never touched
+# again -- confirmed live, once other commits later touched these same paths:
+git diff 14304447 origin/development -- scripts/safe-worktree-remove.mjs scripts/safe-worktree-remove.d.mts tests/safeWorktreeRemove.test.ts docs/CONTRIBUTING.md
+# nonzero output <-- MISLEADING: later, unrelated commits touched these same paths
+# after #561 merged; this is not evidence #561 didn't ship, it is evidence the target
+# was wrong. Always diff against the merge commit, never the branch's moving tip.
+
+# 3. Honest check: is the *merge commit* (not the branch tip) an ancestor of the target?
+git merge-base --is-ancestor 9991065e origin/development
+# exit 0  <-- correct: the squash commit itself is on development
+
+# 4. Negative control: same diff shape as step 2 (a real held-ish ref vs. a real landed
+# ref, scoped to one path) — applied to a path unrelated to #561
+# (scripts/check-merge-landed.mjs is not in `gh pr diff 561 --name-only`'s file list).
+# 5baba942 is the merge commit of PR #425, an ancestor of 9991065e that predates
+# scripts/check-merge-landed.mjs's own creation entirely. Target is 9991065e, the same
+# fixed merge commit as step 2 -- not origin/development, for the reason above.
+git diff 5baba9420c3762e5ad68fd25baf0cd61fb8e31ce 9991065e -- scripts/check-merge-landed.mjs
+# nonzero output <-- correctly reports "not shipped": the held ref has none of this
+# file's content at all, confirming the predicate in step 2 has real discriminating
+# power rather than always reporting "shipped"
+```
+
+Step 1 and step 3 name the same repository state and disagree only because one names the
+wrong SHA — the pre-merge branch tip instead of the merge commit GitHub actually produced.
+That is the entire defect: not a broken command, a command asked about the wrong object.
+
 ## Rejected commit revisions stay with their owner
 
 The rejection-lockout rule (requiring a _different_ author to revise rejected work) was **dismissed on 2026-07-24**. When a reviewer rejects a commit revision, its branch owner fixes it. Do not infer that owner from an issue or comment author field, and do not rotate the revision.
