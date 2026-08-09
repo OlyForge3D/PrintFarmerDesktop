@@ -184,6 +184,21 @@ advisory-audit steps achieve their own non-blocking behavior by internally
 choosing to `::warning::` and exit 0, not by that shared step setting.
 Corrected there to not claim a parity the YAML doesn't have.
 
+A fifth review pass (Vasquez, PR #661; Ralph independently confirmed live via
+`gh api repos/OlyForge3D/PrintFarmerDesktop/branches/main` returning 404) found
+that the `event_name == 'push'` restriction above closes the PR-review-bypass
+path but not a second one: `ci.yml:26`'s top-level trigger (pre-existing,
+untouched by this fix) lists `branches: [development, main]`, but `main` does
+not exist in this repository yet. Anyone with push access could create `main`
+and push attacker-controlled content directly to it — bypassing PR review
+entirely — and that push still satisfies `event_name == 'push'`, with
+`actions/checkout@v4` still checking out exactly that unreviewed content and
+handing it the token. The fix adds a second, independent condition to the step
+itself, `github.ref == 'refs/heads/development'` (`ci.yml:468`): defense in
+depth on top of the event-name gate, not a replacement for it, so the step
+will not run over a push to `main` even once `main` exists, until this
+condition is deliberately revisited alongside real branch protection on it.
+
 **A member is licensed — and expected — to falsify a constraint in their own
 brief and report it, without needing permission first.** Bishop did this in
 the originating incident without being licensed to, and was right. Disputing

@@ -464,8 +464,25 @@ jobs:
       # still reports the precondition rather than silently succeeding.
       # `continue-on-error` keeps either outcome from taking the required
       # "Dependency advisories" context down with it.
+      #
+      # `github.ref == 'refs/heads/development'` is a second, independent gate
+      # on top of `event_name == 'push'` (Vasquez, PR #661 review round 5):
+      # the top-level `on.push.branches` trigger above (line 26) lists both
+      # `development` and `main`, but `main` does not currently exist in this
+      # repo (`gh api repos/OlyForge3D/PrintFarmerDesktop/branches/main` ->
+      # 404, confirmed live). Any actor with push access could create a
+      # `main` branch and push attacker-controlled content directly to it,
+      # bypassing PR review entirely — that push still satisfies
+      # `event_name == 'push'`, and `actions/checkout@v4` would check out
+      # exactly that unreviewed content, handing it the token. Pinning this
+      # step to `development` specifically closes that path: even if `main`
+      # is created later (with or without its own branch protection), this
+      # step will not run over a push to it until this condition is
+      # deliberately revisited. This is defense-in-depth, not a workaround —
+      # `development` is where this repo's actual review gate (this PR's own
+      # merge queue) lives.
       - name: Check merge-queue required contexts against live branch protection
-        if: steps.changes.outputs.docs_only != 'true' && github.event_name == 'push'
+        if: steps.changes.outputs.docs_only != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/development'
         continue-on-error: true
         env:
           MERGE_QUEUE_CONTEXTS_TOKEN: ${{ secrets.MERGE_QUEUE_CONTEXTS_TOKEN }}
