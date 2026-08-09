@@ -978,6 +978,15 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         if (filePath !== metaPath) return;
         await rm(metaPath, { force: true });
         raceSimulated = await tryMakeFileSymlink(escapeTarget, metaPath);
+        if (process.env.PFD_DEBUG_IDENTITY_PIN) {
+          const escapeLstat = await lstat(escapeTarget, { bigint: true });
+          const metaLstat = await lstat(metaPath, { bigint: true }).catch(
+            (e) => e,
+          );
+          console.error(
+            `[identity-pin-debug] preOpen raceSimulated=${raceSimulated} escapeTarget dev=${escapeLstat.dev} ino=${escapeLstat.ino} metaPath-lstat=${metaLstat instanceof Error ? metaLstat.message : `dev=${metaLstat.dev} ino=${metaLstat.ino} isSymlink=${metaLstat.isSymbolicLink()}`}`,
+          );
+        }
       });
       __setIdentityPinPostOpenHookForTests(async (filePath) => {
         if (filePath !== metaPath || !raceSimulated) return;
@@ -988,7 +997,14 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         // the path, so this restoration is irrelevant to it.
         await rm(metaPath, { force: true });
         await writeFile(metaPath, originalRecord, 'utf8');
+        if (process.env.PFD_DEBUG_IDENTITY_PIN) {
+          const metaLstat = await lstat(metaPath, { bigint: true });
+          console.error(
+            `[identity-pin-debug] postOpen restored metaPath dev=${metaLstat.dev} ino=${metaLstat.ino}`,
+          );
+        }
       });
+      process.env.PFD_DEBUG_IDENTITY_PIN = '1'; // TEMP: CI-only diagnostic, see readFileWithIdentityPin
       try {
         const located = await findBackupByOperationId(installRoot, operationId);
         if (!raceSimulated) {
@@ -1001,6 +1017,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
           'metadata read trusted content reached through a swap-in/swap-back around the read',
         ).toBeNull();
       } finally {
+        delete process.env.PFD_DEBUG_IDENTITY_PIN;
         __setIdentityPinPreOpenHookForTests(null);
         __setIdentityPinPostOpenHookForTests(null);
         await rm(escapeDir, { recursive: true, force: true });
