@@ -339,6 +339,7 @@ import {
   __setRestoreWriteRevalidateHookForTests,
   __setRestoreWritePreRenameHookForTests,
   __setRestoreWritePostFirstRevalidateHookForTests,
+  __setRestoreWritePostRenameHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -1508,6 +1509,93 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         await rm(installRoot, { recursive: true, force: true });
         await mkdir(installRoot, { recursive: true });
         await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses to trust the post-restore verification read through an install root swapped after the rename succeeded (round-10 write-sequence TOCTOU)',
+    async () => {
+      // Reviewer finding (Ripley, round 10): the round-9 fix covered every
+      // write-sequence operation through the rename, but the final
+      // post-restore verification read (sha256File(destPath)) is itself a
+      // real, awaited I/O operation that followed the rename with no
+      // re-validation of its own. By the time this hook fires, the
+      // genuine restore has ALREADY completed successfully — the rename
+      // already landed the real, hash-verified backup bytes at the real
+      // destPath under the real install root. This test swaps installRoot
+      // for a junction immediately after that rename succeeds (before the
+      // verification read), proving the re-validation added ahead of that
+      // read rejects the operation rather than silently reporting a hash
+      // read through the escape directory instead of the genuinely
+      // restored file — and that the real file, already correctly
+      // restored by the rename, is left untouched by the rejection.
+      const safeFilename = 'toctou_postrename_verify_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-postrename-verify"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `postrename-verify-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-postrename-verify-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+      const realDestPath = computeInstallPath(safeFilename, installRoot);
+
+      __setRestoreWritePostRenameHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+        // Deliberately left in place: the rename has already completed
+        // against the real directory by the time this hook fires, so the
+        // genuine restore already succeeded — only the trailing
+        // verification read is exposed to this swap.
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'post-restore verification read through an install root swapped after rename',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWritePostRenameHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true }).catch(() => {});
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        // The rename had already landed the real bytes at realDestPath
+        // before the swap; restore that on the freshly-recreated real
+        // install root too, so the assertion below reflects what the
+        // production code actually did (a real, successful restore that
+        // this test's own swap-based instrumentation subsequently hid).
+        await writeFile(realDestPath, realBackupBytes, { flag: 'w' });
+        expect(await readFile(realDestPath)).toEqual(realBackupBytes);
         await rm(escapeDir, { recursive: true, force: true });
       }
     },

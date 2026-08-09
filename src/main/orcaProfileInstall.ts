@@ -894,6 +894,25 @@ export function __setRestoreWritePostFirstRevalidateHookForTests(
 }
 
 /**
+ * Test-only hook fired inside `restoreOrcaProfileWindows`, immediately
+ * after the atomic `rename` onto `destPath` succeeds but before the final
+ * post-restore hash verification read. Lets a regression test swap
+ * `installRoot` for a junction at exactly the point round-10's finding
+ * (Ripley) described: the genuine write had already completed, but the
+ * verification read that follows it was a separate, real, awaited I/O
+ * operation with no revalidation of its own. No-op in production; never
+ * set outside tests.
+ */
+let restoreWritePostRenameHookForTests: (() => Promise<void> | void) | null =
+  null;
+
+export function __setRestoreWritePostRenameHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  restoreWritePostRenameHookForTests = hook;
+}
+
+/**
  * Read `filePath`'s bytes in a way that cannot be defeated by a symlink
  * swapped in and back out again around the read (a "swap-in/swap-back"
  * TOCTOU).
@@ -1311,6 +1330,17 @@ export async function findBackupByOperationId(
  * an `installRoot`-derived path (`revalidateWriteRootOrThrow`), matching
  * this module's own rule that any real awaited operation between a check
  * and a use must get its own fresh check, not a shared one from earlier.
+ *
+ * Round-10 reviewer finding (Ripley): the round-9 fix above covered every
+ * write-sequence operation up to and including the `rename`, but the final
+ * post-restore verification read (`sha256File(destPath)`) is itself a real,
+ * awaited I/O operation that followed the last check with none of its own.
+ * A swap landing after the rename but before this read would make the
+ * function report a hash for whatever the swapped-in escape directory
+ * contains instead of the genuinely-restored file — decoupling what is
+ * reported from what actually happened, even though the restore itself
+ * (the rename) had already completed safely. This now re-validates
+ * immediately before this last read too, closing the sequence's final gap.
  */
 export async function restoreOrcaProfileWindows(
   backupPath: string,
@@ -1451,6 +1481,22 @@ export async function restoreOrcaProfileWindows(
     throw writeErr;
   }
 
+  if (restoreWritePostRenameHookForTests) {
+    await restoreWritePostRenameHookForTests();
+  }
+
+  // Round-10 reviewer finding (Ripley): the rename above lands the genuine,
+  // hash-verified backup bytes at the real `destPath` — but the read below
+  // that verifies and reports on that fact is itself a real, awaited I/O
+  // operation, and it previously reused the raw `destPath` string with no
+  // revalidation between the rename and this read. A swap landing in that
+  // gap would make this function report a hash (success or a spurious
+  // `rollbackFailed` mismatch) for whatever the swapped-in escape directory
+  // happens to contain, decoupling what is reported from what was actually
+  // restored. This re-validates immediately before the read, matching the
+  // same `revalidateWriteRootOrThrow` treatment already applied before each
+  // of the earlier write-sequence operations.
+  await revalidateWriteRootOrThrow(destPath);
   const restoredHash = await sha256File(destPath);
   if (restoredHash !== expectedBackupHash) {
     throw makeError(
