@@ -120,6 +120,20 @@ function parseCheckRun(checkRun, index) {
       `check run ${index + 1} (${name}) has a non-string conclusion`,
     );
   }
+  // `conclusion: null` is the normal, expected shape for a run that has not
+  // completed yet -- that is what "pending" means. But a run whose `status`
+  // is already `completed` is documented by GitHub to always carry a
+  // conclusion; `completed` with `conclusion: null` is not a real API shape,
+  // it is malformed input. Treating it as `pending` would be actively wrong
+  // (it reads as "still running", when the run has in fact finished with no
+  // recorded verdict), and letting it fall through to a clean exit would
+  // reintroduce exactly the kind of false-negative "everything's fine"
+  // misreporting this file exists to prevent. Fail closed instead.
+  if (status === 'completed' && conclusion === null) {
+    throw new Error(
+      `check run ${index + 1} (${name}) is completed but has no conclusion`,
+    );
+  }
   // A queued or in-progress run legitimately has not started yet, so GitHub
   // reports `started_at: null` for it -- that is not malformed input, it is
   // the normal shape of "pending". Only a completed run is required to carry

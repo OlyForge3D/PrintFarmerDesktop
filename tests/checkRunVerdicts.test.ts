@@ -222,6 +222,26 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
+  it('REGRESSION: refuses a completed run with conclusion: null instead of silently reporting it pending', () => {
+    // GitHub documents `conclusion` as always set once a run's `status` is
+    // `completed` -- `completed` with `conclusion: null` is not a real API
+    // shape. `classifyConclusion` treats `null` as "pending" for the
+    // legitimate not-yet-completed case, so if this were allowed through
+    // unchanged it would read as "still running" for a run that has, in
+    // fact, already finished with no recorded verdict -- and `main` would
+    // exit clean instead of failing closed. This must be rejected as
+    // malformed the same way a missing started_at/completed_at is.
+    const checkRuns = [
+      checkRun({
+        status: 'completed',
+        conclusion: null,
+      }),
+    ];
+    expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+      /completed but has no conclusion/,
+    );
+  });
+
   it('REGRESSION: an in-progress rerun outranks an older completed run for the same name, even with a lower id', () => {
     // Live Checks API data showed the opposite of what id-ordering assumes:
     // a later-started rerun can carry a LOWER check-run id than an older,
