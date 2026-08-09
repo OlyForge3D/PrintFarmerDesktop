@@ -23,20 +23,20 @@ existed. The defect is one level up:
 
 ## The instances
 
-| # | Command | Appears to answer | Actually answers |
-|---|---|---|---|
-| 1 | `$body.Contains("text")` where `$body` came from `gh … --jq` | substring present? | **element equality** — `--jq` yields a *string array* in PowerShell, so it returns `False` for text plainly visible in the same output |
-| 2 | `$x -like "text"` (no wildcards) | substring present? | exact whole-string match |
-| 3 | `git rev-parse HEAD^{tree}` **unquoted** in PowerShell | the tree | `{tree}` is parsed as a script block, git receives `HEAD^` and returns the **first parent** — a real commit, printed on a line labelled *tree*, beside a `fatal:` that reads as belonging to the other argument |
-| 4 | `conclusion != "SUCCESS"` | failed checks | **failed *or not finished*** — an unfinished check's `conclusion` is an empty string |
-| 5 | `git branch -a --contains X` | is X the tip? | is X **reachable** — true of every ancestor |
-| 6 | `git merge-base --is-ancestor A B` | was this branch rewritten? | was **this interval** rewritten — a branch can contain a rebase *and* a later merge, and a test aimed at the recent interval cannot see the earlier one |
-| 7 | `$file.Contains("a quoted sentence")` | does the file say this? | is this **exact byte sequence** present — defeated by `prettier`'s 80-column wrap, which breaks prose mid-phrase |
+| #   | Command                                                      | Appears to answer          | Actually answers                                                                                                                                                                                                |
+| --- | ------------------------------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `$body.Contains("text")` where `$body` came from `gh … --jq` | substring present?         | **element equality** — `--jq` yields a _string array_ in PowerShell, so it returns `False` for text plainly visible in the same output                                                                          |
+| 2   | `$x -like "text"` (no wildcards)                             | substring present?         | exact whole-string match                                                                                                                                                                                        |
+| 3   | `git rev-parse HEAD^{tree}` **unquoted** in PowerShell       | the tree                   | `{tree}` is parsed as a script block, git receives `HEAD^` and returns the **first parent** — a real commit, printed on a line labelled _tree_, beside a `fatal:` that reads as belonging to the other argument |
+| 4   | `conclusion != "SUCCESS"`                                    | failed checks              | **failed _or not finished_** — an unfinished check's `conclusion` is an empty string                                                                                                                            |
+| 5   | `git branch -a --contains X`                                 | is X the tip?              | is X **reachable** — true of every ancestor                                                                                                                                                                     |
+| 6   | `git merge-base --is-ancestor A B`                           | was this branch rewritten? | was **this interval** rewritten — a branch can contain a rebase _and_ a later merge, and a test aimed at the recent interval cannot see the earlier one                                                         |
+| 7   | `$file.Contains("a quoted sentence")`                        | does the file say this?    | is this **exact byte sequence** present — defeated by `prettier`'s 80-column wrap, which breaks prose mid-phrase                                                                                                |
 
 Instance 1 was hit independently by two sessions — the first kept it in
 local notes, the second rediscovered it from scratch. Instance 7 nearly
 produced a false accusation of a counterparty whose quote was faithful.
-Instance 3 printed *another PR's own head SHA* as its answer — a wrong
+Instance 3 printed _another PR's own head SHA_ as its answer — a wrong
 value the recipient would have recognised and found corroborating.
 
 Instances 1 and 4 were caught only because a control string known to be
@@ -56,9 +56,9 @@ rewrite claim   ->  name the interval alongside the answer
 quote claim     ->  normalise whitespace before comparing prose
 ```
 
-Concretely for PowerShell + `gh`: join a `--jq` array before any
-`.Contains()` — `(gh … --jq '…') -join "` + "`n" + `"` — and single-quote
-every revision expression containing `^`, `{` or `}`.
+Concretely for PowerShell + `gh`: join a `--jq` array with newlines before
+any `.Contains()` call, and single-quote every revision expression
+containing `^`, `{`, or `}`.
 
 ## Related, more specific write-ups
 
