@@ -487,7 +487,10 @@ export async function resolveClosingIssuesConfidently(read, options = {}) {
     }
   }
 
-  throw new ClosingIssuesIndeterminateError({ reads, elapsedMs: now() - start });
+  throw new ClosingIssuesIndeterminateError({
+    reads,
+    elapsedMs: now() - start,
+  });
 }
 
 export async function fetchPullRequestCommits({
@@ -604,10 +607,14 @@ async function main() {
   // "this pull request arms nothing" or "the field has not populated yet",
   // and those two must not take the same code path: only the former is
   // allowed to pass.
-  const { value: closingIssues, confirmedEmpty, reads, elapsedMs } =
-    await resolveClosingIssuesConfidently(() =>
-      fetchClosingIssues({ owner, repo, prNumber, token }),
-    );
+  const {
+    value: closingIssues,
+    confirmedEmpty,
+    reads,
+    elapsedMs,
+  } = await resolveClosingIssuesConfidently(() =>
+    fetchClosingIssues({ owner, repo, prNumber, token }),
+  );
 
   const { ok, violations } = evaluateClosureScope(closingIssues);
   const armed = closingIssues.map((issue) => `#${issue.number}`).join(', ');

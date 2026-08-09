@@ -405,7 +405,9 @@ describe('resolveClosingIssuesConfidently', () => {
     }
 
     expect(caught).toBeInstanceOf(ClosingIssuesIndeterminateError);
-    const error = caught as InstanceType<typeof ClosingIssuesIndeterminateError>;
+    const error = caught as InstanceType<
+      typeof ClosingIssuesIndeterminateError
+    >;
     expect(error.reads).toBe(3);
     expect(error.elapsedMs).toBeLessThan(45000);
     expect(error.message).toMatch(/not necessarily finished computing/);
