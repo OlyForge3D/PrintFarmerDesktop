@@ -297,6 +297,34 @@ describe('isDirectVitestInvocation', () => {
       ),
     ).toBe(true);
   });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 10): recognises `npm exec vitest` and `npx --yes vitest`, not just the bare launcher-then-vitest form', () => {
+    // `npm exec <binary>` runs a binary directly (bypassing package.json
+    // scripts entirely, the same as `npx`), and `npx --yes` is an ordinary
+    // way to suppress npx's interactive install-confirmation prompt --
+    // both are ordinary launcher spellings, not exotic ones. The previous
+    // version of this check only recognised `vitest` as the IMMEDIATE next
+    // token after the launcher, so the `exec` subcommand and the `--yes`
+    // flag in between both defeated it, and `npm` was not even in
+    // `VITEST_LAUNCHERS` to begin with.
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('npm exec vitest run -t x')),
+    ).toBe(true);
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('npx --yes vitest run -t x')),
+    ).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of this PR, round 10): `npm run <script>` is still not a direct invocation merely because `npm` is now a recognised launcher', () => {
+    // Adding `npm` to `VITEST_LAUNCHERS` (for `npm exec vitest`, above)
+    // must not make an ordinary `npm run <script-name>` -- which names a
+    // package.json script, not a program -- look like a direct invocation
+    // just because `npm` now matches the launcher set. That form is
+    // resolved through the alias chain (HOME 1's own tests), not here.
+    expect(isDirectVitestInvocation(tokenizeCommand('npm run test'))).toBe(
+      false,
+    );
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -440,6 +468,548 @@ describe('HOME 1: package.json test/test:* scripts', () => {
       test: 'npm run does-not-exist',
     });
     expect(violations).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 10): follows an alias chain through a launcher flag between the package manager and `run`', () => {
+    // `npm --silent run ci` is an entirely ordinary way to quiet npm's own
+    // output while still running the `ci` script -- the previous
+    // regex-based alias resolver required `npm`/`run` to be adjacent, so
+    // this exact shape let a narrowing hide one option away from the
+    // already-covered `npm run ci` case above.
+    const violations = checkPackageJsonScripts({
+      test: 'npm --silent run ci',
+      ci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 11): bare `npm ci` is npm\'s own built-in subcommand, not a reference to a "ci" script', () => {
+    // Round 10 widened bare-shorthand alias resolution to any `npm <token>`
+    // with no `run` keyword, which over-reached: npm always resolves its
+    // OWN fixed set of built-in subcommands (`ci`, `install`, `publish`,
+    // `audit`, ...) first, regardless of whether a same-named script also
+    // exists -- `npm ci` never runs `scripts.ci` bare, only `npm run ci`
+    // does. `test: 'npm ci'` here must be read as literally running npm's
+    // clean-install command (no narrowing flag in it at all), NOT as a
+    // reference to the `ci` script below, which DOES carry a narrowing.
+    const violations = checkPackageJsonScripts({
+      test: 'npm ci',
+      ci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 11): npm's own bare lifecycle shorthand (`npm test`) still resolves to the `test` script", () => {
+    // Unlike `npm ci`/`npm install`/other built-ins, `npm test` IS one of
+    // npm's own documented bare shorthands for `npm run test` -- narrowing
+    // the round-11 fix to an allowlist of npm's real bare lifecycle names
+    // (test/start/stop/restart) must not also break this legitimate case.
+    const violations = checkPackageJsonScripts({
+      test: 'npm test',
+      pretest: 'echo unrelated',
+    });
+    expect(violations).toEqual([]);
+    const withNarrowing = checkPackageJsonScripts({
+      prepublish: 'npm test',
+      test: 'vitest run -t "only this arm"',
+    });
+    expect(withNarrowing).toHaveLength(1);
+    expect(withNarrowing[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 11): bare `yarn`/`pnpm <token>` (no `run` keyword) is not followed as a script alias', () => {
+    // yarn/pnpm DO fall back to running a same-named script for an
+    // unrecognised bare subcommand, but only after checking their own
+    // (considerably larger) built-in command sets first -- the identical
+    // false-positive shape `npm ci` just exposed. No review round has
+    // reproduced a concrete yarn/pnpm built-in collision yet, so this file
+    // does not follow bare yarn/pnpm shorthand at all rather than guess at
+    // an allowlist for tools whose bare-command semantics were not
+    // measured here; `run`/`run-script` still resolves it either way.
+    const bareYarn = checkPackageJsonScripts({
+      test: 'yarn build',
+      build: 'vitest run -t "only this arm"',
+    });
+    expect(bareYarn).toEqual([]);
+    const explicitYarnRun = checkPackageJsonScripts({
+      test: 'yarn run build',
+      build: 'vitest run -t "only this arm"',
+    });
+    expect(explicitYarnRun).toHaveLength(1);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 12): bare `npm restart` falls back to npm's own stop-then-start chain when no `restart` script is defined", () => {
+    // npm documents that `npm restart` is not a no-op when `scripts.restart`
+    // is absent -- it runs `stop` then `start` instead. Treating `restart`
+    // exactly like `test`/`start`/`stop` (only ever resolving to
+    // `scripts.restart` itself) missed this real fallback: here, no
+    // `restart` script exists, so bare `npm restart` genuinely reaches the
+    // narrowed `start` script.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 12): the restart fallback tries `stop` before `start`', () => {
+    // npm runs `stop` first, then `start` -- confirms this file follows the
+    // same order rather than only ever reaching `start`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+      start: 'echo unrelated',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 12): an explicit `restart` script takes priority over the stop/start fallback', () => {
+    // When `scripts.restart` itself exists, npm runs that directly -- the
+    // stop/start fallback only applies when no `restart` script is defined
+    // at all. A narrowing hiding in `start` here must not be reached,
+    // because `npm restart` never gets there.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      restart: 'echo ok',
+      start: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in `pretest` runs before `test` and is reached', () => {
+    // npm runs `pretest` before `test` for every `npm test`/`npm run test`
+    // invocation, whether or not `test` itself narrows. A narrowing that
+    // lives only in `pretest` is just as real a narrowing of what CI
+    // actually runs as one in `test` itself.
+    const violations = checkPackageJsonScripts({
+      pretest: 'vitest run -t "only this arm"',
+      test: 'echo actual-tests-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in `posttest` is reached', () => {
+    // Symmetric with `pretest` -- `posttest` runs after `test` and is just
+    // as reachable a home for a narrowing.
+    const violations = checkPackageJsonScripts({
+      test: 'echo actual-tests-here',
+      posttest: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in an ALIASED script's own pre-hook is reached, not just the entry script's", () => {
+    // `test` aliases to `ci` via `npm run ci`; `ci` itself has a `preci`
+    // hook. Because alias resolution recurses through the same
+    // name-based resolver, `preci`'s narrowing must be reached exactly as
+    // `pretest`'s would be for the entry script.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run ci',
+      preci: 'vitest run -t "only this arm"',
+      ci: 'echo actual-tests-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 13): a narrowing in `prestart`/`poststart` is reached through npm restart's stop/start fallback", () => {
+    // The restart fallback (round 12) resolves to `stop` then `start` --
+    // each of THOSE also carries its own pre/post hooks that must be
+    // checked too, not just their own bare command text.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prestart: 'vitest run -t "only this arm"',
+      start: 'echo actual-start-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 13): an unrelated `pre`/`post`-prefixed script that is not actually a lifecycle hook is not treated as one', () => {
+    // `prepublish` is a REAL npm lifecycle hook name (fires around `npm
+    // publish`), but a script like `prebuild` or `pretestdata` that merely
+    // happens to start with `pre`/`post` and is not `pre`+the exact entry
+    // script name must not be mistaken for that entry script's hook.
+    const violations = checkPackageJsonScripts({
+      test: 'echo actual-tests-here',
+      pretestdata: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Vasquez and Ripley, review of PR #647, round 14): a hook's narrowing is not reached when the base script it hooks does not exist", () => {
+    // Real `npm run ci` errors ("Missing script: \"ci\"") and never runs
+    // `preci` at all when `ci` itself has no script -- round 13 checked
+    // `preci` unconditionally, flagging this even though the aliased `ci`
+    // is never actually reached. The hook must only be consulted once its
+    // base script is confirmed to exist.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run ci',
+      preci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Vasquez and Ripley, review of PR #647, round 14): the restart fallback does not reach a missing target's hooks either", () => {
+    // Real `npm restart` with no `restart` script substitutes `stop` then
+    // `start` -- but only for scripts that actually exist. Here `stop`
+    // itself has no script, so real npm never runs `stop` at all, and
+    // therefore never runs `prestop`/`poststop` either; only `start`
+    // (which does exist) is actually reached.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prestop: 'vitest run -t "only this arm"',
+      start: 'echo actual-start-here',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of PR #647, round 15): `prerestart`/`postrestart` still run even when `restart` itself falls back to stop/start', () => {
+    // npm always runs `prerestart`/`postrestart` around whatever `restart`
+    // resolves to -- its OWN script if defined, or the stop/start fallback
+    // if not. Round 14's fix moved the fallback branch entirely before the
+    // pre/post checks, which meant `prerestart` was skipped outright
+    // whenever `scripts.restart` was absent, even though real `npm test`
+    // here genuinely runs `prerestart` before falling back to `start`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prerestart: 'vitest run -t "only this arm"',
+      start: 'echo actual-start-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+    const postViolations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'echo actual-start-here',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(postViolations).toHaveLength(1);
+    expect(postViolations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Ripley, review of PR #647, round 16): `postrestart` is not reached when the restart fallback chain never actually completes', () => {
+    // `stop` is optional in npm's fallback (silently skipped if absent),
+    // but `start` is not -- if neither `restart` nor `start` is defined,
+    // npm aborts ("missing script: start") before `postrestart` ever
+    // fires. Round 15's fix made `postrestart` reachable through the
+    // fallback unconditionally, which over-corrected: here, with no
+    // `restart`/`stop`/`start` script at all, real npm never gets far
+    // enough to run `postrestart`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Ripley, review of PR #647, round 16): `stop`'s own narrowing is still reached even though the overall restart later aborts on a missing `start`", () => {
+    // `stop` genuinely runs (and any narrowing in it is genuinely reached)
+    // before npm gets to the point of discovering `start` is missing and
+    // aborting -- this must still be flagged even though the chain as a
+    // whole never reaches `postrestart`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 17): `postrestart` is not reached when `restart` itself is defined but aliases to a script that does not exist', () => {
+    // `restart` has its own script here, so this is NOT the stop/start
+    // fallback path at all -- it is a plain aliased script like any other.
+    // But that alias target (`ci`) does not exist, so real npm errors
+    // partway through resolving `restart` and never reaches `postrestart`.
+    // Round 16's fix only handled the fallback branch's own `start`
+    // existing-as-a-key check; it didn't account for a main script whose
+    // OWN alias target turns out to be unreachable.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      restart: 'npm run ci',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Vasquez, review of PR #647, round 17): `postrestart` is not reached when the fallback's `start` key exists but aliases to a script that does not exist", () => {
+    // `start` is present as a key (so round 16's existence check passes),
+    // but it aliases to a `ci` script that is not defined -- real npm
+    // errors while running the aliased-to command, so the fallback chain
+    // never completes and `postrestart` never fires.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'npm run ci',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 17): a narrowing inside the missing alias target's own command is irrelevant, but a narrowing that IS reached before the break is still caught", () => {
+    // Sanity check alongside the two negative controls above: `prerestart`
+    // fires unconditionally (before any alias resolution is attempted for
+    // `restart` or the fallback), so a narrowing there must still be
+    // caught even though `restart` itself goes on to alias to a missing
+    // script.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prerestart: 'vitest run -t "only this arm"',
+      restart: 'npm run ci',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 18): `postrestart` is not reached when `stop` is defined but aliases to a script that does not exist', () => {
+    // `stop`'s `--if-present` leniency only covers `stop` being ABSENT --
+    // if `stop` IS defined but its own command aliases to a missing
+    // script, real npm attempts `stop`, that attempt fails, and the whole
+    // `restart` aborts right there, before `start`/`postrestart` ever run.
+    // Round 17's fix only propagated `SCRIPT_UNREACHABLE` for `start`'s
+    // own unreachability; `stop`'s unreachability (as opposed to `stop`
+    // being simply absent) still fell into the same "treat as skip and
+    // continue" bucket.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'npm run missing-alias',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 18): `stop`'s own narrowing is still caught even though `stop` itself also goes on to alias to a missing script", () => {
+    // Direct narrowing in `stop`'s command is detected before alias
+    // resolution is even attempted for `stop`'s own command, so a direct
+    // narrowing there is unaffected by the abort-vs-skip distinction --
+    // this only matters when `stop` itself has no direct narrowing but
+    // goes on to unreachably alias elsewhere. Included as a sanity check
+    // that the round-16 positive control (stop narrows directly, no
+    // start) still passes under the new stop-presence-gated logic.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 18): `stop`'s own narrowing is still caught even though `stop` itself also goes on to alias to a missing script", () => {
+    // Direct narrowing in `stop`'s command is detected before alias
+    // resolution is even attempted for `stop`'s own command, so a direct
+    // narrowing there is unaffected by the abort-vs-skip distinction --
+    // this only matters when `stop` itself has no direct narrowing but
+    // goes on to unreachably alias elsewhere. Included as a sanity check
+    // that the round-16 positive control (stop narrows directly, no
+    // start) still passes under the new stop-presence-gated logic.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez and Ripley, review of PR #647, round 20): `postrestart` IS caught when `stop` and `start` legitimately reuse the same shared alias target from two independent branches (not a cycle)', () => {
+    // `stop -> shared` and `start -> shared` reach the same script twice,
+    // but from two DIFFERENT, non-cyclic branches -- once `stop`'s
+    // resolution has fully returned, `shared` is no longer an ancestor on
+    // the active path, so resolving it again through `start` is
+    // legitimate reuse, not a self-reference. Round 19's fix (treating
+    // ANY re-encounter of a name in `visited` as unreachable) went too
+    // far: it conflated this with a genuine cycle, incorrectly returning
+    // `SCRIPT_UNREACHABLE` for `start` and suppressing the real
+    // `postrestart` narrowing below. `visited` must be scoped to the
+    // active recursion path (popped on return), not accumulate forever.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'npm run shared',
+      start: 'npm run shared',
+      shared: 'echo ok',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez and Ripley, review of PR #647, round 20): a generic `post<name>` hook IS caught when a `pre<name>` hook and the main script legitimately reuse the same shared alias target', () => {
+    // Same DAG-reuse shape as the restart-fallback case above, but for the
+    // generic (non-restart) pre/main/post pattern: `prea` and `a` both
+    // alias to `shared`, which itself has no narrowing -- `shared`'s
+    // resolution via `prea` must not leave a stale "visited" mark that
+    // then falsely blocks resolving it again (legitimately) via `a`,
+    // which would incorrectly suppress `posta`'s real narrowing.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run a',
+      prea: 'npm run shared',
+      a: 'npm run shared',
+      shared: 'echo ok',
+      posta: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez and Ripley, review of PR #647, round 20): a genuine cycle through a shared intermediate is still refused, even with the round-20 stack-scoping fix', () => {
+    // Sanity check alongside the two DAG-reuse positive controls above:
+    // `start` aliasing back to `restart` ITSELF (a true self-reference,
+    // not reuse of an unrelated shared script) must still be caught as
+    // unreachable -- the round-19 fix's actual goal (real cycles refused)
+    // must survive the round-20 correction (legitimate reuse permitted).
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Ripley, review of PR #647, round 19): `postrestart` is not reached when the fallback's `start` cyclically aliases back to `restart` itself", () => {
+    // `visited` exists only to stop THIS CHECKER from recursing forever --
+    // it must not be read by callers as "this path resolved cleanly."
+    // Real npm has no cycle-safe re-entrancy here either: `start: "npm
+    // restart"` while already resolving `restart`'s own fallback would
+    // recurse until npm itself errors out, not complete successfully, so
+    // `postrestart` must not be treated as reached.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Ripley, review of PR #647, round 19): `postrestart` is not reached when the fallback's `stop` cyclically aliases back to `restart` itself", () => {
+    // Same cycle shape as above, one step earlier in the fallback chain.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'npm restart',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Ripley, review of PR #647, round 19): `prerestart`'s own narrowing is still caught even though `start` goes on to cycle back to `restart`", () => {
+    // `prerestart` fires and is checked before the fallback (and its
+    // cyclic `start`) is even attempted, so a narrowing there is
+    // unaffected by the cycle-guard change -- sanity check that treating
+    // a cycle as unreachable didn't over-suppress an unrelated hook that
+    // genuinely runs first.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prerestart: 'vitest run -t "only this arm"',
+      start: 'npm restart',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 15): a `--` end-of-options marker before a dash-prefixed script alias name still resolves it', () => {
+    // `--` is npm's (and getopt-style CLIs generally) canonical "end of
+    // options" marker -- everything after it is positional, even a token
+    // that itself starts with `-`. `npm run -- -ci` names a script
+    // literally called `-ci` (an unusual but valid package.json script
+    // key); skipping flag tokens with no `--` boundary consumed `-ci` as
+    // if it were another option, leaving no alias target resolved at all.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run -- -ci',
+      '-ci': 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
   });
 
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
@@ -1010,6 +1580,38 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '        run: .\\scripts\\vitest.ps1 run -t "only this arm"',
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 10): recognises `npm exec vitest` and `npx --yes vitest` direct invocations in a workflow step', () => {
+    const execForm = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: npm exec vitest run -t "only this arm"',
+    ].join('\n');
+    const execViolations = checkWorkflowText('ci.yml', execForm);
+    expect(execViolations).toHaveLength(1);
+    expect(execViolations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+
+    const yesFlagForm = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: npx --yes vitest run -t "only this arm"',
+    ].join('\n');
+    const yesFlagViolations = checkWorkflowText('ci.yml', yesFlagForm);
+    expect(yesFlagViolations).toHaveLength(1);
+    expect(yesFlagViolations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {
