@@ -76,7 +76,14 @@
 // member-access key built from an expression rather than a plain variable
 // reference (e.g. string concatenation, `helpers['run' + 'Gh'](...)` --
 // distinct from the single-hop variable-key case round 15 already
-// resolves); string/URL construction beyond the patterns already matched
+// resolves); a variable's value CONDITIONALLY reassigned in a branch that
+// may not execute (e.g. `let key = 'invokeGh'; if (cond) key = 'other';
+// obj[key](...)` -- every variable/argv resolver in this file (round
+// 3/13/15/16) picks the most recent TEXTUAL assignment before the use site,
+// with no notion of control flow, so a conditional branch is treated
+// exactly like an unconditional one; distinguishing them needs a real
+// control-flow graph, not another textual "most recent assignment"
+// lookup); string/URL construction beyond the patterns already matched
 // (e.g. an arbitrary-depth chain of variable reassignments before a
 // `fetch()` call, or non-`fetch` HTTP clients such as `axios`/`node-fetch`).
 // Closing these completely would need real interprocedural taint tracking
