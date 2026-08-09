@@ -263,10 +263,19 @@ describe('an enforcement citation names a mechanism that runs', () => {
   it('separates what workflows run from what tests import', () => {
     const invoked = runInvokedScripts(workflows, npmScripts);
     const imported = testImportedScripts(testFiles);
-    // #472 measured this as imported, never executed. #186 wired the live
-    // half into ci.yml's `advisories` job ("Check merge-queue required
+    // #472 measured this as imported, never executed. #186 wired a real call
+    // site into ci.yml's `advisories` job ("Check merge-queue required
     // contexts against live branch protection", `npm run
-    // check:merge-queue-contexts`), so it is now both.
+    // check:merge-queue-contexts`), so `runInvokedScripts` — a textual,
+    // call-site check, not a "this ran on the current head" check — now
+    // finds it. That is a narrower claim than "executed": ci.yml's step
+    // guards the call behind a MERGE_QUEUE_CONTEXTS_TOKEN secret this repo
+    // does not yet provision, so as of this writing the script's main() has
+    // run zero times in CI (Hicks, PR #661 review, round 3 — the step runs,
+    // the guard clause inside it does not reach the npm script). `invoked`
+    // here means "referenced from a workflow run: block a reader can find
+    // and re-check," matching the other assertions in this file; it is not,
+    // and cannot be, a claim about runtime secret state.
     expect(imported.has('check-merge-queue-contexts.mjs')).toBe(true);
     expect(invoked.has('check-merge-queue-contexts.mjs')).toBe(true);
     // Control: a script that genuinely is run by a workflow.

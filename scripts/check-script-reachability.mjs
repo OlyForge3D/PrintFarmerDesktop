@@ -47,6 +47,26 @@ export const UNINVOKED_SCRIPTS = {
 // npm scripts named check:*/verify:* that no workflow invokes. Same rule: the
 // reason is the deliverable. "It is in package.json" is not enforcement —
 // package.json is a menu, not a schedule.
+// NOTE on a check deliberately NOT listed here: `check:merge-queue-contexts`
+// (scripts/check-merge-queue-contexts.mjs, #186/#661) has a real call site
+// in .github/workflows/ci.yml's `advisories` job, gated behind an optional
+// MERGE_QUEUE_CONTEXTS_TOKEN secret this repo does not currently provision —
+// so its main() has never actually executed here, in the same spirit as the
+// two entries above. It stays OUT of this allowlist anyway, because this
+// list's definition of "enforced"/"invoked" (used identically by
+// evaluateCheckEnforcement below and by tests/enforcementCitations.test.ts)
+// is "some workflow's run: block textually references the command," which
+// is true for it and is a call-site fact, not a claim about whether that
+// call site has fired on any given run. Re-adding it here to reflect "hasn't
+// executed yet" was tried and reverted: it collides with the rot guard in
+// tests/scriptReachability.test.ts (`holds no check that a workflow now
+// runs`), which exists specifically to catch an allowlist entry whose
+// justification a workflow has since made false — and a real call site
+// existing is exactly that. The narrower, currently-true fact ("has a
+// citable call site; has not yet fired pending a secret") lives in prose —
+// see tests/enforcementCitations.test.ts's comment on this script and the
+// #186 entries in .squad/decisions.md / .squad/decisions/inbox/ — rather
+// than forced into this boolean allowlist, which has no vocabulary for it.
 export const UNENFORCED_CHECKS = {
   'check:review-coverage':
     'Its judgement IS enforced in CI: tests/reviewHeadCoverage.test.ts drives ' +

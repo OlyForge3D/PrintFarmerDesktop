@@ -120,10 +120,36 @@ not a thing that block can express. The corrected step drops the invalid
 permission and reads an optional `MERGE_QUEUE_CONTEXTS_TOKEN` secret; absent
 that secret it prints a one-line `::warning::` naming exactly this
 precondition and exits, rather than crashing the workflow or silently
-reporting success. It is still true that the step runs on every
-non-docs-only pull request — what it cannot yet do, until someone provisions
-that secret, is complete the comparison. A citation to this step should say
-so plainly, not round up to "and therefore verifies."
+reporting success.
+
+A third review pass (Hicks again, same PR) caught the residual overstatement
+in the paragraph above, before this correction: it said the step "runs...
+what it cannot yet do is complete the comparison," which implies the
+comparison starts and stalls partway. It does not start at all. The guard
+clause exits BEFORE the `npm run check:merge-queue-contexts` line, so in
+this repository's current state — no `MERGE_QUEUE_CONTEXTS_TOKEN` secret
+configured — `scripts/check-merge-queue-contexts.mjs`'s `main()` has not
+executed once in CI, ever. What is true, precisely: the Actions STEP runs
+(is not skipped) on every non-docs-only pull request, and its shell body
+always executes; what is not true is that the script inside it runs, or
+partially runs, absent that secret. `tests/enforcementCitations.test.ts` and
+`scripts/check-script-reachability.mjs`'s `UNENFORCED_CHECKS` still classify
+this as "invoked"/"enforced" — correctly, by their own stated definition,
+which is "does some workflow `run:` line reference this command" (a
+call-site question, decidable from tracked files alone) and not "does this
+command execute on the current head, given secrets neither tool can read."
+That is a real, load-bearing distinction and not a loophole: reverting
+either classification back to "unenforced" was tried and rejected, because
+it made those tools assert something equally false in the other direction —
+`.github/workflows/ci.yml` genuinely does contain a real call site now,
+which is exactly the fact `UNENFORCED_CHECKS`/`invoked` exist to track, and
+an allowlist entry claiming otherwise would itself be the stale-justification
+defect `tests/scriptReachability.test.ts`'s rot guard exists to catch (and
+does catch — restoring the entry to verify this reproduces that guard's own
+failure). The honest scope-limit is stated here, in prose a citation can
+point at, rather than forced into either boolean: this step has a citable,
+re-derivable call site; whether that call site has ever fired is a separate
+question neither classifier answers, and today the answer is no.
 
 **A member is licensed — and expected — to falsify a constraint in their own
 brief and report it, without needing permission first.** Bishop did this in
