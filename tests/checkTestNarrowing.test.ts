@@ -709,6 +709,59 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     expect(violations).toEqual([]);
   });
 
+  it('POSITIVE CONTROL (Ripley, review of PR #647, round 15): `prerestart`/`postrestart` still run even when `restart` itself falls back to stop/start', () => {
+    // npm always runs `prerestart`/`postrestart` around whatever `restart`
+    // resolves to -- its OWN script if defined, or the stop/start fallback
+    // if not. Round 14's fix moved the fallback branch entirely before the
+    // pre/post checks, which meant `prerestart` was skipped outright
+    // whenever `scripts.restart` was absent, even though real `npm test`
+    // here genuinely runs `prerestart` before falling back to `start`.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prerestart: 'vitest run -t "only this arm"',
+      start: 'echo actual-start-here',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+    const postViolations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'echo actual-start-here',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(postViolations).toHaveLength(1);
+    expect(postViolations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of PR #647, round 15): a `--` end-of-options marker before a dash-prefixed script alias name still resolves it', () => {
+    // `--` is npm's (and getopt-style CLIs generally) canonical "end of
+    // options" marker -- everything after it is positional, even a token
+    // that itself starts with `-`. `npm run -- -ci` names a script
+    // literally called `-ci` (an unusual but valid package.json script
+    // key); skipping flag tokens with no `--` boundary consumed `-ci` as
+    // if it were another option, leaving no alias target resolved at all.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run -- -ci',
+      '-ci': 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
     // Round 2 added the single-string exec() shape (`'...'`/`"..."`); round
     // 3 found the identical call shape written as a template literal
