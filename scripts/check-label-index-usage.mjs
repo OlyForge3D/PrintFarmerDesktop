@@ -35,6 +35,49 @@
 // reason (mirrors UNINVOKED_SCRIPTS in check-script-reachability.mjs) — a
 // script that wants to use one of these patterns must say, in the diff, why
 // its shape does not repeat #299.
+//
+// KNOWN LIMITATIONS (scope decision, round 14): thirteen hardening rounds
+// closed a long list of reported bypasses -- reassignment, comma-operator and
+// bracket-call indirection, multi-hop and factory-returned wrappers, barrel
+// re-exports, default imports, destructured aliases, rest-param argv, and
+// array-literal elements that resolve to a separately-declared label-bearing
+// variable, among others. Round 11 (Ripley, in an explicit architecture
+// review) found MORE new bypass shapes than that round fixed: namespace
+// imports (`import * as ns from './x.mjs'; ns.invokeGh([...])`), `export *
+// from` barrel re-exports, combined default+named imports, computed/bracket
+// member calls through an intermediate object reference, `.apply()`/`.bind()`
+// indirection, and multi-hop variable reassignment before a `fetch()` call
+// (`const b = a; fetch(b)`) all still read a stale label answer undetected.
+// That is the signal, not an isolated miss: the space of import forms × call
+// forms × string-construction forms a determined author could combine is not
+// a finite list this regex/pattern-matching approach can ever fully enumerate
+// -- each round's fix has kept surfacing shapes the underlying architecture
+// still cannot systematically rule out, and the discovery rate is not
+// converging on zero. Chasing it further with the same strategy would not
+// have a defined stopping point.
+//
+// The explicit, deliberate scope decision for this lint, going forward: it is
+// a best-effort MECHANICAL SMOKE TEST for the straightforward, common-case
+// shapes of the #299 defect -- a direct `gh`/REST/search invocation, or one
+// resolved through a single easily-recognized layer of variable, wrapper, or
+// import indirection -- not a guaranteed static-analysis boundary or a
+// defense against deliberate obfuscation. It WILL NOT reliably catch: import
+// forms beyond direct/default/named/re-exported single-hop bindings (e.g.
+// namespace imports, `export * from` barrels); call forms beyond direct and
+// bracket/comma-operator indirection already handled (e.g. `.apply()`,
+// `.bind()`, computed calls through a freshly-constructed intermediate
+// object); string/URL construction beyond the patterns already matched (e.g.
+// an arbitrary-depth chain of variable reassignments before a `fetch()` call,
+// or non-`fetch` HTTP clients such as `axios`/`node-fetch`). Closing these
+// completely would need real interprocedural taint tracking over an AST with
+// scope/binding resolution (e.g. via `acorn`/`@babel/parser`), a materially
+// larger investment than a mechanical CI smoke test warrants for this issue.
+// Code review remains the backstop for shapes this deliberately-scoped check
+// cannot see -- the same backstop every other lint in this repository relies
+// on for its own blind spots. Future reports of a NEW bypass shape falling
+// within one of the categories above should be treated as confirming this
+// documented, accepted limitation, not as a fresh blocking defect requiring
+// another hardening round.
 
 import { lstatSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
