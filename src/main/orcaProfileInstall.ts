@@ -1001,7 +1001,23 @@ export async function restoreOrcaProfileWindows(
   } catch {
     throw makeError('pathRestricted', 'Install root is inaccessible.');
   }
-  if (path.dirname(backupPath) !== canonicalInstallRoot) {
+  // Compare canonicalized forms on both sides, not raw path strings: a
+  // legitimate installRoot and backupPath can differ as strings (e.g. an
+  // 8.3 short name or drive-letter normalization a Windows filesystem
+  // applies to one path but not the other) while still naming the same
+  // directory. The actual symlink/junction detection that catches a
+  // swapped ancestor happens above, in `ensureInstallRootSafe`'s
+  // per-segment `lstat` walk (re-run fresh on every call, so a swap that
+  // happened since `findBackupByOperationId` returned is caught there);
+  // this check only guards against `backupPath` pointing somewhere
+  // outside `installRoot` entirely.
+  let canonicalBackupDir: string | null;
+  try {
+    canonicalBackupDir = await realpath(path.dirname(backupPath));
+  } catch {
+    canonicalBackupDir = null;
+  }
+  if (canonicalBackupDir !== canonicalInstallRoot) {
     throw makeError(
       'pathRestricted',
       'Backup path is outside the canonical install root; refused.',
