@@ -1598,7 +1598,19 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         await makeDirReparsePoint(escapeDir, installRoot);
       });
       __setIdentityPinPostOpenHookForTests(async (filePath) => {
-        if (filePath !== metaPath) return;
+        // Match on basename, not exact path-string equality: production
+        // code constructs the actual `filePath` reaching this hook from
+        // `resolveBackupMetaPath`'s *canonical* (realpath'd) install root,
+        // not the raw `installRoot` this test computes `metaPath` from —
+        // on a runner where those two strings differ (drive-letter
+        // normalization, 8.3 short names, etc.), an exact-equality check
+        // here would silently never fire, so the swap-back would never
+        // happen and this test would only cover the easier
+        // "swap in and leave it swapped" case despite claiming to
+        // reproduce swap-back. Basename matching is immune to that,
+        // matching the pattern already used by the round-5/6 sibling
+        // tests above (see `metaFileName` comparisons).
+        if (path.basename(filePath) !== metaFileName) return;
         // The file handle is already open against the escape directory's
         // forged metadata; swapping back now does not change what that
         // handle reads, but does make the *next* path-based check
