@@ -96,28 +96,90 @@ export const isDocumentationPath = (file) => {
 };
 
 /**
- * Classifies a changed-file list.
+ * True when a repository-relative path is documentation OR a test file.
  *
- * An empty list is NOT documentation-only. "Nothing changed" and "the diff could not be computed"
- * arrive here as the same value, and only one of them is safe to treat as a licence to skip.
+ * Reuses `isDocumentationPath` wholesale rather than re-deriving its shape checks and manifest
+ * denylist: the manifest denylist in particular must keep winning by basename before the `tests/`
+ * allowance is ever consulted, and the surest way to guarantee that ordering is to not repeat it. A
+ * dependency manifest under `tests/fixtures/package.json`, say, is rejected by
+ * `isDocumentationPath`'s manifest check before this function's own `tests/` prefix check ever
+ * runs -- the `if` below short-circuits on `true`, not on the denylist, so a manifest never reaches
+ * the `tests/` branch to begin with.
  */
-export const classifyPaths = (files) => {
+export const isDocsOrTestPath = (file) => {
+  if (isDocumentationPath(file)) return true;
+  // isDocumentationPath already returned false for every shape it refuses to reason about --
+  // absolute paths, traversal, empty strings -- and for every manifest by basename. Re-running
+  // those same rejections here would be redundant, but the manifest one is spelled out again
+  // because it is the load-bearing property this predicate must never regress: a manifest must
+  // never qualify via the `tests/` allowance either.
+  if (typeof file !== 'string' || file === '') return false;
+  if (
+    file.startsWith('/') ||
+    file.includes('\\') ||
+    file.split('/').includes('..')
+  ) {
+    return false;
+  }
+  if (MANIFESTS.has(path.posix.basename(file))) return false;
+  return file.startsWith('tests/');
+};
+
+/**
+ * Classifies a changed-file list against a path predicate, shared by both the docs-only and the
+ * docs-and-tests tiers so their "empty list is not a licence to skip" and "list every offender"
+ * behaviour cannot drift apart.
+ *
+ * An empty list is NOT a pass under either tier. "Nothing changed" and "the diff could not be
+ * computed" arrive here as the same value, and only one of them is safe to treat as a licence to
+ * skip.
+ */
+const classifyBy = (files, predicate, allLabel, offendersLabel) => {
   if (!Array.isArray(files) || files.length === 0) {
     return {
-      docsOnly: false,
+      pass: false,
       offenders: [],
       reason: 'no changed files could be read',
     };
   }
-  const offenders = files.filter((file) => !isDocumentationPath(file));
+  const offenders = files.filter((file) => !predicate(file));
   return {
-    docsOnly: offenders.length === 0,
+    pass: offenders.length === 0,
     offenders,
-    reason:
-      offenders.length === 0
-        ? 'every changed path is documentation'
-        : 'non-documentation paths changed',
+    reason: offenders.length === 0 ? allLabel : offendersLabel,
   };
+};
+
+/**
+ * Classifies a changed-file list for the documentation-only tier.
+ */
+export const classifyPaths = (files) => {
+  const { pass, offenders, reason } = classifyBy(
+    files,
+    isDocumentationPath,
+    'every changed path is documentation',
+    'non-documentation paths changed',
+  );
+  return { docsOnly: pass, offenders, reason };
+};
+
+/**
+ * Classifies a changed-file list for the docs-and-tests tier: every path is documentation or lives
+ * under `tests/`. This tier is intentionally a SUPERSET of docs-only -- every docs-only change also
+ * qualifies here -- so `ci.yml` only needs to consult it where the docs-only tier does not already
+ * cover the same ground (the heavy `Sidecar`, `Release package` and `Dependency advisories` steps).
+ * `Desktop`'s own steps stay gated on docs-only alone: a change that is docs-and-tests but not
+ * docs-only, by construction, includes a `tests/` file, and `npm run test`, typecheck and lint must
+ * all still run over it.
+ */
+export const classifyDocsAndTests = (files) => {
+  const { pass, offenders, reason } = classifyBy(
+    files,
+    isDocsOrTestPath,
+    'every changed path is documentation or a test',
+    'paths outside documentation and tests changed',
+  );
+  return { docsAndTests: pass, offenders, reason };
 };
 
 const git = (args) =>
@@ -196,6 +258,11 @@ const changedFiles = () => {
 const main = () => {
   const { files, why } = changedFiles();
   const { docsOnly, offenders, reason } = classifyPaths(files ?? []);
+  const {
+    docsAndTests,
+    offenders: docsAndTestsOffenders,
+    reason: docsAndTestsReason,
+  } = classifyDocsAndTests(files ?? []);
 
   console.log(`docs-only fast path: ${why}`);
   if (files) console.log(`changed files: ${files.length}`);
@@ -207,8 +274,20 @@ const main = () => {
   }
   console.log(`docs_only=${docsOnly} (${reason})`);
 
+  if (docsAndTestsOffenders.length) {
+    console.log('not documentation or tests:');
+    for (const file of docsAndTestsOffenders.slice(0, 20))
+      console.log(`  ${file}`);
+    if (docsAndTestsOffenders.length > 20)
+      console.log(`  ... and ${docsAndTestsOffenders.length - 20} more`);
+  }
+  console.log(`docs_and_tests=${docsAndTests} (${docsAndTestsReason})`);
+
   const out = process.env.GITHUB_OUTPUT;
-  if (out) appendFileSync(out, `docs_only=${docsOnly}\n`);
+  if (out) {
+    appendFileSync(out, `docs_only=${docsOnly}\n`);
+    appendFileSync(out, `docs_and_tests=${docsAndTests}\n`);
+  }
 };
 
 // Written to $GITHUB_OUTPUT by this file rather than by a shell redirect in ci.yml: the jobs that
