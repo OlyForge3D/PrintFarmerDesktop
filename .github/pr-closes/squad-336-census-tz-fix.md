@@ -6,4 +6,5 @@ PR closes no issue on its own -- the empty `closes` block below is a
 deliberate declaration of that, per `.github/pr-closes/README.md`.
 
 ```closes
+
 ```
