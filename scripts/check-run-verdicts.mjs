@@ -83,6 +83,20 @@ const SUPERSEDED_CONCLUSIONS = new Set(['cancelled', 'stale']);
 // grammars.
 // eslint-disable-next-line no-control-regex -- matching control characters is the point: strip every C0/DEL byte (including ESC, which begins ANSI escape sequences) out of an attacker-controlled check-run name before it is ever printed.
 const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f]/g;
+// GitHub's Checks API always returns `started_at`/`completed_at` in strict
+// ISO 8601 with a literal `Z` suffix (e.g. "2026-08-06T16:00:00Z"), never
+// any other `Date.parse`-acceptable shape. `Date.parse` alone is too
+// permissive as a validator: it also happily accepts RFC 2822
+// ("Thu, 06 Aug 2026 16:00:00 GMT") and other non-GitHub formats, so a
+// drifted/malformed API response carrying a timestamp in one of those
+// shapes would sail through a `Date.parse`-only check as "valid" even
+// though it is not a shape this API ever actually emits. Requiring the
+// documented shape up front closes that gap the same way the status/
+// conclusion enum checks close theirs: fail closed on anything that isn't
+// the one shape GitHub is known to send, rather than accepting anything a
+// permissive parser can make sense of.
+const ISO_8601_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 // GitHub's documented Checks API status enum (create/get a check run):
 // https://docs.github.com/en/rest/checks/runs -- queued, in_progress, and
 // completed are the states this file's logic actually branches on; waiting,
@@ -215,6 +229,7 @@ function parseCheckRun(checkRun, index) {
   if (startedAtRaw !== null && startedAtRaw !== undefined) {
     if (
       typeof startedAtRaw !== 'string' ||
+      !ISO_8601_TIMESTAMP_PATTERN.test(startedAtRaw) ||
       Number.isNaN(Date.parse(startedAtRaw))
     ) {
       throw new Error(
@@ -231,6 +246,7 @@ function parseCheckRun(checkRun, index) {
   if (completedAtRaw !== null && completedAtRaw !== undefined) {
     if (
       typeof completedAtRaw !== 'string' ||
+      !ISO_8601_TIMESTAMP_PATTERN.test(completedAtRaw) ||
       Number.isNaN(Date.parse(completedAtRaw))
     ) {
       throw new Error(

@@ -341,6 +341,25 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
+  it.each([
+    ['started_at', 'Thu, 06 Aug 2026 16:00:00 GMT'],
+    ['completed_at', 'Thu, 06 Aug 2026 16:05:00 GMT'],
+  ] as const)(
+    'REGRESSION: refuses a %s in RFC 2822 shape instead of accepting anything Date.parse can make sense of',
+    (field, rfc2822Value) => {
+      // GitHub's Checks API always emits started_at/completed_at in strict
+      // ISO 8601 with a literal Z suffix. Date.parse alone is far more
+      // permissive than that -- it also accepts RFC 2822 and other shapes
+      // GitHub never actually sends. A drifted/malformed response carrying
+      // a non-ISO-8601 (but still Date.parse-able) timestamp must fail
+      // closed rather than silently being treated as valid.
+      const checkRuns = [checkRun({ [field]: rfc2822Value })];
+      expect(() => latestCheckRunsByName(checkRuns)).toThrow(
+        new RegExp(`has an invalid ${field}`),
+      );
+    },
+  );
+
   it('REGRESSION: refuses a completed run with conclusion: null instead of silently reporting it pending', () => {
     // GitHub documents `conclusion` as always set once a run's `status` is
     // `completed` -- `completed` with `conclusion: null` is not a real API
@@ -1066,6 +1085,29 @@ describe('main', () => {
             name: 'Malformed timestamp-order check',
             started_at: '2026-08-06T16:00:00Z',
             completed_at: '2026-08-06T15:00:00Z',
+          }),
+        ]),
+      })),
+      () => undefined,
+    );
+    expect(result).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('REGRESSION: exits undetermined end-to-end for a completed_at in RFC 2822 shape instead of GitHub-documented ISO 8601', () => {
+    // Date.parse alone would accept this shape; GitHub's Checks API never
+    // actually emits it, so it must fail closed the same as any other
+    // drifted/malformed API response this file already guards against.
+    const result = main(
+      ['--repo', 'o/r', '--sha', 'abc123'],
+      {},
+      stub(() => ({
+        status: 0,
+        stdout: pagePayload([
+          checkRun({
+            id: 1,
+            name: 'Malformed timestamp-shape check',
+            started_at: '2026-08-06T16:00:00Z',
+            completed_at: 'Thu, 06 Aug 2026 16:05:00 GMT',
           }),
         ]),
       })),
