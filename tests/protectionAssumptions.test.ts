@@ -728,11 +728,15 @@ describe('#491: the public tier needs no protection object at all', () => {
 describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
   it('requests only the two public endpoints and no authorization header', async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
-    const fetchImpl: typeof fetch = async (input, init) => {
-      const url = String(input);
+    // These stubs are only ever invoked with a string URL by the code under
+    // test, never a URL or Request object, so the cast (rather than a
+    // default `String(input)` toString call, flagged by no-base-to-string)
+    // is safe here.
+    const fetchImpl: typeof fetch = (input, init) => {
+      const url = input as string;
       calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
       const body = url.includes('/rulesets') ? [] : [{ name: 'development' }];
-      return { ok: true, json: async () => body } as Response;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as Response);
     };
 
     const facts = await fetchPublicRepositoryFacts({
@@ -754,8 +758,8 @@ describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
   });
 
   it('surfaces a non-ok response as a thrown error', async () => {
-    const fetchImpl = async () =>
-      ({ ok: false, status: 404, statusText: 'Not Found' }) as Response;
+    const fetchImpl = () =>
+      Promise.resolve({ ok: false, status: 404, statusText: 'Not Found' } as Response);
 
     await expect(
       fetchPublicRepositoryFacts({
@@ -769,13 +773,15 @@ describe('#491: fetchPublicRepositoryFacts sends no credential', () => {
 describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', () => {
   it('requests the two privileged endpoints with the given token', async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
-    const fetchImpl: typeof fetch = async (input, init) => {
-      const url = String(input);
+    // Same rationale as the public-tier stub above: only ever called with a
+    // string URL here, so a direct cast avoids no-base-to-string.
+    const fetchImpl: typeof fetch = (input, init) => {
+      const url = input as string;
       calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
       const body = url.includes('/collaborators')
         ? [{ login: 'jpapiez', role_name: 'admin' }]
         : { enforce_admins: { enabled: false } };
-      return { ok: true, json: async () => body } as Response;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as Response);
     };
 
     const facts = await fetchPrivilegedRepositoryFacts({
