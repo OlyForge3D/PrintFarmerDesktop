@@ -69,6 +69,7 @@
     "check:squad-coverage": "node scripts/check-squad-coverage.mjs",
     "check:test-narrowing": "node scripts/check-test-narrowing.mjs",
     "census:ownership-evidence": "node scripts/census-ownership-evidence.mjs",
+    "check:census-freshness": "node scripts/check-census-freshness.mjs",
     "review:target": "node scripts/prepare-review-target.mjs",
     "instrument:probe": "node scripts/instrument-probe.mjs",
     "report:pr-snapshot": "node scripts/pr-snapshot-report.mjs",

@@ -29,6 +29,7 @@ const canonicalPath =
   process.platform === 'win32' ? realpathSync.native : realpathSync;
 
 import {
+  formatCensusCitation,
   formatReport,
   listWorktreePaths,
   measureWorktree,
@@ -205,6 +206,55 @@ describe('summarizing a census', () => {
   });
 });
 
+describe('emitting the #336 census-measured citation (check-census-freshness.mjs reads this back)', () => {
+  it('appends a well-formed ```census-measured block naming all four numbers and a timestamp', () => {
+    const summary = summarizeCensus([
+      { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
+      { path: '/b', ok: true, ownershipEvidence: false, ownCommits: [] },
+    ]);
+
+    const citation = formatCensusCitation(summary, {
+      measuredAt: '2026-08-04T00:00:00Z',
+    });
+
+    expect(citation).toContain('```census-measured');
+    expect(citation).toContain('worktrees: 2');
+    expect(citation).toContain('true: 1');
+    expect(citation).toContain('false: 1');
+    expect(citation).toContain('accused: 0');
+    expect(citation).toContain('measured_at: 2026-08-04T00:00:00Z');
+  });
+
+  it('defaults measured_at to the real clock when not injected', () => {
+    const summary = summarizeCensus([
+      { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
+    ]);
+    const before = Date.now();
+
+    const citation = formatCensusCitation(summary);
+
+    const match = /measured_at: (.+)/.exec(citation);
+    expect(match).not.toBeNull();
+    const parsed = Date.parse(match?.[1] ?? '');
+    expect(parsed).toBeGreaterThanOrEqual(before);
+    expect(parsed).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('includes the citation block in formatReport output', () => {
+    const summary = summarizeCensus([
+      { path: '/a', ok: true, ownershipEvidence: true, ownCommits: ['sha1'] },
+      { path: '/b', ok: true, ownershipEvidence: false, ownCommits: [] },
+    ]);
+
+    const report = formatReport(summary, {
+      measuredAt: '2026-08-04T00:00:00Z',
+    });
+
+    expect(report).toContain('```census-measured');
+    expect(report).toContain('measured_at: 2026-08-04T00:00:00Z');
+  });
+});
+
 describe('running the census end to end', () => {
   it('produces consistent totals against a real multi-worktree repo', () => {
     tempRoot = mkdtempSync(path.join(os.tmpdir(), 'census-fixture-'));
@@ -221,5 +271,19 @@ describe('running the census end to end', () => {
     expect(summary.ownershipEvidenceTrue).toBe(1);
     expect(summary.ownershipEvidenceFalse).toBe(1);
     expect(summary.wronglyAccused).toBe(0);
+  });
+
+  it('threads an injected measuredAt through to the report citation', () => {
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), 'census-fixture-'));
+    const repoPath = path.join(tempRoot, 'repo');
+    git(['init', '--quiet', '--initial-branch=trunk', repoPath], tempRoot);
+    configure(repoPath);
+    commit(repoPath, 'a.txt', 'authored in the main worktree');
+
+    const { report } = runCensus(repoPath, {
+      measuredAt: '2026-08-04T00:00:00Z',
+    });
+
+    expect(report).toContain('measured_at: 2026-08-04T00:00:00Z');
   });
 });

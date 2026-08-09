@@ -40,6 +40,16 @@
 // needs a change to `push-guard.mjs` itself, not to this census. This script
 // only re-takes the same measurement the issue's baseline used, so successive
 // runs are comparable.
+//
+// `formatReport` (and `runCensus`) now also append a `` ```census-measured ``
+// fenced citation block naming this run's four numbers and a `measured_at`
+// timestamp. This is the durable half of the #336 fix: the census itself
+// already self-re-derives on every run, but a *citation* of a past run
+// (pasted into an issue or PR) does not carry any signal of its own age.
+// `scripts/check-census-freshness.mjs` reads that citation back and fails
+// loudly once it has aged past the reflog decay window this census depends
+// on, so a stale citation can be caught mechanically instead of by someone
+// remembering to ask "is this still current?".
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -141,7 +151,28 @@ export function summarizeCensus(measurements) {
   };
 }
 
-export function formatReport(summary) {
+/**
+ * Appends a `census-measured` fenced citation — the same format
+ * check-census-freshness.mjs's `parseCensusCitations` reads back — so this
+ * report can be pasted verbatim into an issue comment or PR body and later
+ * checked for staleness with no hand-transcription step (#336). `measuredAt`
+ * defaults to the real clock but accepts an injected value for deterministic
+ * tests.
+ */
+export function formatCensusCitation(summary, { measuredAt } = {}) {
+  const timestamp = measuredAt ?? new Date().toISOString();
+  return [
+    '```census-measured',
+    `worktrees: ${summary.worktreesTotal}`,
+    `true: ${summary.ownershipEvidenceTrue}`,
+    `false: ${summary.ownershipEvidenceFalse}`,
+    `accused: ${summary.wronglyAccused}`,
+    `measured_at: ${timestamp}`,
+    '```',
+  ].join('\n');
+}
+
+export function formatReport(summary, { measuredAt } = {}) {
   const lines = [
     '[census-ownership-evidence]',
     `worktrees total          ${summary.worktreesTotal}`,
@@ -171,16 +202,21 @@ export function formatReport(summary) {
       );
     }
   }
+  lines.push('', formatCensusCitation(summary, { measuredAt }));
   return lines.join('\n');
 }
 
-export function runCensus(cwd = process.cwd()) {
+export function runCensus(cwd = process.cwd(), { measuredAt } = {}) {
   const worktreePaths = listWorktreePaths(cwd);
   const measurements = worktreePaths.map((worktreePath) =>
     measureWorktree(path.resolve(worktreePath)),
   );
   const summary = summarizeCensus(measurements);
-  return { summary, measurements, report: formatReport(summary) };
+  return {
+    summary,
+    measurements,
+    report: formatReport(summary, { measuredAt }),
+  };
 }
 
 function main() {
