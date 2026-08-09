@@ -850,9 +850,10 @@ describe('#491: the four unauthenticated endpoint codes this exemption depends o
     { path: `/${REPOSITORY_PATH}/collaborators`, expectedStatus: 401 },
   ] as const;
 
-  it.each(ENDPOINT_EXPECTATIONS)(
+  it.for(ENDPOINT_EXPECTATIONS)(
     'reads $path unauthenticated as HTTP $expectedStatus',
-    async ({ path, expectedStatus }) => {
+    { timeout: 15_000 },
+    async ({ path, expectedStatus }, ctx) => {
       const url = `https://api.github.com${path}`;
       const timeout = new Promise<never>((_resolve, reject) => {
         setTimeout(() => reject(new Error('timed out after 10000ms')), 10_000);
@@ -867,10 +868,13 @@ describe('#491: the four unauthenticated endpoint codes this exemption depends o
         // A network failure here is evidence about this environment (no
         // egress, DNS unavailable, offline sandbox), not evidence that
         // #491's scope claim has drifted -- there is nothing to assert
-        // against. Warn loudly rather than failing or silently passing.
+        // against. Use ctx.skip() (not a bare `return`) so Vitest reports
+        // this as SKIPPED rather than a silent pass -- CI must never look
+        // green without ever having exercised the assertion below.
         console.warn(
-          `#491: could not reach ${url} to pin its unauthenticated status (${String(error)}); skipping this endpoint's assertion`,
+          `#491: could not reach ${url} to pin its unauthenticated status (${String(error)})`,
         );
+        ctx.skip();
         return;
       }
 
@@ -880,11 +884,12 @@ describe('#491: the four unauthenticated endpoint codes this exemption depends o
       ) {
         // An unauthenticated caller shares GitHub's per-IP rate limit with
         // everything else on that IP. Exhausting it is a property of the
-        // runner, not of #491's claim, so it is reported rather than
-        // asserted against.
+        // runner, not of #491's claim, so it is reported as SKIPPED rather
+        // than asserted against or silently passed.
         console.warn(
-          `#491: unauthenticated rate limit exhausted while checking ${url}; skipping this endpoint's assertion`,
+          `#491: unauthenticated rate limit exhausted while checking ${url}`,
         );
+        ctx.skip();
         return;
       }
 
@@ -893,7 +898,6 @@ describe('#491: the four unauthenticated endpoint codes this exemption depends o
         `${url} returned HTTP ${response.status}, not the ${expectedStatus} #491's public/privileged split depends on`,
       ).toBe(expectedStatus);
     },
-    15_000,
   );
 });
 
