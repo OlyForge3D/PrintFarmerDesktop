@@ -111,6 +111,19 @@ export const LABEL_INDEX_PATTERNS = [
     name: 'search API label: qualifier',
     pattern: /search\/issues[^\n]*label:|[?&]q=[^\s'"]*label(?:s|%3A|:)/,
   },
+  {
+    // Hicks: `gh api repos/<owner>/<repo>/issues -f labels=bug` (or the
+    // typed `-F` form) passes the label filter to the REST issues
+    // collection endpoint through `gh api`'s own field-flag syntax rather
+    // than a URL query string -- the identical REST filter the pattern
+    // above already catches when spelled as `/issues?...labels=`, just
+    // handed to the endpoint through gh's CLI wrapper instead of a raw
+    // fetch/URL. `gh api --help`: `-f/--raw-field` and `-F/--field` both
+    // add a `key=value` request parameter, so either flag spelling reaches
+    // the same lagged collection filter.
+    name: 'gh api ... -f/-F labels=',
+    pattern: /\bgh\s+api\b[^\n]*(?:-f|-F|--(?:raw-)?field)\s+labels?=/,
+  },
 ];
 
 /**
@@ -537,6 +550,28 @@ function gitLsFiles(directory) {
  * `lstatSync(...).isSymbolicLink()`, refuse, report -- not resolve-and-
  * contain, which would still open and read a file this scan has no business
  * reading.
+ *
+ * Vasquez (round 5): the `lstat`-then-`readFile` sequence above is two
+ * separate filesystem calls, so a regular file at the checked path could in
+ * principle be swapped for a symlink in the gap between them (TOCTOU). The
+ * airtight fix -- opening with `O_NOFOLLOW` so the open itself fails
+ * atomically if the path is a symlink -- is POSIX-only: `fs.constants.
+ * O_NOFOLLOW` is `undefined` on Windows (confirmed on this repo's own
+ * windows-latest runner), and this repo's CI runs both `windows-latest` and
+ * `macos-latest`, so a Windows build silently WOULD NOT get the protection
+ * a `|` of an `undefined` flag is a no-op, not an error. Since a portable,
+ * single-syscall guarantee isn't available across both platforms this
+ * script must run on, the gap is narrowed instead of closed by re-checking
+ * with a SECOND `lstat` immediately after the read: if the path is a
+ * symlink post-read, the just-read content is discarded (never added to
+ * `files`) and the path moves to `refusedSymlinks` instead, same as if it
+ * had been caught on the first check. This still cannot defeat a
+ * sufficiently well-timed adversary controlling the filesystem live during
+ * this scan's run -- no portable Node API can, without an OS-specific
+ * syscall this script cannot rely on across both CI platforms -- but it
+ * ensures a swap that lands validation on wrong-then-right OR right-
+ * then-wrong-again symlink states is caught by ONE of the two checks
+ * rather than trusted on the strength of only the first.
  */
 export function collectScannedFiles({
   readFile = (path) => readFileSync(path, 'utf8'),
@@ -561,7 +596,17 @@ export function collectScannedFiles({
         continue;
       }
 
-      files.push({ path: relativePath, contents: readFile(relativePath) });
+      const contents = readFile(relativePath);
+
+      // Re-check immediately after reading: narrows (does not eliminate --
+      // see the TOCTOU note above) the window in which this path could have
+      // been swapped for a symlink between the check above and this read.
+      if (lstat(relativePath).isSymbolicLink()) {
+        refusedSymlinks.push(relativePath);
+        continue;
+      }
+
+      files.push({ path: relativePath, contents });
     }
   }
   return { files, refusedSymlinks };

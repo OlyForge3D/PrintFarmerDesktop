@@ -26,6 +26,15 @@ const REST_LIST_SNIPPET =
 const SEARCH_API_SNIPPET =
   "fetch(`https://api.github.com/search/issues?q=${encodeURIComponent('repo:owner/repo label:hold:sequenced')}`)";
 
+// Hicks: `gh api ... -f/-F labels=...` hands the label filter to the same
+// REST issues collection endpoint the URL-anchored pattern above already
+// catches, just spelled through gh's own field-flag syntax.
+const GH_API_RAW_FIELD_LABELS_SNIPPET =
+  'gh api repos/owner/repo/issues -f labels=hold:sequenced -f state=all';
+
+const GH_API_TYPED_FIELD_LABELS_SNIPPET =
+  'gh api repos/owner/repo/issues -F labels=hold:sequenced';
+
 // Vasquez: `gh pr list --help`/`gh issue list --help` document `-l` as the
 // short form of `--label`, so this is the same hazard as GH_PR_LIST_SNIPPET
 // under a shorter spelling, not a different command.
@@ -272,6 +281,34 @@ describe('scanLabelIndexUsage', () => {
     });
     expect(violations).toHaveLength(1);
     expect(violations[0]!.matches).toContain('gh search issues/prs --label');
+  });
+
+  // Hicks (round 5): `gh api ... -f/-F labels=...` reaches the same REST
+  // issues-collection filter, spelled through gh's field-flag syntax.
+  it('flags gh api ... -f labels=... (the raw-field form)', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_API_RAW_FIELD_LABELS_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh api ... -f/-F labels=');
+  });
+
+  it('flags gh api ... -F labels=... (the typed-field form)', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_API_TYPED_FIELD_LABELS_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh api ... -f/-F labels=');
   });
 
   // Vasquez: an argv-array invocation of the identical banned shape must be
@@ -721,6 +758,29 @@ describe('collectScannedFiles', () => {
         contents: 'contents of scripts/real-file.mjs',
       },
     ]);
+  });
+
+  // Vasquez (round 5): the pre-read lstat and the read itself are two
+  // separate filesystem calls, so a path could in principle be swapped for
+  // a symlink in between (TOCTOU). Simulates that swap by having `lstat`
+  // report "not a symlink" on its FIRST call (the pre-read check, which
+  // passes) and "IS a symlink" on its SECOND call (the post-read
+  // re-check) -- the just-read content must be discarded and the path
+  // reported as refused, not silently trusted on the strength of the
+  // first check alone.
+  it('discards content and refuses the path if a post-read recheck finds a symlink (narrows the TOCTOU race)', () => {
+    let lstatCallCount = 0;
+    const { files, refusedSymlinks } = collectScannedFiles({
+      listFiles: () => ['scripts/swapped-file.mjs'],
+      lstat: () => {
+        lstatCallCount += 1;
+        return { isSymbolicLink: () => lstatCallCount >= 2 };
+      },
+      readFile: (path) => `contents of ${path}`,
+    });
+
+    expect(refusedSymlinks).toEqual(['scripts/swapped-file.mjs']);
+    expect(files).toEqual([]);
   });
 });
 
