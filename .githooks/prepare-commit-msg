@@ -1,0 +1,21 @@
+#!/bin/sh
+# Installed by the `prepare` npm script (scripts/install-git-hooks.mjs), which
+# points core.hooksPath at this directory -- the exact same wiring
+# .githooks/pre-push uses. No separate installation step exists or is needed:
+# once core.hooksPath names this directory, git runs every hook file it finds
+# here, so pre-push being armed is this hook being armed.
+#
+# The logic lives in scripts/prepare-commit-msg.mjs so it is unit-tested and
+# behaves identically on Windows, macOS and Linux; this is only a shim.
+#
+# git passes the commit-message file path, and (for most commit paths) a
+# commit source -- "message", "template", "merge", "squash", or "commit" --
+# plus a SHA that is present only for "commit" (amend, cherry-pick, `commit
+# -c`). All arguments are forwarded unchanged; scripts/prepare-commit-msg.mjs
+# decides what to do with each source.
+#
+# The hook is resolved relative to this file, not to the toplevel of whatever
+# repository is being committed to, so a hooksPath pointed here from
+# elsewhere works -- see .githooks/pre-push for the identical reasoning.
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec node "$hook_dir/../scripts/prepare-commit-msg.mjs" "$@"
