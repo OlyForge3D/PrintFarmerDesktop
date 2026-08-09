@@ -384,157 +384,67 @@ function parseCheckRun(checkRun, index) {
 /**
  * Compare two parsed check runs for the same name and report which one is
  * the more recent attempt: `1` if `a` is strictly newer than `b`, `-1` if
- * `a` is strictly older, or `0` if the two cannot be safely ordered from
- * the data available (a genuine tie, or two runs neither of which can be
- * proven newer than the other).
+ * `a` is strictly older, or `0` if the two tie (or, in principle, are
+ * malformed enough that no comparison is possible -- see below).
  *
- * This never throws -- unlike an earlier version of this comparator, an
- * unresolvable pair here does not necessarily mean the whole "latest
- * attempt for this name" question is unresolvable. A later run elsewhere
- * in the list can still unambiguously outrank both members of an earlier
- * ambiguous pair (see `latestCheckRunsByName`, which is what actually
- * decides whether an unresolved `0` is fatal). Deciding that here, per
- * pair, in isolation, was the bug: it threw as soon as it observed the
- * first ambiguous pair for a name, even when a run appearing later in the
- * input array would have unambiguously resolved which run is truly latest.
+ * Round-8 finding (Ripley and Vasquez, independently, same root cause):
+ * an earlier version of this function decided recency via a set of
+ * separate pairwise rules -- "open beats completed, but bounded against
+ * the completed run's own timestamp" for one pair of states, "started
+ * beats queued, unconditionally" for another. Each rule was locally
+ * defensible, but composing them did not produce a genuine partial order:
+ * a stale `in_progress` run could beat a `queued` rerun (via the
+ * unconditional "started beats queued" rule), that `queued` rerun could
+ * beat a `completed failure` (via the bounded-timestamp rule, since it was
+ * created after the failure completed), and that same `completed failure`
+ * could beat the original stale `in_progress` run (via the bounded rule
+ * again, since the failure started after the stale run started) -- a
+ * genuine 3-cycle (A > C, C > B, B > A) among three runs for the same
+ * name. Which run `latestCheckRunsByName` reported as "latest" then
+ * depended on the input array's order, defeating the entire point of a
+ * "latest run" computation.
  *
- * Neither `id` ordering nor a single timestamp field is sound on its own:
+ * The fix: stop deciding recency from ad hoc pairwise rules and instead
+ * score each run independently, then compare the scores. Any comparison
+ * built by comparing a single real-number score per input is transitive
+ * by construction (it is just `<` on numbers) -- there is no way for it to
+ * produce a cycle, no matter how the score is computed, as long as the
+ * score is a pure function of one run alone (never of the pair being
+ * compared).
  *
- * - `id` ordering (the prior approach) assumes a higher check-run id always
- *   means a newer run. Live Checks API data on this repo disproves that: a
- *   later-started rerun can carry a LOWER id than an older run for the same
- *   name, so ordering by id alone can pick a stale run and reintroduce this
- *   file's original bug through a different mechanism.
- * - Ordering by `started_at` alone (the original approach, before id
- *   ordering replaced it) breaks on a run that legitimately has not started
- *   yet (`started_at: null` while queued).
+ * The score used here is `created_at`. Unlike `started_at`/`completed_at`,
+ * every check run -- queued, in-progress, or completed -- is guaranteed a
+ * `created_at`, set at the instant GitHub creates the run object, before
+ * it is even scheduled (see `parseCheckRun`). A rerun of a check is,
+ * definitionally, a *new* check-run object: GitHub creates it with a new
+ * `created_at` no earlier than the run it supersedes. So "which run was
+ * created most recently" directly answers "which run is the latest
+ * attempt" -- correctly and uniformly, regardless of whether that attempt
+ * has started or finished yet. This also directly resolves every case the
+ * old bounded-pairwise rules were trying to handle piecemeal: a stale
+ * queued/in-progress run created long before a later completed rerun
+ * simply has an older `created_at` and loses; a genuinely new rerun --
+ * queued, in-progress, or completed -- created after every other attempt
+ * simply has the newest `created_at` and wins, with no special-casing
+ * needed per state.
  *
- * Instead: a run that is still open (`status !== 'completed'`) is ordinarily
- * treated as more current than one that has already completed for the same
- * name -- an in-flight attempt is usually the live state of that check.
- * But that preference is *bounded*, not unconditional:
- *
- * - An open run that has actually started (`started_at` non-null) only wins
- *   if it started STRICTLY AFTER the completed run's own `started_at`.
- *   Without that bound, a genuinely stale `in_progress` run -- a runner that
- *   hung or never reported back, started well before some later completed
- *   rerun -- would permanently mask that completed run's real verdict behind
- *   a `pending` reading forever.
- * - A still-`queued` open run has no `started_at` to bound against, but it
- *   is guaranteed a `created_at` (set the moment GitHub creates the run,
- *   before it has even been scheduled -- see `parseCheckRun`). That bounds
- *   it the same way: the queued run only wins if it was created STRICTLY
- *   AFTER the completed run's own `completed_at`. A queued run created
- *   BEFORE the completed run had even finished cannot be "the newer
- *   attempt" -- it is a stale/orphaned run sitting in the queue from before
- *   that completion, and letting it unconditionally win (the prior
- *   behaviour) would let such an orphaned queued entry mask a real,
- *   already-known `failure` behind a `pending` reading, which is exactly the
- *   false-pass this file exists to close.
- * - The bound is intentionally STRICT (`>`), not `>=`. GitHub's Checks API
- *   only reports second-resolution timestamps, so an open run and a
- *   completed run for the same name can genuinely tie to the second (this
- *   repo's own live data shows same-second completions). An exact tie does
- *   NOT prove the open run is newer -- it is equally consistent with the
- *   open run being a stale artifact that merely happens to share a second
- *   with the completed run's boundary timestamp. Resolving that tie in
- *   favor of "open wins" would let a same-second stale queued/in-progress
- *   run mask a real completed `failure` behind `pending`, silently bypassing
- *   the merge gate. So an exact tie returns `0` (unresolvable) rather than
- *   picking a side; `latestCheckRunsByName`'s undominated-set algorithm then
- *   fails closed (throws "cannot determine") instead of ever reporting
- *   `pending` off of a same-second tie.
- *
- * Between two runs in the same state (both completed, or both still open),
- * compare the timestamp that state guarantees is present: `completed_at` for
- * two completed runs (always non-null once completed), `started_at` for two
- * still-open runs (may still be null on both if neither has started; that
- * case returns `0` rather than guessing).
- *
- * `completed_at` is only second-resolution, so two reruns of a fast job can
- * genuinely tie on it -- live Checks API data on this repo showed exactly
- * that (two "Stacked base" completions in the same second), and falling
- * back to `id` at that point is just as unsound as ordering by id
- * everywhere: a rerun's id is not guaranteed to be higher than an earlier
- * attempt's. `started_at` is a second, independent monotonic signal that is
- * not tied to `completed_at`'s tie -- a later rerun was, definitionally,
- * *started* no earlier than the run it superseded, even when both happen
- * to finish in the same second. So a `completed_at` tie falls through to
- * comparing `started_at` before ever falling back to id.
- *
- * If `started_at` *also* ties -- both timestamps identical between two
- * completed runs, or both still-open runs never having started at all --
- * there is no timestamp left this API guarantees is monotonic, and id is
- * not a safe way to break that tie either (the entire reason id ordering
- * was abandoned as this file's primary signal in the first place). Rather
- * than trust id as a last resort, this returns `0`: the pair is genuinely
- * unresolvable, and it is `latestCheckRunsByName`'s job to decide whether
- * that unresolved pair actually matters for the final answer.
+ * `created_at` is only second-resolution, so two runs can genuinely tie on
+ * it (this repo's own live Checks API data has shown same-second
+ * timestamps). An exact tie does not prove either run is newer, so this
+ * returns `0` (unresolvable) rather than picking a side -- exactly as an
+ * exact tie was already handled before this rewrite. `latestCheckRunsByName`
+ * decides whether an unresolved `0` for a given pair is actually fatal to
+ * the overall "latest run for this name" answer.
  *
  * @param {ReturnType<typeof parseCheckRun>} a
  * @param {ReturnType<typeof parseCheckRun>} b
  * @returns {1 | -1 | 0}
  */
 function compareCheckRunRecency(a, b) {
-  const aOpen = a.status !== 'completed';
-  const bOpen = b.status !== 'completed';
-  if (aOpen !== bOpen) {
-    const open = aOpen ? a : b;
-    const completed = aOpen ? b : a;
-    let openTime;
-    let bound;
-    if (open.startedAt !== null) {
-      openTime = Date.parse(open.startedAt);
-      bound = Date.parse(/** @type {string} */ (completed.startedAt));
-    } else {
-      // Still queued, never started: bound against the completed run's
-      // completed_at using the one timestamp a queued run is guaranteed to
-      // carry, created_at (see the doc comment above and parseCheckRun).
-      openTime = Date.parse(open.createdAt);
-      bound = Date.parse(/** @type {string} */ (completed.completedAt));
-    }
-    // Strict comparison only -- an exact-second tie proves nothing about
-    // ordering (see the doc comment above) and must not resolve in favor of
-    // either side.
-    if (openTime === bound) return 0;
-    const openWins = openTime > bound;
-    if (openWins) return aOpen ? 1 : -1;
-    return aOpen ? -1 : 1;
-  }
-  if (!aOpen) {
-    // Both completed: compare the timestamp every completed run is
-    // required to carry. A tie on `completed_at` (only second-resolution)
-    // falls through to `started_at` -- still a monotonic, timestamp-based
-    // signal, not id.
-    if (a.completedAt !== b.completedAt) {
-      return Date.parse(/** @type {string} */ (a.completedAt)) >
-        Date.parse(/** @type {string} */ (b.completedAt))
-        ? 1
-        : -1;
-    }
-    if (a.startedAt !== b.startedAt) {
-      // Both completed, so both are guaranteed a non-null started_at by
-      // parseCheckRun -- no null-handling needed here, unlike the
-      // still-open branch below.
-      return Date.parse(/** @type {string} */ (a.startedAt)) >
-        Date.parse(/** @type {string} */ (b.startedAt))
-        ? 1
-        : -1;
-    }
-    return 0;
-  }
-  // Both still open: prefer whichever has actually started over one still
-  // queued with no started_at, since that is strictly more information
-  // about progress; between two with comparable started_at, compare it
-  // directly. If neither has started at all, there is no timestamp signal
-  // to compare.
-  if (a.startedAt === null && b.startedAt === null) return 0;
-  if (a.startedAt === null) return -1;
-  if (b.startedAt === null) return 1;
-  if (a.startedAt !== b.startedAt) {
-    return Date.parse(a.startedAt) > Date.parse(b.startedAt) ? 1 : -1;
-  }
-  return 0;
+  const aCreatedAt = Date.parse(a.createdAt);
+  const bCreatedAt = Date.parse(b.createdAt);
+  if (aCreatedAt === bCreatedAt) return 0;
+  return aCreatedAt > bCreatedAt ? 1 : -1;
 }
 
 /**

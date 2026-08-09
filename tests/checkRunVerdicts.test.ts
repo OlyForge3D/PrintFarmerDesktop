@@ -103,30 +103,35 @@ describe('latestCheckRunsByName', () => {
     const checkRuns = [
       checkRun({
         id: 1,
+        created_at: '2026-08-06T15:58:20Z',
         started_at: '2026-08-06T15:58:29Z',
         completed_at: '2026-08-06T15:58:35Z',
         conclusion: 'cancelled',
       }),
       checkRun({
         id: 2,
+        created_at: '2026-08-06T15:58:22Z',
         started_at: '2026-08-06T15:58:30Z',
         completed_at: '2026-08-06T15:58:40Z',
         conclusion: 'cancelled',
       }),
       checkRun({
         id: 3,
+        created_at: '2026-08-06T15:59:45Z',
         started_at: '2026-08-06T15:59:53Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'success',
       }),
       checkRun({
         id: 4,
+        created_at: '2026-08-06T16:00:10Z',
         started_at: '2026-08-06T16:00:16Z',
         completed_at: '2026-08-06T16:00:30Z',
         conclusion: 'success',
       }),
       checkRun({
         id: 5,
+        created_at: '2026-08-06T16:21:30Z',
         started_at: '2026-08-06T16:21:37Z',
         completed_at: '2026-08-06T16:21:50Z',
         conclusion: 'cancelled',
@@ -182,6 +187,7 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 20,
         name: 'Desktop',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'cancelled',
@@ -189,6 +195,7 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 21,
         name: 'Desktop',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'success',
@@ -196,6 +203,7 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 22,
         name: 'Desktop',
+        created_at: '2026-08-06T16:59:50Z',
         started_at: '2026-08-06T17:00:00Z',
         completed_at: '2026-08-06T17:00:05Z',
         conclusion: 'failure',
@@ -213,6 +221,7 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 20,
         name: 'Desktop',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'cancelled',
@@ -220,6 +229,7 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 21,
         name: 'Desktop',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'success',
@@ -227,6 +237,7 @@ describe('latestCheckRunsByName', () => {
       checkRun({
         id: 22,
         name: 'Desktop',
+        created_at: '2026-08-06T16:59:50Z',
         started_at: '2026-08-06T17:00:00Z',
         completed_at: '2026-08-06T17:00:05Z',
         conclusion: 'failure',
@@ -244,33 +255,36 @@ describe('latestCheckRunsByName', () => {
     expect(result).toBe(EXIT_FAILED);
   });
 
-  it('REGRESSION: breaks a completed_at tie by started_at, not id, when a later rerun has a LOWER id', () => {
+  it('REGRESSION: breaks a completed_at tie by created_at, not id, when a later rerun has a LOWER id', () => {
     // `completed_at` is only second-resolution, so two reruns of a fast job
     // can genuinely finish in the same reported second. Live Checks API
     // data on this repo showed exactly that (two "Stacked base" completions
     // tied on completed_at) with the later rerun carrying a LOWER id than
-    // the earlier one -- falling back to id at the completed_at-tie point
-    // is exactly as unsound as ordering by id everywhere. started_at is an
-    // independent timestamp signal not tied to that same-second collision,
-    // and the later-started run is, definitionally, the later attempt.
+    // the earlier one -- falling back to id at that point is exactly as
+    // unsound as ordering by id everywhere. `created_at` is the sole
+    // recency signal now (see compareCheckRunRecency), and the
+    // later-created run is, definitionally, the later attempt regardless
+    // of its id or how its completed_at happens to compare.
     const checkRuns = [
       checkRun({
         id: 42,
+        created_at: '2026-08-06T15:59:55Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'failure',
       }),
       checkRun({
         id: 7,
+        created_at: '2026-08-06T15:59:58Z',
         started_at: '2026-08-06T16:00:03Z',
         completed_at: '2026-08-06T16:00:05Z',
         conclusion: 'success',
       }),
     ];
     const latest = latestCheckRunsByName(checkRuns);
-    // The lower-id run (7) started later, so it is the true latest attempt
-    // -- picking it means the earlier failure is correctly superseded
-    // rather than left standing as the reported verdict.
+    // The lower-id run (7) was created later, so it is the true latest
+    // attempt -- picking it means the earlier failure is correctly
+    // superseded rather than left standing as the reported verdict.
     expect(latest.get('some check')?.id).toBe(7);
     expect(latest.get('some check')?.conclusion).toBe('success');
   });
@@ -630,13 +644,17 @@ describe('latestCheckRunsByName', () => {
     // a later-started rerun can carry a LOWER check-run id than an older,
     // already-completed run for the same name. An in-flight run is always
     // the live state of that check regardless of id, so it must win here
-    // even though its id (2) is lower than the completed run's id (9).
+    // even though its id (2) is lower than the completed run's id (9) --
+    // because it was created after that completed run (see
+    // compareCheckRunRecency, which compares created_at as the sole
+    // recency signal).
     const checkRuns = [
       checkRun({
         id: 9,
         name: 'Desktop',
         status: 'completed',
         conclusion: 'success',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:05:00Z',
       }),
@@ -645,6 +663,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
+        created_at: '2026-08-06T16:09:50Z',
         started_at: '2026-08-06T16:10:00Z',
         completed_at: null,
       }),
@@ -671,6 +690,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
+        created_at: '2026-08-06T14:59:50Z',
         started_at: '2026-08-06T15:00:00Z',
         completed_at: null,
       }),
@@ -679,6 +699,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'completed',
         conclusion: 'failure',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:05:00Z',
       }),
@@ -690,22 +711,20 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it('REGRESSION: an in-progress run that started at the same instant as a completed run does not outrank it -- an exact-second tie is ambiguous, not a win for the open run (fails closed rather than reporting a possibly-wrong pending)', () => {
-    // Vasquez (round 8): the Checks API only reports second-resolution
-    // timestamps, so an in-progress run and a completed run for the same
-    // name can genuinely tie to the second. Treating that tie as "the open
-    // run wins" (the prior `>=` behaviour) is unsound -- it is equally
-    // consistent with the open run being a stale artifact that merely
-    // shares a second with the completed run's own started_at, and could
-    // mask a real completed `failure` behind a false `pending`. The bound
-    // must be strict (`>`): an exact tie is unresolvable, not a win, so
-    // this must fail closed (throw) rather than silently pick a side.
+  it('REGRESSION: an in-progress run created at the same instant as a completed run does not outrank it -- an exact-second tie is ambiguous, not a win for either side (fails closed rather than reporting a possibly-wrong pending)', () => {
+    // Vasquez (round 8, still valid after the round-8 architectural
+    // rewrite): the Checks API only reports second-resolution timestamps,
+    // so two runs for the same name can genuinely tie on `created_at` --
+    // now the sole recency signal (see compareCheckRunRecency). An exact
+    // tie does not prove either run is newer, so this must fail closed
+    // (throw), not silently pick a side.
     const checkRuns = [
       checkRun({
         id: 9,
         name: 'Desktop',
         status: 'completed',
         conclusion: 'success',
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: '2026-08-06T16:05:00Z',
       }),
@@ -714,6 +733,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'in_progress',
         conclusion: null,
+        created_at: '2026-08-06T15:59:50Z',
         started_at: '2026-08-06T16:00:00Z',
         completed_at: null,
       }),
@@ -754,17 +774,23 @@ describe('latestCheckRunsByName', () => {
     expect(result).toBe(EXIT_UNDETERMINED);
   });
 
-  it('REGRESSION: a queued run created in the same second a completed failure finished does not mask that failure behind a false pending (Ralph round-8 repro: exact-second tie must not resolve in favor of the open run)', () => {
-    // Vasquez (round 8): `compareCheckRunRecency` still used `>=` when
-    // bounding a still-queued run's `created_at` against a completed run's
-    // `completed_at`. Since the Checks API only reports second-resolution
-    // timestamps, a queued run created in the exact same second a completed
-    // `failure` finished would unconditionally "win" under `>=`, printing
+  it('REGRESSION: two runs created in the exact same second -- a completed failure and a queued rerun -- cannot be safely ordered, and must not silently mask the failure behind a false pending (Ralph round-8 repro, restated for the created_at-only design)', () => {
+    // Vasquez (round 8): under the pre-rewrite design, a still-queued run's
+    // `created_at` was bounded against the completed run's `completed_at`
+    // using `>=`, so a queued run created in the exact same second a
+    // completed `failure` finished would unconditionally "win", printing
     // `pending` and exiting clean (0) instead of surfacing the real
-    // failure -- a merge-gate bypass. The bound must be strict: an
-    // exact-second tie proves nothing about which run is actually newer,
-    // so it must be treated as ambiguous (fails closed) rather than
-    // resolved in the open run's favor.
+    // failure -- a merge-gate bypass.
+    //
+    // After the round-8 architectural rewrite (compareCheckRunRecency now
+    // compares `created_at` alone, for every run regardless of status --
+    // see that function's doc comment for why), the equivalent genuine
+    // tie is two runs sharing the exact same `created_at`: a batch of
+    // check runs dispatched in the same second, one of which happens to
+    // already be `completed` while another of the same name is still
+    // `queued`. Neither run's own creation timestamp proves it is the
+    // newer attempt, so this must fail closed (throw) rather than
+    // resolving in favor of either side.
     const checkRuns = [
       checkRun({
         id: 1,
@@ -780,7 +806,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'queued',
         conclusion: null,
-        created_at: '2026-08-06T15:59:29Z',
+        created_at: '2026-08-06T15:58:00Z',
         started_at: null,
         completed_at: null,
       }),
@@ -790,7 +816,7 @@ describe('latestCheckRunsByName', () => {
     );
   });
 
-  it("REGRESSION (end-to-end): main() exits undetermined, not a clean pass, on Ralph round-8's exact-second queued-vs-completed-failure tie", () => {
+  it("REGRESSION (end-to-end): main() exits undetermined, not a clean pass, on Ralph round-8's exact-created_at queued-vs-completed-failure tie", () => {
     const checkRuns = [
       checkRun({
         id: 1,
@@ -806,7 +832,7 @@ describe('latestCheckRunsByName', () => {
         name: 'Desktop',
         status: 'queued',
         conclusion: null,
-        created_at: '2026-08-06T15:59:29Z',
+        created_at: '2026-08-06T15:58:00Z',
         started_at: null,
         completed_at: null,
       }),
@@ -1509,6 +1535,7 @@ describe('main', () => {
             name: 'Desktop',
             status: 'in_progress',
             conclusion: null,
+            created_at: '2026-08-06T14:59:50Z',
             started_at: '2026-08-06T15:00:00Z',
             completed_at: null,
           }),
@@ -1517,6 +1544,7 @@ describe('main', () => {
             name: 'Desktop',
             status: 'completed',
             conclusion: 'failure',
+            created_at: '2026-08-06T15:59:50Z',
             started_at: '2026-08-06T16:00:00Z',
             completed_at: '2026-08-06T16:05:00Z',
           }),
