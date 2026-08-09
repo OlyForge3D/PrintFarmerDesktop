@@ -25,7 +25,7 @@ Line 37 is a different rule entirely. The wording quoted alongside the number wa
 - When citing a file **not yet on the default branch**, cite the **heading or a quoted phrase**, not a line number — headings survive rebases and are greppable, which is the property the citation rule actually wants.
 - Name the **PR** that carries the file, so the reader knows the target is provisional.
 - If a line number genuinely helps, mark it as of a specific commit and expect it to rot.
-- For files already on `development`, line numbers are fine and remain preferred.
+- This narrows the existing `.squad/decisions.md` rule at **2026-07-25 — Review lessons from PRs #68 and #69** ("Grep for the expression, not the line") — it does not relax it. That entry already shows a *merged*-file line citation (`threemf.rs:560`) falsified by the very merge it described, so a bare line number decays post-merge too, just less often and with a reviewable edit marking each decay. For files already on `development`, a line number is usable for a citation checked against the current head, but the greppable expression or heading remains preferred whenever the citation needs to outlive further edits — a cited rule, a security precondition, anything load-bearing.
 
 **Corollary, stated separately because it is easy to lose:** an exact quotation does not validate the pointer attached to it. Quote and location are independent claims and both need checking; a correct quote makes a wrong line number harder to spot, not easier.
 
