@@ -118,6 +118,12 @@ function isStaticField(member) {
 function collectCallableTypeNames(sourceFile) {
   const aliases = new Map(); // name -> TypeNode (the aliased type)
   const callableInterfaces = new Set(); // names of interfaces with a call signature
+  // names of in-scope identifiers that refer to something callable -- a
+  // function declaration, or a variable initialized with an arrow function
+  // or function expression -- so that a `typeof <identifier>` type query
+  // resolves to "function-typed" too (see `isFunctionTyped`'s TypeQueryNode
+  // branch).
+  const callableIdentifiers = new Set();
 
   const visit = (node) => {
     if (ts.isTypeAliasDeclaration(node)) {
@@ -127,12 +133,23 @@ function collectCallableTypeNames(sourceFile) {
         ts.isCallSignatureDeclaration(member),
       );
       if (hasCallSignature) callableInterfaces.add(node.name.text);
+    } else if (ts.isFunctionDeclaration(node) && node.name) {
+      callableIdentifiers.add(node.name.text);
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const initializer = node.initializer;
+      if (
+        initializer &&
+        (ts.isArrowFunction(initializer) ||
+          ts.isFunctionExpression(initializer))
+      ) {
+        callableIdentifiers.add(node.name.text);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
 
-  return { aliases, callableInterfaces };
+  return { aliases, callableInterfaces, callableIdentifiers };
 }
 
 /**
@@ -142,9 +159,10 @@ function collectCallableTypeNames(sourceFile) {
  * make this check noisy on the common "optional config value" shape it is
  * not built to guard.
  *
- * `typeNames` resolves same-file type aliases and callable interfaces (see
- * `collectCallableTypeNames`); `seen` guards against infinite recursion on a
- * type alias that (directly or through a chain) refers back to itself.
+ * `typeNames` resolves same-file type aliases, callable interfaces, and
+ * `typeof`-queried identifiers (see `collectCallableTypeNames`); `seen`
+ * guards against infinite recursion on a type alias that (directly or
+ * through a chain) refers back to itself.
  */
 function isFunctionTyped(typeNode, sourceFile, typeNames, seen = new Set()) {
   if (!typeNode) return false;
@@ -175,6 +193,14 @@ function isFunctionTyped(typeNode, sourceFile, typeNames, seen = new Set()) {
       return isFunctionTyped(aliasedType, sourceFile, typeNames, seen);
     }
     return false;
+  }
+  // `field?: typeof someFunction;` -- exactly as callable as writing the
+  // function's own type inline, since `typeof` here just borrows the type
+  // of an existing callable in scope. Only resolves a plain identifier
+  // (`typeof foo`), not a qualified name (`typeof ns.foo`), for the same
+  // reason type references above are limited to plain identifiers.
+  if (ts.isTypeQueryNode(typeNode) && ts.isIdentifier(typeNode.exprName)) {
+    return typeNames.callableIdentifiers.has(typeNode.exprName.text);
   }
   return false;
 }

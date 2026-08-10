@@ -173,6 +173,29 @@ describe('findInertSeamCandidates', () => {
       findInertSeamCandidates('objectAssignSeam.fixture.ts', source),
     ).toEqual([]);
   });
+
+  it('POSITIVE CONTROL: flags a seam typed via `typeof <identifier>` where the identifier resolves to an in-scope function', () => {
+    // Vasquez's review finding on the re-review of PR #706: `field?: typeof
+    // someFunction;` borrows a callable's type via a type query rather than
+    // an inline function type, a type alias, or a callable interface, and
+    // is exactly as inert once shadowed -- but was invisible to the check
+    // until `collectCallableTypeNames` also tracked callable identifiers.
+    const source = readFixture('typeofSeam.fixture.ts');
+    const violations = findInertSeamCandidates('typeofSeam.fixture.ts', source);
+    expect(violations.map((v) => v.name)).toEqual(['resolveConflict']);
+    expect(violations[0]?.typeText).toBe('typeof resolveConflict');
+  });
+
+  it('does not flag a field typed via `typeof <identifier>` when the identifier is not callable', () => {
+    // Resolving `typeof` identifiers must not become "any type query is
+    // function-typed" -- `typeof aStringConstant` is ordinary data, not a
+    // capability, and flagging it would make the check noisy on the common
+    // "reuse a literal's inferred type" pattern.
+    const source = readFixture('typeofNonCallable.fixture.ts');
+    expect(
+      findInertSeamCandidates('typeofNonCallable.fixture.ts', source),
+    ).toEqual([]);
+  });
 });
 
 describe('formatViolation', () => {
