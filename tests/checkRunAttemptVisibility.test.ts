@@ -99,6 +99,82 @@ describe('#340 falsifier', () => {
   });
 });
 
+describe('error handling contract', () => {
+  it('exits 2 (undetermined) rather than reporting clean when GitHub returns zero workflow runs', async () => {
+    const fetchImpl = vi.fn(() => runsPage([]));
+    const exitCode = await main(
+      ['--sha', HEAD_185, '--repo', 'OlyForge3D/PrintFarmerDesktop'],
+      { GITHUB_TOKEN: 'test-token' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+    );
+    // A head with zero workflow runs is not a "no re-run" negative -- it is
+    // an unreadable input (checks have not attached yet, or the SHA is
+    // wrong). Reporting EXIT_CLEAN here would be indistinguishable from a
+    // genuine attempt-1 pass, exactly the near-miss #340 disclosed against
+    // its own survey ("a survey that cannot see the thing it is counting
+    // reports absence"). It must not be silently folded into "no reruns".
+    expect(exitCode).toBe(EXIT_UNDETERMINED);
+    expect(exitCode).not.toBe(EXIT_CLEAN);
+  });
+
+  it('exits 2 (undetermined) when the GitHub API responds with an HTTP error, rather than reporting clean', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      }),
+    );
+    const exitCode = await main(
+      ['--sha', HEAD_185, '--repo', 'OlyForge3D/PrintFarmerDesktop'],
+      { GITHUB_TOKEN: 'test-token' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+    );
+    // A failed API call must surface as undetermined, not as a silent
+    // "attempt 1 / no re-run" result -- the same asymmetry #340 names: a
+    // checker that reports clean when it could not actually look is worse
+    // than no checker at all, because it converts an unknown into a false
+    // assurance.
+    expect(exitCode).toBe(EXIT_UNDETERMINED);
+    expect(exitCode).not.toBe(EXIT_CLEAN);
+  });
+
+  it('exits 2 (undetermined) when the network request itself rejects', async () => {
+    const fetchImpl: typeof fetch = () =>
+      Promise.reject(new Error('network unreachable'));
+    const exitCode = await main(
+      ['--sha', HEAD_185, '--repo', 'OlyForge3D/PrintFarmerDesktop'],
+      { GITHUB_TOKEN: 'test-token' },
+      undefined,
+      fetchImpl,
+    );
+    expect(exitCode).toBe(EXIT_UNDETERMINED);
+    expect(exitCode).not.toBe(EXIT_CLEAN);
+  });
+
+  it('exits 2 (undetermined) resolving a --pr when the pulls API responds with an HTTP error', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        json: () => Promise.resolve({}),
+      }),
+    );
+    const exitCode = await main(
+      ['--pr', '185', '--repo', 'OlyForge3D/PrintFarmerDesktop'],
+      { GITHUB_TOKEN: 'test-token' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+    );
+    expect(exitCode).toBe(EXIT_UNDETERMINED);
+    expect(exitCode).not.toBe(EXIT_CLEAN);
+  });
+});
+
 describe('formatReport', () => {
   it('warns a reviewer when the max attempt exceeds 1', () => {
     const runs: WorkflowRun[] = [
