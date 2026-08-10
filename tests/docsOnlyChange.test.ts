@@ -250,6 +250,57 @@ describe('the rust-untouched tier recognises what can reach the cargo build', ()
     expect(affectsRust('scripts/docs-only-change.mjs')).toBe(true);
   });
 
+  // Ripley, PR #708 review. The manifest set alone left a false negative open, which is the one
+  // direction that costs correctness here: these files change what the job's commands DO without
+  // appearing in any crate source or manifest, so a change to one can turn the cargo matrix red
+  // while touching no `.rs` file at all. None of them exists in this repository yet -- which is
+  // exactly why they are pinned now, because the predicate is wrong on the commit that ADDS one,
+  // the very commit whose effect nobody has measured.
+  it('claims cargo, rustfmt, clippy and toolchain configuration', () => {
+    for (const file of [
+      '.cargo/config.toml',
+      '.cargo/config',
+      'rustfmt.toml',
+      '.rustfmt.toml',
+      'clippy.toml',
+      '.clippy.toml',
+      'rust-toolchain',
+      'rust-toolchain.toml',
+    ]) {
+      expect(affectsRust(file)).toBe(true);
+    }
+  });
+
+  it('claims that configuration wherever it sits, not only at the repository root', () => {
+    // Same reasoning as `.rs` and the manifests: a per-crate override is the normal place for
+    // several of these, and `native/` is not the only directory a crate may ever occupy.
+    for (const file of [
+      'native/.cargo/config.toml',
+      'native/rustfmt.toml',
+      'native/model-core/clippy.toml',
+      'tools/codegen/rust-toolchain.toml',
+    ]) {
+      expect(affectsRust(file)).toBe(true);
+    }
+  });
+
+  it('claims anything under a .cargo directory, not just the two config spellings', () => {
+    // The directory is what makes a file cargo's, so the directory is the test. This is what keeps
+    // a future `.cargo/audit.toml` or credential/registry file from reopening the same hole under
+    // a filename nobody enumerated.
+    expect(affectsRust('.cargo/audit.toml')).toBe(true);
+    expect(affectsRust('.cargo/registries/mirror.toml')).toBe(true);
+  });
+
+  it('does not claim a generic config file merely for being named config', () => {
+    // The control on the rule above. `config` and `config.toml` are far too generic to claim
+    // globally by basename -- doing so would cost build minutes on every unrelated change -- so
+    // the `.cargo/` segment, not the filename, is what earns the claim.
+    expect(affectsRust('src/config.toml')).toBe(false);
+    expect(affectsRust('config.toml')).toBe(false);
+    expect(affectsRust('resources/config')).toBe(false);
+  });
+
   it('claims any shape it cannot reason about', () => {
     // The opposite answer from `isDocumentationPath` on the identical inputs, and for the identical
     // reason: in both cases the unknown shape resolves toward running the build, not skipping it.
@@ -339,6 +390,24 @@ describe('the rust-untouched tier resolves uncertainty toward the full cargo mat
     expect(classifyRustUntouched(['native/Cargo.lock']).rustUntouched).toBe(
       false,
     );
+  });
+
+  it('fails when a tool config is the only non-source path in the change', () => {
+    // The end-to-end shape of Ripley's finding: a pull request that adds a formatter config
+    // alongside ordinary TypeScript would, before this, have been classified rust-untouched and
+    // stood the cargo matrix down -- including the `cargo fmt --check` that the new file redefines.
+    const verdict = classifyRustUntouched([
+      'src/main/index.ts',
+      'rustfmt.toml',
+    ]);
+    expect(verdict.rustUntouched).toBe(false);
+    expect(verdict.offenders).toEqual(['rustfmt.toml']);
+  });
+
+  it('fails on a .cargo/config.toml change with no other Rust path in sight', () => {
+    const verdict = classifyRustUntouched(['.cargo/config.toml', 'README.md']);
+    expect(verdict.rustUntouched).toBe(false);
+    expect(verdict.offenders).toEqual(['.cargo/config.toml']);
   });
 
   it('treats an empty or unreadable file list as not rust-untouched (fail-safe)', () => {

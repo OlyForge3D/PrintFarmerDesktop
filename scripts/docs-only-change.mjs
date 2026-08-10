@@ -145,6 +145,35 @@ const RUST_GATE_FILES = new Set([
 const RUST_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock']);
 
 /**
+ * Tool-configuration basenames that change what the `Sidecar` job's commands DO without appearing
+ * anywhere in the crate's source or its manifests (Ripley, PR #708 review).
+ *
+ * This is the hole the manifest set alone left open, and it is a false negative -- the only
+ * direction that costs correctness here. `cargo fmt --check`, `cargo clippy -- -D warnings` and
+ * `cargo build/test` each read configuration that is not `Cargo.toml`: an added `rustfmt.toml`
+ * silently redefines what "formatted" means, a `clippy.toml` redefines which lints deny, and a
+ * `rust-toolchain.toml` swaps the compiler the whole job runs on. A change to any of them can turn
+ * the cargo matrix from green to red while touching not one `.rs` file, so classifying it as
+ * "cannot reach the cargo build" would stand the job down on precisely the change that needed it.
+ *
+ * Deliberately the whole family rather than only the filenames named in review. `rustfmt.toml` and
+ * `clippy.toml` are the same hazard under two names, and fixing one while leaving the other is a
+ * fix that holds only until someone reaches for the other tool. Each entry earns its place by
+ * being read by a command this job actually runs -- cargo, rustfmt, clippy, or the toolchain
+ * selection -- which is what bounds the list rather than leaving it open-ended.
+ *
+ * Both the bare and dot-prefixed spellings are listed because both tools accept both.
+ */
+const RUST_TOOL_CONFIGS = new Set([
+  'rustfmt.toml',
+  '.rustfmt.toml',
+  'clippy.toml',
+  '.clippy.toml',
+  'rust-toolchain',
+  'rust-toolchain.toml',
+]);
+
+/**
  * True when a repository-relative path can affect the `Sidecar` job.
  *
  * The safety direction is inverted relative to `isDocumentationPath`, and deliberately so. There
@@ -155,8 +184,14 @@ const RUST_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock']);
  *
  * A prefix test on `native/` alone would be the fragile form: it is correct only for as long as
  * every crate lives there, and a second crate added elsewhere would silently stop being built.
- * `.rs` and the cargo manifests are matched by suffix and basename anywhere in the tree so the
- * predicate survives that move without needing to be revisited.
+ * `.rs`, the cargo manifests and the tool configs are matched by suffix and basename anywhere in
+ * the tree so the predicate survives that move without needing to be revisited.
+ *
+ * None of the tool-config files exists in this repository today, and that is the reason to handle
+ * them now rather than when one appears. The cost of the predicate being wrong is paid on the
+ * commit that ADDS such a file -- the very commit whose effect on the build nobody has measured
+ * yet -- and a fast path that stands the cargo matrix down on that commit is the blind check this
+ * detector's header already refuses to ship.
  */
 export const affectsRust = (file) => {
   if (typeof file !== 'string' || file === '') return true;
@@ -170,7 +205,16 @@ export const affectsRust = (file) => {
   }
   if (file.startsWith('native/')) return true;
   if (file.endsWith('.rs')) return true;
-  if (RUST_MANIFESTS.has(path.posix.basename(file))) return true;
+  // Anything under a `.cargo/` directory, at any depth, is cargo's own configuration by
+  // construction -- `.cargo/config.toml` and its extensionless predecessor `.cargo/config` can
+  // redirect the registry, change the target, or inject rustflags. Matched by directory segment
+  // rather than by basename because `config` and `config.toml` are far too generic to claim
+  // globally: `src/config.toml` is not cargo's, and claiming it would cost build minutes on every
+  // unrelated change. The directory is what makes the file cargo's, so the directory is the test.
+  if (file.split('/').includes('.cargo')) return true;
+  const base = path.posix.basename(file);
+  if (RUST_MANIFESTS.has(base)) return true;
+  if (RUST_TOOL_CONFIGS.has(base)) return true;
   return RUST_GATE_FILES.has(file);
 };
 

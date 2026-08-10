@@ -179,10 +179,22 @@ permissions:
 # So this tier is orthogonal to the other two rather than nested in them, and
 # it answers a question about the build's inputs rather than about a file's
 # genre: can this change reach the cargo build at all? `native/**`, any `.rs`
-# file anywhere, `Cargo.toml`/`Cargo.lock` anywhere, this workflow file, and
-# the detector script itself all answer yes. Everything else -- `src/`,
-# `tests/`, `e2e/`, `scripts/`, `.squad/` -- cannot, because `cargo` never
-# reads them.
+# file anywhere, `Cargo.toml`/`Cargo.lock` anywhere, anything under a
+# `.cargo/` directory, the rustfmt/clippy/toolchain configs
+# (`rustfmt.toml`, `clippy.toml`, `rust-toolchain.toml` and their dot-prefixed
+# spellings) anywhere, this workflow file, and the detector script itself all
+# answer yes. Everything else -- `src/`, `tests/`, `e2e/`, `scripts/`,
+# `.squad/` -- cannot, because `cargo` never reads them.
+#
+# The tool-config half of that list is there because of a false negative Ripley
+# found in review of PR #708: those files change what `cargo fmt --check` and
+# `cargo clippy -- -D warnings` actually enforce, and which compiler runs,
+# without appearing in any crate source or manifest. A change to one can turn
+# this matrix from green to red while touching no `.rs` file, so classifying it
+# as unable to reach the build would stand the job down on exactly the change
+# that needed it. None of them exists in this repository yet, which is the
+# reason to handle them now: the predicate is wrong on the commit that ADDS
+# one.
 #
 # It gates `sidecar` only. `package` also builds the sidecar, but it goes on
 # to package the Electron app and drive Playwright over the result, so a
