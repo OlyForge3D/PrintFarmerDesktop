@@ -324,6 +324,31 @@ export const UNENFORCED_CHECKS = {
     "runner with read access to that shared checkout's branches (not a " +
     'GitHub-hosted, single-ref pull_request runner), wire it in on a cron and ' +
     'delete this entry.',
+  'check:hooks-coverage':
+    'Its judgement IS enforced in CI: tests/hooksCoverage.test.ts drives ' +
+    'parsePorcelainWorktreeList, normalizeSeparators, evaluatePopulation, ' +
+    'assertMainCheckoutPresent, evaluateCoverage and runCheck over real git ' +
+    'repositories with real linked worktrees, including the falsifier (a ' +
+    'linked worktree with no .githooks/pre-push must be reported UNARMED, ' +
+    'naming its path) and a positive control (every worktree armed reports ' +
+    'CLEAN), under `npm run test`. Its main() answers a question about THE ' +
+    'CLONE IT RUNS IN — every worktree `git worktree list --porcelain` names ' +
+    '— and a pull_request workflow does a fresh clone plus one `npm ci`, so ' +
+    'exactly one worktree exists and `prepare` (scripts/install-git-hooks.mjs) ' +
+    'arms it during that same install. Running this on a runner would report ' +
+    "CLEAN on every single run, forever, regardless of whether #382's coverage " +
+    'defect exists anywhere in the actual population of developer worktrees — ' +
+    'not a weaker signal but a category error, the same one #382 names: a ' +
+    'runner-scoped result cannot speak for a fleet it never sees. ' +
+    'STATE THE WEAKNESS PLAINLY: #382 exists precisely because long-lived ' +
+    'worktrees created before the guard existed have no `npm install` event ' +
+    'left to spend, so nothing lifecycle-driven can reach them, and no ' +
+    'GitHub-hosted, single-ref pull_request runner can observe them either. ' +
+    'It is invoked by hand (`npm run check:hooks-coverage`) against a real, ' +
+    'multi-worktree clone, which is the only place this question is askable. ' +
+    'Discharge path: the day a scheduled workflow runs on a self-hosted ' +
+    'runner with a persistent, multi-worktree clone on disk, wire it in on a ' +
+    'cron and delete this entry.',
   'check:test-narrowing':
     'Its judgement IS enforced in CI: tests/checkTestNarrowing.test.ts drives ' +
     'checkAllHomes, checkPackageJsonScripts, checkWorkflowText and every ' +

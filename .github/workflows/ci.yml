@@ -201,6 +201,19 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      # `prepare` (which just ran as part of `npm ci` above) is the only event
+      # that arms this checkout's git hooks. This step is the one place that
+      # event is verified rather than just trusted -- `hooks:verify` reads
+      # `core.hooksPath` and the hook file back off the filesystem and fails
+      # the job if either is missing (#382). It answers only for THIS single
+      # checkout: a CI runner is always exactly one worktree, so this cannot
+      # and does not stand in for `check:hooks-coverage`, which answers the
+      # separate, un-CI-able question of whether every worktree of a
+      # developer's clone is armed (see that script's own header for why it
+      # is deliberately not wired in here).
+      - name: Git hooks armed
+        run: npm run hooks:verify
+
       - name: Calibration provenance
         if: steps.changes.outputs.docs_only != 'true'
         run: npm run check:provenance
