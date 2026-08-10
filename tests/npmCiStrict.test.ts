@@ -342,6 +342,59 @@ describe('npm-ci-strict main orchestration', () => {
     ).toBe(true);
   });
 
+  it('reports a non-zero production-tree exit status in the unrecovered-cleanup message even when `problems` is empty', async () => {
+    // #700: the unrecovered-cleanup diagnostic used to consult only
+    // `findTreeProblems(tree)`. If `npm ls --omit=dev --all --json` exited
+    // non-zero without populating `problems`, this branch reported "reports
+    // no problems; the residue is outside the production tree" even though
+    // npm's exit status said it could not vouch for the tree. This mirrors
+    // the primary gate further down, which folds `exitProblems` and
+    // `problems` together instead of trusting `problems` alone.
+    const recovery = {
+      attempted: true,
+      recovered: false,
+      directories: ['parse-color'],
+      reason: 'retry failed: EPERM still locked',
+    };
+    const harness = createOrchestrationHarness({
+      install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+      recovery,
+      tree: CLEAN_PRODUCTION_TREE,
+      treeStatus: 1,
+      treeStderr: 'npm error could not read package.json',
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual([
+      'npm-ci',
+      'cleanup-retry',
+      'production-tree',
+      'write-evidence',
+      'mark-evidence',
+      'fail',
+    ]);
+    expect(harness.writeCleanupEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        productionTreeProblems: [],
+        productionTreeExitProblems: [
+          `\`${NPM_PRODUCTION_TREE_COMMAND}\` exited 1: npm error could not read package.json`,
+        ],
+      }),
+    );
+    const lines: string[] = harness.fail.mock.calls[0]?.[0] ?? [];
+    expect(
+      lines.some(
+        (line) =>
+          line.includes(`\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems:`) &&
+          line.includes('exited 1'),
+      ),
+    ).toBe(true);
+    expect(
+      lines.some((line) => line.includes('reports no problems')),
+    ).toBe(false);
+  });
+
   it('reports a production-tree read failure rather than swallowing it, and still fails closed', async () => {
     const recovery = {
       attempted: true,
