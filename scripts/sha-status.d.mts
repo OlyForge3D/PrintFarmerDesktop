@@ -20,6 +20,12 @@ export interface ShaFacts {
   behind?: number | null;
   /** The base commit carrying the same subject, `''` for none, `null` for unasked. */
   shipped: string | null;
+  /**
+   * Reachable from any branch this remote currently advertises. Only
+   * measured on the `twin`/`local-only` arm (onBase false, onPr false);
+   * `null` elsewhere, or when the remote's heads could not be fetched.
+   */
+  remotePublished?: boolean | null;
 }
 
 export type ShaVerdict =
@@ -29,6 +35,7 @@ export type ShaVerdict =
   | 'pr-head'
   | 'stale'
   | 'twin'
+  | 'local-only'
   | 'unresolved'
   | 'base-stale'
   | 'indeterminate';
@@ -55,6 +62,11 @@ export function classify(facts: ShaFacts): {
   summary: string;
 };
 export function fetchPrHead(pr: string, remote?: string): string | null;
+export function fetchRemoteHeads(remote?: string): string | null;
+export function reachableFromAnyRemoteHead(
+  sha: string,
+  headsRef: string | null,
+): boolean | null;
 export function resolveCommit(rev: string): string | null;
 export function distanceToTip(sha: string, base: string): number | null;
 export function remoteTrackingParts(
@@ -67,7 +79,12 @@ export function fetchBase(
 ): { ref: string; fresh: boolean; refreshable: boolean };
 export function inspect(
   sha: string,
-  options?: { base?: string; prRef?: string | null; baseFresh?: boolean },
+  options?: {
+    base?: string;
+    prRef?: string | null;
+    baseFresh?: boolean;
+    remoteHeadsRef?: string | null;
+  },
 ): ShaStatus;
 export function parseArgs(argv: string[]): ShaStatusOptions;
 export function main(

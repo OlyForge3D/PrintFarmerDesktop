@@ -191,6 +191,7 @@ describe('a SHA quoted in a handoff has three failure modes and one instrument e
   let live: string;
   let supersededHead: string;
   let twin: string;
+  let localOnly: string;
   let prHead: string;
 
   beforeAll(() => {
@@ -226,9 +227,22 @@ describe('a SHA quoted in a handoff has three failure modes and one instrument e
     );
     git(['push', '-q', '--no-verify', 'origin', 'development'], work);
 
-    // A twin: a real object, on a real chain, that the PR ref does not contain.
+    // A twin: a real object, on a real chain, that the PR ref does not
+    // contain — and, unlike `supersededHead`/`twin` below before #443,
+    // actually published: pushed to a branch this remote advertises, so a
+    // fetch of the remote's heads finds it.
     git(['checkout', '-q', '-b', 'parallel', supersededHead], work);
     twin = commit(work, 'parallel work', 'parallel');
+    git(['push', '-q', '--no-verify', 'origin', 'parallel'], work);
+
+    // #443's counterexample: a real object, same shape as `twin` — exists,
+    // not on the base, not on the PR ref — but never pushed anywhere. No
+    // branch this remote advertises contains it. This is the case the old
+    // rationale got backwards: it claimed `ls-remote` and `gh api
+    // commits/<sha>` both succeed, and for this object both would fail.
+    git(['checkout', '-q', '-b', 'never-pushed', supersededHead], work);
+    localOnly = commit(work, 'local only work', 'local-only');
+    git(['checkout', '-q', 'development'], work);
 
     git(['fetch', '-q', 'origin'], work);
   });
@@ -266,6 +280,54 @@ describe('a SHA quoted in a handoff has three failure modes and one instrument e
       work,
     );
     expect(parallel.stdout).toContain('TWIN');
+  });
+
+  it('#443: an object absent from every remote ref does not produce the same output as one present on a remote ref', () => {
+    // Built at runtime from two real commits that are IDENTICAL on every axis
+    // the old code branched on — exist, resolve, neither an ancestor of the
+    // base, neither an ancestor of the named PR ref — and differ on exactly
+    // one thing: `twin` was pushed to a branch this remote advertises,
+    // `localOnly` was not. The old code printed the same rationale for both;
+    // this asserts the PROPERTY that they must now differ, rather than
+    // pinning either output to a fixed string, so the guard cannot rot into a
+    // stale-string match if the wording changes again later.
+    for (const sha of [twin, localOnly]) {
+      expect(gitExit(['cat-file', '-e', `${sha}^{commit}`], work)).toBe(0);
+      expect(
+        gitExit(
+          ['merge-base', '--is-ancestor', sha, 'origin/development'],
+          work,
+        ),
+      ).toBe(1);
+      expect(gitExit(['merge-base', '--is-ancestor', sha, prHead], work)).toBe(
+        1,
+      );
+    }
+
+    // Positive control: `twin` really is on a branch the remote advertises,
+    // and `localOnly` really is on none of them. If this ever assembled
+    // fixtures where both landed on the same side, the property assertion
+    // below would pass vacuously.
+    const remoteBranches = git(['branch', '-r'], work);
+    expect(remoteBranches).toContain('origin/parallel');
+    expect(remoteBranches).not.toContain('origin/never-pushed');
+    expect(
+      gitExit(['rev-parse', '--verify', 'origin/never-pushed'], work),
+    ).not.toBe(0);
+
+    const published = run(
+      [twin, '--base', 'origin/development', '--pr', '1'],
+      work,
+    );
+    const unpublished = run(
+      [localOnly, '--base', 'origin/development', '--pr', '1'],
+      work,
+    );
+
+    expect(published.stdout).not.toBe(unpublished.stdout);
+    expect(published.stdout).toContain('TWIN');
+    expect(unpublished.stdout).toContain('LOCAL-ONLY');
+    expect(unpublished.stdout).not.toContain('TWIN');
   });
 
   it('says it cannot tell them apart when no PR is named, rather than guessing', () => {
@@ -482,6 +544,51 @@ describe('the classifier does not soften a git failure into an answer', () => {
 
     expect(result.verdict).toBe('stale');
     expect(result.summary).toContain('may still be unmerged');
+  });
+
+  it('#443: reports twin only when publication elsewhere was actually measured true', () => {
+    const result = classify({
+      exists: true,
+      onBase: false,
+      onPr: false,
+      shipped: null,
+      remotePublished: true,
+    });
+
+    expect(result.verdict).toBe('twin');
+    expect(result.summary).not.toContain('gh api');
+  });
+
+  it('#443: reports local-only, not twin, when nothing on the remote contains the object', () => {
+    const result = classify({
+      exists: true,
+      onBase: false,
+      onPr: false,
+      shipped: null,
+      remotePublished: false,
+    });
+
+    expect(result.verdict).toBe('local-only');
+    expect(result.summary).toContain('nobody else can retrieve');
+  });
+
+  it('#443: does not assert twin when publication elsewhere could not be checked at all', () => {
+    // `remotePublished` is `null` when `fetchRemoteHeads` itself failed — a
+    // network problem, not a fact about the object. The old bug was
+    // asserting success it never measured; the fix must not repeat that
+    // mistake in the other direction by asserting `local-only` on a fetch
+    // failure either. Falls back to `twin` with a narrowed rationale, per the
+    // issue's option (b), rather than guessing which state actually holds.
+    const result = classify({
+      exists: true,
+      onBase: false,
+      onPr: false,
+      shipped: null,
+      remotePublished: null,
+    });
+
+    expect(result.verdict).toBe('twin');
+    expect(result.summary).toContain('was NOT checked');
   });
 });
 
