@@ -425,7 +425,21 @@ describe('surveyBehindPrs', () => {
     });
     vi.mocked(shaStatus.fetchPrHead).mockReturnValue('refs/tmp/head');
     // Neither base is an ancestor of the (different) head -> both BEHIND.
-    vi.mocked(shaStatus.isAncestor).mockReturnValue(false);
+    // Record every (sha, ref) pair isAncestor is actually called with, so the
+    // assertions below can prove each PR was compared against its OWN
+    // resolved base SHA -- not the shared, unresolved ref name the buggy
+    // implementation passed for every PR regardless of which base it was
+    // fetched from (Hicks, pre-PR review round 3: the prior version of this
+    // test only varied resolveCommit's *return value* by call count and never
+    // checked what isAncestor was actually invoked with, so it would have
+    // passed unchanged against the old bug too).
+    const ancestorCalls: Array<[string, string]> = [];
+    vi.mocked(shaStatus.isAncestor).mockImplementation(
+      (sha: string, ref: string) => {
+        ancestorCalls.push([sha, ref]);
+        return false;
+      },
+    );
 
     const run = (
       _command: string,
@@ -473,6 +487,17 @@ describe('surveyBehindPrs', () => {
     expect(survey.candidates.find((c) => c.number === 99)?.baseRefName).toBe(
       'release/1.x',
     );
+    // The decisive assertion: PR #10 (base development) must have been
+    // compared against development-sha, and PR #99 (base release/1.x)
+    // against release-sha -- two DIFFERENT sha arguments. Under the bug this
+    // regression-tests, both calls would instead receive the same literal,
+    // unresolved ref string 'refs/tmp/sha-status/base' (or, after a partial
+    // fix that resolves but shares one cache key, the same single resolved
+    // value for both), so this distinguishes the fix from every buggy
+    // variant, not just from the specific shape of the original bug.
+    expect(ancestorCalls).toHaveLength(2);
+    expect(ancestorCalls).toContainEqual(['development-sha', 'refs/tmp/head']);
+    expect(ancestorCalls).toContainEqual(['release-sha', 'refs/tmp/head']);
   });
 });
 
