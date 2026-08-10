@@ -13,7 +13,7 @@ export interface Collaborator {
 
 export interface RepositoryFacts {
   protection: Record<string, unknown>;
-  rulesets?: Array<Record<string, unknown>>;
+  rulesets: Array<Record<string, unknown>>;
   protectedBranches?: string[];
   collaborators?: Collaborator[];
 }
@@ -31,15 +31,13 @@ export declare function evaluateProtectionAssumptions(
 // (`/rulesets`, `/branches?protected=true`) -- protected branches, and
 // rulesets covering feature branches.
 export declare function evaluatePublicProtectionAssumptions(facts: {
-  rulesets?: Array<Record<string, unknown>>;
+  rulesets: Array<Record<string, unknown>>;
   protectedBranches?: string[];
 }): AssumptionViolation[];
 
 export declare const PRIVILEGED_ONLY_ASSUMPTIONS: readonly string[];
 
-export declare function rulesetCoversFeatureBranches(
-  ruleset: Record<string, unknown> | null | undefined,
-): boolean;
+export declare function rulesetCoversFeatureBranches(ruleset: unknown): boolean;
 
 export declare function formatViolations(
   violations: AssumptionViolation[],
@@ -72,7 +70,7 @@ export declare function fetchRepositoryFacts(input: {
 
 export interface StatusCheckEnforcement {
   /** 'bypassable' means the setting is present and exempts the only merger. */
-  state: 'binding' | 'bypassable' | 'absent';
+  state: 'binding' | 'bypassable' | 'absent' | 'unconfirmed';
   why: string;
 }
 export function statusCheckEnforcement(
@@ -88,3 +86,31 @@ export interface AdminExemptibleSettingReadings {
 export function adminExemptibleSettingEnforcement(
   protection: unknown,
 ): AdminExemptibleSettingReadings;
+
+export interface MergedAgainstBaseWorst {
+  number: number;
+  commits: number;
+}
+
+export interface MergedAgainstBaseReading {
+  requested: number;
+  sampled: number;
+  upToDate: number;
+  behind: number;
+  unmeasured: number;
+  worst: MergedAgainstBaseWorst | null;
+}
+
+export declare function measureMergedAgainstBase(input: {
+  repository: { owner: string; repo: string };
+  token: string;
+  fetchImpl?: typeof fetch;
+  base?: string;
+  sampleSize?: number;
+  perPage?: number;
+  maxPages?: number;
+}): Promise<MergedAgainstBaseReading>;
+
+export declare function formatMergedAgainstBaseReading(
+  reading: MergedAgainstBaseReading,
+): string;

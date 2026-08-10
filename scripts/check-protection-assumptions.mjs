@@ -108,6 +108,39 @@ function readEnabledFact(node) {
   return { confirmed: false };
 }
 
+// Same distinction as `readEnabledFact`, specialised to `enforce_admins`:
+// `{ confirmed: false }` means GitHub's response cannot confirm whether
+// administrators are exempt at all (absent node, malformed node, or a
+// non-boolean `enabled`), and must not be treated as a confirmed exemption
+// -- see `adminExemptionReading`'s docblock for the finding this fixes.
+function readAdminsExempt(protection) {
+  const fact = readEnabledFact(protection?.enforce_admins);
+  if (!fact.confirmed) return { confirmed: false };
+  return { confirmed: true, exempt: fact.value === false };
+}
+
+// Same distinction again, specialised to `required_status_checks.strict`:
+// a plain `protection?.required_status_checks?.strict === true` check
+// collapses "GitHub confirmed strict is false", "required_status_checks is
+// entirely absent", and "required_status_checks is present but strict is
+// missing or not a literal boolean" into one indistinguishable `false` --
+// which is exactly right for the loud violation check above (any of those
+// three still means "do not rely on up-to-date-ness"), but wrong for
+// `statusCheckEnforcement`'s reporting path, which narrated all three as
+// the single confident claim "strict is not set". Bishop's review of
+// #490/#676 (head 4681cbad) reproduced this as the 6th instance of the same
+// silent-conflation class already fixed five times elsewhere in this file.
+function readStrictFact(protection) {
+  const node = protection?.required_status_checks;
+  if (node === undefined || node === null || typeof node !== 'object') {
+    return { confirmed: false };
+  }
+  if (typeof node.strict === 'boolean') {
+    return { confirmed: true, value: node.strict };
+  }
+  return { confirmed: false };
+}
+
 /**
  * Pure. Takes the four reads and returns what has moved.
  *
@@ -117,7 +150,7 @@ function readEnabledFact(node) {
  */
 export function evaluateProtectionAssumptions({
   protection,
-  rulesets = [],
+  rulesets,
   protectedBranches = [],
   collaborators = [],
 }) {
@@ -333,9 +366,25 @@ export function evaluateProtectionAssumptions({
 // CI. Split out so the public tier can be evaluated, and run for real, without
 // ever constructing a `protection` object the caller does not have.
 export function evaluatePublicProtectionAssumptions({
-  rulesets = [],
+  rulesets,
   protectedBranches = [],
 }) {
+  // `rulesets = []` as a default silently reads a missing or malformed
+  // top-level `/rulesets` response the same as GitHub confirming there are
+  // none -- collapsing "no ruleset reaches feature branches" (a fact) with
+  // "the response never said" (an absence of data) into the same falsely
+  // clean result. Bishop's review of #490/#676 (head 4681cbad) reproduced
+  // this as the 7th instance of the same silent-conflation class already
+  // fixed six times elsewhere in this file. `protectedBranches` does not
+  // need the same guard: a missing value already defaults to `[]`, which
+  // fails the `=== 'development'` check below and raises a violation --
+  // the safe direction already, unlike rulesets defaulting to "no coverage".
+  if (!Array.isArray(rulesets)) {
+    throw new TypeError(
+      'rulesets is required and must be an array; a missing or malformed /rulesets response cannot be read as "no ruleset reaches feature branches" -- that would silently accept an incomplete or absent API response as a clean result',
+    );
+  }
+
   const violations = [];
 
   const protectedNames = [...protectedBranches].sort((a, b) =>
@@ -400,18 +449,32 @@ export const PRIVILEGED_ONLY_ASSUMPTIONS = Object.freeze([
  * two into one boolean is exactly the hole #488 fixed for the violation
  * checks above, and callers below split it back out via `readEnabledFact`
  * rather than a plain `?.enabled === x` comparison.
+ *
+ * `adminsExempt` must make the same distinction for `enforce_admins` itself:
+ * Hicks reproduced, in review of #490/#676 (head a92efda4), that both
+ * readers below computed it as `protection?.enforce_admins?.enabled !==
+ * true`, which silently treated a missing/malformed `enforce_admins` node
+ * the same as a confirmed `{ enabled: false }` -- narrating an unconfirmed
+ * field as though GitHub had confirmed administrators are exempt. Callers
+ * now pass a tri-state `{ confirmed, exempt }` (from `readEnabledFact`)
+ * instead of a plain boolean, and an unconfirmed `enforce_admins` produces
+ * its own `'unconfirmed'` state rather than defaulting into `'bypassable'`.
  */
 function adminExemptionReading({
   present,
   adminsExempt,
   absentWhy,
+  unconfirmedAdminsExemptWhy,
   bypassableWhy,
   bindingWhy,
 }) {
   if (!present) {
     return { state: 'absent', why: absentWhy };
   }
-  if (!adminsExempt) {
+  if (!adminsExempt.confirmed) {
+    return { state: 'unconfirmed', why: unconfirmedAdminsExemptWhy };
+  }
+  if (!adminsExempt.exempt) {
     return { state: 'binding', why: bindingWhy };
   }
   return { state: 'bypassable', why: bypassableWhy };
@@ -429,23 +492,38 @@ function adminExemptionReading({
  *
  * The assumption check above asserts `strict === true` and names the consequence of
  * its absence as "a PR can merge against a trunk it was never tested against."
- * Measured over the thirty most recently merged pull requests, that consequence
- * occurs anyway:
- *
- *   up to date at merge   15 / 30
- *   merged behind base    15 / 30      worst: #366, seventy commits behind
- *
- * So the assertion passes while the harm it names happens in half of all merges.
+ * That consequence occurs anyway, because `enforce_admins: false` exempts the
+ * only account that can merge from the check `strict` performs. So the
+ * assertion passes while the harm it names remains possible on every merge.
  * That is not an argument for turning `enforce_admins` on — #111 declined it
  * correctly, because the only admin is the only merger and enforcing it would
  * deadlock the repository. It is an argument for saying out loud which of these
  * settings is load-bearing, so that no other control is written on the assumption
  * that a merged PR was tested against the trunk it landed on.
  *
+ * #490: two earlier versions of this comment transcribed how often that harm
+ * actually occurs -- first as "15/30, worst #366 seventy commits behind", then
+ * (in review of the first fix) as "28/2" -- as prose inside this file, with
+ * nothing that re-derives the figure. Both were unfalsifiable the same way:
+ * the test suite below exercises this function against a hand-written fixture
+ * and never reads a pull request, so neither number had a falsifier, and each
+ * was independently found to already be wrong when someone bothered to
+ * recompute it. `measureMergedAgainstBase`, below, is the fix: it queries the
+ * API for the N most recently merged pull requests against `base` and, for
+ * each one, compares the merge commit's first parent (the trunk tip immediately
+ * before that merge) against the PR's own head commit, so "up to date" and
+ * "commits behind" are counted the same way every run rather than remembered
+ * from one. `main()` calls it and prints the result on every run, so the
+ * figure is always current and this file never again states a number about
+ * the past that nothing recomputes.
+ *
  * This is reported rather than failed. The state below is the permanent and correct
  * one, and a check that fails on the correct state teaches its reader to ignore it.
- * What binds it is the test suite: if the pair ever changes, this reading changes
- * with it, so the claim cannot quietly outlive the facts it rests on.
+ * What binds it is the test suite: if the `strict` / `enforce_admins` pair ever
+ * changes, this reading changes with it, so the qualitative claim above cannot
+ * quietly outlive the facts it rests on. The merged-behind-base rate is bound
+ * the same way `measureMergedAgainstBase` is bound: by unit tests against a
+ * fake API response, not by a number transcribed into this comment.
  *
  * `strict` was the only setting read this way until #489: `enforce_admins: false`
  * exempts administrators from `allow_force_pushes`, `allow_deletions` and
@@ -454,11 +532,15 @@ function adminExemptionReading({
  * admin. `adminExemptibleSettingEnforcement`, below, reads all four the same way.
  */
 export function statusCheckEnforcement(protection) {
+  const strictFact = readStrictFact(protection);
   return adminExemptionReading({
-    present: protection?.required_status_checks?.strict === true,
-    adminsExempt: protection?.enforce_admins?.enabled !== true,
-    absentWhy:
-      'strict is not set, so a pull request may merge against a base it was never tested against',
+    present: strictFact.confirmed && strictFact.value === true,
+    adminsExempt: readAdminsExempt(protection),
+    absentWhy: strictFact.confirmed
+      ? 'strict is not set, so a pull request may merge against a base it was never tested against'
+      : 'required_status_checks.strict is missing or malformed in the response rather than confirmed either way, so whether up-to-date-ness is enforced cannot be read from this field',
+    unconfirmedAdminsExemptWhy:
+      'strict is set, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
     bindingWhy:
       'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
     bypassableWhy:
@@ -485,13 +567,14 @@ export function statusCheckEnforcement(protection) {
  * Vasquez's own review of this generalisation caught.
  */
 export function adminExemptibleSettingEnforcement(protection) {
-  const adminsExempt = protection?.enforce_admins?.enabled !== true;
+  const adminsExempt = readAdminsExempt(protection);
 
   const enabledNodeReading = ({
     node,
     protectiveValue,
     missingWhy,
     explicitUnsafeWhy,
+    unconfirmedAdminsExemptWhy,
     bypassableWhy,
     bindingWhy,
   }) => {
@@ -503,6 +586,7 @@ export function adminExemptibleSettingEnforcement(protection) {
       present: fact.value === protectiveValue,
       adminsExempt,
       absentWhy: explicitUnsafeWhy,
+      unconfirmedAdminsExemptWhy,
       bypassableWhy,
       bindingWhy,
     });
@@ -517,6 +601,8 @@ export function adminExemptibleSettingEnforcement(protection) {
         'allow_force_pushes is missing or malformed in the response rather than confirmed either way, so whether force pushes are restricted cannot be read from this field',
       explicitUnsafeWhy:
         'allow_force_pushes is confirmed enabled, so force pushes are not restricted for anyone, administrator or not',
+      unconfirmedAdminsExemptWhy:
+        'allow_force_pushes is confirmed disallowed, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
       bindingWhy:
         'force pushes are disallowed by configuration and administrators are not exempt, so the restriction binds every pusher',
       bypassableWhy:
@@ -529,6 +615,8 @@ export function adminExemptibleSettingEnforcement(protection) {
         'allow_deletions is missing or malformed in the response rather than confirmed either way, so whether deletion is restricted cannot be read from this field',
       explicitUnsafeWhy:
         'allow_deletions is confirmed enabled, so the branch can be deleted by anyone, administrator or not',
+      unconfirmedAdminsExemptWhy:
+        'allow_deletions is confirmed disallowed, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
       bindingWhy:
         'deletion is disallowed by configuration and administrators are not exempt, so the restriction binds every account',
       bypassableWhy:
@@ -541,6 +629,8 @@ export function adminExemptibleSettingEnforcement(protection) {
         'required_linear_history is missing or malformed in the response rather than confirmed either way, so whether linear history is required cannot be read from this field',
       explicitUnsafeWhy:
         'required_linear_history is confirmed not enabled, so merge commits are not restricted for anyone, administrator or not',
+      unconfirmedAdminsExemptWhy:
+        'required_linear_history is confirmed required, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
       bindingWhy:
         'linear history is required by configuration and administrators are not exempt, so it binds every merger',
       bypassableWhy:
@@ -553,10 +643,74 @@ export function adminExemptibleSettingEnforcement(protection) {
  * A ruleset matters here only if it is ENABLED and reaches something other than
  * `development`. `enforcement: 'disabled'` and `evaluate` (dry-run) grant nothing.
  */
+const KNOWN_RULESET_ENFORCEMENTS = new Set(['active', 'evaluate', 'disabled']);
+const KNOWN_RULESET_TARGETS = new Set(['branch', 'tag', 'push']);
+
 export function rulesetCoversFeatureBranches(ruleset) {
-  if (!ruleset || ruleset.enforcement !== 'active') return false;
-  if (ruleset.target && ruleset.target !== 'branch') return false;
-  const include = ruleset.conditions?.ref_name?.include ?? [];
+  if (ruleset === null) return false;
+  // A ruleset entry that is present but not an object (e.g. `0`, `false`,
+  // `''`, a string, a number) is malformed external data, not the
+  // deliberate "no ruleset" signal that `null` represents. Bishop
+  // reproduced this in review of #490/#676 (head f4435a12):
+  // `if (!ruleset) return false;` conflated `null` with any other falsy
+  // value, so a malformed `/rulesets` entry like `0` was silently treated
+  // as "does not cover feature branches" instead of failing loud.
+  if (typeof ruleset !== 'object') {
+    throw new Error(
+      `Ruleset entry is not an object (got ${JSON.stringify(ruleset)}); refusing to treat malformed data as "covers no feature branches".`,
+    );
+  }
+  // A non-null ruleset object without a recognized `enforcement` value is
+  // malformed/truncated data, not a confirmed-inactive ruleset. Bishop
+  // reproduced this in review of #490 (head 670905f4): `!== 'active'`
+  // silently treated a missing/garbled `enforcement` field the same as an
+  // explicit `'disabled'`, producing a falsely-clean "does not cover
+  // feature branches" result for a ruleset whose actual enforcement state
+  // GitHub never confirmed. `'active'`/`'evaluate'`/`'disabled'` are the
+  // only enforcement values GitHub's API defines; anything else (absent,
+  // null, a typo, a future/unknown value) throws instead of defaulting to
+  // "not active".
+  if (!KNOWN_RULESET_ENFORCEMENTS.has(ruleset.enforcement)) {
+    throw new Error(
+      `Ruleset ${JSON.stringify(ruleset.name ?? ruleset.id ?? '(unnamed)')} has an unrecognized enforcement value (got ${JSON.stringify(ruleset.enforcement)}); refusing to treat unconfirmed enforcement state as "not active".`,
+    );
+  }
+  if (ruleset.enforcement !== 'active') return false;
+  // An active ruleset without a recognized `target` value is malformed/
+  // truncated data, not a confirmed non-branch ruleset. Hicks reproduced
+  // this in review of #490 (head 7a822636): `ruleset.target &&
+  // ruleset.target !== 'branch'` silently treated a missing/falsy `target`
+  // the same as confirmed `target: 'branch'` semantics -- which happens to
+  // be safe only by coincidence, since the same code would also silently
+  // accept e.g. `target: 0` or `target: ''` and fall through as if it were
+  // branch-targeted. GitHub's ruleset target values are `'branch'`,
+  // `'tag'`, and `'push'`; anything else (absent, null, unrecognized)
+  // throws instead of guessing which semantics apply.
+  if (!KNOWN_RULESET_TARGETS.has(ruleset.target)) {
+    throw new Error(
+      `Active ruleset ${JSON.stringify(ruleset.name ?? ruleset.id ?? '(unnamed)')} has an unrecognized target value (got ${JSON.stringify(ruleset.target)}); refusing to guess whether it targets branches.`,
+    );
+  }
+  if (ruleset.target !== 'branch') return false;
+  // An active, branch-targeted ruleset without a resolvable
+  // conditions.ref_name.include array is not a ruleset that "covers no
+  // feature branches" -- it is malformed or truncated data. `?? []`
+  // silently defaulted the missing targeting data to an empty array and
+  // returned `false`, the same "silently accept malformed external data"
+  // failure already fixed 14 times over in this file for other fields: a
+  // ruleset that is genuinely active could, for all this function knows,
+  // actually reach every branch, and reporting it as covering none because
+  // the field GitHub uses to say so is absent is exactly the falsely-clean
+  // result this file's other fixes exist to prevent. Hicks reproduced this
+  // in review of #490 (head 31e0d8e). So a missing/non-array `include`
+  // throws instead of defaulting, while an explicit empty array (a
+  // well-formed ruleset that legitimately targets no refs) is unaffected.
+  const include = ruleset.conditions?.ref_name?.include;
+  if (!Array.isArray(include)) {
+    throw new Error(
+      `Active ruleset ${JSON.stringify(ruleset.name ?? ruleset.id ?? '(unnamed)')} has no conditions.ref_name.include array (got ${JSON.stringify(include)}); refusing to treat missing targeting data as "covers no feature branches".`,
+    );
+  }
   return include.some(
     (ref) => ref !== 'refs/heads/development' && ref !== '~DEFAULT_BRANCH',
   );
@@ -570,6 +724,19 @@ export function formatViolations(violations) {
     )
     .join('\n');
 }
+
+// `head.sha`/`merge_commit_sha` (and the first-parent sha resolved from a
+// merge commit) must be non-empty strings to be used in a URL path. A truthy
+// non-string -- an object like `{ bogus: true }`, a number, a boolean --
+// would otherwise get coerced into the request path via template-literal
+// stringification and could still receive *a* response, which this function
+// would then trust, producing a falsely-clean reading instead of failing
+// loud. This deliberately does not require a specific SHA shape (e.g. 40 hex
+// characters): GitHub's own abbreviated-SHA support and this file's tests
+// both use shorter opaque identifiers, and the actual failure mode being
+// guarded against is "not a string at all", not "a string that doesn't look
+// like a real SHA".
+const isShaLike = (value) => typeof value === 'string' && value.length > 0;
 
 const api = async (fetchImpl, repository, token, endpoint) => {
   const response = await fetchImpl(
@@ -679,6 +846,366 @@ export async function fetchRepositoryFacts({
   };
 }
 
+/**
+ * The N most recently merged pull requests targeting `base`, by `merged_at`
+ * -- not by list order, because `/pulls?sort=updated` and merge order are not
+ * the same thing, and silently trusting page order here would reintroduce
+ * exactly the kind of unverified-by-construction reading #490 is about.
+ *
+ * GitHub does not offer "list merged PRs sorted by merged_at" directly, and
+ * `sort=updated` is not a proxy for it: an old merged PR can receive a new
+ * comment and jump to the front of that ordering while a more recently
+ * merged PR with no further activity sits behind it. That makes any
+ * count-based early stop -- "stop once N*2 merged PRs have been seen" --
+ * unsound: a later page can still hold a more recently merged PR than an
+ * earlier one, so stopping before the true last page can return the wrong
+ * sample and therefore the wrong split. This was exactly Hicks' finding
+ * against the first version of this function in review of #490.
+ *
+ * So this pages through every closed PR (both merged and unmerged closes)
+ * until the API itself reports there is nothing left to page -- a batch
+ * shorter than `perPage` -- and only then sorts the merged ones by
+ * `merged_at` and truncates to `sampleSize`. `maxPages` is a safety bound
+ * against paging forever, and it must never become a second, silent
+ * correctness mechanism: reaching it before a genuinely partial page has
+ * been seen means an unknown number of closed PRs -- possibly including
+ * more recently merged, more-behind ones -- were never looked at. Returning
+ * whatever was gathered so far in that case would print a plausible-looking
+ * split while silently excluding the very PRs that could change it: an "all
+ * clear" that is not actually all clear. This was Vasquez's finding against
+ * the second version of this function in review of #490 (reviewing the
+ * pagination fix that itself answered Hicks' first pagination finding) --
+ * so hitting `maxPages` without a genuine last page throws instead of
+ * returning a truncated-but-silent sample; the caller already surfaces that
+ * as an honest "could not be measured" rather than a wrong number.
+ */
+async function fetchRecentlyMergedPullRequests({
+  repository,
+  token,
+  fetchImpl,
+  base,
+  sampleSize,
+  perPage = 100,
+  maxPages = 50,
+}) {
+  const merged = [];
+  let sawGenuineLastPage = false;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const batch = await api(
+      fetchImpl,
+      repository,
+      token,
+      `/pulls?state=closed&base=${encodeURIComponent(base)}&per_page=${perPage}&page=${page}&sort=updated&direction=desc`,
+    );
+    // The rest of this loop assumes `batch` is an array of pull request
+    // objects to iterate, count, and slice by page-size. A malformed
+    // response -- e.g. a JSON string instead of an array -- is still
+    // iterable in JS (strings are iterable, yielding one-character
+    // "PRs"), so without this check the loop would silently walk
+    // characters instead of pull requests: every "pr" would have no
+    // merged_at and be skipped, and a short "batch" (a string shorter
+    // than perPage) would look like the genuine last page, producing an
+    // empty, plausible-looking sample instead of an error. Hicks
+    // reproduced this in review of #490 (head 28051c3) with a 200 OK
+    // response body of the bare string "oops". Fail loudly on any
+    // response shape other than an array.
+    if (!Array.isArray(batch)) {
+      throw new Error(
+        `Expected an array of pull requests from /pulls (page ${page}), got ${JSON.stringify(batch)}; refusing to treat a malformed response as an empty or partial page.`,
+      );
+    }
+    for (const pr of batch) {
+      // A well-formed GitHub API response includes `merged_at` as a key on
+      // every closed PR -- either `null` (not merged) or a timestamp string
+      // (merged). A PR entry missing the key entirely is not a legitimate
+      // "not merged" signal, it's a sign the response is malformed or
+      // truncated (e.g. a partial JSON body, or a shape change that dropped
+      // fields) -- and JS's `pr.merged_at === undefined` cannot tell "key
+      // present with value undefined" apart from "key absent altogether",
+      // silently treating both the same as the null case. Bishop reproduced
+      // this in review of #490 (head 327996a) with `{ number: 123 }` and no
+      // `merged_at` property at all. So the key's presence is checked
+      // first and an absent key throws, before the null-vs-other-falsy
+      // check below (which only ever sees a key that is actually present).
+      if (!('merged_at' in pr)) {
+        throw new Error(
+          `Pull request #${JSON.stringify(pr.number)} has no merged_at key at all (expected null for not merged, or a timestamp string); refusing to treat a missing key the same as a legitimate "not merged" signal.`,
+        );
+      }
+      // Closed-but-unmerged PRs report `merged_at: null` -- that's a
+      // legitimate, well-formed signal to skip and is not an error. But
+      // other falsy values (e.g. an empty string) are not what the API
+      // uses to mean "not merged"; treating them the same way via a bare
+      // `!pr.merged_at` check silently drops a PR that claimed to have
+      // *some* merged_at value instead of surfacing that the data is
+      // malformed. Hicks reproduced this in review of #490 (head e5d6248)
+      // with `merged_at: ''`, which the sample silently excluded rather
+      // than throwing on. Only `null`/`undefined` mean "not merged";
+      // anything else falsy is malformed and must throw.
+      if (pr.merged_at === null || pr.merged_at === undefined) continue;
+      if (typeof pr.merged_at !== 'string' || pr.merged_at === '') {
+        throw new Error(
+          `Pull request #${pr.number} has a malformed merged_at (${JSON.stringify(pr.merged_at)}); expected null (not merged) or a non-empty timestamp string.`,
+        );
+      }
+      // `merged_at` drives the sort below that determines which PRs count as
+      // the "most recently merged" sample. A truthy but unparseable value
+      // (e.g. a malformed timestamp) would silently produce NaN, which
+      // `Array.prototype.sort` treats as neither greater nor less than any
+      // other value -- collapsing the sort to whatever order the API
+      // happened to return, which is exactly the unsound-ordering defect
+      // this function already had to fix once. Fail loudly instead of
+      // trusting a value that can't actually be compared.
+      const mergedAtMs = Date.parse(pr.merged_at);
+      if (!Number.isFinite(mergedAtMs)) {
+        throw new Error(
+          `Pull request #${pr.number} has an unparseable merged_at (${JSON.stringify(pr.merged_at)}); refusing to sort by an invalid timestamp.`,
+        );
+      }
+      merged.push(pr);
+    }
+    // A batch shorter than the requested page size is the API's own signal
+    // that this was the last page -- the only condition under which stopping
+    // is sound, because every closed PR has now been seen and merged_at can
+    // be trusted to sort the true top `sampleSize`.
+    if (batch.length < perPage) {
+      sawGenuineLastPage = true;
+      break;
+    }
+  }
+  if (!sawGenuineLastPage) {
+    // Reaching `maxPages` full pages without ever seeing a short page means
+    // pagination was cut off, not completed -- there could be more closed
+    // PRs, merged more recently than any seen so far, still unread. Silently
+    // truncating here is exactly the defect being fixed: it can return a
+    // clean-looking sample while the true most-recent, most-behind PRs sit
+    // on a page this call never reached. Fail loudly instead.
+    throw new Error(
+      `Reached maxPages (${maxPages}) at perPage ${perPage} without finding the true last page of closed pull requests targeting "${base}"; the sample would be truncated and unsound, not just incomplete, so refusing to return it.`,
+    );
+  }
+  return merged
+    .sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at))
+    .slice(0, sampleSize);
+}
+
+/**
+ * Measures, at run time, whether merged pull requests were up to date with
+ * `base` at the moment they merged -- the reading #490 found transcribed as a
+ * fixed number in this file's own docblock, twice, each already wrong by the
+ * time anyone re-checked it.
+ *
+ * For each merged PR: `merge_commit_sha`'s first parent is the tip `base` had
+ * immediately before that merge landed (true whether the merge used a merge
+ * commit, squash, or rebase, because in every case GitHub records exactly one
+ * commit as the first parent of what it merged into `base`). Comparing that
+ * parent against the PR's own `head.sha` -- which GitHub retains even after
+ * the source branch is deleted -- with `GET /compare/{head}...{parent}`
+ * yields `ahead_by`: the number of commits reachable from that base tip but
+ * not from the PR head, i.e. exactly the commits the PR was missing when it
+ * merged. Zero means the PR was up to date at merge; more than zero is the
+ * number of commits it was behind.
+ *
+ * Pull requests without a `merge_commit_sha` or a `head.sha` (both required
+ * fields for a merged PR, but defend against a malformed response rather than
+ * throwing mid-sample), or whose merge commit has no resolvable first
+ * parent, cannot be measured and are excluded from `upToDate`/`behind`. That
+ * exclusion is safe only if it is visible: silently shrinking the sample and
+ * reporting the reduced subset as though it were the whole "last N merged
+ * pull requests" turns a real gap in the data into an artificially clean-
+ * looking result -- the same failure mode as the maxPages and `ahead_by`
+ * bugs already fixed here, just one step further down the same function.
+ * Hicks reproduced this in review of #490 (head 417a712): 30 sampled PRs, 3
+ * silently unmeasurable, printed as "27 / 27 clean" with no surfaced
+ * unknowns. So this tracks `unmeasured` separately from `sampled` (which now
+ * means "measured", not "attempted"), and `formatMergedAgainstBaseReading`
+ * always names both the requested count and any unmeasured count -- a
+ * reader can never see a clean split without also being told how many PRs,
+ * if any, were excluded from it.
+ */
+export async function measureMergedAgainstBase({
+  repository,
+  token,
+  fetchImpl = fetch,
+  base = 'development',
+  sampleSize = 30,
+  perPage = 100,
+  maxPages = 50,
+}) {
+  const pullRequests = await fetchRecentlyMergedPullRequests({
+    repository,
+    token,
+    fetchImpl,
+    base,
+    sampleSize,
+    perPage,
+    maxPages,
+  });
+
+  let upToDate = 0;
+  let behind = 0;
+  let unmeasured = 0;
+  let worst = null;
+
+  for (const pr of pullRequests) {
+    // `pr.number` is used verbatim in error messages and as the identifier
+    // in the `worst` offender report -- if it's missing or not a real PR
+    // number, both would silently produce a nonsensical identifier like
+    // `#undefined` or `#NaN` instead of failing loud, the same class of bug
+    // already fixed for `ahead_by` and `merged_at` on this same field's
+    // neighbors. Vasquez found this in review of #490 (head e0487ac).
+    if (
+      typeof pr.number !== 'number' ||
+      !Number.isInteger(pr.number) ||
+      pr.number <= 0
+    ) {
+      throw new Error(
+        `Pull request entry has an invalid number (positive integer expected, got ${JSON.stringify(pr.number)}); refusing to report a "worst offender" under a fabricated identifier.`,
+      );
+    }
+
+    const headSha = pr.head?.sha;
+    const mergeCommitSha = pr.merge_commit_sha;
+    // Absent fields (null/undefined) are a legitimate reason a PR can't be
+    // measured -- see the docblock above. But a *truthy* value that is not a
+    // real SHA string (e.g. `{ bogus: true }`, a number, or an empty string)
+    // is not "missing", it's malformed: silently passing it through to the
+    // `/commits/{sha}` and `/compare/{head}...{parent}` URLs below would
+    // stringify it into a broken request path and could still receive a
+    // response that this function then trusted, producing a falsely-clean
+    // reading instead of failing loud -- the same "silently accept malformed
+    // external data" class of bug already fixed for `pr.number`, `ahead_by`,
+    // and `merged_at` on this same function. Vasquez/Hicks reproduced this on
+    // head 327996a with a malformed `head.sha`.
+    if (headSha != null && !isShaLike(headSha)) {
+      throw new Error(
+        `Pull request #${pr.number} has a malformed head.sha (expected a non-empty string, got ${JSON.stringify(headSha)}); refusing to build a compare request from it.`,
+      );
+    }
+    if (mergeCommitSha != null && !isShaLike(mergeCommitSha)) {
+      throw new Error(
+        `Pull request #${pr.number} has a malformed merge_commit_sha (expected a non-empty string, got ${JSON.stringify(mergeCommitSha)}); refusing to build a commit-lookup request from it.`,
+      );
+    }
+    if (!mergeCommitSha || !headSha) {
+      unmeasured += 1;
+      continue;
+    }
+
+    const mergeCommit = await api(
+      fetchImpl,
+      repository,
+      token,
+      `/commits/${mergeCommitSha}`,
+    );
+    const baseTipAtMerge = mergeCommit.parents?.[0]?.sha;
+    // Same reasoning as headSha/mergeCommitSha above, one API call further
+    // down the chain: a missing first parent is a legitimate "can't measure
+    // this PR" case, but a truthy, non-SHA value here would build an equally
+    // broken `/compare` request while looking like a resolved parent.
+    if (baseTipAtMerge != null && !isShaLike(baseTipAtMerge)) {
+      throw new Error(
+        `Pull request #${pr.number}'s merge commit (${mergeCommitSha}) has a malformed first-parent sha (expected a non-empty string, got ${JSON.stringify(baseTipAtMerge)}); refusing to build a compare request from it.`,
+      );
+    }
+    if (!baseTipAtMerge) {
+      unmeasured += 1;
+      continue;
+    }
+
+    const comparison = await api(
+      fetchImpl,
+      repository,
+      token,
+      `/compare/${headSha}...${baseTipAtMerge}`,
+    );
+    // `?? 0` here would silently count PR #pr.number as up to date whenever
+    // the compare response is missing, malformed, or `ahead_by` is absent --
+    // rate limiting, a transient API shape change, or anything else that
+    // makes the response not what was expected. That is a silently wrong
+    // result standing in for a failure, not a degrade: a PR that may well be
+    // behind base gets counted as up to date with no error and no warning.
+    // Hicks reproduced this concretely in review of #490 (head 85d5148) with
+    // a merged PR, a valid parent, and an empty `{}` compare response. So
+    // this validates `ahead_by` is actually a number before trusting it, and
+    // throws otherwise -- the same "loud failure over silent wrong answer"
+    // fix already applied to the maxPages truncation in this same function's
+    // caller, for the same reason.
+    //
+    // `typeof === 'number'` alone is not enough: it accepts -1, NaN, and
+    // Infinity, all of which are numbers in JS but none of which is a
+    // sensible count of commits behind. `-1` would flip the up-to-date/
+    // behind classification below (a negative value fails `=== 0` and so
+    // is treated as "behind" -- worse, "worst by -1 commits" makes no
+    // sense as an offender); `NaN` fails every ordering comparison
+    // silently, so it could never become `worst` even while being counted
+    // in `behind`; `Infinity` would always win `worst` regardless of any
+    // genuinely worse finite offender. Both Hicks and Vasquez independently
+    // reproduced this identically in review of #490 (head 9ef8526), so
+    // `ahead_by` must be a finite, non-negative number, not merely typeof
+    // 'number', before it is trusted. It also must be an integer: `ahead_by`
+    // is a count of commits, and a fractional value such as `0.5` is just as
+    // malformed a compare response as a negative or non-finite one --
+    // Vasquez reproduced this on head 2f65da1 (`{ ahead_by: 0.5 }` silently
+    // reported as "0.5 commits behind" and eligible to become `worst`).
+    if (
+      typeof comparison.ahead_by !== 'number' ||
+      !Number.isInteger(comparison.ahead_by) ||
+      comparison.ahead_by < 0
+    ) {
+      throw new Error(
+        `Compare response for #${pr.number} (${headSha}...${baseTipAtMerge}) did not include a valid ahead_by (non-negative integer expected, got ${JSON.stringify(comparison.ahead_by)}); refusing to guess whether it was up to date at merge.`,
+      );
+    }
+    const commitsBehind = comparison.ahead_by;
+
+    if (commitsBehind === 0) {
+      upToDate += 1;
+    } else {
+      behind += 1;
+      if (!worst || commitsBehind > worst.commits) {
+        worst = { number: pr.number, commits: commitsBehind };
+      }
+    }
+  }
+
+  return {
+    requested: pullRequests.length,
+    sampled: upToDate + behind,
+    upToDate,
+    behind,
+    unmeasured,
+    worst,
+  };
+}
+
+export function formatMergedAgainstBaseReading(reading) {
+  if (reading.requested === 0) {
+    return 'Merged-behind-base reading: no measurable merged pull requests were found in the sampled window.';
+  }
+  const worstText = reading.worst
+    ? ` (worst: #${reading.worst.number}, ${reading.worst.commits} commit${reading.worst.commits === 1 ? '' : 's'} behind)`
+    : '';
+  // Whenever any PR was excluded from measurement, that must appear in the
+  // same sentence as the split, not merely be inferable from `sampled` being
+  // smaller than `requested` -- a reader skimming for "clean" must not be
+  // able to miss it. This is what closes Hicks' "27 / 27 clean" finding: the
+  // denominator here is always the measured count, and an unmeasured clause
+  // is present whenever that count is not the full requested sample.
+  const unmeasuredText =
+    reading.unmeasured > 0
+      ? `; ${reading.unmeasured} of ${reading.requested} could not be measured (missing merge data)`
+      : '';
+  if (reading.sampled === 0) {
+    return `Merged-behind-base reading: none of the ${reading.requested} sampled merged pull requests could be measured (missing merge data).`;
+  }
+  return (
+    `Merged-behind-base reading (live, last ${reading.requested} merged pull requests): ` +
+    `up to date at merge ${reading.upToDate} / ${reading.sampled} measured, ` +
+    `merged behind base ${reading.behind} / ${reading.sampled} measured${worstText}${unmeasuredText}`
+  );
+}
+
 async function main() {
   const token = discoverToken(process.env);
   const repositoryName = discoverRepository(process.env);
@@ -775,6 +1302,22 @@ async function main() {
   console.log(
     `Linear-history enforcement: ${enforcement.required_linear_history.state} — ${enforcement.required_linear_history.why}`,
   );
+
+  // #490: derived fresh every run rather than transcribed once and left to go
+  // stale. A failure here does not fail the whole check -- the qualitative
+  // enforcement reading above does not depend on this number -- but it must
+  // not be silently skipped either, so a failure says so.
+  try {
+    const behindReading = await measureMergedAgainstBase({
+      repository,
+      token,
+    });
+    console.log(formatMergedAgainstBaseReading(behindReading));
+  } catch (error) {
+    console.log(
+      `Merged-behind-base reading: could not be measured this run (${error instanceof Error ? error.message : String(error)}).`,
+    );
+  }
 
   if (violations.length === 0) {
     console.log(
