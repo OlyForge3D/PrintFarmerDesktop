@@ -72,6 +72,7 @@
     "check:hold-gate-readiness": "node scripts/check-hold-gate-readiness.mjs",
     "check:squad-coverage": "node scripts/check-squad-coverage.mjs",
     "check:test-narrowing": "node scripts/check-test-narrowing.mjs",
+    "check:inert-class-field-seams": "node scripts/check-inert-class-field-seams.mjs",
     "census:ownership-evidence": "node scripts/census-ownership-evidence.mjs",
     "check:census-freshness": "node scripts/check-census-freshness.mjs",
     "review:target": "node scripts/prepare-review-target.mjs",

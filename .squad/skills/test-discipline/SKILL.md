@@ -5,6 +5,21 @@ description: What counts as an acceptable test change in PrintFarmer Desktop. Re
 
 # Test discipline
 
+## A comment claiming derivation is a testable claim, and only a counterfactual proves it
+
+A comment that says a value **derives itself** once some capability appears is a claim about a counterfactual — what happens when that capability is granted — not about the value's current, capability-absent contents. Asserting only the current state (`the array is empty`, `the handler refuses`) cannot distinguish a genuinely derived `[]` from a hard-coded `[]`: both produce identical output while the capability is absent, and no assertion over that state tells them apart.
+
+This is not hypothetical. Issue #270: `src/main/calibrationService.ts` replaced a hard-coded `[]` with a value advertised as derived from transport capability, with a comment promising both the advertiser and the executor would "switch on by themselves" once the capability appeared. Typecheck was clean, lint was clean, and every existing test was green — because every one of them asserted the capability-absent state, which a hard-coded literal satisfies exactly as well as a derivation does. The seam was inert: `useDefineForClassFields` (this project's ES2022 target) makes an optional class field emit an own `undefined` property on every instance, which shadows whatever a caller assigns to the prototype afterward, so the "derived" value could never actually turn on. **The fix was self-concealing in a way the hard-coded literal it replaced was not** — a stale literal is at least honest about being a literal.
+
+So: when you replace a literal with a derivation, or write a comment claiming a value activates itself once some condition holds, add a test **in the same commit** that:
+
+1. actually grants the capability/condition at runtime (patch the prototype, flip the flag, supply the dependency — whatever the comment says triggers the derivation), and
+2. asserts the derived behavior **changes** as a result, at every site the comment claims will change together.
+
+`tests/calibration.availability-negotiation.test.ts`'s `'the refusal is derived from the absent capability, not asserted'` block is the pattern to copy: it patches `SidecarCalibrationAdapter.prototype.resolveCalibrationConflict` at runtime and requires both `conflictResolutionsFor` and the resolve IPC handler to switch on together, restoring the prototype afterward so later tests are not left measuring an adapter that no longer exists in production. It also caught a _second_ hard-coded refusal the author's own comment claimed was derived — the counterfactual test does not just confirm the one site you were thinking about.
+
+When you cannot state which instrument would notice if the derivation were inert, say so plainly in the PR body. If the answer is "none," per issue #270's own conclusion, the change is not ready. `scripts/check-inert-class-field-seams.mjs` (`npm run check:inert-class-field-seams`, wired into `ci.yml`) catches the specific `useDefineForClassFields` shape of this defect mechanically; it cannot catch every way a derivation claim can be untested, which is why the counterfactual-test requirement above is the durable rule and the script is only one instrument for one recurring shape of it.
+
 ## Never weaken a test to make it pass
 
 Do not skip, delete, `#[ignore]`, loosen an assertion, or widen a tolerance to get green. If a test fails, either the production code is wrong or the test encodes a stale contract — establish which, and say which in the PR body.
