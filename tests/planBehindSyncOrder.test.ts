@@ -183,9 +183,7 @@ describe('planSyncOrder', () => {
     ]);
     expect(plans.size).toBe(2);
     expect(plans.get('development')?.next?.number).toBe(10);
-    expect(plans.get('development')?.queued.map((c) => c.number)).toEqual([
-      11,
-    ]);
+    expect(plans.get('development')?.queued.map((c) => c.number)).toEqual([11]);
     expect(plans.get('release/1.x')?.next?.number).toBe(99);
     expect(plans.get('release/1.x')?.queued).toEqual([]);
   });
@@ -289,7 +287,10 @@ describe('formatPlan', () => {
     // exact same "nothing to sync" as a genuinely clean one. Undetermined
     // must never read as all-clear.
     const text = formatPlan(new Map(), [
-      { number: 42, reason: 'base development could not be refreshed from origin.' },
+      {
+        number: 42,
+        reason: 'base development could not be refreshed from origin.',
+      },
     ]);
     expect(text).toContain('Could not determine BEHIND status');
     expect(text).toContain('#42');
@@ -616,8 +617,8 @@ describe('main', () => {
 
   it('surveys open PRs and reports the oldest BEHIND one to sync next', () => {
     vi.mocked(shaStatus.fetchPrHead).mockReturnValue('refs/tmp/head');
-    vi.mocked(shaStatus.resolveCommit).mockImplementation(
-      (rev: string) => (rev === 'refs/tmp/head' ? 'sha-current' : rev),
+    vi.mocked(shaStatus.resolveCommit).mockImplementation((rev: string) =>
+      rev === 'refs/tmp/head' ? 'sha-current' : rev,
     );
     vi.mocked(shaStatus.fetchBase).mockReturnValue({
       ref: 'refs/tmp/base',
@@ -655,18 +656,12 @@ describe('main', () => {
     };
 
     const logged: string[] = [];
-    const spy = vi
-      .spyOn(console, 'log')
-      .mockImplementation((msg: string) => {
-        logged.push(msg);
-      });
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
+      logged.push(msg);
+    });
     try {
       expect(
-        main(
-          [],
-          { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
-          run as never,
-        ),
+        main([], { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' }, run as never),
       ).toBe(0);
     } finally {
       spy.mockRestore();
@@ -686,18 +681,12 @@ describe('main', () => {
       return { status: 0, stdout: '', stderr: '' };
     };
     const logged: string[] = [];
-    const spy = vi
-      .spyOn(console, 'log')
-      .mockImplementation((msg: string) => {
-        logged.push(msg);
-      });
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
+      logged.push(msg);
+    });
     try {
       expect(
-        main(
-          [],
-          { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
-          run as never,
-        ),
+        main([], { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' }, run as never),
       ).toBe(0);
     } finally {
       spy.mockRestore();
@@ -739,18 +728,12 @@ describe('main', () => {
     };
 
     const logged: string[] = [];
-    const spy = vi
-      .spyOn(console, 'log')
-      .mockImplementation((msg: string) => {
-        logged.push(msg);
-      });
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
+      logged.push(msg);
+    });
     try {
       expect(
-        main(
-          [],
-          { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
-          run as never,
-        ),
+        main([], { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' }, run as never),
       ).toBe(0);
     } finally {
       spy.mockRestore();

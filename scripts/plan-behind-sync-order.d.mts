@@ -28,9 +28,7 @@ export function surveyBehindPrs(
   opts: { remote?: string },
   env?: NodeJS.ProcessEnv,
   run?: (...args: unknown[]) => unknown,
-):
-  | { candidates: BehindCandidate[]; skipped: SkippedPr[] }
-  | { error: string };
+): { candidates: BehindCandidate[]; skipped: SkippedPr[] } | { error: string };
 
 export function parseArgs(argv: readonly string[]): {
   remote?: string;
@@ -43,4 +41,3 @@ export function main(
   env?: NodeJS.ProcessEnv,
   run?: (...args: unknown[]) => unknown,
 ): number;
-
