@@ -13,7 +13,7 @@
  */
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { IpcChannel, CalibrationConflictKind } from '@shared/ipc';
+import { IpcChannel, type CalibrationConflictResolution } from '@shared/ipc';
 import {
   conflictResolutionsFor,
   SidecarCalibrationAdapter,
@@ -333,42 +333,54 @@ describe('Calibration conflict resolution negotiates on one capability', () => {
    * do not, "derived" was decoration.
    */
   describe('the refusal is derived from the absent capability, not asserted', () => {
+    // These no longer vary by kind: conflictResolutionsFor carries no per-kind
+    // policy (issue #304). It gates whatever resolutions the store already
+    // put on the wire, so the fixture list stands in for "whatever the store
+    // sent" rather than for any kind-specific table.
+    const SAMPLE_RESOLUTIONS: CalibrationConflictResolution[] = [
+      'acceptServer',
+      'keepLocalAsNewRevision',
+      'manualFieldMerge',
+    ];
+
     it('offers nothing while the transport has no resolve capability', () => {
       expect(supportsConflictResolution({})).toBe(false);
-      for (const kind of CalibrationConflictKind.options) {
-        expect(
-          conflictResolutionsFor({}, kind),
-          `${kind} advertised a resolution while no resolve capability exists`,
-        ).toEqual([]);
-      }
+      expect(
+        conflictResolutionsFor({}, SAMPLE_RESOLUTIONS),
+        'an incapable transport must report nothing, regardless of what the ' +
+          'store sent',
+      ).toEqual([]);
     });
 
-    it('offers resolutions as soon as a transport can resolve', () => {
+    it('offers exactly what it was given as soon as a transport can resolve', () => {
       const capable = {
         resolveCalibrationConflict: () => Promise.resolve(undefined),
       };
       expect(supportsConflictResolution(capable)).toBe(true);
-      for (const kind of CalibrationConflictKind.options) {
-        expect(
-          conflictResolutionsFor(capable, kind).length,
-          `${kind} still advertised nothing even though the transport can ` +
-            `resolve, so the empty result above proves nothing about derivation`,
-        ).toBeGreaterThan(0);
-      }
+      expect(
+        conflictResolutionsFor(capable, SAMPLE_RESOLUTIONS),
+        'a capable transport must pass the store-provided list through ' +
+          'unchanged -- this function has no policy of its own to apply',
+      ).toEqual(SAMPLE_RESOLUTIONS);
     });
 
-    it('restricts manualFieldMerge to the kinds the schema restricts it to', () => {
+    it('applies no per-kind opinion of its own, in either direction', () => {
+      // Issue #304's fix removed the second table rather than adding a test of
+      // it. What is left to prove is that this function cannot reintroduce
+      // one: whatever the store says is permitted for a kind -- including a
+      // set with no manualFieldMerge, or an unusual one with it -- must come
+      // back unfiltered given a capable transport.
       const capable = {
         resolveCalibrationConflict: () => Promise.resolve(undefined),
       };
-      const withMerge = CalibrationConflictKind.options.filter((kind) =>
-        conflictResolutionsFor(capable, kind).includes('manualFieldMerge'),
-      );
-      // Transcribed from the CalibrationConflictResolution schema doc, which
-      // limits manualFieldMerge to metadata/draft conflicts. Not a new policy.
-      // The *store* enforces this against the ratified table in sync.rs; this
-      // only checks what the UI is told it may offer.
-      expect(withMerge).toEqual(['projectMetadata', 'stepDraft']);
+      const noMerge: CalibrationConflictResolution[] = [
+        'acceptServer',
+        'keepLocalAsNewRevision',
+      ];
+      const onlyMerge: CalibrationConflictResolution[] = ['manualFieldMerge'];
+      expect(conflictResolutionsFor(capable, noMerge)).toEqual(noMerge);
+      expect(conflictResolutionsFor(capable, onlyMerge)).toEqual(onlyMerge);
+      expect(conflictResolutionsFor(capable, [])).toEqual([]);
     });
 
     it('stops refusing at the IPC boundary once the capability appears', async () => {

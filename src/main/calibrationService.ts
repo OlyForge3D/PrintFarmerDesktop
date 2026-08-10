@@ -29,6 +29,7 @@ import { ServerProfileService } from './serverProfiles.js';
 import type { SidecarClient } from './sidecar.js';
 import {
   CalibrationConflictKind as CalibrationConflictKindSchema,
+  CalibrationConflictResolution as CalibrationConflictResolutionSchema,
   type CalibrationConflict,
   type CalibrationConflictKind,
   type CalibrationConflictResolution,
@@ -141,6 +142,23 @@ const CalibrationConflictWire = z
      * fabricating one.
      */
     conflictKind: z.string().nullable().default(null),
+    /**
+     * The resolutions permitted for `conflictKind`, computed store-side by
+     * `CalibrationConflictKind::available_resolutions` in
+     * `native/model-core/src/sync.rs` -- the exact function the store
+     * enforces against when a resolution is actually requested (issue #304).
+     *
+     * `conflictResolutionsFor` reads this field rather than transcribing its
+     * own per-kind table: the store is the only place that policy is written
+     * down. `.default([])` covers a sidecar built before this field existed;
+     * the field is still required in the sense that matters -- there is no
+     * runtime fallback to a hard-coded table, only to the empty set, which is
+     * also what an unclassified conflict reports.
+     */
+    availableResolutions: z
+      .array(CalibrationConflictResolutionSchema)
+      .max(3)
+      .default([]),
   })
   .passthrough();
 
@@ -222,6 +240,16 @@ const CalibrationConflictResolutionWire = z
     createdAt: z.string(),
     revisionId: z.string().nullable().default(null),
     supersedesRevisionId: z.string().nullable().default(null),
+    /**
+     * The resolutions permitted for `kind`, per the same
+     * `available_resolutions()` this call was just checked against
+     * store-side (issue #304). See `CalibrationConflictWire.availableResolutions`
+     * for why this is read rather than re-derived.
+     */
+    availableResolutions: z
+      .array(CalibrationConflictResolutionSchema)
+      .max(3)
+      .default([]),
     supersededObservations: z.array(
       z.object({
         observationId: z.string(),
@@ -259,54 +287,38 @@ function summarizeConflictPayload(payload: unknown): string | null {
 }
 
 /**
- * Resolutions this build can actually execute for a conflict of `kind`.
+ * Resolutions this build can actually offer for a conflict, gated on whether
+ * the transport can execute one at all.
  *
- * Derived from two facts. Neither is a literal written into this function:
+ * This function carries no per-kind policy (issue #304). It used to: a
+ * hard-coded table here transcribed `manualFieldMerge` is "only available for
+ * metadata/draft conflicts" from the `CalibrationConflictResolution` schema
+ * doc, and that table agreed with the one the store enforces
+ * (`CalibrationConflictKind::available_resolutions` in
+ * `native/model-core/src/sync.rs`) only because two authors were careful.
+ * Nothing failed when they diverged, because each side was individually
+ * self-consistent -- see `tests/calibrationResolutionPolicyParity.test.ts` for
+ * how that was made to fail instead, before this function stopped needing a
+ * counterpart to compare against.
  *
- * 1. Whether the conflict transport exposes a resolve capability at all.
- *    `SidecarCalibrationAdapter` now has one (#296), so for that transport this
- *    returns the table below rather than `[]` -- and it does so *because the
- *    capability is present*, not because somebody edited this function. A
- *    transport without the method still gets `[]`.
- * 2. The per-kind policy already ratified in the `CalibrationConflictResolution`
- *    schema doc: `manualFieldMerge` is "only available for metadata/draft
- *    conflicts where a textual merge is well-defined. Not available for
- *    measurements, exact profile JSON, or outcome selections." That is
- *    transcribed here, not authored. This function sets no new policy about
- *    what is semantically safe to resolve; that decision belongs in an issue
- *    where the model-core owner can see it, not in a diff.
- *
- * The capability half worked exactly as designed: #296 gave the adapter a
- * `resolveCalibrationConflict` method, and this function started returning
- * resolutions with neither call site edited. **What went stale was the comment
- * that used to stand here**, which described the pre-#296 state in the present
- * tense -- "today it does not, so this returns `[]` for every kind". The
- * self-activating value could not go stale; the prose asserting that it could
- * not, did. A correct design documented in a tense that expires reads as
- * current, because the design it describes really is still working.
- *
- * The transcription half of point 2 is the part with no such protection, and it
- * is why `tests/calibrationResolutionPolicyParity.test.ts` exists. The same
- * policy is enforced by `CalibrationConflictKind::available_resolutions` in
- * `native/model-core/src/sync.rs`, which is what
- * `sqlite_catalog.rs` rejects against. Two transcriptions of one ratified
- * policy across a language boundary agreed only because two authors were
- * careful (#304). **Editing the branch below without editing the Rust table
- * now fails that test**, in both directions: over-advertising offers the user a
- * button the store rejects, and under-advertising hides a permitted resolution
- * with no error at all.
+ * The fix is not a synchronous query back to the store -- `conflictResolutionsFor`
+ * has to answer while the IPC payload is still being built, and adding a
+ * round trip there was the one option not on the table. Instead, the store
+ * now sends the answer on the wire it was already sending: both
+ * `CalibrationConflictWire` and `CalibrationConflictResolutionWire` carry an
+ * `availableResolutions` field populated from `available_resolutions()` and
+ * nothing else (`calibration_conflict_from_row` and
+ * `resolve_calibration_conflict` in `sqlite_catalog.rs`). This function's only
+ * remaining job is the one thing the store cannot know: whether *this*
+ * transport is wired up to resolve anything at all. A transport without
+ * `resolveCalibrationConflict` gets `[]` regardless of what the store would
+ * have permitted, because there is no button here to offer.
  */
 export function conflictResolutionsFor(
   transport: ConflictResolutionCapable,
-  kind: CalibrationConflictKind,
+  resolutions: readonly CalibrationConflictResolution[],
 ): CalibrationConflictResolution[] {
-  if (!supportsConflictResolution(transport)) {
-    return [];
-  }
-  const textuallyMergeable = kind === 'projectMetadata' || kind === 'stepDraft';
-  return textuallyMergeable
-    ? ['acceptServer', 'keepLocalAsNewRevision', 'manualFieldMerge']
-    : ['acceptServer', 'keepLocalAsNewRevision'];
+  return supportsConflictResolution(transport) ? [...resolutions] : [];
 }
 
 /** Anything that may one day carry an authoritative conflict resolve call. */
@@ -429,7 +441,10 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         localPayloadSummary: null,
         serverPayloadSummary: null,
         serverRevision: 0,
-        availableResolutions: conflictResolutionsFor(this, parsed.kind),
+        availableResolutions: conflictResolutionsFor(
+          this,
+          parsed.availableResolutions,
+        ),
         resolvedAt: resolvedAtIso,
         resolution: parsed.resolution,
         // The instant the conflict was detected, read back from the store's
@@ -597,7 +612,10 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         localPayloadSummary: summarizeConflictPayload(parsed.localPayload),
         serverPayloadSummary: summarizeConflictPayload(parsed.serverPayload),
         serverRevision: parsed.serverRevision,
-        availableResolutions: conflictResolutionsFor(this, kind),
+        availableResolutions: conflictResolutionsFor(
+          this,
+          parsed.availableResolutions,
+        ),
         createdAt: sidecarTimestampToIso(parsed.createdAt, 'createdAt'),
         resolution: null,
         resolvedAt: null,

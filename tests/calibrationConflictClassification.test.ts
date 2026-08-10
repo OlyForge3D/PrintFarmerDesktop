@@ -12,18 +12,18 @@
  * returned list rather than advertised under a fabricated kind.
  *
  * These tests assert against the real adapter and a real transport. Nothing
- * here restates the policy table: the permitted-set expectations are derived
- * by calling `conflictResolutionsFor`, the same function the adapter uses, so
- * a legitimate policy change moves both sides together and this file keeps
- * checking the property it names -- that only a classified conflict is
- * advertised, and it is advertised under the kind the store actually recorded.
+ * here restates the store's resolution policy: the wire fixture below
+ * supplies `availableResolutions` the way the real store would (issue #304 --
+ * the store is now the only place that table exists), and these tests check
+ * only the property they name -- that only a classified conflict is
+ * advertised, under the kind the store actually recorded, with whatever
+ * resolutions the wire said and nothing else.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import {
   SidecarCalibrationAdapter,
-  conflictResolutionsFor,
   mapCalibrationConflictKind,
   supportsConflictResolution,
 } from '../src/main/calibrationService.js';
@@ -49,19 +49,43 @@ const UNMAPPED_ENTITY_TYPES = [
 ] as const;
 
 /**
+ * Stands in for what `CalibrationConflictKind::available_resolutions`
+ * (`native/model-core/src/sync.rs`) would put on the wire for each kind
+ * `MAPPED_ENTITY_TYPES` classifies to. This is a test fixture, not a second
+ * copy of the store's policy: nothing in `src/main/` reads this map, it only
+ * shapes the fake sidecar response these tests feed to the real adapter, and
+ * the adapter's job under test is to pass it through unchanged, not to know
+ * what belongs in it.
+ */
+const WIRE_RESOLUTIONS_BY_KIND: Record<string, string[]> = {
+  projectMetadata: [
+    'acceptServer',
+    'keepLocalAsNewRevision',
+    'manualFieldMerge',
+  ],
+  stepDraft: ['acceptServer', 'keepLocalAsNewRevision', 'manualFieldMerge'],
+  outcomeSelection: ['acceptServer', 'keepLocalAsNewRevision'],
+  staleprinterSnapshot: ['acceptServer', 'keepLocalAsNewRevision'],
+};
+
+/**
  * Builds a wire-shaped conflict row the way the store now produces one:
  * `entityType` carries the entity type, `conflictKind` carries whatever was
  * classified (and persisted) for it at record time -- `null` when
  * `mapCalibrationConflictKind` returned `null`, exactly mirroring what
- * `record_calibration_conflict` would have stored.
+ * `record_calibration_conflict` would have stored -- and `availableResolutions`
+ * carries the fixture policy for that kind, mirroring what
+ * `calibration_conflict_from_row` would have computed from it.
  */
 function conflictRow(entityType: string): Record<string, unknown> {
+  const kind = mapCalibrationConflictKind(entityType);
   return {
     conflictId: `conflict-${entityType}`,
     profileId: 'profile-1',
     projectId: 'project-1',
     entityType,
-    conflictKind: mapCalibrationConflictKind(entityType),
+    conflictKind: kind,
+    availableResolutions: kind ? WIRE_RESOLUTIONS_BY_KIND[kind] : [],
     entityId: `entity-${entityType}`,
     operationId: null,
     localPayload: { displayName: 'local' },
@@ -154,15 +178,12 @@ describe('#365 conflict_kind, not entity_type, is the source of the listed kind'
     // breaking listing entirely.
     expect(supportsConflictResolution(adapter)).toBe(true);
     for (const conflict of conflicts) {
-      const expected = conflictResolutionsFor(
-        { resolveCalibrationConflict: () => undefined },
-        conflict.kind,
-      );
-      expect(expected.length).toBeGreaterThan(0);
+      const expected = WIRE_RESOLUTIONS_BY_KIND[conflict.kind];
+      expect(expected?.length).toBeGreaterThan(0);
       expect(
         conflict.availableResolutions,
-        `${conflict.entityId} is classifiable, so it must advertise the ` +
-          `policy's set for ${conflict.kind}`,
+        `${conflict.entityId} is classifiable, so it must advertise exactly ` +
+          `what the store sent for ${conflict.kind}, unfiltered`,
       ).toEqual(expected);
     }
   });

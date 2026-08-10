@@ -3643,6 +3643,7 @@ impl CatalogStore for SqliteCatalog {
                 supersedes_revision_id,
                 superseded_observations,
                 replayed: true,
+                available_resolutions: kind.available_resolutions().to_vec(),
             });
         }
 
@@ -3765,6 +3766,7 @@ impl CatalogStore for SqliteCatalog {
             supersedes_revision_id,
             superseded_observations,
             replayed: false,
+            available_resolutions: kind.available_resolutions().to_vec(),
         })
     }
 
@@ -4451,6 +4453,14 @@ fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationC
         conflict_kind_raw.as_deref().and_then(|value| {
             serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
         });
+    // Derived from `conflict_kind` via the same function the store enforces
+    // against (`available_resolutions`, `sync.rs`), never a second table
+    // (issue #304). Unclassified rows report no resolutions: they have no
+    // ratified policy to advertise, and the store already refuses to resolve
+    // them (`CALIBRATION_CONFLICT_KIND_UNCLASSIFIED`).
+    let available_resolutions = conflict_kind
+        .map(|kind| kind.available_resolutions().to_vec())
+        .unwrap_or_default();
     Ok(CalibrationConflictDto {
         conflict_id: row.get(0)?,
         profile_id: row.get(1)?,
@@ -4463,6 +4473,7 @@ fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationC
         server_revision: row.get(8)?,
         created_at: row.get(9)?,
         conflict_kind,
+        available_resolutions,
     })
 }
 
@@ -6713,6 +6724,99 @@ mod tests {
                  CalibrationConflictKind; the two vocabularies must stay disjoint"
             );
         }
+    }
+
+    /// Issue #304: the per-kind resolution policy used to be transcribed a
+    /// second time in TypeScript (`conflictResolutionsFor` in
+    /// `src/main/calibrationService.ts`), and nothing failed when the two
+    /// tables disagreed. The fix removed the second table rather than adding
+    /// a second test of it: both DTOs that leave the store now carry an
+    /// `available_resolutions` field populated by calling
+    /// `CalibrationConflictKind::available_resolutions` -- the exact function
+    /// `resolve_calibration_conflict` enforces against -- and nothing else.
+    ///
+    /// This is the guard against the realistic way that could still drift: a
+    /// future edit at either DTO-construction site
+    /// (`calibration_conflict_from_row`, or either `Ok(CalibrationConflictResolutionDto`
+    /// in `resolve_calibration_conflict`) hand-writing its own list instead of
+    /// calling the shared function. Exercised through the real list and
+    /// resolve code paths -- not by calling `available_resolutions()` twice --
+    /// so a hand-written literal at the DTO site is what this test would
+    /// catch; a legitimate policy change edits `available_resolutions()` once
+    /// and every assertion here moves with it, which is why this test has no
+    /// opinion about what the policy *should* be.
+    #[test]
+    fn wire_available_resolutions_is_never_anything_but_the_ratified_policy() {
+        use CalibrationConflictKind::*;
+
+        let all_kinds = [
+            ProjectMetadata,
+            StepOrdering,
+            StepDraft,
+            OutcomeSelection,
+            StalePrinterSnapshot,
+            DeletionVsLocalEdit,
+        ];
+
+        for kind in all_kinds {
+            let mut store = SqliteCatalog::open_in_memory().unwrap();
+            let conflict_id = seed_conflict(&mut store, Some(kind), 9);
+
+            // The list path (`listCalibrationConflicts` -> CalibrationConflictDto).
+            let listed = store
+                .list_calibration_conflicts("profile-1", Some("project-1"))
+                .unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(
+                listed[0].available_resolutions,
+                kind.available_resolutions(),
+                "{kind:?}: the list DTO's available_resolutions must be exactly \
+                 what the store enforces -- a second, hand-written list here is \
+                 the defect issue #304 removed"
+            );
+
+            // The resolve path (`resolveCalibrationConflict` ->
+            // CalibrationConflictResolutionDto), using whichever resolution this
+            // kind actually permits so the call succeeds.
+            let permitted = kind
+                .available_resolutions()
+                .first()
+                .copied()
+                .expect("every kind permits at least one resolution");
+            let resolved = store
+                .resolve_calibration_conflict(&resolve_params(&conflict_id, permitted))
+                .unwrap();
+            assert_eq!(
+                resolved.available_resolutions,
+                kind.available_resolutions(),
+                "{kind:?}: the resolution DTO's available_resolutions must be \
+                 exactly what the store enforces"
+            );
+        }
+    }
+
+    /// An unclassified conflict (`conflict_kind` is `None`) has no ratified
+    /// policy to advertise, so the wire field must be empty rather than
+    /// guessed from `entity_type` -- the same discipline issue #219 applied to
+    /// `kind` itself.
+    #[test]
+    fn wire_available_resolutions_is_empty_for_an_unclassified_conflict() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        seed_conflict(&mut store, None, 9);
+
+        let listed = store
+            .list_calibration_conflicts("profile-1", Some("project-1"))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].conflict_kind, None,
+            "fixture sanity: this conflict must actually be unclassified"
+        );
+        assert!(
+            listed[0].available_resolutions.is_empty(),
+            "an unclassified conflict must advertise no resolutions, not a \
+             guessed set"
+        );
     }
 
     #[test]
