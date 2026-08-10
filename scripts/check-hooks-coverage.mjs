@@ -4,7 +4,11 @@
 // population those reports were supposed to cover. `hooks:verify` — the
 // existing `--verify` flag on install-git-hooks.mjs — reads `process.cwd()`,
 // so it only ever answers for the worktree the operator happens to be
-// standing in. Nothing invokes it, and nothing asks the coverage question at
+// standing in. At the time #382 was filed nothing invoked it at all (a
+// repo-wide search found only its own package.json definition and prose);
+// `npm run hooks:verify` is now a CI step in ci.yml's `desktop` job, so it is
+// exercised on every push, but that only ever answers for the single
+// worktree a CI runner checks out. Nothing asked the coverage question at
 // all: `grep 'worktree list' scripts/ tests/` was zero hits before this file.
 //
 // THIS SCRIPT is the coverage question: enumerate EVERY worktree of the
