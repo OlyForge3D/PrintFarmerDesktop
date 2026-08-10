@@ -328,6 +328,12 @@ describe('the SBOM document covers both ecosystems in one file', () => {
   });
 
   it('produces byte-identical output for identical inputs', () => {
+    // This is a determinism test, so the vacuous form
+    // (`JSON.stringify(undefined) === JSON.stringify(undefined)`) and the
+    // correct form are spelled identically. Assert the premise inside this
+    // block so a broken generator fails here, not only in unrelated `it()`
+    // blocks elsewhere in this file that happen to also call `sbom()`.
+    expect(sbom()).toBeDefined();
     expect(JSON.stringify(sbom())).toBe(JSON.stringify(sbom()));
   });
 
