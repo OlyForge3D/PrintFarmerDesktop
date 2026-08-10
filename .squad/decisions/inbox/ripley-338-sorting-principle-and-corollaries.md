@@ -1,11 +1,11 @@
 # The sorting principle: absence invites a second look, success ends the investigation
 
 **By:** Ripley — split out of #214 at Ripley's own request. #214 is "commands that
-answer a neighbouring question": a defect *class*, keyed to which predicate was
+answer a neighbouring question": a defect _class_, keyed to which predicate was
 run. The instances below are not command defects — they cover a label, a
 configuration read, a broadcast form, a bucket name, and a retraction's grammar.
 Filed under #214's heading they read as N more rows in that table; filed here
-they are the principle that explains *why* that whole table, and several others
+they are the principle that explains _why_ that whole table, and several others
 in this squad's doctrine, keep collecting new rows instead of emptying out.
 
 ## The principle
@@ -18,7 +18,7 @@ this doctrine has filed under #214, #253, #305, #307, #516, and the four
 corollaries below is an instance of a result that was well-formed, plausible,
 and unaudited. This is the reason a catalogue of "commands that lie" never
 converges: the fix for each row is a smarter predicate, but the sorting rule
-that decides which rows *get written* is upstream of any of them — it is
+that decides which rows _get written_ is upstream of any of them — it is
 whichever result looked done.
 
 ## Corollary 1 — the mute corollary
@@ -77,7 +77,7 @@ published to date was void rather than merely wrong.
 
 > **Two aggregates over disjoint populations yield a difference that is
 > arithmetically valid and semantically empty.** `COUNT` and `MAX` are total
-> functions — they return a comparable number for *any* two sets, including
+> functions — they return a comparable number for _any_ two sets, including
 > unrelated ones, and **cannot report that their operands describe different
 > objects. Only a join can fail, and a join is the one thing nobody ran.**
 
@@ -92,8 +92,8 @@ that could fail, rather than only the aggregate that cannot.
 ## Corollary 4 — the form a declination must take
 
 > **A declination is a second reading only when it names what was read.**
-> *"I did not do X"* is nothing; *"I did not do X because the ref resolved to a
-> different SHA"* is a measurement.
+> _"I did not do X"_ is nothing; _"I did not do X because the ref resolved to a
+> different SHA"_ is a measurement.
 
 Without the qualifier, every "I didn't touch it" becomes admissible as
 evidence — **a null result dressed as a control**, which is the class this
@@ -123,28 +123,28 @@ The requested window (declared instances 22-37) resolved by URL — 16 declared,
 13 unique comments, 3 ambiguous (a declared number pointing at two different
 URLs):
 
-| # | comment |
-|---|---|
-| 22, 23 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174340271 |
-| 24 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174371096 |
-| 25 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174390337 |
-| 26, 27 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174424008 |
-| 28 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174437045 |
-| 29 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174452224 |
+| #                     | comment                                                                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 22, 23                | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174340271                                                                                       |
+| 24                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174371096                                                                                       |
+| 25                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174390337                                                                                       |
+| 26, 27                | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174424008                                                                                       |
+| 28                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174437045                                                                                       |
+| 29                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174452224                                                                                       |
 | **30 — AMBIGUOUS x2** | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174478494 · https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174702762 |
-| 31, 32 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174492691 |
+| 31, 32                | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174492691                                                                                       |
 | **33 — AMBIGUOUS x2** | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174504831 · https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174610471 |
-| 34 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174520687 |
+| 34                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174520687                                                                                       |
 | **35 — AMBIGUOUS x2** | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174532398 · https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174610471 |
-| 36 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174548537 |
-| 37 | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174559883 |
+| 36                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174548537                                                                                       |
+| 37                    | https://github.com/OlyForge3D/PrintFarmerDesktop/issues/214#issuecomment-5174559883                                                                                       |
 
 **Representative members, each a well-formed-but-wrong result that ended its
 own investigation:**
 
 - **`CORRECTION` as a trust-bearing label.** A correction inherits the trust
   earned by the act of correcting and spends it on its own new, unverified
-  values. The label signals *already verified*, which is exactly the signal
+  values. The label signals _already verified_, which is exactly the signal
   that stops the recipient verifying it themselves.
 - **Branch protection read as weak rather than unset.**
   `required_approving_review_count = 0` is not a protection that exists but
