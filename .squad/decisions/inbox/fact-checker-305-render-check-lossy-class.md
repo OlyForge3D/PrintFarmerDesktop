@@ -26,13 +26,13 @@ that is, in each case below, entirely present in data already fetched.
 
 ## The five instances (no new member; every one already owned)
 
-| Instance | Collapsed distinction | Owner |
-| --- | --- | --- |
-| Abbreviated SHA | The displayed prefix is the part that was right; a divergence lives in the digits nobody renders | #210 |
-| `mergeable` | REST boolean vs. GraphQL enum — every enum member (`CONFLICTING`, `UNKNOWN`, ...) is a non-empty string, so all read truthy | #288 |
-| Re-run logs | `gh run view --log --job <id>` serves the **latest attempt's** log for an id that names an earlier one | #261 |
-| `review.state` | `COMMENTED` is the only state a same-account reviewer can land, so praise, a blocker, and a clearance are one value | #280 |
-| `conclusion: null` | *in progress*, *queued*, and *never scheduled* all render as an empty cell | recorded on #214's thread |
+| Instance           | Collapsed distinction                                                                                                       | Owner                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| Abbreviated SHA    | The displayed prefix is the part that was right; a divergence lives in the digits nobody renders                            | #210                      |
+| `mergeable`        | REST boolean vs. GraphQL enum — every enum member (`CONFLICTING`, `UNKNOWN`, ...) is a non-empty string, so all read truthy | #288                      |
+| Re-run logs        | `gh run view --log --job <id>` serves the **latest attempt's** log for an id that names an earlier one                      | #261                      |
+| `review.state`     | `COMMENTED` is the only state a same-account reviewer can land, so praise, a blocker, and a clearance are one value         | #280                      |
+| `conclusion: null` | _in progress_, _queued_, and _never scheduled_ all render as an empty cell                                                  | recorded on #214's thread |
 
 Confirmed closed via `gh issue view`: #210, #261, #280, #288, #214. This
 issue adds no sixth member and does not reopen any of the five.
@@ -47,8 +47,8 @@ Measured on #272: attempt 1 (`92017658599`) FAILURE, attempt 2
 (`92021803750`) SUCCESS, and the commit's check-runs filtered to failures
 returned 0. The red run was not deleted — `GET /actions/jobs/92017658599`
 still resolves it — it was **orphaned**: retrievable, but no longer
-reachable from the commit. This is the *conclusion*-side twin of #261's
-*log*-side finding; same cause, different surface, not claimed as a
+reachable from the commit. This is the _conclusion_-side twin of #261's
+_log_-side finding; same cause, different surface, not claimed as a
 separate member.
 
 ## The test
@@ -67,8 +67,8 @@ scratch:
    truthiness test over a string enum is always wrong and always looks
    right — this is exactly #288's `mergeable` defect.
 3. **Does the identifier I quoted select the thing I read, or something
-   that merely resembles it?** A stale SHA is *absent* and says so; a stale
-   line number or a re-run job id *resolves* and returns different content
+   that merely resembles it?** A stale SHA is _absent_ and says so; a stale
+   line number or a re-run job id _resolves_ and returns different content
    with no error. Absence is a safe failure; silent substitution is not.
 
 ## Falsifier

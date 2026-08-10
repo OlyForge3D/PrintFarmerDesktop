@@ -333,8 +333,8 @@ separate instrument bug — an abbreviated SHA (#210), the REST/GraphQL
 serving the latest re-run's log for an id naming an earlier one (#261), and
 `review.state` collapsing praise, a blocker, and a clearance into the one
 state (`COMMENTED`) a same-account reviewer can land (#280) — plus
-`conclusion: null` collapsing *in progress*, *queued*, and *never
-scheduled* into one empty cell (on #214's thread). None generalized, so the
+`conclusion: null` collapsing _in progress_, _queued_, and _never
+scheduled_ into one empty cell (on #214's thread). None generalized, so the
 same shape was re-derived from scratch five times. It is **not** #214/#253
 (`.squad/known-lying-commands.md`): those are instruments answering a
 neighbouring question with a different command required to fix them; here
