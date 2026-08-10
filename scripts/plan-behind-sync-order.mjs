@@ -212,6 +212,16 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
     return { error: 'could not resolve the repository.' };
   }
 
+  // `gh pr list` returns at most PR_LIST_LIMIT results with no indication of
+  // whether more exist -- if the open PR count happens to equal the limit
+  // exactly, that looks identical to "these are all of them" (Hicks, pre-PR
+  // review round 4: a real open-PR count above this cap would silently
+  // survey only part of the set, and the "next to sync" recommendation would
+  // be about that partial view, not the true set of open PRs). Detecting
+  // that the result is exactly PR_LIST_LIMIT long and erroring rather than
+  // proceeding keeps this the same shape as every other undetermined case in
+  // this module: report "cannot tell", never guess.
+  const PR_LIST_LIMIT = 200;
   const list = runGh(
     run,
     [
@@ -224,7 +234,7 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
       '--json',
       'number,createdAt,baseRefName,headRefOid',
       '--limit',
-      '200',
+      String(PR_LIST_LIMIT),
     ],
     { ...env, GH_TOKEN: token },
   );
@@ -239,6 +249,15 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
     prs = JSON.parse(list.stdout);
   } catch {
     return { error: 'could not parse gh pr list output.' };
+  }
+  if (prs.length === PR_LIST_LIMIT) {
+    return {
+      error:
+        `gh pr list returned exactly the --limit ${PR_LIST_LIMIT} cap, so this ` +
+        'repository may have more open pull requests than were surveyed. ' +
+        'Refusing to recommend a next PR to sync from a possibly-partial view ' +
+        'of the open set.',
+    };
   }
   if (prs.length === 0) {
     return { candidates: [], skipped: [] };

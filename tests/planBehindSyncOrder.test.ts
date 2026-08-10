@@ -499,6 +499,78 @@ describe('surveyBehindPrs', () => {
     expect(ancestorCalls).toContainEqual(['development-sha', 'refs/tmp/head']);
     expect(ancestorCalls).toContainEqual(['release-sha', 'refs/tmp/head']);
   });
+
+  it('errors rather than silently surveying a partial set when gh pr list hits its --limit cap', () => {
+    // Hicks, pre-PR review round 4: gh pr list --limit 200 returns at most
+    // 200 results with no signal about whether more open PRs exist. If the
+    // real open-PR count happens to be >= 200, a survey that trusted exactly
+    // 200 results as "all of them" would recommend a next-to-sync PR based on
+    // a possibly-partial view -- the same "undetermined read as measured"
+    // shape this whole module exists to avoid, just at the list-fetch layer
+    // instead of the per-PR layer.
+    const run = (
+      _command: string,
+      args: readonly string[],
+    ): { status: number; stdout: string; stderr: string } => {
+      if (args.includes('list')) {
+        const prs = Array.from({ length: 200 }, (_, i) => ({
+          number: i + 1,
+          createdAt: '2026-08-04T09:00:00Z',
+          baseRefName: 'development',
+          headRefOid: 'sha-current',
+        }));
+        return { status: 0, stdout: JSON.stringify(prs), stderr: '' };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    };
+
+    const survey = surveyBehindPrs(
+      {},
+      { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
+      run as never,
+    );
+    expect('error' in survey).toBe(true);
+    if (!('error' in survey)) return;
+    expect(survey.error).toContain('--limit 200');
+  });
+
+  it('surveys normally when the open PR count is comfortably under the --limit cap', () => {
+    vi.mocked(shaStatus.fetchBase).mockReturnValue({
+      ref: 'refs/tmp/sha-status/base',
+      fresh: true,
+      refreshable: true,
+    });
+    vi.mocked(shaStatus.resolveCommit).mockImplementation((rev: string) =>
+      rev === 'refs/tmp/sha-status/base' ? 'base-sha' : 'sha-current',
+    );
+    vi.mocked(shaStatus.fetchPrHead).mockReturnValue('refs/tmp/head');
+    vi.mocked(shaStatus.isAncestor).mockReturnValue(true);
+
+    const run = (
+      _command: string,
+      args: readonly string[],
+    ): { status: number; stdout: string; stderr: string } => {
+      if (args.includes('list')) {
+        const prs = Array.from({ length: 199 }, (_, i) => ({
+          number: i + 1,
+          createdAt: '2026-08-04T09:00:00Z',
+          baseRefName: 'development',
+          headRefOid: 'sha-current',
+        }));
+        return { status: 0, stdout: JSON.stringify(prs), stderr: '' };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    };
+
+    const survey = surveyBehindPrs(
+      {},
+      { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
+      run as never,
+    );
+    expect('error' in survey).toBe(false);
+    if ('error' in survey) return;
+    expect(survey.candidates).toHaveLength(199);
+  });
 });
 
 describe('main', () => {
