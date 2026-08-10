@@ -324,6 +324,37 @@ queue, CI dashboard, epic tracker, backlog snapshot — live here.
 protocol asked; the failures are structural, not diligence failures, which is
 why "measure more carefully" is not being proposed as a fix here either.
 
+## A rendered value is not the value that was checked
+
+**This applies to any instrument, not only the five already found.** #305
+is a class statement over four closed issues that were each fixed as a
+separate instrument bug — an abbreviated SHA (#210), the REST/GraphQL
+`mergeable` boolean-vs-enum split (#288), `gh run view --log --job <id>`
+serving the latest re-run's log for an id naming an earlier one (#261), and
+`review.state` collapsing praise, a blocker, and a clearance into the one
+state (`COMMENTED`) a same-account reviewer can land (#280) — plus
+`conclusion: null` collapsing *in progress*, *queued*, and *never
+scheduled* into one empty cell (on #214's thread). None generalized, so the
+same shape was re-derived from scratch five times. It is **not** #214/#253
+(`.squad/known-lying-commands.md`): those are instruments answering a
+neighbouring question with a different command required to fix them; here
+the instrument answers the right question and its **display** is lossy —
+fixed by rendering a different projection of data already fetched, never by
+a different command. Before trusting or shipping a new instrument, ask:
+
+1. **How many distinct underlying values map to what I am looking at?**
+   Name them if more than one.
+2. **Is the type I am branching on the type the API documents?** A
+   truthiness test over a string enum is always wrong and always looks
+   right.
+3. **Does the identifier I quoted select the thing I read, or something
+   that merely resembles it?** A stale SHA is absent and says so; a stale
+   line number or re-run job id resolves and returns different content with
+   no error — absence is a safe failure, silent substitution is not.
+
+Full class statement, the five-instance table, and the falsifier:
+`.squad/decisions/inbox/fact-checker-305-render-check-lossy-class.md`.
+
 ## Rejected commit revisions stay with their owner
 
 The rejection-lockout rule (requiring a _different_ author to revise rejected work) was **dismissed on 2026-07-24**. When a reviewer rejects a commit revision, its branch owner fixes it. Do not infer that owner from an issue or comment author field, and do not rotate the revision.
