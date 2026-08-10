@@ -429,23 +429,38 @@ function adminExemptionReading({
  *
  * The assumption check above asserts `strict === true` and names the consequence of
  * its absence as "a PR can merge against a trunk it was never tested against."
- * Measured over the thirty most recently merged pull requests, that consequence
- * occurs anyway:
- *
- *   up to date at merge   15 / 30
- *   merged behind base    15 / 30      worst: #366, seventy commits behind
- *
- * So the assertion passes while the harm it names happens in half of all merges.
+ * That consequence occurs anyway, because `enforce_admins: false` exempts the
+ * only account that can merge from the check `strict` performs. So the
+ * assertion passes while the harm it names remains possible on every merge.
  * That is not an argument for turning `enforce_admins` on — #111 declined it
  * correctly, because the only admin is the only merger and enforcing it would
  * deadlock the repository. It is an argument for saying out loud which of these
  * settings is load-bearing, so that no other control is written on the assumption
  * that a merged PR was tested against the trunk it landed on.
  *
+ * #490: two earlier versions of this comment transcribed how often that harm
+ * actually occurs -- first as "15/30, worst #366 seventy commits behind", then
+ * (in review of the first fix) as "28/2" -- as prose inside this file, with
+ * nothing that re-derives the figure. Both were unfalsifiable the same way:
+ * the test suite below exercises this function against a hand-written fixture
+ * and never reads a pull request, so neither number had a falsifier, and each
+ * was independently found to already be wrong when someone bothered to
+ * recompute it. `measureMergedAgainstBase`, below, is the fix: it queries the
+ * API for the N most recently merged pull requests against `base` and, for
+ * each one, compares the merge commit's first parent (the trunk tip immediately
+ * before that merge) against the PR's own head commit, so "up to date" and
+ * "commits behind" are counted the same way every run rather than remembered
+ * from one. `main()` calls it and prints the result on every run, so the
+ * figure is always current and this file never again states a number about
+ * the past that nothing recomputes.
+ *
  * This is reported rather than failed. The state below is the permanent and correct
  * one, and a check that fails on the correct state teaches its reader to ignore it.
- * What binds it is the test suite: if the pair ever changes, this reading changes
- * with it, so the claim cannot quietly outlive the facts it rests on.
+ * What binds it is the test suite: if the `strict` / `enforce_admins` pair ever
+ * changes, this reading changes with it, so the qualitative claim above cannot
+ * quietly outlive the facts it rests on. The merged-behind-base rate is bound
+ * the same way `measureMergedAgainstBase` is bound: by unit tests against a
+ * fake API response, not by a number transcribed into this comment.
  *
  * `strict` was the only setting read this way until #489: `enforce_admins: false`
  * exempts administrators from `allow_force_pushes`, `allow_deletions` and
@@ -679,6 +694,318 @@ export async function fetchRepositoryFacts({
   };
 }
 
+/**
+ * The N most recently merged pull requests targeting `base`, by `merged_at`
+ * -- not by list order, because `/pulls?sort=updated` and merge order are not
+ * the same thing, and silently trusting page order here would reintroduce
+ * exactly the kind of unverified-by-construction reading #490 is about.
+ *
+ * GitHub does not offer "list merged PRs sorted by merged_at" directly, and
+ * `sort=updated` is not a proxy for it: an old merged PR can receive a new
+ * comment and jump to the front of that ordering while a more recently
+ * merged PR with no further activity sits behind it. That makes any
+ * count-based early stop -- "stop once N*2 merged PRs have been seen" --
+ * unsound: a later page can still hold a more recently merged PR than an
+ * earlier one, so stopping before the true last page can return the wrong
+ * sample and therefore the wrong split. This was exactly Hicks' finding
+ * against the first version of this function in review of #490.
+ *
+ * So this pages through every closed PR (both merged and unmerged closes)
+ * until the API itself reports there is nothing left to page -- a batch
+ * shorter than `perPage` -- and only then sorts the merged ones by
+ * `merged_at` and truncates to `sampleSize`. `maxPages` is a safety bound
+ * against paging forever, and it must never become a second, silent
+ * correctness mechanism: reaching it before a genuinely partial page has
+ * been seen means an unknown number of closed PRs -- possibly including
+ * more recently merged, more-behind ones -- were never looked at. Returning
+ * whatever was gathered so far in that case would print a plausible-looking
+ * split while silently excluding the very PRs that could change it: an "all
+ * clear" that is not actually all clear. This was Vasquez's finding against
+ * the second version of this function in review of #490 (reviewing the
+ * pagination fix that itself answered Hicks' first pagination finding) --
+ * so hitting `maxPages` without a genuine last page throws instead of
+ * returning a truncated-but-silent sample; the caller already surfaces that
+ * as an honest "could not be measured" rather than a wrong number.
+ */
+async function fetchRecentlyMergedPullRequests({
+  repository,
+  token,
+  fetchImpl,
+  base,
+  sampleSize,
+  perPage = 100,
+  maxPages = 50,
+}) {
+  const merged = [];
+  let sawGenuineLastPage = false;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const batch = await api(
+      fetchImpl,
+      repository,
+      token,
+      `/pulls?state=closed&base=${encodeURIComponent(base)}&per_page=${perPage}&page=${page}&sort=updated&direction=desc`,
+    );
+    // The rest of this loop assumes `batch` is an array of pull request
+    // objects to iterate, count, and slice by page-size. A malformed
+    // response -- e.g. a JSON string instead of an array -- is still
+    // iterable in JS (strings are iterable, yielding one-character
+    // "PRs"), so without this check the loop would silently walk
+    // characters instead of pull requests: every "pr" would have no
+    // merged_at and be skipped, and a short "batch" (a string shorter
+    // than perPage) would look like the genuine last page, producing an
+    // empty, plausible-looking sample instead of an error. Hicks
+    // reproduced this in review of #490 (head 28051c3) with a 200 OK
+    // response body of the bare string "oops". Fail loudly on any
+    // response shape other than an array.
+    if (!Array.isArray(batch)) {
+      throw new Error(
+        `Expected an array of pull requests from /pulls (page ${page}), got ${JSON.stringify(batch)}; refusing to treat a malformed response as an empty or partial page.`,
+      );
+    }
+    for (const pr of batch) {
+      // Closed-but-unmerged PRs report `merged_at: null` -- that's a
+      // legitimate, well-formed signal to skip and is not an error. But
+      // other falsy values (e.g. an empty string) are not what the API
+      // uses to mean "not merged"; treating them the same way via a bare
+      // `!pr.merged_at` check silently drops a PR that claimed to have
+      // *some* merged_at value instead of surfacing that the data is
+      // malformed. Hicks reproduced this in review of #490 (head e5d6248)
+      // with `merged_at: ''`, which the sample silently excluded rather
+      // than throwing on. Only `null`/`undefined` mean "not merged";
+      // anything else falsy is malformed and must throw.
+      if (pr.merged_at === null || pr.merged_at === undefined) continue;
+      if (typeof pr.merged_at !== 'string' || pr.merged_at === '') {
+        throw new Error(
+          `Pull request #${pr.number} has a malformed merged_at (${JSON.stringify(pr.merged_at)}); expected null (not merged) or a non-empty timestamp string.`,
+        );
+      }
+      // `merged_at` drives the sort below that determines which PRs count as
+      // the "most recently merged" sample. A truthy but unparseable value
+      // (e.g. a malformed timestamp) would silently produce NaN, which
+      // `Array.prototype.sort` treats as neither greater nor less than any
+      // other value -- collapsing the sort to whatever order the API
+      // happened to return, which is exactly the unsound-ordering defect
+      // this function already had to fix once. Fail loudly instead of
+      // trusting a value that can't actually be compared.
+      const mergedAtMs = Date.parse(pr.merged_at);
+      if (!Number.isFinite(mergedAtMs)) {
+        throw new Error(
+          `Pull request #${pr.number} has an unparseable merged_at (${JSON.stringify(pr.merged_at)}); refusing to sort by an invalid timestamp.`,
+        );
+      }
+      merged.push(pr);
+    }
+    // A batch shorter than the requested page size is the API's own signal
+    // that this was the last page -- the only condition under which stopping
+    // is sound, because every closed PR has now been seen and merged_at can
+    // be trusted to sort the true top `sampleSize`.
+    if (batch.length < perPage) {
+      sawGenuineLastPage = true;
+      break;
+    }
+  }
+  if (!sawGenuineLastPage) {
+    // Reaching `maxPages` full pages without ever seeing a short page means
+    // pagination was cut off, not completed -- there could be more closed
+    // PRs, merged more recently than any seen so far, still unread. Silently
+    // truncating here is exactly the defect being fixed: it can return a
+    // clean-looking sample while the true most-recent, most-behind PRs sit
+    // on a page this call never reached. Fail loudly instead.
+    throw new Error(
+      `Reached maxPages (${maxPages}) at perPage ${perPage} without finding the true last page of closed pull requests targeting "${base}"; the sample would be truncated and unsound, not just incomplete, so refusing to return it.`,
+    );
+  }
+  return merged
+    .sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at))
+    .slice(0, sampleSize);
+}
+
+/**
+ * Measures, at run time, whether merged pull requests were up to date with
+ * `base` at the moment they merged -- the reading #490 found transcribed as a
+ * fixed number in this file's own docblock, twice, each already wrong by the
+ * time anyone re-checked it.
+ *
+ * For each merged PR: `merge_commit_sha`'s first parent is the tip `base` had
+ * immediately before that merge landed (true whether the merge used a merge
+ * commit, squash, or rebase, because in every case GitHub records exactly one
+ * commit as the first parent of what it merged into `base`). Comparing that
+ * parent against the PR's own `head.sha` -- which GitHub retains even after
+ * the source branch is deleted -- with `GET /compare/{head}...{parent}`
+ * yields `ahead_by`: the number of commits reachable from that base tip but
+ * not from the PR head, i.e. exactly the commits the PR was missing when it
+ * merged. Zero means the PR was up to date at merge; more than zero is the
+ * number of commits it was behind.
+ *
+ * Pull requests without a `merge_commit_sha` or a `head.sha` (both required
+ * fields for a merged PR, but defend against a malformed response rather than
+ * throwing mid-sample), or whose merge commit has no resolvable first
+ * parent, cannot be measured and are excluded from `upToDate`/`behind`. That
+ * exclusion is safe only if it is visible: silently shrinking the sample and
+ * reporting the reduced subset as though it were the whole "last N merged
+ * pull requests" turns a real gap in the data into an artificially clean-
+ * looking result -- the same failure mode as the maxPages and `ahead_by`
+ * bugs already fixed here, just one step further down the same function.
+ * Hicks reproduced this in review of #490 (head 417a712): 30 sampled PRs, 3
+ * silently unmeasurable, printed as "27 / 27 clean" with no surfaced
+ * unknowns. So this tracks `unmeasured` separately from `sampled` (which now
+ * means "measured", not "attempted"), and `formatMergedAgainstBaseReading`
+ * always names both the requested count and any unmeasured count -- a
+ * reader can never see a clean split without also being told how many PRs,
+ * if any, were excluded from it.
+ */
+export async function measureMergedAgainstBase({
+  repository,
+  token,
+  fetchImpl = fetch,
+  base = 'development',
+  sampleSize = 30,
+  perPage = 100,
+  maxPages = 50,
+}) {
+  const pullRequests = await fetchRecentlyMergedPullRequests({
+    repository,
+    token,
+    fetchImpl,
+    base,
+    sampleSize,
+    perPage,
+    maxPages,
+  });
+
+  let upToDate = 0;
+  let behind = 0;
+  let unmeasured = 0;
+  let worst = null;
+
+  for (const pr of pullRequests) {
+    // `pr.number` is used verbatim in error messages and as the identifier
+    // in the `worst` offender report -- if it's missing or not a real PR
+    // number, both would silently produce a nonsensical identifier like
+    // `#undefined` or `#NaN` instead of failing loud, the same class of bug
+    // already fixed for `ahead_by` and `merged_at` on this same field's
+    // neighbors. Vasquez found this in review of #490 (head e0487ac).
+    if (
+      typeof pr.number !== 'number' ||
+      !Number.isInteger(pr.number) ||
+      pr.number <= 0
+    ) {
+      throw new Error(
+        `Pull request entry has an invalid number (positive integer expected, got ${JSON.stringify(pr.number)}); refusing to report a "worst offender" under a fabricated identifier.`,
+      );
+    }
+
+    const headSha = pr.head?.sha;
+    if (!pr.merge_commit_sha || !headSha) {
+      unmeasured += 1;
+      continue;
+    }
+
+    const mergeCommit = await api(
+      fetchImpl,
+      repository,
+      token,
+      `/commits/${pr.merge_commit_sha}`,
+    );
+    const baseTipAtMerge = mergeCommit.parents?.[0]?.sha;
+    if (!baseTipAtMerge) {
+      unmeasured += 1;
+      continue;
+    }
+
+    const comparison = await api(
+      fetchImpl,
+      repository,
+      token,
+      `/compare/${headSha}...${baseTipAtMerge}`,
+    );
+    // `?? 0` here would silently count PR #pr.number as up to date whenever
+    // the compare response is missing, malformed, or `ahead_by` is absent --
+    // rate limiting, a transient API shape change, or anything else that
+    // makes the response not what was expected. That is a silently wrong
+    // result standing in for a failure, not a degrade: a PR that may well be
+    // behind base gets counted as up to date with no error and no warning.
+    // Hicks reproduced this concretely in review of #490 (head 85d5148) with
+    // a merged PR, a valid parent, and an empty `{}` compare response. So
+    // this validates `ahead_by` is actually a number before trusting it, and
+    // throws otherwise -- the same "loud failure over silent wrong answer"
+    // fix already applied to the maxPages truncation in this same function's
+    // caller, for the same reason.
+    //
+    // `typeof === 'number'` alone is not enough: it accepts -1, NaN, and
+    // Infinity, all of which are numbers in JS but none of which is a
+    // sensible count of commits behind. `-1` would flip the up-to-date/
+    // behind classification below (a negative value fails `=== 0` and so
+    // is treated as "behind" -- worse, "worst by -1 commits" makes no
+    // sense as an offender); `NaN` fails every ordering comparison
+    // silently, so it could never become `worst` even while being counted
+    // in `behind`; `Infinity` would always win `worst` regardless of any
+    // genuinely worse finite offender. Both Hicks and Vasquez independently
+    // reproduced this identically in review of #490 (head 9ef8526), so
+    // `ahead_by` must be a finite, non-negative number, not merely typeof
+    // 'number', before it is trusted. It also must be an integer: `ahead_by`
+    // is a count of commits, and a fractional value such as `0.5` is just as
+    // malformed a compare response as a negative or non-finite one --
+    // Vasquez reproduced this on head 2f65da1 (`{ ahead_by: 0.5 }` silently
+    // reported as "0.5 commits behind" and eligible to become `worst`).
+    if (
+      typeof comparison.ahead_by !== 'number' ||
+      !Number.isInteger(comparison.ahead_by) ||
+      comparison.ahead_by < 0
+    ) {
+      throw new Error(
+        `Compare response for #${pr.number} (${headSha}...${baseTipAtMerge}) did not include a valid ahead_by (non-negative integer expected, got ${JSON.stringify(comparison.ahead_by)}); refusing to guess whether it was up to date at merge.`,
+      );
+    }
+    const commitsBehind = comparison.ahead_by;
+
+    if (commitsBehind === 0) {
+      upToDate += 1;
+    } else {
+      behind += 1;
+      if (!worst || commitsBehind > worst.commits) {
+        worst = { number: pr.number, commits: commitsBehind };
+      }
+    }
+  }
+
+  return {
+    requested: pullRequests.length,
+    sampled: upToDate + behind,
+    upToDate,
+    behind,
+    unmeasured,
+    worst,
+  };
+}
+
+export function formatMergedAgainstBaseReading(reading) {
+  if (reading.requested === 0) {
+    return 'Merged-behind-base reading: no measurable merged pull requests were found in the sampled window.';
+  }
+  const worstText = reading.worst
+    ? ` (worst: #${reading.worst.number}, ${reading.worst.commits} commit${reading.worst.commits === 1 ? '' : 's'} behind)`
+    : '';
+  // Whenever any PR was excluded from measurement, that must appear in the
+  // same sentence as the split, not merely be inferable from `sampled` being
+  // smaller than `requested` -- a reader skimming for "clean" must not be
+  // able to miss it. This is what closes Hicks' "27 / 27 clean" finding: the
+  // denominator here is always the measured count, and an unmeasured clause
+  // is present whenever that count is not the full requested sample.
+  const unmeasuredText =
+    reading.unmeasured > 0
+      ? `; ${reading.unmeasured} of ${reading.requested} could not be measured (missing merge data)`
+      : '';
+  if (reading.sampled === 0) {
+    return `Merged-behind-base reading: none of the ${reading.requested} sampled merged pull requests could be measured (missing merge data).`;
+  }
+  return (
+    `Merged-behind-base reading (live, last ${reading.requested} merged pull requests): ` +
+    `up to date at merge ${reading.upToDate} / ${reading.sampled} measured, ` +
+    `merged behind base ${reading.behind} / ${reading.sampled} measured${worstText}${unmeasuredText}`
+  );
+}
+
 async function main() {
   const token = discoverToken(process.env);
   const repositoryName = discoverRepository(process.env);
@@ -775,6 +1102,22 @@ async function main() {
   console.log(
     `Linear-history enforcement: ${enforcement.required_linear_history.state} — ${enforcement.required_linear_history.why}`,
   );
+
+  // #490: derived fresh every run rather than transcribed once and left to go
+  // stale. A failure here does not fail the whole check -- the qualitative
+  // enforcement reading above does not depend on this number -- but it must
+  // not be silently skipped either, so a failure says so.
+  try {
+    const behindReading = await measureMergedAgainstBase({
+      repository,
+      token,
+    });
+    console.log(formatMergedAgainstBaseReading(behindReading));
+  } catch (error) {
+    console.log(
+      `Merged-behind-base reading: could not be measured this run (${error instanceof Error ? error.message : String(error)}).`,
+    );
+  }
 
   if (violations.length === 0) {
     console.log(

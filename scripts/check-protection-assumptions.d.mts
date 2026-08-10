@@ -88,3 +88,31 @@ export interface AdminExemptibleSettingReadings {
 export function adminExemptibleSettingEnforcement(
   protection: unknown,
 ): AdminExemptibleSettingReadings;
+
+export interface MergedAgainstBaseWorst {
+  number: number;
+  commits: number;
+}
+
+export interface MergedAgainstBaseReading {
+  requested: number;
+  sampled: number;
+  upToDate: number;
+  behind: number;
+  unmeasured: number;
+  worst: MergedAgainstBaseWorst | null;
+}
+
+export declare function measureMergedAgainstBase(input: {
+  repository: { owner: string; repo: string };
+  token: string;
+  fetchImpl?: typeof fetch;
+  base?: string;
+  sampleSize?: number;
+  perPage?: number;
+  maxPages?: number;
+}): Promise<MergedAgainstBaseReading>;
+
+export declare function formatMergedAgainstBaseReading(
+  reading: MergedAgainstBaseReading,
+): string;

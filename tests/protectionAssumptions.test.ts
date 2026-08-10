@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   EXPECTED_COLLABORATORS,
   EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI,
@@ -12,7 +12,9 @@ import {
   evaluateProtectionAssumptions,
   fetchPrivilegedRepositoryFacts,
   fetchPublicRepositoryFacts,
+  formatMergedAgainstBaseReading,
   formatViolations,
+  measureMergedAgainstBase,
   rulesetCoversFeatureBranches,
   statusCheckEnforcement,
 } from '../scripts/check-protection-assumptions.mjs';
@@ -899,6 +901,792 @@ describe('#491: the four unauthenticated endpoint codes this exemption depends o
       ).toBe(expectedStatus);
     },
   );
+});
+
+describe('measureMergedAgainstBase (#490: derived, not transcribed)', () => {
+  const repository = { owner: 'o', repo: 'r' };
+
+  // Builds a fetchImpl that answers exactly the endpoints
+  // fetchRecentlyMergedPullRequests / measureMergedAgainstBase issue:
+  //   GET /pulls?state=closed&base=...&per_page=...&page=N&...  (PR pages)
+  //   GET /commits/{sha}                                        (merge commit parents)
+  //   GET /compare/{head}...{parent}                             (ahead_by)
+  function fakeApi({
+    pages, // array of PR-list pages; [] after the last one
+    parents, // { [mergeCommitSha]: [parentSha, ...] }
+    aheadBy, // { [`${head}...${parent}`]: number }
+  }: {
+    pages: Array<Array<Record<string, unknown>>>;
+    parents: Record<string, string[]>;
+    aheadBy: Record<string, number>;
+  }) {
+    return vi.fn((url: string) => {
+      const u = new URL(url);
+      const path = u.pathname;
+      let body: unknown;
+
+      if (path.endsWith('/pulls')) {
+        const page = Number(u.searchParams.get('page') ?? '1');
+        body = pages[page - 1] ?? [];
+      } else if (path.includes('/commits/')) {
+        const sha = path.split('/commits/')[1] ?? '';
+        body = { parents: (parents[sha] ?? []).map((p) => ({ sha: p })) };
+      } else if (path.includes('/compare/')) {
+        const key = path.split('/compare/')[1] ?? '';
+        body = { ahead_by: aheadBy[key] ?? 0 };
+      } else {
+        throw new Error(`fakeApi: unexpected endpoint ${path}`);
+      }
+
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+  }
+
+  it('counts a PR as up to date when the merge-commit parent is already reachable from its head', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          {
+            number: 701,
+            merged_at: '2026-08-09T10:00:00Z',
+            merge_commit_sha: 'merge701',
+            head: { sha: 'head701' },
+          },
+        ],
+        [],
+      ],
+      parents: { merge701: ['parent701'] },
+      aheadBy: { 'head701...parent701': 0 },
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 30,
+    });
+
+    expect(reading).toEqual({
+      requested: 1,
+      sampled: 1,
+      upToDate: 1,
+      behind: 0,
+      unmeasured: 0,
+      worst: null,
+    });
+  });
+
+  it('counts a PR as behind by exactly ahead_by commits, and tracks the worst one', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          {
+            number: 669,
+            merged_at: '2026-08-09T09:00:00Z',
+            merge_commit_sha: 'merge669',
+            head: { sha: 'head669' },
+          },
+          {
+            number: 667,
+            merged_at: '2026-08-09T08:00:00Z',
+            merge_commit_sha: 'merge667',
+            head: { sha: 'head667' },
+          },
+          {
+            number: 664,
+            merged_at: '2026-08-09T07:00:00Z',
+            merge_commit_sha: 'merge664',
+            head: { sha: 'head664' },
+          },
+        ],
+        [],
+      ],
+      parents: {
+        merge669: ['parent669'],
+        merge667: ['parent667'],
+        merge664: ['parent664'],
+      },
+      aheadBy: {
+        'head669...parent669': 3,
+        'head667...parent667': 2,
+        'head664...parent664': 1,
+      },
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 30,
+    });
+
+    expect(reading).toEqual({
+      requested: 3,
+      sampled: 3,
+      upToDate: 0,
+      behind: 3,
+      unmeasured: 0,
+      worst: { number: 669, commits: 3 },
+    });
+  });
+
+  it('sorts by merged_at rather than trusting list order, and truncates to sampleSize', async () => {
+    // Deliberately out of order: the API's own `sort=updated` is not the same
+    // axis as merge recency, so trusting arrival order here would silently
+    // reintroduce an unverified reading.
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          {
+            number: 1,
+            merged_at: '2026-08-01T00:00:00Z',
+            merge_commit_sha: 'm1',
+            head: { sha: 'h1' },
+          },
+          {
+            number: 3,
+            merged_at: '2026-08-03T00:00:00Z',
+            merge_commit_sha: 'm3',
+            head: { sha: 'h3' },
+          },
+          {
+            number: 2,
+            merged_at: '2026-08-02T00:00:00Z',
+            merge_commit_sha: 'm2',
+            head: { sha: 'h2' },
+          },
+        ],
+        [],
+      ],
+      parents: { m1: ['p1'], m2: ['p2'], m3: ['p3'] },
+      aheadBy: {
+        'h1...p1': 0,
+        'h2...p2': 0,
+        'h3...p3': 0,
+      },
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 2,
+    });
+
+    // Only the two most recently merged (#3, #2) should be sampled -- #1 is
+    // excluded by sampleSize despite appearing first in the page.
+    expect(reading.sampled).toBe(2);
+    expect(reading.upToDate).toBe(2);
+  });
+
+  it('excludes a merged PR with no merge_commit_sha or head sha from the split, and counts it as unmeasured rather than dropping it silently', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          {
+            number: 9,
+            merged_at: '2026-08-09T00:00:00Z',
+            merge_commit_sha: null,
+            head: { sha: 'h9' },
+          },
+        ],
+        [],
+      ],
+      parents: {},
+      aheadBy: {},
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 30,
+    });
+
+    expect(reading).toEqual({
+      requested: 1,
+      sampled: 0,
+      upToDate: 0,
+      behind: 0,
+      unmeasured: 1,
+      worst: null,
+    });
+  });
+
+  // Hicks' finding on review of #490 (head 417a712): a PR that could not be
+  // measured (missing merge data, or an unresolvable merge-commit parent)
+  // was silently excluded from `sampled`, and formatMergedAgainstBaseReading
+  // then reported the shrunk subset as though it were the whole requested
+  // sample -- e.g. 30 requested, 3 silently unmeasurable, printed as
+  // "27 / 27 clean" with no surfaced unknowns. That is the same "real gap
+  // becomes an artificially clean result" failure as the maxPages and
+  // ahead_by bugs, one function further down. Here two of three sampled PRs
+  // are unmeasurable for different reasons (no merge_commit_sha; a merge
+  // commit with no resolvable parent) and the third is genuinely up to
+  // date -- asserting the reading names all three counts distinctly, and
+  // that the formatted text always surfaces the unmeasured count rather
+  // than letting a reader see a clean split without it.
+  it('surfaces unmeasurable PRs as a distinct count rather than silently shrinking the sample (Hicks repro)', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          // No merge_commit_sha at all.
+          {
+            number: 501,
+            merged_at: '2026-08-03T00:00:00Z',
+            merge_commit_sha: null,
+            head: { sha: 'h501' },
+          },
+          // Merge commit resolves but has no parents.
+          {
+            number: 502,
+            merged_at: '2026-08-02T00:00:00Z',
+            merge_commit_sha: 'm502',
+            head: { sha: 'h502' },
+          },
+          // Genuinely measurable and up to date.
+          {
+            number: 503,
+            merged_at: '2026-08-01T00:00:00Z',
+            merge_commit_sha: 'm503',
+            head: { sha: 'h503' },
+          },
+        ],
+        [],
+      ],
+      parents: { m502: [], m503: ['p503'] },
+      aheadBy: { 'h503...p503': 0 },
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 30,
+    });
+
+    expect(reading).toEqual({
+      requested: 3,
+      sampled: 1,
+      upToDate: 1,
+      behind: 0,
+      unmeasured: 2,
+      worst: null,
+    });
+
+    const text = formatMergedAgainstBaseReading(reading);
+    expect(text).toContain('2 of 3 could not be measured');
+    expect(text).toContain('1 / 1 measured');
+  });
+
+  // Hicks' finding on review of #490 (head 85d5148): `comparison.ahead_by ?? 0`
+  // silently treated a missing or malformed `ahead_by` as "0 behind" -- up to
+  // date -- rather than as a failure to measure. Hicks reproduced this with a
+  // merged PR, a valid parent, and an empty `{}` compare response, which
+  // previously produced `{"sampled":1,"upToDate":1,"behind":0,"worst":null}`
+  // instead of failing. This constructs that exact response directly (rather
+  // than through fakeApi's aheadBy map, which always supplies the field) and
+  // asserts the measurement throws instead of silently reporting the PR as
+  // up to date.
+  it('throws rather than silently treating a compare response with no ahead_by as up to date (Hicks repro)', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 400,
+                  merged_at: '2026-08-01T00:00:00Z',
+                  merge_commit_sha: 'm400',
+                  head: { sha: 'h400' },
+                },
+              ]
+            : [];
+      } else if (path.includes('/commits/')) {
+        body = { parents: [{ sha: 'p400' }] };
+      } else if (path.includes('/compare/')) {
+        // No `ahead_by` at all -- the exact shape Hicks reproduced.
+        body = {};
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/ahead_by/i);
+  });
+
+  // Both Hicks and Vasquez independently reproduced this in review of #490
+  // (head 9ef8526): the `ahead_by` validation checked `typeof === 'number'`
+  // only, which accepts -1, NaN, and Infinity -- all numbers in JS, none of
+  // them a sensible count of commits. -1 would still count as "behind"
+  // (fails the `=== 0` up-to-date check) and could become `worst` with a
+  // nonsensical negative commit count; NaN fails every `>` comparison
+  // silently, so it is counted as behind yet can never become `worst` no
+  // matter how many other PRs are compared against it; Infinity would
+  // always win `worst` regardless of any genuinely worse finite offender.
+  // Vasquez separately reproduced this again on head 2f65da1 for a
+  // fractional value (`0.5`): finite and non-negative, but not a sensible
+  // count of commits either -- `ahead_by` must be an integer.
+  // Each must throw exactly like a missing/non-numeric ahead_by does.
+  it.each([
+    ['a negative number', -1],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a fractional number', 0.5],
+  ])(
+    'throws rather than silently accepting %s as ahead_by (Hicks/Vasquez repro)',
+    async (_label, aheadBy) => {
+      const fetchImpl = vi.fn((url: string) => {
+        const path = new URL(url).pathname;
+        let body: unknown;
+        if (path.endsWith('/pulls')) {
+          const page = Number(new URL(url).searchParams.get('page') ?? '1');
+          body =
+            page === 1
+              ? [
+                  {
+                    number: 401,
+                    merged_at: '2026-08-01T00:00:00Z',
+                    merge_commit_sha: 'm401',
+                    head: { sha: 'h401' },
+                  },
+                ]
+              : [];
+        } else if (path.includes('/commits/')) {
+          body = { parents: [{ sha: 'p401' }] };
+        } else if (path.includes('/compare/')) {
+          body = { ahead_by: aheadBy };
+        } else {
+          throw new Error(`unexpected endpoint ${path}`);
+        }
+        return { ok: true, json: () => body };
+      }) as unknown as typeof fetch;
+
+      await expect(
+        measureMergedAgainstBase({
+          repository,
+          token: 't',
+          fetchImpl,
+          sampleSize: 1,
+        }),
+      ).rejects.toThrow(/ahead_by/i);
+    },
+  );
+
+  // Vasquez's finding on review of #490 (head 2f65da1): sorting used
+  // `Date.parse(pr.merged_at)` directly. A truthy but unparseable
+  // `merged_at` parses to NaN, and `Array.prototype.sort`'s comparator
+  // treats NaN as neither greater nor less than anything -- silently
+  // collapsing the sort to whatever order the API happened to return
+  // instead of true merge-time order, which is the same unsound-ordering
+  // defect already fixed once for `sort=updated` trust. Must throw instead.
+  it('throws rather than silently sorting by an unparseable merged_at (Vasquez repro)', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 501,
+                  merged_at: 'not-a-date',
+                  merge_commit_sha: 'm501',
+                  head: { sha: 'h501' },
+                },
+              ]
+            : [];
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/merged_at/i);
+  });
+
+  // Hicks' finding on review of #490 (head e5d6248): `merged_at: null` is
+  // the API's well-formed signal for "not merged" and is legitimate to skip
+  // silently, but a bare `if (!pr.merged_at) continue;` treated *any* falsy
+  // value the same way -- including an empty string, which is not what the
+  // API uses to mean "not merged". Hicks reproduced this concretely: a
+  // merged PR entry with `merged_at: ''` was silently excluded from the
+  // sample (measureMergedAgainstBase returned `requested: 0`) instead of
+  // throwing on malformed data. Only null/undefined may mean "not merged";
+  // any other falsy merged_at must throw.
+  it('throws rather than silently dropping a PR with merged_at: "" from the sample (Hicks repro)', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 701,
+                  merged_at: '',
+                  merge_commit_sha: 'm701',
+                  head: { sha: 'h701' },
+                },
+              ]
+            : [];
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/merged_at/i);
+  });
+
+  // Hicks' finding on review of #490 (head 28051c3): fetchRecentlyMergedPullRequests
+  // never validated the shape of the /pulls response before iterating it.
+  // A malformed 200 OK body that is a string rather than an array is still
+  // iterable in JS (strings are iterable), so each "pr" would be a single
+  // character with no merged_at -- silently skipped -- and a "batch"
+  // shorter than perPage would look like the genuine last page, producing
+  // an empty, plausible-looking sample (requested: 0) instead of an error.
+  // Hicks reproduced this concretely with a /pulls response body of "oops".
+  it('throws rather than silently treating a non-array /pulls response as an empty page (Hicks repro)', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/pulls')) {
+        return { ok: true, json: () => 'oops' };
+      }
+      throw new Error(`unexpected endpoint ${path}`);
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/array/i);
+  });
+
+  // Vasquez's finding on review of #490 (head e0487ac): `pr.number` was
+  // used verbatim as the "worst offender" identifier and in error messages
+  // without ever being validated. Malformed API data (missing or
+  // non-numeric `number`) would silently produce a nonsensical identifier
+  // like `#undefined` or `#NaN` instead of failing loud -- the same bug
+  // class already fixed for `ahead_by` and `merged_at`, just on a different
+  // field.
+  it.each([
+    ['missing', undefined],
+    ['a string', 'oops'],
+    ['zero', 0],
+    ['negative', -5],
+    ['NaN', Number.NaN],
+  ])(
+    'throws rather than silently trusting %s as a pull request number (Vasquez repro)',
+    async (_label, prNumber) => {
+      const fetchImpl = vi.fn((url: string) => {
+        const path = new URL(url).pathname;
+        let body: unknown;
+        if (path.endsWith('/pulls')) {
+          const page = Number(new URL(url).searchParams.get('page') ?? '1');
+          body =
+            page === 1
+              ? [
+                  {
+                    number: prNumber,
+                    merged_at: '2026-08-01T00:00:00Z',
+                    merge_commit_sha: 'm601',
+                    head: { sha: 'h601' },
+                  },
+                ]
+              : [];
+        } else {
+          throw new Error(`unexpected endpoint ${path}`);
+        }
+        return { ok: true, json: () => body };
+      }) as unknown as typeof fetch;
+
+      await expect(
+        measureMergedAgainstBase({
+          repository,
+          token: 't',
+          fetchImpl,
+          sampleSize: 1,
+        }),
+      ).rejects.toThrow(/number/i);
+    },
+  );
+
+  it('paginates across closed-PR pages until sampleSize merged PRs are found', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        // Page 1 (perPage: 1, so this one-item page is a FULL page and must
+        // not be mistaken for the last one): one closed-but-unmerged PR,
+        // contributes nothing to the merged sample.
+        [{ number: 10, merged_at: null }],
+        // Page 2 (also full at perPage: 1): the one merged PR.
+        [
+          {
+            number: 11,
+            merged_at: '2026-08-09T00:00:00Z',
+            merge_commit_sha: 'm11',
+            head: { sha: 'h11' },
+          },
+        ],
+        // Page 3: empty -- the genuine last page, which is what must stop
+        // pagination, not having already found `sampleSize` merged PRs.
+        [],
+      ],
+      parents: { m11: ['p11'] },
+      aheadBy: { 'h11...p11': 0 },
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 1,
+      perPage: 1,
+    });
+
+    expect(reading.sampled).toBe(1);
+    expect(reading.upToDate).toBe(1);
+  });
+
+  // Hicks' finding on review of #490 (head 157f884): the earlier version of
+  // this function stopped paging as soon as it had collected
+  // `sampleSize * 2` merged PRs, trusting `/pulls?sort=updated` order. That
+  // order is not `merged_at` order -- an older merged PR bumped by a recent
+  // comment sorts ahead of a more recently merged PR with no further
+  // activity -- so an early stop can return entirely the wrong sample. Here,
+  // page 1 is a FULL page (`perPage` items) of older, up-to-date merges that
+  // an updated-sort could easily surface first; page 2 is a SHORT page (the
+  // true last page) of more recently merged PRs that were behind base. The
+  // old count-based stop would have been satisfied by page 1 alone and
+  // reported "2 / 2 up to date"; the fix must keep paging past a full page
+  // regardless of how many merged PRs it has already seen, and report the
+  // true most-recently-merged sample instead.
+  it('does not stop at a full page of older merges when a shorter, more recent page follows (Hicks repro)', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          {
+            number: 100,
+            merged_at: '2026-08-01T00:00:00Z',
+            merge_commit_sha: 'm100',
+            head: { sha: 'h100' },
+          },
+          {
+            number: 101,
+            merged_at: '2026-08-02T00:00:00Z',
+            merge_commit_sha: 'm101',
+            head: { sha: 'h101' },
+          },
+        ],
+        [
+          {
+            number: 200,
+            merged_at: '2026-08-10T00:00:00Z',
+            merge_commit_sha: 'm200',
+            head: { sha: 'h200' },
+          },
+        ],
+        [],
+      ],
+      parents: { m100: ['p100'], m101: ['p101'], m200: ['p200'] },
+      aheadBy: {
+        // Page 1 (older): up to date at merge.
+        'h100...p100': 0,
+        'h101...p101': 0,
+        // Page 2 (newer, the true top of the sample): behind at merge.
+        'h200...p200': 5,
+      },
+    });
+
+    const reading = await measureMergedAgainstBase({
+      repository,
+      token: 't',
+      fetchImpl,
+      sampleSize: 1,
+      perPage: 2,
+    });
+
+    // The correct most-recently-merged sample of size 1 is PR #200 (merged
+    // 2026-08-10), which was behind by 5 -- not either of the older,
+    // up-to-date PRs from the full first page.
+    expect(reading).toEqual({
+      requested: 1,
+      sampled: 1,
+      upToDate: 0,
+      behind: 1,
+      unmeasured: 0,
+      worst: { number: 200, commits: 5 },
+    });
+  });
+
+  // Vasquez's finding on review of #490 (head 74bd775): the previous fix for
+  // Hicks' pagination finding kept paging until a genuinely short page was
+  // seen, but if `maxPages` full pages were exhausted first, it silently
+  // returned whatever had been gathered so far. That is the same defect in a
+  // different shape -- an unknown number of closed PRs, possibly including a
+  // more recently merged, more-behind one, were never read, yet the function
+  // returned a clean-looking sample as if nothing were missing. Here,
+  // `maxPages: 1` at `perPage: 1` means exactly one full page is fetched --
+  // an up-to-date merge -- and a second, more recently merged, behind-base PR
+  // sits on the page that is never reached because the cap was hit first.
+  // The old silently-truncating behaviour would report "1 / 1 up to date";
+  // the fix must refuse to report anything rather than report that.
+  it('throws rather than silently truncating when maxPages is exhausted before the true last page (Vasquez repro)', async () => {
+    const fetchImpl = fakeApi({
+      pages: [
+        [
+          {
+            number: 300,
+            merged_at: '2026-08-01T00:00:00Z',
+            merge_commit_sha: 'm300',
+            head: { sha: 'h300' },
+          },
+        ],
+        // Never reached: maxPages is exhausted after page 1. If it were
+        // reached, this behind-base, more-recently-merged PR would flip the
+        // reading entirely -- which is exactly why silently stopping short
+        // of the true last page must not be allowed to look like success.
+        [
+          {
+            number: 301,
+            merged_at: '2026-08-10T00:00:00Z',
+            merge_commit_sha: 'm301',
+            head: { sha: 'h301' },
+          },
+        ],
+      ],
+      parents: { m300: ['p300'], m301: ['p301'] },
+      aheadBy: { 'h300...p300': 0, 'h301...p301': 9 },
+    });
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+        perPage: 1,
+        maxPages: 1,
+      }),
+    ).rejects.toThrow(/maxPages/i);
+  });
+});
+
+describe('formatMergedAgainstBaseReading', () => {
+  it('reports the split and the worst offender', () => {
+    const text = formatMergedAgainstBaseReading({
+      requested: 30,
+      sampled: 30,
+      upToDate: 27,
+      behind: 3,
+      unmeasured: 0,
+      worst: { number: 669, commits: 3 },
+    });
+    expect(text).toContain('up to date at merge 27 / 30');
+    expect(text).toContain('merged behind base 3 / 30');
+    expect(text).toContain('worst: #669, 3 commits behind');
+    expect(text).not.toContain('could not be measured');
+  });
+
+  it('singularises "1 commit" and omits the worst clause when nothing is behind', () => {
+    const oneCommit = formatMergedAgainstBaseReading({
+      requested: 5,
+      sampled: 5,
+      upToDate: 4,
+      behind: 1,
+      unmeasured: 0,
+      worst: { number: 1, commits: 1 },
+    });
+    expect(oneCommit).toContain('1 commit behind)');
+    expect(oneCommit).not.toContain('1 commits behind)');
+
+    const allUpToDate = formatMergedAgainstBaseReading({
+      requested: 5,
+      sampled: 5,
+      upToDate: 5,
+      behind: 0,
+      unmeasured: 0,
+      worst: null,
+    });
+    expect(allUpToDate).not.toContain('worst');
+  });
+
+  it('says plainly when nothing could be sampled, rather than a division-shaped 0 / 0', () => {
+    const text = formatMergedAgainstBaseReading({
+      requested: 0,
+      sampled: 0,
+      upToDate: 0,
+      behind: 0,
+      unmeasured: 0,
+      worst: null,
+    });
+    expect(text).toContain('no measurable merged pull requests');
+    expect(text).not.toContain('0 / 0');
+  });
+
+  // Hicks' finding on review of #490 (head 417a712): a reader must never be
+  // able to see a clean split without also being told how many PRs, if any,
+  // were excluded from it. These pin both shapes of that guarantee: some
+  // PRs measured plus some unmeasured, and every single sampled PR
+  // unmeasured (so there is no split to report at all, only the caveat).
+  it('always names the unmeasured count in the same sentence as the split, never leaving it only inferable', () => {
+    const text = formatMergedAgainstBaseReading({
+      requested: 30,
+      sampled: 27,
+      upToDate: 27,
+      behind: 0,
+      unmeasured: 3,
+      worst: null,
+    });
+    expect(text).toContain('up to date at merge 27 / 27 measured');
+    expect(text).toContain('3 of 30 could not be measured');
+  });
+
+  it('says plainly that nothing could be measured when every sampled PR was unmeasurable, rather than reporting an empty split as clean', () => {
+    const text = formatMergedAgainstBaseReading({
+      requested: 4,
+      sampled: 0,
+      upToDate: 0,
+      behind: 0,
+      unmeasured: 4,
+      worst: null,
+    });
+    expect(text).toContain(
+      'none of the 4 sampled merged pull requests could be measured',
+    );
+    expect(text).not.toContain('0 / 0');
+    expect(text).not.toContain('up to date');
+  });
 });
 
 /**
