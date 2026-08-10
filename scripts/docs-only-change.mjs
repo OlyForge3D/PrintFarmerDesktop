@@ -126,6 +126,99 @@ export const isDocsOrTestPath = (file) => {
 };
 
 /**
+ * Paths outside `native/` whose change can still alter what the `Sidecar` job does or how it is
+ * run, and which therefore deny the rust-untouched tier on their own.
+ *
+ * `ci.yml` is here because it *is* the job definition: an edit to the sidecar steps, the toolchain
+ * action pin or the feature matrix must be exercised by the job it edits, and a tier that let a
+ * change to those steps skip those steps would be self-certifying.
+ *
+ * `scripts/docs-only-change.mjs` is here for the same reason one level up: this file decides the
+ * tier, so a change to it must never be classified by the version of itself under review.
+ */
+const RUST_GATE_FILES = new Set([
+  '.github/workflows/ci.yml',
+  'scripts/docs-only-change.mjs',
+]);
+
+/** Manifest basenames that belong to a cargo build specifically. */
+const RUST_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock']);
+
+/**
+ * Tool-configuration basenames that change what the `Sidecar` job's commands DO without appearing
+ * anywhere in the crate's source or its manifests (Ripley, PR #708 review).
+ *
+ * This is the hole the manifest set alone left open, and it is a false negative -- the only
+ * direction that costs correctness here. `cargo fmt --check`, `cargo clippy -- -D warnings` and
+ * `cargo build/test` each read configuration that is not `Cargo.toml`: an added `rustfmt.toml`
+ * silently redefines what "formatted" means, a `clippy.toml` redefines which lints deny, and a
+ * `rust-toolchain.toml` swaps the compiler the whole job runs on. A change to any of them can turn
+ * the cargo matrix from green to red while touching not one `.rs` file, so classifying it as
+ * "cannot reach the cargo build" would stand the job down on precisely the change that needed it.
+ *
+ * Deliberately the whole family rather than only the filenames named in review. `rustfmt.toml` and
+ * `clippy.toml` are the same hazard under two names, and fixing one while leaving the other is a
+ * fix that holds only until someone reaches for the other tool. Each entry earns its place by
+ * being read by a command this job actually runs -- cargo, rustfmt, clippy, or the toolchain
+ * selection -- which is what bounds the list rather than leaving it open-ended.
+ *
+ * Both the bare and dot-prefixed spellings are listed because both tools accept both.
+ */
+const RUST_TOOL_CONFIGS = new Set([
+  'rustfmt.toml',
+  '.rustfmt.toml',
+  'clippy.toml',
+  '.clippy.toml',
+  'rust-toolchain',
+  'rust-toolchain.toml',
+]);
+
+/**
+ * True when a repository-relative path can affect the `Sidecar` job.
+ *
+ * The safety direction is inverted relative to `isDocumentationPath`, and deliberately so. There
+ * the load-bearing answer was "this IS documentation", so recognition had to be positive and
+ * absence of evidence could not imply it. Here the load-bearing answer is "this DOES affect the
+ * crate", so *that* is what must never be inferred from absence: anything this cannot reason
+ * about, and anything carrying a Rust smell wherever it sits, answers `true` and the job runs.
+ *
+ * A prefix test on `native/` alone would be the fragile form: it is correct only for as long as
+ * every crate lives there, and a second crate added elsewhere would silently stop being built.
+ * `.rs`, the cargo manifests and the tool configs are matched by suffix and basename anywhere in
+ * the tree so the predicate survives that move without needing to be revisited.
+ *
+ * None of the tool-config files exists in this repository today, and that is the reason to handle
+ * them now rather than when one appears. The cost of the predicate being wrong is paid on the
+ * commit that ADDS such a file -- the very commit whose effect on the build nobody has measured
+ * yet -- and a fast path that stands the cargo matrix down on that commit is the blind check this
+ * detector's header already refuses to ship.
+ */
+export const affectsRust = (file) => {
+  if (typeof file !== 'string' || file === '') return true;
+  // A shape this cannot reason about is treated as affecting the crate, not as exempt from it.
+  if (
+    file.startsWith('/') ||
+    file.includes('\\') ||
+    file.split('/').includes('..')
+  ) {
+    return true;
+  }
+  if (file.startsWith('native/')) return true;
+  if (file.endsWith('.rs')) return true;
+  // Anything under a `.cargo/` directory, at any depth, is cargo's own configuration by
+  // construction -- `.cargo/config.toml` and its extensionless predecessor `.cargo/config` can
+  // redirect the registry, change the target, or inject rustflags. Matched by directory segment
+  // rather than by basename because `config` and `config.toml` are far too generic to claim
+  // globally: `src/config.toml` is not cargo's, and claiming it would cost build minutes on every
+  // unrelated change. The directory is what makes the file cargo's, so the directory is the test.
+  if (file.split('/').includes('.cargo')) return true;
+  const base = path.posix.basename(file);
+  if (RUST_MANIFESTS.has(base)) return true;
+  if (RUST_TOOL_CONFIGS.has(base)) return true;
+  return RUST_GATE_FILES.has(file);
+};
+
+/**
  * Classifies a changed-file list against a path predicate, shared by both the docs-only and the
  * docs-and-tests tiers so their "empty list is not a licence to skip" and "list every offender"
  * behaviour cannot drift apart.
@@ -180,6 +273,35 @@ export const classifyDocsAndTests = (files) => {
     'paths outside documentation and tests changed',
   );
   return { docsAndTests: pass, offenders, reason };
+};
+
+/**
+ * Classifies a changed-file list for the rust-untouched tier: no changed path can affect the
+ * cargo build, so the `Sidecar` job's toolchain install, two format/clippy passes, four test
+ * invocations and lib3mf build have nothing to say about the change under review (#707).
+ *
+ * This tier is INDEPENDENT of the other two rather than nested inside them. A pull request that
+ * rewrites `src/main/index.ts` is neither docs-only nor docs-and-tests, and every `Desktop` and
+ * `Release package` step correctly runs over it -- but it cannot change a line of Rust, and until
+ * this tier existed it still paid for a full two-platform cargo matrix. That case is the common
+ * one, not the exotic one: over the twenty pull requests preceding this change, nineteen touched
+ * no Rust at all, and `Sidecar (windows-latest)` was the longest single job in the run on several
+ * of them -- the wall-clock critical path, compiling a crate the change never reached.
+ *
+ * Because the tiers are independent, `ci.yml` composes them rather than replacing one with
+ * another: the `Sidecar` steps stand down on docs-only OR docs-and-tests OR rust-untouched, and
+ * the first two remain in the condition even though this tier now subsumes them in practice. They
+ * are not redundant by construction, only by coincidence of the current predicates, and dropping
+ * them would make `Sidecar`'s gating depend on that coincidence holding.
+ */
+export const classifyRustUntouched = (files) => {
+  const { pass, offenders, reason } = classifyBy(
+    files,
+    (file) => !affectsRust(file),
+    'no changed path can affect the cargo build',
+    'paths that can affect the cargo build changed',
+  );
+  return { rustUntouched: pass, offenders, reason };
 };
 
 const git = (args) =>
@@ -263,6 +385,11 @@ const main = () => {
     offenders: docsAndTestsOffenders,
     reason: docsAndTestsReason,
   } = classifyDocsAndTests(files ?? []);
+  const {
+    rustUntouched,
+    offenders: rustOffenders,
+    reason: rustReason,
+  } = classifyRustUntouched(files ?? []);
 
   console.log(`docs-only fast path: ${why}`);
   if (files) console.log(`changed files: ${files.length}`);
@@ -283,10 +410,19 @@ const main = () => {
   }
   console.log(`docs_and_tests=${docsAndTests} (${docsAndTestsReason})`);
 
+  if (rustOffenders.length) {
+    console.log('can affect the cargo build:');
+    for (const file of rustOffenders.slice(0, 20)) console.log(`  ${file}`);
+    if (rustOffenders.length > 20)
+      console.log(`  ... and ${rustOffenders.length - 20} more`);
+  }
+  console.log(`rust_untouched=${rustUntouched} (${rustReason})`);
+
   const out = process.env.GITHUB_OUTPUT;
   if (out) {
     appendFileSync(out, `docs_only=${docsOnly}\n`);
     appendFileSync(out, `docs_and_tests=${docsAndTests}\n`);
+    appendFileSync(out, `rust_untouched=${rustUntouched}\n`);
   }
 };
 
