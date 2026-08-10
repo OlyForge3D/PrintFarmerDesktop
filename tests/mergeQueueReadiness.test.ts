@@ -168,16 +168,27 @@ describe('the parsers see the real files, not an empty string', () => {
   });
 
   it('reads the advisory workflows as not subscribing', () => {
-    for (const file of [
-      'citation-reachability.yml',
-      'pr-closure-scope.yml',
-      'sequencing-hold.yml',
-    ]) {
+    for (const file of ['citation-reachability.yml', 'pr-closure-scope.yml']) {
       const entry = workflows.find((candidate) => candidate.file === file);
       const triggers = triggersOf(entry!.contents, file);
       expect(triggers).toContain('pull_request');
       expect(triggers).not.toContain('merge_group');
     }
+  });
+
+  it('reads sequencing-hold.yml as reporting for queued entries (#480)', () => {
+    // #480: this workflow moved from "advisory" to "reports" once its `on:`
+    // block gained `merge_group:`, making its context eligible to be a
+    // required one. See .squad/holds.md's #480 follow-up section for the
+    // measured steps that landed it, and check-hold-gate-readiness.mjs for
+    // the remaining (owner-only) prerequisite before it is actually required.
+    const entry = workflows.find(
+      (candidate) => candidate.file === 'sequencing-hold.yml',
+    );
+    const triggers = triggersOf(entry!.contents, entry!.file);
+    expect(triggers).toContain('pull_request');
+    expect(triggers).toContain('merge_group');
+    expect(declaredClassOf(entry!.contents, entry!.file)).toBe('reports');
   });
 
   it('reads the general closing-reference workflow as reporting for queued entries', () => {
@@ -286,14 +297,18 @@ describe('the refusal text explains the failure that has no red to look at', () 
   it('names each context, its workflow, and what will happen', () => {
     // The text is the product here. A queue entry that hangs produces no
     // failing check to open, so whoever is looking has only this message.
+    // "Sequencing hold" itself no longer deadlocks (#480 gave it merge_group
+    // support), so this now exercises the same hazard against a context that
+    // still does: "Gate issue closure scope" (pr-closure-scope.yml), which
+    // remains advisory for the reason its own header states.
     const message = formatDeadlock(
       evaluateRequiredContexts({
         workflows,
-        requiredContexts: ['Sequencing hold'],
+        requiredContexts: ['Gate issue closure scope'],
       }),
     );
-    expect(message).toContain('Sequencing hold');
-    expect(message).toContain('sequencing-hold.yml');
+    expect(message).toContain('Gate issue closure scope');
+    expect(message).toContain('pr-closure-scope.yml');
     expect(message).toContain('Pending forever');
     expect(message).toContain('#122');
   });

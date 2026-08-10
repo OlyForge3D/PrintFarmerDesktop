@@ -280,24 +280,27 @@ export const UNENFORCED_CHECKS = {
     'real sequencing-hold.yml text, under `npm run test`. #480 chose ' +
     '"Sequencing hold" as a required status context over required approving ' +
     'reviews, which is categorically impossible while jpapiez is the sole ' +
-    'collaborator (self-review 422s; #206, #187). That choice has two ' +
-    'remaining prerequisites this script reports on: (1) sequencing-hold.yml ' +
-    'must subscribe to merge_group and reclassify from "advisory" to ' +
-    '"reports" — a `.github/workflows/` edit, blocked by the same missing ' +
-    '`workflow` OAuth scope check:closed-head-dispatch and ' +
-    'check:direct-push-artifact above are blocked on (measured directly: a ' +
-    'one-line push under that path was rejected with "refusing to allow an ' +
-    'OAuth App to create or update workflow ... without `workflow` scope"); ' +
-    '(2) the repository owner must add "Sequencing hold" to development\'s ' +
-    'required_status_checks.contexts, a branch-protection admin write this ' +
-    'session does not perform. ' +
-    'STATE THE WEAKNESS PLAINLY: until both land, this reports readiness by ' +
+    'collaborator (self-review 422s; #206, #187). That choice had two ' +
+    'prerequisites this script reports on. (1) is now DONE: ' +
+    'sequencing-hold.yml subscribes to merge_group and declares ' +
+    '"# merge-queue: reports" (was "advisory") — landed with a second, ' +
+    'non-active `gh` account carrying `workflow` scope, switched to ' +
+    'in-process (unset GH_TOKEN/GITHUB_TOKEN, `gh auth switch`, remote URL ' +
+    'set from `gh auth token`) because the active session credential lacked ' +
+    'that scope on its own, the same gap check:closed-head-dispatch and ' +
+    'check:direct-push-artifact above still report against. (2) remains, ' +
+    'deliberately: the repository owner must add "Sequencing hold" to ' +
+    "development's required_status_checks.contexts, a branch-protection " +
+    'admin write this session does not perform even though its token ' +
+    'carries `admin: true` — #480\'s own reasoning ("a gate the proposer ' +
+    'can silently install is not a gate") applies to every session that ' +
+    'could make this call, not only the first one that measured it. ' +
+    'STATE THE WEAKNESS PLAINLY: until (2) lands, this reports readiness by ' +
     'hand only, and the #480 gate itself is not live. See ' +
     '.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md ' +
-    'for the exact diff and API call. Discharge path: once a maintainer with ' +
-    '`workflow` scope lands the trigger change and the branch-protection ' +
-    'context is added, `npm run check:hold-gate-readiness` reports ready and ' +
-    'this entry should be deleted.',
+    'for the exact diff and API call. Discharge path: once the owner adds ' +
+    'the branch-protection context, `npm run check:hold-gate-readiness` ' +
+    'reports ready and this entry should be deleted.',
   'check:stranded-branches':
     'Its judgement IS enforced in CI: tests/strandedBranches.test.ts drives ' +
     'listLocalBranches, listStrandedCommits, evaluateRemoteRefPresence and ' +

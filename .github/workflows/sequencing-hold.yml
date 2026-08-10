@@ -1,20 +1,31 @@
 name: Sequencing hold
 
-# merge-queue: advisory
+# merge-queue: reports
 #
-# Same constraint as pr-closure-scope.yml, and for the same reason: this
-# workflow does not report under merge_group, so its check run MUST NOT be a
-# required context. .squad/holds.md says so in prose; this line is the form a
-# check can read. scripts/check-merge-queue-contexts.mjs holds that
-# classification, enforced by tests/mergeQueueReadiness.test.ts under
-# `npm run test`; its live branch-protection comparison is wired into a step
-# in ci.yml's `advisories` job (#186, #472 — that comparison used to have no
-# call site at all), though that step only actually compares once a
-# repo-admin-scoped token is configured there — see that step's own comment.
+# #480: this workflow now subscribes to merge_group (below), so its check run
+# is eligible to be a required context — the reason pr-closure-scope.yml
+# stays "advisory" no longer applies here, because that reason was narrowly
+# "does not run under merge_group", and that is now false for this workflow.
+# scripts/check-merge-queue-contexts.mjs holds this classification, enforced
+# by tests/mergeQueueReadiness.test.ts under `npm run test`; its live
+# branch-protection comparison is wired into a step in ci.yml's `advisories`
+# job (#186, #472 — that comparison used to have no call site at all), though
+# that step only actually compares once a repo-admin-scoped token is
+# configured there — see that step's own comment.
+#
+# Eligible is not the same as required: `development`'s
+# required_status_checks.contexts still does not name "Sequencing hold" as of
+# this change (a branch-protection admin write, deliberately left to the
+# repository owner rather than made by this session — see #480 and
+# .squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md).
+# `npm run check:hold-gate-readiness` reports exactly that remaining gap.
 
 # Deliberately a separate workflow rather than a job in ci.yml, for the same
 # reason pr-closure-scope.yml is: the check needs a pull request number and a
-# pull request's labels, and neither `push` nor `merge_group` carries either.
+# pull request's labels, and `push` carries neither. (`merge_group` DOES carry
+# a resolvable PR number as of the subscription added below — see that
+# comment — but ci.yml's jobs are still the wrong home for a check keyed on
+# labels, which ci.yml's build/test jobs are not.)
 # Adding it to ci.yml would have required a job-level `if:` or a
 # `github.event_name` branch, both of which tests/ciWorkflowTriggers.test.ts
 # bans outright — a job skipped by a conditional reports `skipped`, which counts
@@ -37,15 +48,22 @@ name: Sequencing hold
 # Note that `types:` REPLACES the default set rather than extending it, so the
 # three defaults are listed explicitly alongside the two that matter.
 #
-# Consequence, stated plainly: like pr-closure-scope.yml this workflow does not
-# report under `merge_group`. It MUST NOT be added to a branch ruleset's
-# required contexts while that remains true — a required context that no
-# workflow emits stays Pending forever and blocks the entry instead of failing
-# it. tests/sequencingHold.test.ts pins this subscription so the constraint is
-# checked rather than remembered.
+# `merge_group:` is left on its default configuration deliberately, matching
+# closing-reference-declaration.yml: a merge-queue entry carries no label to
+# check (the queue's own ref has none), but check-sequencing-hold.mjs does not
+# need one either — it reads the PR's labels via the REST API, keyed off the
+# PR number resolvePullRequestNumber() recovers from the queue's
+# `refs/heads/gh-readonly-queue/<branch>/pr-<N>-<sha>` head ref (the same
+# resolver pr-closure-scope.yml already uses). Without this trigger, a
+# required "Sequencing hold" context would never report for a queued entry —
+# the entry would hang Pending forever rather than fail (#122) — which is
+# exactly why this context was NOT required until this subscription existed.
+# tests/sequencingHold.test.ts and tests/mergeQueueReadiness.test.ts pin the
+# subscription so the constraint is checked rather than remembered.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
 
 permissions:
   contents: read
