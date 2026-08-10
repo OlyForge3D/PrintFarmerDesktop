@@ -15,14 +15,36 @@ export interface SyncPlan {
   queued: BehindCandidate[];
 }
 
-export function planSyncOrder(
-  candidates: readonly BehindCandidate[],
-): Map<string, SyncPlan>;
+export interface SyncLease {
+  prNumber: number;
+  claimedAt: string;
+  expiresAt: string;
+}
+
+export const SYNC_LEASE_REF: string;
+export const LEASE_TTL_MS: number;
+
+export function planSyncOrder(candidates: readonly BehindCandidate[]): SyncPlan;
 
 export function formatPlan(
-  plans: Map<string, SyncPlan>,
+  plan: SyncPlan,
   skipped: readonly SkippedPr[],
+  activeLease?: SyncLease | null,
 ): string;
+
+export function isLeaseExpired(lease: SyncLease, now: number): boolean;
+
+export function readSyncLease(
+  remote: string,
+  run: (...args: unknown[]) => unknown,
+): { lease: SyncLease | null; oid: string | null };
+
+export function claimSyncLease(
+  prNumber: number,
+  remote: string,
+  run: (...args: unknown[]) => unknown,
+  options?: { now?: number; ttlMs?: number },
+): { claimed: boolean; reason?: string };
 
 export function surveyBehindPrs(
   opts: { remote?: string },
@@ -33,6 +55,7 @@ export function surveyBehindPrs(
 export function parseArgs(argv: readonly string[]): {
   remote?: string;
   help?: boolean;
+  claim?: boolean;
   error?: string;
 };
 

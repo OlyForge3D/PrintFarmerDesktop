@@ -398,6 +398,38 @@ the moment of use — before routing, holding, reviewing, or publishing," which 
 role reads. This section stays the authoritative procedure for Ralph's own merge gate
 specifically; it is not restated a second time in the shared file.
 
+### 9.3 Serializing base-syncs against the shared runner pool — #263
+
+**#263:** six `CI` runs entered within eleven seconds against the shared GitHub-hosted
+runner pool (~40 jobs fanned out), and the PR whose jobs queued behind that burst took
+2x as long wall-clock as a PR that entered cleanly the same second — same total job time
+in both cases, all of the difference was start spread waiting for a free runner.
+Recommending or dispatching more than one base-sync in the same round (even against
+**different** base branches — the runner pool is one pool regardless of target branch)
+reintroduces exactly this burst, and each sync that gets starved stays BEHIND longer and
+is more likely to need yet another sync before the next trunk commit lands — the feedback
+loop the issue names.
+
+Before recommending or dispatching a base-sync for ANY BEHIND PR, consult:
+
+```bash
+npm run plan:behind-sync-order
+```
+
+This reports the single next PR to sync, oldest-first across every base combined (never
+one recommendation per base), and whether a sync is already in flight for some other PR
+(a lease claimed via `--claim` by whichever session is actually performing that sync). If
+a lease is active, do not dispatch or recommend another base-sync this round regardless of
+which PR or base it would target — wait for that lease to clear or expire. The session that
+actually performs a sync (not Ralph, which delegates all code work per §1) is the one that
+should pass `--claim` when running the tool, so a concurrent round or session sees the
+reservation rather than recommending the same or a different PR to sync at the same time.
+
+See `scripts/plan-behind-sync-order.mjs`'s header comment for the full design (why the
+scheduling question is global even though each PR's own BEHIND-ness is decided per base,
+and the git-native lease mechanism) and `.squad/decisions/inbox/vasquez-263-runner-contention-findings.md`
+for the measurement history.
+
 ---
 
 ## 10. Report Format

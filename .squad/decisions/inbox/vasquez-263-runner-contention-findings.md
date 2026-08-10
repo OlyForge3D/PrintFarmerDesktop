@@ -69,6 +69,56 @@ returns has reintroduced the exact contention #263 measured. It does not
 rebase or push anything itself: syncing another session's branch is still
 that session's own work per `.squad/skills/git-workflow/SKILL.md`'s
 "never rebase or merge around it you do not own" rule. Tests:
-`tests/planBehindSyncOrder.test.ts` (20 tests, ordering logic + survey
+`tests/planBehindSyncOrder.test.ts` (43 tests, ordering logic + survey
 plumbing stubbed the same way `tests/behindBase.test.ts` stubs
 `sha-status.mjs`).
+
+### Addendum: external review (Hicks, Vasquez on PR #681) found two real defects in the first cut, both now fixed
+
+PR #681's local three-way review approved a first cut that grouped
+`planSyncOrder`'s output **per base branch** (`Map<baseRefName, {next,
+queued}>`), on the reasoning that PR ancestry/BEHIND-ness is a per-base
+question — true, and `surveyBehindPrs`'s per-base ancestry cache is correct
+and unchanged. But Ralph's dispatched external reviewers (also named Hicks
+and Vasquez — a naming collision with this session's own local review
+personas, not the same reviewers) posted REJECT verdicts as real PR
+comments identifying that the *scheduling* question is NOT per-base:
+`.github/workflows/ci.yml`'s `pull_request:` trigger fans every push, on
+every base, into the SAME shared GitHub-hosted runner pool, so
+recommending "sync #10 (development) next" and "sync #99 (release/1.x)
+next" in the same round still launches two concurrent CI fan-outs into one
+contended pool — exactly the burst #263 measured. Vasquez's second finding:
+the tool was advisory-only with no lock, so two sessions (or the same
+session across nearby rounds) could both read the same "sync next" and both
+act on it. Hicks's third finding: nothing in checked-in automation actually
+called the script, so #263 was not really fixed yet, only measurable.
+
+Fixes shipped in the same round, each empirically verified before relying
+on it in code (not merely reasoned about):
+
+- `planSyncOrder` now returns a single GLOBAL `{next, queued}`, sorted by
+  `createdAt` then PR number across every base together. A new test
+  (`serializes globally across base branches, not one queue per base`)
+  asserts two candidates on different bases still yield only one `next`.
+- A real compare-and-swap lease (`readSyncLease`/`claimSyncLease`),
+  implemented as a plain commit (parented on the git empty-tree object,
+  `4b825dc642cb6eb9a060e54bf8d69288fbee4904`, so no tree/blob write is
+  needed) whose message is JSON `{prNumber, claimedAt, expiresAt}`, pushed
+  to a dedicated ref `refs/behind-sync-lease/current` via
+  `git push <remote> <oid>:<ref> --force-with-lease=<ref>:<expectedOldOid>`.
+  This does NOT need the `workflow` scope this session lacks (see above) —
+  it is an arbitrary custom ref push, not a `.github/workflows/**` edit.
+  CAS semantics (empty-expect-requires-ref-absent, stale-expect-rejected,
+  correct-expect-succeeds, fetch-then-read-message) were verified against a
+  disposable scratch bare git repository before being relied on in
+  `scripts/plan-behind-sync-order.mjs`; the scratch repo was deleted
+  afterward. `main` stays read-only by default (reports an active lease
+  informationally); a new opt-in `--claim` flag lets a caller that is
+  actually about to perform the sync also reserve it atomically.
+- Wired `plan:behind-sync-order` into `.squad/agents/ralph/loop.md` §9.3 —
+  the natural "checked-in automation" call site available to this session
+  (a normal markdown file Ralph reads every round, per the file's own
+  header), given the `workflow`-scope gap blocking a `.github/workflows/**`
+  wiring. Addresses Hicks's "inert script, nothing calls it" finding within
+  this repo's agent-driven (not pure-CI) automation model.
+

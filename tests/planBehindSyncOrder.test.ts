@@ -6,6 +6,10 @@ import {
   parseArgs,
   main,
   surveyBehindPrs,
+  isLeaseExpired,
+  readSyncLease,
+  claimSyncLease,
+  SYNC_LEASE_REF,
 } from '../scripts/plan-behind-sync-order.mjs';
 
 // The git-level primitives come from scripts/sha-status.mjs and
@@ -22,8 +26,8 @@ vi.mock('../scripts/sha-status.mjs', () => ({
 const shaStatus = await import('../scripts/sha-status.mjs');
 
 describe('planSyncOrder', () => {
-  it('returns an empty plan map when nothing is BEHIND', () => {
-    const plans = planSyncOrder([
+  it('returns a null next when nothing is BEHIND', () => {
+    const plan = planSyncOrder([
       {
         number: 1,
         createdAt: '2026-08-01T00:00:00Z',
@@ -37,7 +41,8 @@ describe('planSyncOrder', () => {
         behind: false,
       },
     ]);
-    expect(plans.size).toBe(0);
+    expect(plan.next).toBeNull();
+    expect(plan.queued).toEqual([]);
   });
 
   it('picks exactly one next candidate, never the whole BEHIND set at once', () => {
@@ -46,7 +51,7 @@ describe('planSyncOrder', () => {
     // measured (six CI runs entering within eleven seconds). The shape of
     // the return value -- one `next`, the rest `queued` -- is what makes
     // "sync all of these" the wrong thing to read off it.
-    const plans = planSyncOrder([
+    const plan = planSyncOrder([
       {
         number: 10,
         createdAt: '2026-08-04T09:00:00Z',
@@ -66,13 +71,12 @@ describe('planSyncOrder', () => {
         behind: true,
       },
     ]);
-    const plan = plans.get('development');
-    expect(plan?.next?.number).toBe(10);
-    expect(plan?.queued.map((c) => c.number)).toEqual([11, 12]);
+    expect(plan.next?.number).toBe(10);
+    expect(plan.queued.map((c) => c.number)).toEqual([11, 12]);
   });
 
   it('orders the oldest-createdAt BEHIND PR first regardless of input order', () => {
-    const plans = planSyncOrder([
+    const plan = planSyncOrder([
       {
         number: 30,
         createdAt: '2026-08-04T11:00:00Z',
@@ -92,13 +96,12 @@ describe('planSyncOrder', () => {
         behind: true,
       },
     ]);
-    const plan = plans.get('development');
-    expect(plan?.next?.number).toBe(10);
-    expect(plan?.queued.map((c) => c.number)).toEqual([20, 30]);
+    expect(plan.next?.number).toBe(10);
+    expect(plan.queued.map((c) => c.number)).toEqual([20, 30]);
   });
 
   it('breaks a createdAt tie on the lower PR number, deterministically', () => {
-    const plans = planSyncOrder([
+    const plan = planSyncOrder([
       {
         number: 42,
         createdAt: '2026-08-04T09:00:00Z',
@@ -112,13 +115,12 @@ describe('planSyncOrder', () => {
         behind: true,
       },
     ]);
-    const plan = plans.get('development');
-    expect(plan?.next?.number).toBe(7);
-    expect(plan?.queued.map((c) => c.number)).toEqual([42]);
+    expect(plan.next?.number).toBe(7);
+    expect(plan.queued.map((c) => c.number)).toEqual([42]);
   });
 
   it('ignores PRs that are not BEHIND when choosing the next sync', () => {
-    const plans = planSyncOrder([
+    const plan = planSyncOrder([
       {
         number: 1,
         createdAt: '2026-08-04T08:00:00Z',
@@ -132,9 +134,8 @@ describe('planSyncOrder', () => {
         behind: true,
       },
     ]);
-    const plan = plans.get('development');
-    expect(plan?.next?.number).toBe(2);
-    expect(plan?.queued).toEqual([]);
+    expect(plan.next?.number).toBe(2);
+    expect(plan.queued).toEqual([]);
   });
 
   it('does not mutate the input array', () => {
@@ -157,11 +158,17 @@ describe('planSyncOrder', () => {
     expect(input).toEqual(copy);
   });
 
-  it('groups BEHIND PRs by their own base, never serializing across bases', () => {
-    // Two open PRs targeting different bases are not the same queue: #10
-    // being BEHIND development says nothing about whether #99 (targeting
-    // release/1.x) is safe to sync next, or vice versa.
-    const plans = planSyncOrder([
+  it('serializes globally across base branches, not one queue per base', () => {
+    // Hicks and Vasquez, external review round on PR #681: the previous
+    // version grouped by baseRefName and returned an independent `next` PER
+    // BASE, so #10 (development) and #99 (release/1.x) could both be
+    // recommended as "next" in the same round. That reintroduces the
+    // contention #263 measured -- both syncs still launch a full CI fan-out
+    // into the SAME shared runner pool, regardless of which branch either
+    // targets. Only ONE candidate, across every base combined, may come back
+    // as `next`; the other two -- even though one targets a different base
+    // entirely -- must be `queued`.
+    const plan = planSyncOrder([
       {
         number: 10,
         createdAt: '2026-08-04T09:00:00Z',
@@ -181,104 +188,74 @@ describe('planSyncOrder', () => {
         behind: true,
       },
     ]);
-    expect(plans.size).toBe(2);
-    expect(plans.get('development')?.next?.number).toBe(10);
-    expect(plans.get('development')?.queued.map((c) => c.number)).toEqual([11]);
-    expect(plans.get('release/1.x')?.next?.number).toBe(99);
-    expect(plans.get('release/1.x')?.queued).toEqual([]);
+    expect(plan.next?.number).toBe(99);
+    expect(plan.next?.baseRefName).toBe('release/1.x');
+    expect(plan.queued.map((c) => c.number)).toEqual([10, 11]);
   });
 });
 
 describe('formatPlan', () => {
   it('says nothing to sync when there is no next candidate anywhere', () => {
-    const text = formatPlan(new Map(), []);
+    const text = formatPlan({ next: null, queued: [] }, []);
     expect(text).toContain('No open pull request is BEHIND its base');
   });
 
   it('names exactly one PR to sync next and warns against firing multiple', () => {
-    const plans = new Map([
-      [
-        'development',
-        {
-          next: {
-            number: 5,
-            createdAt: '2026-08-04T09:00:00Z',
-            baseRefName: 'development',
-            behind: true,
-          },
-          queued: [],
-        },
-      ],
-    ]);
-    const text = formatPlan(plans, []);
+    const plan = {
+      next: {
+        number: 5,
+        createdAt: '2026-08-04T09:00:00Z',
+        baseRefName: 'development',
+        behind: true,
+      },
+      queued: [],
+    };
+    const text = formatPlan(plan, []);
     expect(text).toContain('Sync PR #5 next');
     expect(text).toContain('contention');
   });
 
+  it("warns that the cross-base guarantee holds even when queued PRs share the next one's base", () => {
+    const plan = {
+      next: {
+        number: 5,
+        createdAt: '2026-08-04T09:00:00Z',
+        baseRefName: 'development',
+        behind: true,
+      },
+      queued: [],
+    };
+    const text = formatPlan(plan, []);
+    expect(text).toMatch(/ACROSS base branches/i);
+  });
+
   it('lists queued PRs as not-yet, distinct from the one to sync now', () => {
-    const plans = new Map([
-      [
-        'development',
+    const plan = {
+      next: {
+        number: 5,
+        createdAt: '2026-08-04T09:00:00Z',
+        baseRefName: 'development',
+        behind: true,
+      },
+      queued: [
         {
-          next: {
-            number: 5,
-            createdAt: '2026-08-04T09:00:00Z',
-            baseRefName: 'development',
-            behind: true,
-          },
-          queued: [
-            {
-              number: 6,
-              createdAt: '2026-08-04T10:00:00Z',
-              baseRefName: 'development',
-              behind: true,
-            },
-            {
-              number: 7,
-              createdAt: '2026-08-04T11:00:00Z',
-              baseRefName: 'development',
-              behind: true,
-            },
-          ],
+          number: 6,
+          createdAt: '2026-08-04T10:00:00Z',
+          baseRefName: 'development',
+          behind: true,
+        },
+        {
+          number: 7,
+          createdAt: '2026-08-04T11:00:00Z',
+          baseRefName: 'release/1.x',
+          behind: true,
         },
       ],
-    ]);
-    const text = formatPlan(plans, []);
+    };
+    const text = formatPlan(plan, []);
     expect(text).toContain('do not sync these yet');
     expect(text).toContain('#6');
     expect(text).toContain('#7');
-  });
-
-  it('prints one labeled section per base when multiple bases have a plan', () => {
-    const plans = new Map([
-      [
-        'development',
-        {
-          next: {
-            number: 5,
-            createdAt: '2026-08-04T09:00:00Z',
-            baseRefName: 'development',
-            behind: true,
-          },
-          queued: [],
-        },
-      ],
-      [
-        'release/1.x',
-        {
-          next: {
-            number: 99,
-            createdAt: '2026-08-04T08:00:00Z',
-            baseRefName: 'release/1.x',
-            behind: true,
-          },
-          queued: [],
-        },
-      ],
-    ]);
-    const text = formatPlan(plans, []);
-    expect(text).toContain('Sync PR #5 next (BEHIND development');
-    expect(text).toContain('Sync PR #99 next (BEHIND release/1.x');
   });
 
   it('reports skipped/undetermined PRs distinctly, never as a silent clear', () => {
@@ -286,7 +263,7 @@ describe('formatPlan', () => {
     // the candidate list entirely, so an incomplete survey printed the
     // exact same "nothing to sync" as a genuinely clean one. Undetermined
     // must never read as all-clear.
-    const text = formatPlan(new Map(), [
+    const text = formatPlan({ next: null, queued: [] }, [
       {
         number: 42,
         reason: 'base development could not be refreshed from origin.',
@@ -299,26 +276,311 @@ describe('formatPlan', () => {
   });
 
   it('reports skipped PRs alongside a real plan, not instead of it', () => {
-    const plans = new Map([
-      [
-        'development',
-        {
-          next: {
-            number: 5,
-            createdAt: '2026-08-04T09:00:00Z',
-            baseRefName: 'development',
-            behind: true,
-          },
-          queued: [],
-        },
-      ],
-    ]);
-    const text = formatPlan(plans, [
+    const plan = {
+      next: {
+        number: 5,
+        createdAt: '2026-08-04T09:00:00Z',
+        baseRefName: 'development',
+        behind: true,
+      },
+      queued: [],
+    };
+    const text = formatPlan(plan, [
       { number: 42, reason: 'moved mid-survey.' },
     ]);
     expect(text).toContain('Sync PR #5 next');
     expect(text).toContain('Could not determine BEHIND status');
     expect(text).toContain('#42');
+  });
+
+  it('reports an active lease instead of a new recommendation, even if the leased PR is not in this survey', () => {
+    // Vasquez, external review round on PR #681: advisory-only ordering
+    // does not stop two concurrent sessions/rounds from both reading the
+    // same "sync next" recommendation and both acting on it. Once a lease
+    // is active, formatPlan must report THAT instead of computing a fresh
+    // "next" -- otherwise a second invocation mid-sync would recommend a
+    // second, concurrent base-sync anyway, defeating the whole point of the
+    // lease.
+    const plan = {
+      next: {
+        number: 5,
+        createdAt: '2026-08-04T09:00:00Z',
+        baseRefName: 'development',
+        behind: true,
+      },
+      queued: [],
+    };
+    const lease = {
+      prNumber: 3,
+      claimedAt: '2026-08-04T09:00:00.000Z',
+      expiresAt: '2026-08-04T09:30:00.000Z',
+    };
+    const text = formatPlan(plan, [], lease);
+    expect(text).toContain('already in flight for PR #3');
+    expect(text).not.toContain('Sync PR #5 next');
+    expect(text).toContain('#5');
+    expect(text).toContain('do not sync these yet');
+  });
+});
+
+describe('isLeaseExpired', () => {
+  it('is false strictly before expiresAt', () => {
+    const lease = {
+      prNumber: 1,
+      claimedAt: '2026-08-04T09:00:00.000Z',
+      expiresAt: '2026-08-04T09:30:00.000Z',
+    };
+    const now = new Date('2026-08-04T09:29:00.000Z').getTime();
+    expect(isLeaseExpired(lease, now)).toBe(false);
+  });
+
+  it('is true at or after expiresAt', () => {
+    const lease = {
+      prNumber: 1,
+      claimedAt: '2026-08-04T09:00:00.000Z',
+      expiresAt: '2026-08-04T09:30:00.000Z',
+    };
+    const now = new Date('2026-08-04T09:30:00.000Z').getTime();
+    expect(isLeaseExpired(lease, now)).toBe(true);
+  });
+
+  it('is true for an unparsable expiresAt, never treated as "never expires"', () => {
+    const lease = {
+      prNumber: 1,
+      claimedAt: '2026-08-04T09:00:00.000Z',
+      expiresAt: 'not-a-date',
+    };
+    expect(isLeaseExpired(lease, Date.now())).toBe(true);
+  });
+});
+
+describe('readSyncLease', () => {
+  it('reports no lease when the ref has never been claimed (fetch fails)', () => {
+    // Verified empirically against a scratch bare repository: fetching a
+    // ref that has never been pushed exits 128 ("couldn't find remote
+    // ref"), not 0 with empty output. That must read as "no lease", not an
+    // error to surface.
+    const run = vi
+      .fn()
+      .mockReturnValue({ status: 128, stdout: '', stderr: '' });
+    const result = readSyncLease('origin', run as never);
+    expect(result).toEqual({ lease: null, oid: null });
+    expect(run).toHaveBeenCalledWith(
+      'git',
+      [
+        'fetch',
+        '--quiet',
+        'origin',
+        `${SYNC_LEASE_REF}:refs/tmp/behind-sync-lease/read`,
+      ],
+      expect.objectContaining({ encoding: 'utf8' }),
+    );
+  });
+
+  it('fetches into a private local ref, then reads oid and message from it', () => {
+    const calls: string[][] = [];
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'fetch') return { status: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse') {
+        return { status: 0, stdout: 'abc123\n', stderr: '' };
+      }
+      if (args[0] === 'log') {
+        return {
+          status: 0,
+          stdout:
+            '{"prNumber":7,"claimedAt":"2026-08-04T09:00:00.000Z","expiresAt":"2026-08-04T09:30:00.000Z"}\n',
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    });
+    const result = readSyncLease('origin', run as never);
+    expect(result.oid).toBe('abc123');
+    expect(result.lease).toEqual({
+      prNumber: 7,
+      claimedAt: '2026-08-04T09:00:00.000Z',
+      expiresAt: '2026-08-04T09:30:00.000Z',
+    });
+    expect(calls[0]).toEqual([
+      'fetch',
+      '--quiet',
+      'origin',
+      `${SYNC_LEASE_REF}:refs/tmp/behind-sync-lease/read`,
+    ]);
+    expect(calls[1]).toEqual(['rev-parse', 'refs/tmp/behind-sync-lease/read']);
+    expect(calls[2]).toEqual([
+      'log',
+      '-1',
+      '--format=%B',
+      'refs/tmp/behind-sync-lease/read',
+    ]);
+  });
+
+  it('returns oid with a null lease when the message is not valid lease JSON', () => {
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === 'fetch') return { status: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse')
+        return { status: 0, stdout: 'abc123\n', stderr: '' };
+      if (args[0] === 'log')
+        return { status: 0, stdout: 'not json', stderr: '' };
+      throw new Error('unexpected');
+    });
+    const result = readSyncLease('origin', run as never);
+    expect(result).toEqual({ lease: null, oid: 'abc123' });
+  });
+});
+
+describe('claimSyncLease', () => {
+  it('claims an empty ref with an empty --force-with-lease expect value', () => {
+    // Verified empirically: `--force-with-lease=<ref>:` (empty expect)
+    // succeeds only if the ref does not yet exist remotely on GitHub.
+    const calls: string[][] = [];
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'fetch') return { status: 128, stdout: '', stderr: '' };
+      if (args[0] === 'commit-tree') {
+        return { status: 0, stdout: 'newoid123\n', stderr: '' };
+      }
+      if (args[0] === 'push') return { status: 0, stdout: '', stderr: '' };
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    });
+    const result = claimSyncLease(5, 'origin', run as never, {
+      now: new Date('2026-08-04T09:00:00.000Z').getTime(),
+      ttlMs: 30 * 60 * 1000,
+    });
+    expect(result).toEqual({ claimed: true });
+    const pushCall = calls.find((c) => c[0] === 'push');
+    expect(pushCall).toEqual([
+      'push',
+      'origin',
+      `newoid123:${SYNC_LEASE_REF}`,
+      `--force-with-lease=${SYNC_LEASE_REF}:`,
+    ]);
+    const commitCall = calls.find((c) => c[0] === 'commit-tree');
+    expect(commitCall?.[1]).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+    expect(commitCall?.[2]).toBe('-m');
+    const payload: unknown = JSON.parse(commitCall?.[3] as string);
+    expect(payload).toEqual({
+      prNumber: 5,
+      claimedAt: '2026-08-04T09:00:00.000Z',
+      expiresAt: '2026-08-04T09:30:00.000Z',
+    });
+  });
+
+  it('refuses without pushing when a DIFFERENT PR already holds an unexpired lease', () => {
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === 'fetch') return { status: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse')
+        return { status: 0, stdout: 'oldoid\n', stderr: '' };
+      if (args[0] === 'log') {
+        return {
+          status: 0,
+          stdout:
+            '{"prNumber":3,"claimedAt":"2026-08-04T08:00:00.000Z","expiresAt":"2026-08-04T09:30:00.000Z"}\n',
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    });
+    const result = claimSyncLease(5, 'origin', run as never, {
+      now: new Date('2026-08-04T09:00:00.000Z').getTime(),
+    });
+    expect(result.claimed).toBe(false);
+    expect(result.reason).toContain('PR #3');
+    expect(run).not.toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['push']),
+      expect.anything(),
+    );
+  });
+
+  it('allows re-claiming for the SAME PR that already holds the lease', () => {
+    const calls: string[][] = [];
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'fetch') return { status: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse')
+        return { status: 0, stdout: 'oldoid\n', stderr: '' };
+      if (args[0] === 'log') {
+        return {
+          status: 0,
+          stdout:
+            '{"prNumber":5,"claimedAt":"2026-08-04T08:00:00.000Z","expiresAt":"2026-08-04T08:30:00.000Z"}\n',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'commit-tree')
+        return { status: 0, stdout: 'newoid\n', stderr: '' };
+      if (args[0] === 'push') return { status: 0, stdout: '', stderr: '' };
+      throw new Error('unexpected');
+    });
+    const result = claimSyncLease(5, 'origin', run as never, {
+      now: new Date('2026-08-04T09:00:00.000Z').getTime(),
+    });
+    expect(result).toEqual({ claimed: true });
+    const pushCall = calls.find((c) => c[0] === 'push');
+    expect(pushCall).toEqual([
+      'push',
+      'origin',
+      `newoid:${SYNC_LEASE_REF}`,
+      `--force-with-lease=${SYNC_LEASE_REF}:oldoid`,
+    ]);
+  });
+
+  it('allows claiming after the previous lease has expired, using its oid as the expect value', () => {
+    const calls: string[][] = [];
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'fetch') return { status: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse')
+        return { status: 0, stdout: 'expiredoid\n', stderr: '' };
+      if (args[0] === 'log') {
+        return {
+          status: 0,
+          stdout:
+            '{"prNumber":3,"claimedAt":"2026-08-04T07:00:00.000Z","expiresAt":"2026-08-04T07:30:00.000Z"}\n',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'commit-tree')
+        return { status: 0, stdout: 'newoid\n', stderr: '' };
+      if (args[0] === 'push') return { status: 0, stdout: '', stderr: '' };
+      throw new Error('unexpected');
+    });
+    const result = claimSyncLease(9, 'origin', run as never, {
+      now: new Date('2026-08-04T09:00:00.000Z').getTime(),
+    });
+    expect(result).toEqual({ claimed: true });
+    const pushCall = calls.find((c) => c[0] === 'push');
+    expect(pushCall).toEqual([
+      'push',
+      'origin',
+      `newoid:${SYNC_LEASE_REF}`,
+      `--force-with-lease=${SYNC_LEASE_REF}:expiredoid`,
+    ]);
+  });
+
+  it('reports losing the race when the push is rejected as stale', () => {
+    // Verified empirically: a stale/wrong expect value is rejected by the
+    // remote ("! [rejected] ... (stale info)"), exit 1 -- this is what makes
+    // the lease an actual mutual-exclusion primitive rather than a
+    // best-effort suggestion: a losing racer's push does NOT silently
+    // overwrite the winner's claim.
+    const run = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === 'fetch') return { status: 128, stdout: '', stderr: '' };
+      if (args[0] === 'commit-tree')
+        return { status: 0, stdout: 'newoid\n', stderr: '' };
+      if (args[0] === 'push') {
+        return { status: 1, stdout: '', stderr: '! [rejected] (stale info)' };
+      }
+      throw new Error('unexpected');
+    });
+    const result = claimSyncLease(5, 'origin', run as never, {
+      now: new Date('2026-08-04T09:00:00.000Z').getTime(),
+    });
+    expect(result.claimed).toBe(false);
+    expect(result.reason).toMatch(/lost the race/);
   });
 });
 
@@ -333,6 +595,14 @@ describe('parseArgs', () => {
 
   it('reads help', () => {
     expect(parseArgs(['--help']).help).toBe(true);
+  });
+
+  it('reads --claim', () => {
+    expect(parseArgs(['--claim']).claim).toBe(true);
+  });
+
+  it('defaults claim to falsy when not passed', () => {
+    expect(parseArgs([]).claim).toBeFalsy();
   });
 
   it('rejects an unknown argument', () => {
