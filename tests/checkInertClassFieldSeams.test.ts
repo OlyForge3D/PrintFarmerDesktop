@@ -7,13 +7,22 @@
 // guard: every fixture below is a positive or negative control for one arm
 // of its detection logic, so a future edit that widens or narrows the check
 // cannot silently stop catching the shape it exists for.
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   findInertSeamCandidates,
   formatViolation,
+  listSourceFiles,
   scanRepository,
 } from '../scripts/check-inert-class-field-seams.mjs';
 
@@ -104,6 +113,66 @@ describe('findInertSeamCandidates', () => {
       findInertSeamCandidates('initializedField.fixture.ts', source),
     ).toEqual([]);
   });
+
+  it('POSITIVE CONTROL: flags a seam typed via a same-file callable type alias, not just an inline function type', () => {
+    // Bishop/Ripley/Vasquez review finding on PR #706: the original check
+    // only recognized an inline `(...) => R` type literal. A field typed via
+    // a named type alias for a function type -- `type Handler = (id:
+    // string) => Promise<void>;` used as `field?: Handler;` -- is the exact
+    // same #270 shape and must be flagged too.
+    const source = readFixture('typeAliasSeam.fixture.ts');
+    const violations = findInertSeamCandidates(
+      'typeAliasSeam.fixture.ts',
+      source,
+    );
+    expect(violations.map((v) => v.name)).toEqual(['resolveConflict']);
+    expect(violations[0]?.typeText).toBe('ResolveHandler');
+  });
+
+  it('POSITIVE CONTROL: flags a seam typed via a same-file callable interface (a call signature)', () => {
+    // Same review finding: a field typed via an interface with a call
+    // signature -- `interface Handler { (id: string): Promise<void>; }` --
+    // is exactly as callable, and exactly as inert, as an inline function
+    // type or a type alias to one.
+    const source = readFixture('callableInterfaceSeam.fixture.ts');
+    const violations = findInertSeamCandidates(
+      'callableInterfaceSeam.fixture.ts',
+      source,
+    );
+    expect(violations.map((v) => v.name)).toEqual(['resolveConflict']);
+  });
+
+  it('does not flag a field typed via a non-callable named type (a data interface or a type alias to a plain type)', () => {
+    // Resolving named types must not become "any type reference is
+    // function-typed" -- that would make the check noisy on the extremely
+    // common case of an optional field typed via an interface or type
+    // alias that is ordinary data, not a capability.
+    const source = readFixture('nonCallableNamedType.fixture.ts');
+    expect(
+      findInertSeamCandidates('nonCallableNamedType.fixture.ts', source),
+    ).toEqual([]);
+  });
+
+  it("does not flag a field assigned via bracket/computed property access (`this['foo'] = ...`)", () => {
+    // Bishop's false-positive finding: the original self-assignment
+    // detection only recognized the dotted `this.foo = ...` form. A field
+    // the class assigns to itself via bracket notation is just as
+    // self-managed and must not be flagged as an inert seam.
+    const source = readFixture('bracketAssignedSeam.fixture.ts');
+    expect(
+      findInertSeamCandidates('bracketAssignedSeam.fixture.ts', source),
+    ).toEqual([]);
+  });
+
+  it('does not flag a field assigned via `Object.assign(this, { foo: ... })`', () => {
+    // Same false-positive class: `Object.assign` is another ordinary way a
+    // class assigns its own fields to itself and must not read as an
+    // external prototype patch.
+    const source = readFixture('objectAssignSeam.fixture.ts');
+    expect(
+      findInertSeamCandidates('objectAssignSeam.fixture.ts', source),
+    ).toEqual([]);
+  });
 });
 
 describe('formatViolation', () => {
@@ -118,6 +187,48 @@ describe('formatViolation', () => {
     expect(message).toContain('exampleSeam?:');
     expect(message).toContain('useDefineForClassFields');
     expect(message).toContain('declare');
+  });
+});
+
+/**
+ * Bishop's file-scan finding on PR #706: `git ls-files -- 'src/**\/*.ts'`
+ * does NOT also match root-level `src/*.ts` files -- git's pathspec glob
+ * requires `**` to span at least one full directory segment, so a
+ * root-level file is invisible to that pattern alone. A scan that silently
+ * skips files it should have scanned is exactly the #270-shaped failure
+ * mode (a clean result must mean "genuinely nothing found", not "we never
+ * looked here") -- so this is a real repo behavior to pin, not a fixture.
+ */
+describe('listSourceFiles', () => {
+  let repoDir: string;
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(path.join(tmpdir(), 'inert-seam-scan-'));
+    execFileSync('git', ['init', '--quiet'], { cwd: repoDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], {
+      cwd: repoDir,
+    });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
+    mkdirSync(path.join(repoDir, 'src', 'nested'), { recursive: true });
+    writeFileSync(
+      path.join(repoDir, 'src', 'rootLevel.ts'),
+      'export const rootLevel = true;\n',
+    );
+    writeFileSync(
+      path.join(repoDir, 'src', 'nested', 'nestedFile.ts'),
+      'export const nested = true;\n',
+    );
+    execFileSync('git', ['add', '.'], { cwd: repoDir });
+  });
+
+  afterEach(() => {
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('includes both a root-level src/*.ts file and a nested src/**/*.ts file', () => {
+    const files = listSourceFiles(repoDir);
+    expect(files).toContain(path.posix.join('src', 'rootLevel.ts'));
+    expect(files).toContain(path.posix.join('src', 'nested', 'nestedFile.ts'));
   });
 });
 

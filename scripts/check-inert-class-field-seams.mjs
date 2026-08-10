@@ -61,15 +61,27 @@ import ts from 'typescript';
  * ignore list to keep in sync.
  */
 export function listSourceFiles(repoRoot) {
+  // `src/**/*.ts` alone misses root-level `src/*.ts` files: git's pathspec
+  // glob treats `**` as requiring at least one full directory segment, so it
+  // does not also match zero segments the way some other glob dialects do.
+  // Pass both the nested and root-level patterns explicitly rather than
+  // relying on `**` to cover both -- a scan that silently skips files it
+  // should have scanned is exactly the #270-shaped failure mode this check
+  // exists to prevent (a clean result must mean "genuinely nothing found",
+  // never "some inputs were never looked at").
   const output = execFileSync(
     'git',
-    ['ls-files', '--', 'src/**/*.ts', 'src/**/*.tsx'],
+    ['ls-files', '--', 'src/**/*.ts', 'src/**/*.tsx', 'src/*.ts', 'src/*.tsx'],
     { cwd: repoRoot, encoding: 'utf8' },
   );
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
+  return Array.from(
+    new Set(
+      output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ),
+  ).sort();
 }
 
 function isDeclareField(member) {
@@ -91,32 +103,125 @@ function isStaticField(member) {
 }
 
 /**
+ * Collects every top-level (or nested, e.g. inside a namespace) type alias
+ * and interface declaration in a source file, keyed by name, so that a class
+ * field typed via a *named* callable type -- a type alias whose aliased type
+ * is a function type, or an interface with a call signature -- resolves to
+ * "function-typed" the same as an inline `(...) => R` literal would.
+ *
+ * Without this, `field?: Handler;` (with `type Handler = (x: T) => R;` or
+ * `interface Handler { (x: T): R; }` declared alongside it) is a real #270
+ * seam shape -- assigning a callable to the prototype is exactly as inert as
+ * the inline-function-type case -- but was invisible to the original
+ * inline-only check.
+ */
+function collectCallableTypeNames(sourceFile) {
+  const aliases = new Map(); // name -> TypeNode (the aliased type)
+  const callableInterfaces = new Set(); // names of interfaces with a call signature
+
+  const visit = (node) => {
+    if (ts.isTypeAliasDeclaration(node)) {
+      aliases.set(node.name.text, node.type);
+    } else if (ts.isInterfaceDeclaration(node)) {
+      const hasCallSignature = node.members.some((member) =>
+        ts.isCallSignatureDeclaration(member),
+      );
+      if (hasCallSignature) callableInterfaces.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  return { aliases, callableInterfaces };
+}
+
+/**
  * A field only reads as a capability seam if its type is itself callable --
  * a plain `resolveCalibrationConflict?: string` optional field is ordinary
  * optional data, not a prototype-patchable capability, and flagging it would
  * make this check noisy on the common "optional config value" shape it is
  * not built to guard.
+ *
+ * `typeNames` resolves same-file type aliases and callable interfaces (see
+ * `collectCallableTypeNames`); `seen` guards against infinite recursion on a
+ * type alias that (directly or through a chain) refers back to itself.
  */
-function isFunctionTyped(typeNode, sourceFile) {
+function isFunctionTyped(typeNode, sourceFile, typeNames, seen = new Set()) {
   if (!typeNode) return false;
   if (ts.isFunctionTypeNode(typeNode)) return true;
   // A parenthesized or unioned function type, e.g. `(() => void) | undefined`
   // -- walk unions/parentheses looking for at least one function member.
   if (ts.isParenthesizedTypeNode(typeNode)) {
-    return isFunctionTyped(typeNode.type, sourceFile);
+    return isFunctionTyped(typeNode.type, sourceFile, typeNames, seen);
   }
   if (ts.isUnionTypeNode(typeNode)) {
-    return typeNode.types.some((member) => isFunctionTyped(member, sourceFile));
+    return typeNode.types.some((member) =>
+      isFunctionTyped(member, sourceFile, typeNames, seen),
+    );
+  }
+  // A named type -- `field?: Handler;` -- resolves through a same-file type
+  // alias or callable interface declaration, e.g. `type Handler = (x: T) =>
+  // R;` or `interface Handler { (x: T): R; }`. Only plain identifiers are
+  // resolved (not `Namespace.Handler`-style qualified names, which this
+  // simple AST-only check has no reliable way to locate without a full
+  // multi-file type-checking program).
+  if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) {
+    const name = typeNode.typeName.text;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    if (typeNames.callableInterfaces.has(name)) return true;
+    const aliasedType = typeNames.aliases.get(name);
+    if (aliasedType) {
+      return isFunctionTyped(aliasedType, sourceFile, typeNames, seen);
+    }
+    return false;
   }
   return false;
 }
 
 /**
- * True if the class body assigns `this.<fieldName> = ...` anywhere in its own
+ * True if a node is an ObjectLiteralExpression property (init, shorthand, or
+ * method) whose key text equals `fieldName`, OR a spread element -- a spread
+ * (`...rest`) could bring in a property with any name, so it is treated as a
+ * potential match rather than assumed not to assign `fieldName`.
+ */
+function objectLiteralAssignsProperty(objectLiteral, fieldName, sourceFile) {
+  return objectLiteral.properties.some((property) => {
+    if (ts.isSpreadAssignment(property)) return true;
+    const name = property.name;
+    if (!name) return false;
+    if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) {
+      return name.getText(sourceFile) === fieldName;
+    }
+    if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+      return name.text === fieldName;
+    }
+    // Computed key, e.g. `[someExpr]: value` -- cannot statically resolve
+    // the key text, so treat it as a potential match rather than a
+    // definite non-match (see module doc: absence of a finding must mean
+    // "genuinely not found", not "we didn't look here").
+    return true;
+  });
+}
+
+/**
+ * True if the class body assigns `fieldName` to itself anywhere in its own
  * constructor or methods. A field the class assigns to itself is managed
  * internally (an ordinary optional callback threaded through a constructor
  * argument, for instance) and is not the "nothing here ever sets this except
  * an external patch" shape this check exists to catch.
+ *
+ * Recognises three assignment shapes, since all three are ordinary,
+ * self-managed field writes rather than external prototype patches:
+ *   - `this.foo = ...`               (dotted property access)
+ *   - `this['foo'] = ...`            (bracket / computed property access,
+ *                                     including a computed key that cannot
+ *                                     be statically resolved -- treated as a
+ *                                     potential match to avoid a false
+ *                                     positive)
+ *   - `Object.assign(this, { foo: ... })` (and any `Object.assign(this, ...)`
+ *     call with a spread or computed key among its source objects, treated
+ *     as a potential match for the same reason)
  */
 function isSelfAssigned(classNode, fieldName, sourceFile) {
   let found = false;
@@ -124,13 +229,57 @@ function isSelfAssigned(classNode, fieldName, sourceFile) {
     if (found) return;
     if (
       ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isPropertyAccessExpression(node.left) &&
-      node.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
-      node.left.name.getText(sourceFile) === fieldName
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken
     ) {
-      found = true;
-      return;
+      const { left } = node;
+      if (
+        ts.isPropertyAccessExpression(left) &&
+        left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        left.name.getText(sourceFile) === fieldName
+      ) {
+        found = true;
+        return;
+      }
+      if (
+        ts.isElementAccessExpression(left) &&
+        left.expression.kind === ts.SyntaxKind.ThisKeyword
+      ) {
+        const argument = left.argumentExpression;
+        if (ts.isStringLiteralLike(argument) && argument.text === fieldName) {
+          found = true;
+          return;
+        }
+        if (
+          !ts.isStringLiteralLike(argument) &&
+          !ts.isNumericLiteral(argument)
+        ) {
+          // A non-literal computed key, e.g. `this[key] = ...` -- cannot
+          // statically resolve which property it targets, so treat as a
+          // potential match rather than assume it is unrelated.
+          found = true;
+          return;
+        }
+      }
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.expression.getText(sourceFile) === 'Object' &&
+      node.expression.name.getText(sourceFile) === 'assign' &&
+      node.arguments.length > 0 &&
+      node.arguments[0].kind === ts.SyntaxKind.ThisKeyword
+    ) {
+      const sources = node.arguments.slice(1);
+      const matches = sources.some(
+        (source) =>
+          ts.isObjectLiteralExpression(source)
+            ? objectLiteralAssignsProperty(source, fieldName, sourceFile)
+            : true, // non-literal source (e.g. a spread variable) -- potential match
+      );
+      if (matches) {
+        found = true;
+        return;
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -168,6 +317,7 @@ export function findInertSeamCandidates(filePath, sourceText) {
   );
 
   const violations = [];
+  const typeNames = collectCallableTypeNames(sourceFile);
 
   const visitClass = (classNode) => {
     for (const member of classNode.members) {
@@ -176,7 +326,7 @@ export function findInertSeamCandidates(filePath, sourceText) {
       if (member.initializer) continue;
       if (isDeclareField(member)) continue;
       if (isStaticField(member)) continue;
-      if (!isFunctionTyped(member.type, sourceFile)) continue;
+      if (!isFunctionTyped(member.type, sourceFile, typeNames)) continue;
       if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name))
         continue;
       const fieldName = member.name.getText(sourceFile);
