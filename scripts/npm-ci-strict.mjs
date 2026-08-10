@@ -253,6 +253,8 @@ export function resolveCleanupEvidencePath(environment = process.env) {
  *     directories: string[],
  *     reason: string | null
  *   },
+ *   productionTreeProblems?: string[],
+ *   productionTreeError?: string | null,
  *   environment?: NodeJS.ProcessEnv,
  *   recordedAt?: string
  * }} input
@@ -297,6 +299,8 @@ export function createCleanupEvidence(input) {
       recovered: input.recovery.recovered,
       reason: input.recovery.reason,
     },
+    productionTreeProblems: input.productionTreeProblems ?? [],
+    productionTreeError: input.productionTreeError ?? null,
     warningExcerpt,
   };
 }
@@ -633,7 +637,21 @@ export async function main({
         )}; validating the resulting tree before continuing.\n`,
       );
     } else {
-      const evidence = createCleanupEvidence({ output, recovery });
+      let productionTreeProblems = [];
+      let productionTreeError = null;
+      try {
+        const { tree } = readProductionTreeImpl();
+        productionTreeProblems = findTreeProblems(tree);
+      } catch (error) {
+        productionTreeError = error.message;
+      }
+
+      const evidence = createCleanupEvidence({
+        output,
+        recovery,
+        productionTreeProblems,
+        productionTreeError,
+      });
       let evidenceResult;
       try {
         const evidencePath = await writeCleanupEvidenceImpl(evidence);
@@ -642,6 +660,12 @@ export async function main({
       } catch (error) {
         evidenceResult = `Durable evidence could not be staged: ${error.message}`;
       }
+
+      const productionTreeLine = productionTreeError
+        ? `\`${NPM_PRODUCTION_TREE_COMMAND}\` could not be read: ${productionTreeError}`
+        : productionTreeProblems.length > 0
+          ? `\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems: ${productionTreeProblems.join('; ')}`
+          : `\`${NPM_PRODUCTION_TREE_COMMAND}\` reports no problems; the residue is outside the production tree.`;
 
       const paths = extractCleanupPaths(output);
       failImpl([
@@ -652,6 +676,7 @@ export async function main({
         'and every later step in this job would run against it.',
         paths.length > 0 ? `Directories npm named: ${paths.join(', ')}` : '',
         `Automatic recovery: ${recovery.reason}.`,
+        productionTreeLine,
         evidenceResult,
         '',
         'Do not rerun this job directly. Follow docs/npm-cleanup-recovery.md;',
