@@ -419,36 +419,57 @@ describe('the pure classifier', () => {
     ).toBe('NO_ANSWER');
   });
 
-  it('addedLinesOf reads real added lines for a real commit in this repository', () => {
-    // scripts/citation-corpus.mjs's introducing commit - reachable, non-merge, and its own
-    // opening comment line is asserted verbatim in .squad/fact-checker/content-assertions.md.
-    const lines = addedLinesOf('42054254e06e26d164cf8f56c8f776dd5d828e2a');
-    expect(lines).not.toBeNull();
-    expect(
-      (lines ?? []).some((line) =>
-        line.includes(
-          'This module is deliberately the *mechanism* and never the *number*.',
-        ),
-      ),
-    ).toBe(true);
+  /**
+   * These three tests used to pin a real, deep-history commit from this repository
+   * (`42054254e0...`, citation-corpus.mjs's introducing commit) directly. That broke in CI:
+   * the `Desktop` job's checkout uses `fetch-depth: 2` (ci.yml), so that commit's objects are
+   * not present at all in a shallow clone -- `addedLinesOf`/`classify` correctly report null/
+   * WITHHOLD for a reader that cannot resolve it, which is the right behavior, but made these
+   * tests flaky against how deep a given checkout happens to be. A synthetic fixture with a
+   * full, self-contained history removes that dependency entirely: these three now build their
+   * own tiny repository (via `fixture()`) and run the real, unmocked module functions against
+   * it from that repository's own working directory, so the assertion holds regardless of how
+   * this repository was checked out.
+   */
+  it('addedLinesOf reads real added lines for a real commit in a self-contained fixture repository', () => {
+    const { dir, cited, claim } = fixture();
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const lines = addedLinesOf(cited);
+      expect(lines).not.toBeNull();
+      expect((lines ?? []).some((line) => line.includes(claim))).toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
-  it('classify PASSes the real ledger row this repository ships', () => {
-    const result = classify(
-      '42054254e06e26d164cf8f56c8f776dd5d828e2a',
-      'This module is deliberately the *mechanism* and never the *number*.',
-      revs,
-    );
-    expect(result.verdict).toBe('PASS');
+  it('classify PASSes a reachable commit against the content it actually added', () => {
+    const { dir, cited, claim } = fixture();
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const result = classify(cited, claim, readerRevisions());
+      expect(result.verdict).toBe('PASS');
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
   it('classify FAILs the same reachable commit against a false assertion', () => {
-    const result = classify(
-      '42054254e06e26d164cf8f56c8f776dd5d828e2a',
-      'a sentence this commit never wrote',
-      revs,
-    );
-    expect(result.verdict).toBe('FAIL');
+    const { dir, cited } = fixture();
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const result = classify(
+        cited,
+        'a sentence this commit never wrote',
+        readerRevisions(),
+      );
+      expect(result.verdict).toBe('FAIL');
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });
 
