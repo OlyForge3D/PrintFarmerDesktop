@@ -272,6 +272,67 @@ Step 1 and step 3 name the same repository state and disagree only because one n
 wrong SHA — the pre-merge branch tip instead of the merge commit GitHub actually produced.
 That is the entire defect: not a broken command, a command asked about the wrong object.
 
+## A verification query asserts the property and the subject, or it asserts nothing
+
+**This is a distinct axis from "Re-derive state at the moment of use" above and from
+#214/#305 below — it is about what a single verification query itself must check, not
+about when to re-fetch or how to render.** #307: PR #218 reported 9 of 9 checks passing —
+every required context green at `head_sha` `dc6aaf79` — while, at that same instant,
+`mergeable` was `CONFLICTING`, `mergeStateStatus` was `DIRTY`, a `merge-tree` dry run
+against `development` produced six conflicts, and a schema column the merge policy
+required was absent from that head. **Not one check was wrong.** They ran on `dc6aaf79`,
+they passed on `dc6aaf79`, and the rollup was a true statement about that commit. The
+defect is that "green at a SHA" and "safe to merge" are different claims, and only the
+first one had an instrument. Six of seven instruments measured the same day shared this
+shape — `gh pr checks`, `hold:sequenced`, `ls-remote refs/heads`, a freeze pin, a stacked
+base ref, and `updatedAt` (`updatedAt` only partially — see the falsifier below) — each was
+precisely correct about the property it checked and silent on whether its subject was
+still the thing in question.
+
+**The rule:**
+
+> Every verification query asserts two things or it asserts nothing: that the property
+> holds, and that the subject is still the one you meant.
+
+The second assertion is a freshness/scope claim, and it must be **bracketed**, not taken
+from a single read:
+
+```
+read subject identity  ->  measure property  ->  re-read subject identity  ->  compare
+```
+
+A single read *before* the measurement only pins the start of the window — exactly the
+interval in which the subject can move. #307's own worked fix: three separate `gh pr
+checks` runs each reported 7/7 green against a head (`e6a8547`, `667c63d`, `5c72694`) that
+had already been superseded by a base-sync while the check query was in flight. Every
+green was correct for the head it measured. The remedy was bracketing the head read —
+`git ls-remote` (or `gh pr view --json headRefOid`) immediately before *and* immediately
+after the checks query — so the claim becomes head-stability *across* the read, not
+head-identity *at its start*. Concretely, for a merge-readiness verification: read
+`headRefOid` and `mergeable`/`mergeStateStatus`, run the checks query, re-read
+`headRefOid` and `mergeable`/`mergeStateStatus`, and only trust the result if both reads
+agree.
+
+### Falsifier — #214 (predicate) vs. #305 (display) vs. #307 (subject)
+
+Three distinct axes, distinguished by which repair actually closes the gap:
+
+| | Defect is in the... | Repaired by... |
+|---|---|---|
+| **#214** ("Our verification commands use matching primitives that silently answer a neighbouring question...") | **predicate** — the command answers a neighbouring question, e.g. `--is-ancestor` on reachability instead of tip-identity | choosing a **different command** |
+| **#305** ("A value whose displayed form is a lossy projection of its checked form...") | **display** — the right command is run, but its rendering collapses distinctions the check itself made, e.g. a REST boolean `mergeable` collapsing `CONFLICTING`/`UNKNOWN`/etc. | printing a **different projection** of output already fetched |
+| **#307 (this section)** | **subject** — the right command, correctly rendered, answers truthfully about a subject (a SHA, a PR head) that has since moved out of scope | adding a **subject-liveness assertion** bracketing the property check, not substituting for it |
+
+**#214 already names the adjacent discipline this class is missing**: its "positive
+control on the subject" language — prove the corpus is live before trusting an absence —
+is a control *within* a predicate check. #307 is that same discipline being absent from
+verification queries **entirely**: #214's instances pass the subject-liveness control and
+fail on the predicate; #307's instances pass the predicate and have no subject-liveness
+control at all. If a verification query in front of you is repaired by swapping in a
+different command, it is #214, not this. If it is repaired by rendering more of the same
+output, it is #305, not this. If it is repaired only by re-reading the subject's identity
+after the measurement and comparing, it belongs here.
+
 ## A status board is a memory wearing the costume of a measurement
 
 **This applies to any multi-row status display, not only a single reported value.**
