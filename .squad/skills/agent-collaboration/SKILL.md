@@ -272,6 +272,58 @@ Step 1 and step 3 name the same repository state and disagree only because one n
 wrong SHA — the pre-merge branch tip instead of the merge commit GitHub actually produced.
 That is the entire defect: not a broken command, a command asked about the wrong object.
 
+## A status board is a memory wearing the costume of a measurement
+
+**This applies to any multi-row status display, not only a single reported value.**
+#275 found six same-day instances of one shape: a board is produced by
+measuring, then read later as if it were still measuring, and nothing in its
+presentation marks the gap — the values were correct when written. A five-row
+merge-queue board where all five rows had moved, a claim re-measured
+immediately before sending that still arrived false, and a "not yet merged"
+note that a merge falsified nine minutes later are three instances from one
+afternoon; #202 and #214 are the same defect in cross-session messages and
+verification commands, #253 catalogues the general "answers a neighbouring
+question and returns a confident, well-formed value" family it belongs to, and
+#274 (`npm-ci-strict`/merge queue) is the same shape with a lockfile in place of
+a SHA. `.squad/decisions/inbox/hicks-status-is-not-a-memory.md` and
+`.squad/decisions/inbox/vasquez-a-sha-is-a-perishable-claim.md` cover the
+single-value case in full; this section is the board-level and multi-state
+generalization, and the canonical conventions for **any** status board — merge
+queue, CI dashboard, epic tracker, backlog snapshot — live here.
+
+1. **Timestamp every status value, or omit it.** `X at HH:MM` — never a bare
+   SHA, a bare "green", or a bare "merged" in a status line. A reader can price
+   a timestamped value against how long ago it was taken; a bare one gives
+   them nothing to price.
+2. **Phrase terminally where possible.** `7/7 at <sha>` is a permanent fact
+   about a tree and never expires. `green` is a fact about _now_, and _now_ is
+   gone by the time anyone reads it. Prefer the form that stays true forever
+   over the form that is only ever true at the instant it was measured.
+3. **The receiver re-derives; the receiver never quotes.** Only two
+   disciplines act inside the send-to-read interval — receiver-side
+   re-measurement and terminal phrasing — and every other discipline is
+   sender-side and structurally cannot reach that interval, no matter how
+   carefully or how recently the sender measured. Before acting on any board
+   row, re-query the live source (`gh`, `git ls-remote`, the workflow run) —
+   do not act on the row as displayed. Ralph's merge-gate instance of this is
+   codified in `.squad/agents/ralph/loop.md` §9.2 and enforced by
+   `scripts/check-gate-premises.mjs`; that section is the merge-gate-specific
+   procedure, and this section generalizes it to board reporting broadly.
+4. **Distinguish `RED` from `PENDING` explicitly.** A status control that
+   collapses "checked and failing" and "not checked yet" into one boolean
+   cannot tell "not yet" from "never" — which is exactly how a run that has
+   not started reads as a pass. Any status-reporting convention (a board
+   column, a merge-gate check, a dashboard cell) must expose at least three
+   states — `PASS`, `RED`/`FAIL`, and `PENDING`/not-yet-run — never a two-value
+   boolean that forces one of the latter two to borrow the other's meaning.
+   Where an underlying API only returns a boolean or an absent field, treat
+   absence as `PENDING`, never silently as either `PASS` or `RED`, and say so
+   in the board's own legend.
+
+**Blame note.** In every #275 instance the sender did what the existing
+protocol asked; the failures are structural, not diligence failures, which is
+why "measure more carefully" is not being proposed as a fix here either.
+
 ## Rejected commit revisions stay with their owner
 
 The rejection-lockout rule (requiring a _different_ author to revise rejected work) was **dismissed on 2026-07-24**. When a reviewer rejects a commit revision, its branch owner fixes it. Do not infer that owner from an issue or comment author field, and do not rotate the revision.
