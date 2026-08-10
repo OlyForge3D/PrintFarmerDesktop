@@ -376,6 +376,31 @@ describe('strict status checks are present and bind nobody', () => {
     expect(evaluateProtectionAssumptions(facts)).toEqual([]);
     expect(statusCheckEnforcement(facts.protection).state).not.toBe('binding');
   });
+
+  // Hicks' finding on review of #490/#676 (head a92efda4): both
+  // `statusCheckEnforcement` and `adminExemptibleSettingEnforcement`
+  // computed `adminsExempt` as `protection?.enforce_admins?.enabled !==
+  // true`, which silently treated a missing/malformed `enforce_admins`
+  // node the same as a confirmed `{ enabled: false }` -- narrating an
+  // unconfirmed field as though GitHub had confirmed administrators are
+  // exempt, rather than reporting that the exemption itself could not be
+  // read from the response.
+  it('reports "unconfirmed" rather than silently assuming administrators are exempt when enforce_admins cannot be read', () => {
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>).enforce_admins;
+    expect(statusCheckEnforcement(facts.protection).state).toBe('unconfirmed');
+    expect(statusCheckEnforcement(facts.protection).why).toMatch(
+      /enforce_admins is missing or malformed/i,
+    );
+  });
+
+  it('reports "unconfirmed" rather than silently assuming exemption when enforce_admins is present but malformed', () => {
+    const facts = baseline();
+    (facts.protection as Record<string, unknown>).enforce_admins = {
+      enabled: 'yes',
+    };
+    expect(statusCheckEnforcement(facts.protection).state).toBe('unconfirmed');
+  });
 });
 
 describe('#489: the admin-exemption reading generalises beyond strict', () => {
@@ -440,6 +465,20 @@ describe('#489: the admin-exemption reading generalises beyond strict', () => {
     expect(adminExemptibleSettingEnforcement(facts.protection).strict).toEqual(
       statusCheckEnforcement(facts.protection),
     );
+  });
+
+  // Same Hicks finding as above, generalised: every admin-exemptible
+  // setting reader shares the same `adminsExempt` computation, so a
+  // missing/malformed enforce_admins must produce 'unconfirmed' for all
+  // four settings, not just strict.
+  it('reports "unconfirmed" for every admin-exemptible setting when enforce_admins cannot be read (Hicks repro)', () => {
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>).enforce_admins;
+    const readings = adminExemptibleSettingEnforcement(facts.protection);
+    expect(readings.strict.state).toBe('unconfirmed');
+    expect(readings.allow_force_pushes.state).toBe('unconfirmed');
+    expect(readings.allow_deletions.state).toBe('unconfirmed');
+    expect(readings.required_linear_history.state).toBe('unconfirmed');
   });
 
   // The defect #489 reports: the violation text for these three settings

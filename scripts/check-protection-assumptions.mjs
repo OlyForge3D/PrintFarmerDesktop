@@ -108,6 +108,17 @@ function readEnabledFact(node) {
   return { confirmed: false };
 }
 
+// Same distinction as `readEnabledFact`, specialised to `enforce_admins`:
+// `{ confirmed: false }` means GitHub's response cannot confirm whether
+// administrators are exempt at all (absent node, malformed node, or a
+// non-boolean `enabled`), and must not be treated as a confirmed exemption
+// -- see `adminExemptionReading`'s docblock for the finding this fixes.
+function readAdminsExempt(protection) {
+  const fact = readEnabledFact(protection?.enforce_admins);
+  if (!fact.confirmed) return { confirmed: false };
+  return { confirmed: true, exempt: fact.value === false };
+}
+
 /**
  * Pure. Takes the four reads and returns what has moved.
  *
@@ -400,18 +411,32 @@ export const PRIVILEGED_ONLY_ASSUMPTIONS = Object.freeze([
  * two into one boolean is exactly the hole #488 fixed for the violation
  * checks above, and callers below split it back out via `readEnabledFact`
  * rather than a plain `?.enabled === x` comparison.
+ *
+ * `adminsExempt` must make the same distinction for `enforce_admins` itself:
+ * Hicks reproduced, in review of #490/#676 (head a92efda4), that both
+ * readers below computed it as `protection?.enforce_admins?.enabled !==
+ * true`, which silently treated a missing/malformed `enforce_admins` node
+ * the same as a confirmed `{ enabled: false }` -- narrating an unconfirmed
+ * field as though GitHub had confirmed administrators are exempt. Callers
+ * now pass a tri-state `{ confirmed, exempt }` (from `readEnabledFact`)
+ * instead of a plain boolean, and an unconfirmed `enforce_admins` produces
+ * its own `'unconfirmed'` state rather than defaulting into `'bypassable'`.
  */
 function adminExemptionReading({
   present,
   adminsExempt,
   absentWhy,
+  unconfirmedAdminsExemptWhy,
   bypassableWhy,
   bindingWhy,
 }) {
   if (!present) {
     return { state: 'absent', why: absentWhy };
   }
-  if (!adminsExempt) {
+  if (!adminsExempt.confirmed) {
+    return { state: 'unconfirmed', why: unconfirmedAdminsExemptWhy };
+  }
+  if (!adminsExempt.exempt) {
     return { state: 'binding', why: bindingWhy };
   }
   return { state: 'bypassable', why: bypassableWhy };
@@ -471,9 +496,11 @@ function adminExemptionReading({
 export function statusCheckEnforcement(protection) {
   return adminExemptionReading({
     present: protection?.required_status_checks?.strict === true,
-    adminsExempt: protection?.enforce_admins?.enabled !== true,
+    adminsExempt: readAdminsExempt(protection),
     absentWhy:
       'strict is not set, so a pull request may merge against a base it was never tested against',
+    unconfirmedAdminsExemptWhy:
+      'strict is set, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
     bindingWhy:
       'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
     bypassableWhy:
@@ -500,13 +527,14 @@ export function statusCheckEnforcement(protection) {
  * Vasquez's own review of this generalisation caught.
  */
 export function adminExemptibleSettingEnforcement(protection) {
-  const adminsExempt = protection?.enforce_admins?.enabled !== true;
+  const adminsExempt = readAdminsExempt(protection);
 
   const enabledNodeReading = ({
     node,
     protectiveValue,
     missingWhy,
     explicitUnsafeWhy,
+    unconfirmedAdminsExemptWhy,
     bypassableWhy,
     bindingWhy,
   }) => {
@@ -518,6 +546,7 @@ export function adminExemptibleSettingEnforcement(protection) {
       present: fact.value === protectiveValue,
       adminsExempt,
       absentWhy: explicitUnsafeWhy,
+      unconfirmedAdminsExemptWhy,
       bypassableWhy,
       bindingWhy,
     });
@@ -532,6 +561,8 @@ export function adminExemptibleSettingEnforcement(protection) {
         'allow_force_pushes is missing or malformed in the response rather than confirmed either way, so whether force pushes are restricted cannot be read from this field',
       explicitUnsafeWhy:
         'allow_force_pushes is confirmed enabled, so force pushes are not restricted for anyone, administrator or not',
+      unconfirmedAdminsExemptWhy:
+        'allow_force_pushes is confirmed disallowed, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
       bindingWhy:
         'force pushes are disallowed by configuration and administrators are not exempt, so the restriction binds every pusher',
       bypassableWhy:
@@ -544,6 +575,8 @@ export function adminExemptibleSettingEnforcement(protection) {
         'allow_deletions is missing or malformed in the response rather than confirmed either way, so whether deletion is restricted cannot be read from this field',
       explicitUnsafeWhy:
         'allow_deletions is confirmed enabled, so the branch can be deleted by anyone, administrator or not',
+      unconfirmedAdminsExemptWhy:
+        'allow_deletions is confirmed disallowed, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
       bindingWhy:
         'deletion is disallowed by configuration and administrators are not exempt, so the restriction binds every account',
       bypassableWhy:
@@ -556,6 +589,8 @@ export function adminExemptibleSettingEnforcement(protection) {
         'required_linear_history is missing or malformed in the response rather than confirmed either way, so whether linear history is required cannot be read from this field',
       explicitUnsafeWhy:
         'required_linear_history is confirmed not enabled, so merge commits are not restricted for anyone, administrator or not',
+      unconfirmedAdminsExemptWhy:
+        'required_linear_history is confirmed required, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
       bindingWhy:
         'linear history is required by configuration and administrators are not exempt, so it binds every merger',
       bypassableWhy:

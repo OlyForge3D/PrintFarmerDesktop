@@ -70,7 +70,7 @@ export declare function fetchRepositoryFacts(input: {
 
 export interface StatusCheckEnforcement {
   /** 'bypassable' means the setting is present and exempts the only merger. */
-  state: 'binding' | 'bypassable' | 'absent';
+  state: 'binding' | 'bypassable' | 'absent' | 'unconfirmed';
   why: string;
 }
 export function statusCheckEnforcement(
