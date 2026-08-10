@@ -237,8 +237,8 @@ describe('the sequencing-hold workflow sees label-only changes', () => {
     expect(typesOf(workflow).length).toBeGreaterThan(0);
   });
 
-  it('runs on pull requests', () => {
-    expect(triggersOf(workflow)).toEqual(['pull_request']);
+  it('runs on pull requests and merge-queue entries', () => {
+    expect(triggersOf(workflow)).toEqual(['merge_group', 'pull_request']);
   });
 
   it('runs on labeled and unlabeled', () => {
@@ -264,13 +264,16 @@ describe('the sequencing-hold workflow sees label-only changes', () => {
     }
   });
 
-  it('stays out of the merge queue', () => {
-    // A `merge_group` entry carries no pull request and therefore no labels,
-    // so this check cannot run there. It must not become a required context
-    // while that is true: a required context that no workflow emits stays
-    // Pending forever and blocks the entry rather than failing it — which is
-    // exactly the deadlock #122 fixed in ci.yml.
-    expect(triggersOf(workflow)).not.toContain('merge_group');
+  it('reports for the merge queue (#480)', () => {
+    // A `merge_group` entry carries no pull request object directly, but its
+    // head ref (`refs/heads/gh-readonly-queue/<branch>/pr-<N>-<sha>`) resolves
+    // to a PR number via the shared resolver pr-closure-scope.yml already
+    // uses, and this check reads labels via the REST API rather than the
+    // checkout, so it can genuinely report a verdict for a queued entry.
+    // Without this subscription, a required "Sequencing hold" context would
+    // stay Pending forever rather than fail (#122) — this is the change #480
+    // made to lift that constraint.
+    expect(triggersOf(workflow)).toContain('merge_group');
   });
 
   it('does not install dependencies', () => {
