@@ -145,6 +145,15 @@ jobs:
       - name: Verify every cited revision is reachable, twinned, or declared
         run: npm run check:citation-reachability
 
+      # A deliberately separate step from the one above, and a deliberately separate script
+      # (#528). Reachability answers "can a reader reach this revision"; this answers "does the
+      # content it names still say what the citation claims" -- and the two must never share an
+      # exit code, because a reachability failure is repaired by declaring a twin and a content
+      # failure is repaired by editing the prose. Folding them into one step would make a single
+      # red ambiguous between those two remedies.
+      - name: Verify pinned content assertions against their cited commits
+        run: npm run check:citation-content
+
       - name: Verify admin-guide server citations at their pinned revisions
         env:
           GITHUB_TOKEN: ${{ github.token }}
