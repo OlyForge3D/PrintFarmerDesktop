@@ -13,7 +13,7 @@ export interface Collaborator {
 
 export interface RepositoryFacts {
   protection: Record<string, unknown>;
-  rulesets?: Array<Record<string, unknown>>;
+  rulesets: Array<Record<string, unknown>>;
   protectedBranches?: string[];
   collaborators?: Collaborator[];
 }
@@ -31,7 +31,7 @@ export declare function evaluateProtectionAssumptions(
 // (`/rulesets`, `/branches?protected=true`) -- protected branches, and
 // rulesets covering feature branches.
 export declare function evaluatePublicProtectionAssumptions(facts: {
-  rulesets?: Array<Record<string, unknown>>;
+  rulesets: Array<Record<string, unknown>>;
   protectedBranches?: string[];
 }): AssumptionViolation[];
 

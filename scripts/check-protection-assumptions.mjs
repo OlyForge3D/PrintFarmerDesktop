@@ -150,7 +150,7 @@ function readStrictFact(protection) {
  */
 export function evaluateProtectionAssumptions({
   protection,
-  rulesets = [],
+  rulesets,
   protectedBranches = [],
   collaborators = [],
 }) {
@@ -366,9 +366,25 @@ export function evaluateProtectionAssumptions({
 // CI. Split out so the public tier can be evaluated, and run for real, without
 // ever constructing a `protection` object the caller does not have.
 export function evaluatePublicProtectionAssumptions({
-  rulesets = [],
+  rulesets,
   protectedBranches = [],
 }) {
+  // `rulesets = []` as a default silently reads a missing or malformed
+  // top-level `/rulesets` response the same as GitHub confirming there are
+  // none -- collapsing "no ruleset reaches feature branches" (a fact) with
+  // "the response never said" (an absence of data) into the same falsely
+  // clean result. Bishop's review of #490/#676 (head 4681cbad) reproduced
+  // this as the 7th instance of the same silent-conflation class already
+  // fixed six times elsewhere in this file. `protectedBranches` does not
+  // need the same guard: a missing value already defaults to `[]`, which
+  // fails the `=== 'development'` check below and raises a violation --
+  // the safe direction already, unlike rulesets defaulting to "no coverage".
+  if (!Array.isArray(rulesets)) {
+    throw new TypeError(
+      'rulesets is required and must be an array; a missing or malformed /rulesets response cannot be read as "no ruleset reaches feature branches" -- that would silently accept an incomplete or absent API response as a clean result',
+    );
+  }
+
   const violations = [];
 
   const protectedNames = [...protectedBranches].sort((a, b) =>

@@ -73,7 +73,7 @@ describe('the premises of #111 and #151 are checked, not promised', () => {
     expect(() =>
       evaluateProtectionAssumptions({
         protection: null as unknown as Record<string, unknown>,
-      }),
+      } as unknown as Parameters<typeof evaluateProtectionAssumptions>[0]),
     ).toThrow(/refusing to report that assumptions hold/);
   });
 
@@ -864,9 +864,34 @@ describe('#491: the public tier needs no protection object at all', () => {
     ]);
   });
 
-  it('defaults rulesets and protectedBranches to empty and still reports (nothing protected)', () => {
-    const violations = evaluatePublicProtectionAssumptions({});
+  it('defaults protectedBranches to empty and still reports (nothing protected)', () => {
+    const violations = evaluatePublicProtectionAssumptions({ rulesets: [] });
     expect(violations.map((v) => v.assumption)).toEqual(['protected branches']);
+  });
+
+  // Bishop's finding on review of #490/#676 (head 4681cbad), the 7th
+  // instance of the same conflation class: `rulesets = []` as a default
+  // silently read a missing or malformed top-level `/rulesets` response the
+  // same as GitHub confirming there are none, so `evaluatePublicProtectionAssumptions({})`
+  // used to return a falsely clean "no rulesets cover feature branches"
+  // result instead of surfacing that the data was never actually read.
+  it('refuses to report rulesets coverage clean when rulesets is entirely missing', () => {
+    expect(() =>
+      evaluatePublicProtectionAssumptions(
+        {} as unknown as Parameters<
+          typeof evaluatePublicProtectionAssumptions
+        >[0],
+      ),
+    ).toThrow(/rulesets is required and must be an array/);
+  });
+
+  it('refuses to report rulesets coverage clean when rulesets is present but not an array', () => {
+    expect(() =>
+      evaluatePublicProtectionAssumptions({
+        rulesets: null as unknown as Array<Record<string, unknown>>,
+        protectedBranches: ['development'],
+      }),
+    ).toThrow(/rulesets is required and must be an array/);
   });
 
   // Every assumption `evaluateProtectionAssumptions` checks that is NOT one of
