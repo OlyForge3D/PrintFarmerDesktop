@@ -311,6 +311,33 @@ export function evaluateProtectionAssumptions({
     );
   }
 
+  violations.push(
+    ...evaluatePublicProtectionAssumptions({
+      rulesets,
+      protectedBranches,
+    }),
+  );
+
+  return violations;
+}
+
+// #491: `protected branches` and `rulesets covering feature branches` are the
+// only two of these nine assumptions that depend SOLELY on the two GitHub
+// endpoints that need no credential at all -- `/branches?protected=true` and
+// `/rulesets` both return 200 to an unauthenticated request against this
+// public repository (measured; only `/branches/{branch}/protection` and
+// `/collaborators` return 401 without a token). The UNENFORCED_CHECKS entry
+// this check used to justify itself with claimed "every one of those
+// endpoints needs admin scope" -- true of the other seven assumptions, false
+// of these two, and the false half is exactly what foreclosed running them in
+// CI. Split out so the public tier can be evaluated, and run for real, without
+// ever constructing a `protection` object the caller does not have.
+export function evaluatePublicProtectionAssumptions({
+  rulesets = [],
+  protectedBranches = [],
+}) {
+  const violations = [];
+
   const protectedNames = [...protectedBranches].sort((a, b) =>
     a.localeCompare(b),
   );
@@ -343,6 +370,23 @@ export function evaluateProtectionAssumptions({
 
   return violations;
 }
+
+// The seven assumptions that DO need the privileged tier
+// (`/branches/{branch}/protection`, `/collaborators`), named here once so
+// `main()`'s no-token path can report each one explicitly as
+// not-checked-no-scope rather than silently omitting it from the printed
+// output. Order matches the sequence `evaluateProtectionAssumptions` checks
+// them in, above.
+export const PRIVILEGED_ONLY_ASSUMPTIONS = Object.freeze([
+  'development.allow_force_pushes',
+  'development.allow_deletions',
+  'development.required_linear_history',
+  'development.required_status_checks.strict',
+  'development.required_status_checks.contexts',
+  'development.enforce_admins',
+  'development.required_approving_review_count',
+  'collaborators',
+]);
 
 /**
  * Shared shape behind every admin-exemptible reading below: a setting is
@@ -546,24 +590,69 @@ const api = async (fetchImpl, repository, token, endpoint) => {
   return response.json();
 };
 
-export async function fetchRepositoryFacts({
+// #491: unauthenticated `publicApi` is deliberately a separate function from
+// `api` above rather than `api` called with an empty token. `api` always
+// attaches an `authorization` header, and GitHub answers a MALFORMED
+// authorization header (e.g. `Bearer undefined`, or `Bearer `) with 401 even
+// on endpoints that accept no credential at all -- so reusing `api` with a
+// missing token would not reproduce "unauthenticated", it would reproduce
+// "authenticated badly", and could silently turn a real public 200 into a
+// false 401 that this file would misreport as "needs admin scope after all".
+const publicApi = async (fetchImpl, repository, endpoint) => {
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${repository.owner}/${repository.repo}${endpoint}`,
+    {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `${endpoint} request failed: ${response.status} ${response.statusText}`,
+    );
+  }
+  return response.json();
+};
+
+// #491: the two reads GitHub answers with no credential at all, measured
+// against this public repository -- `/rulesets` and
+// `/branches?protected=true` both return 200 unauthenticated; only
+// `/branches/{branch}/protection` and `/collaborators` require an
+// admin-scoped token (401 without one). These back exactly the two
+// assumptions `evaluatePublicProtectionAssumptions` checks.
+export async function fetchPublicRepositoryFacts({
+  repository,
+  fetchImpl = fetch,
+}) {
+  const [rulesets, protectedBranches] = await Promise.all([
+    publicApi(fetchImpl, repository, '/rulesets'),
+    publicApi(fetchImpl, repository, '/branches?protected=true'),
+  ]);
+
+  return {
+    rulesets,
+    protectedBranches: protectedBranches.map((b) => b.name),
+  };
+}
+
+// #491: the two reads that need an admin-scoped token -- branch protection
+// detail and the collaborator list. Both 401 without one (measured). Backs
+// the seven assumptions in `PRIVILEGED_ONLY_ASSUMPTIONS`.
+export async function fetchPrivilegedRepositoryFacts({
   repository,
   branch = 'development',
   token,
   fetchImpl = fetch,
 }) {
-  const [protection, rulesets, protectedBranches, collaborators] =
-    await Promise.all([
-      api(fetchImpl, repository, token, `/branches/${branch}/protection`),
-      api(fetchImpl, repository, token, '/rulesets'),
-      api(fetchImpl, repository, token, '/branches?protected=true'),
-      api(fetchImpl, repository, token, '/collaborators'),
-    ]);
+  const [protection, collaborators] = await Promise.all([
+    api(fetchImpl, repository, token, `/branches/${branch}/protection`),
+    api(fetchImpl, repository, token, '/collaborators'),
+  ]);
 
   return {
     protection,
-    rulesets,
-    protectedBranches: protectedBranches.map((b) => b.name),
     collaborators: collaborators.map((c) => ({
       login: c.login,
       role: c.role_name,
@@ -571,20 +660,45 @@ export async function fetchRepositoryFacts({
   };
 }
 
+export async function fetchRepositoryFacts({
+  repository,
+  branch = 'development',
+  token,
+  fetchImpl = fetch,
+}) {
+  const [publicFacts, privilegedFacts] = await Promise.all([
+    fetchPublicRepositoryFacts({ repository, fetchImpl }),
+    fetchPrivilegedRepositoryFacts({ repository, branch, token, fetchImpl }),
+  ]);
+
+  return {
+    protection: privilegedFacts.protection,
+    rulesets: publicFacts.rulesets,
+    protectedBranches: publicFacts.protectedBranches,
+    collaborators: privilegedFacts.collaborators,
+  };
+}
+
 async function main() {
   const token = discoverToken(process.env);
   const repositoryName = discoverRepository(process.env);
 
-  if (token === null || repositoryName === null) {
-    const missing = [];
-    if (token === null) missing.push('no GITHUB_TOKEN and no `gh auth token`');
-    if (repositoryName === null)
-      missing.push('no GITHUB_REPOSITORY and no origin remote');
+  // #491: only the ABSENCE OF A REPOSITORY TO ASK ABOUT is a full skip now.
+  // A missing token used to be treated identically -- but two of the four
+  // reads this file needs (`/rulesets`, `/branches?protected=true`) return
+  // 200 to an unauthenticated request against this repository (measured),
+  // and #151's ruleset/protected-branches questions depend only on those
+  // two. Folding "no token" into the same full skip as "no repository" is
+  // exactly the "every one of those endpoints needs admin scope" claim #491
+  // found too broad, reproduced here as code rather than only as prose.
+  if (repositoryName === null) {
     // Same degrade as check:merge-queue-contexts and the same reason: hard
     // failing where there is nothing to read teaches people to ignore the exit
     // code. It says plainly that it did not check, because a silent skip that
     // exits 0 is a control reporting success for work it did not do.
-    console.log(`Skipped the assumption check: ${missing.join('; ')}.`);
+    console.log(
+      'Skipped the assumption check: no GITHUB_REPOSITORY and no origin remote.',
+    );
     console.log(
       'Every fact this guards is remote, so this run has NOT checked whether the premises of #111 and #151 still hold.',
     );
@@ -605,6 +719,40 @@ async function main() {
       ? process.env
       : { ...process.env, GITHUB_REPOSITORY: repositoryName },
   );
+
+  if (token === null) {
+    // #491's public tier: real work, not a skip. Only the two assumptions
+    // that need no credential are checked; the other seven are reported
+    // below by name as not-checked-no-scope, never silently omitted.
+    const publicFacts = await fetchPublicRepositoryFacts({ repository });
+    const violations = evaluatePublicProtectionAssumptions(publicFacts);
+
+    console.log(
+      `No admin-scoped credential found, so only the public tier ran: ` +
+        `${2 - violations.length}/2 public assumption(s) held, ` +
+        `${PRIVILEGED_ONLY_ASSUMPTIONS.length} assumption(s) not-checked-no-scope.`,
+    );
+    for (const assumption of PRIVILEGED_ONLY_ASSUMPTIONS) {
+      console.log(`  not-checked-no-scope: ${assumption}`);
+    }
+
+    if (violations.length === 0) {
+      console.log(
+        'The public-tier facts (protected branches, rulesets reaching feature branches) still hold.',
+      );
+      return;
+    }
+
+    console.error(
+      'A premise moved in the public tier. These decisions were correct against facts that have changed:\n',
+    );
+    console.error(formatViolations(violations));
+    console.error(
+      '\nThis is not automatically a misconfiguration. Re-read the named decisions before changing anything.',
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const facts = await fetchRepositoryFacts({ repository, token });
   const violations = evaluateProtectionAssumptions(facts);
