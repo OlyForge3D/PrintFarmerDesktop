@@ -480,12 +480,21 @@ Verified from OlyForge3D/PrintFarmer read-only source:
 - **Pinned:** `167a3b134a678a0d9a8c10371da8333d03ddc636`
 - **Contract snapshot (queried 2026-08-05):**
   `9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0`
-- **Default-branch HEAD (re-queried 2026-08-05):**
-  `09f6cae810c5b48992f905bab89d5e334a3fb98c`
-  — two commits ahead of the contract snapshot; changed files are UI/design
-  material only (theme CSS, ThemeContext, DESIGN_SYSTEM.md). No queue, calibration,
+- **Default-branch HEAD at the time of the contract snapshot (queried
+  2026-08-05):** `09f6cae810c5b48992f905bab89d5e334a3fb98c`
+  — two commits ahead of the contract snapshot; changed files were UI/design
+  material only (theme CSS, ThemeContext, DESIGN_SYSTEM.md).
+- **Default-branch HEAD (re-queried 2026-08-09):** commit
+  `SHA a91855abb901b97188e04e0aa006345076b2a2bf` (`SHA a91855ab` for short)
+  — 162 commits ahead of the `09f6cae8` HEAD above, but zero `.cs` files (and
+  specifically none under `src/api/` or `src/infra/`) differ between
+  `09f6cae8` and this head; the added commits are UI/design, mobile,
+  tooling, and documentation material only. No queue, calibration,
   controller, DTO, or contract file was modified between `9c1d7e4b` and
-  `09f6cae8`. All claims below remain accurate at the latest head.
+  `SHA a91855ab`. All claims below remain accurate at the latest head as of
+  this re-verification. This is a statement about a moving branch and has a
+  shelf life — re-derive it, don't inherit it, whenever §10 is next relied
+  upon.
 
 Every claim is cited to a stable source path and named symbol; line numbers are
 given as `line@commit-prefix` where they differ between commits. The parity
@@ -498,14 +507,39 @@ file for the test strategy.
 > Orca worker, or printer hardware was exercised. The residual live-instance
 > requirement for issue #57 is stated in §10.7.
 
+> **No automated gate in this repository verifies these server claims.**
+> `tests/calibrationServerContractParity.test.ts` parses this section against
+> PFD's own desktop-side production constants — a same-repository check that
+> catches this document drifting from PFD's code, but it never reads
+> `OlyForge3D/PrintFarmer` and cannot detect the server itself renaming a
+> route, dropping a header, or otherwise changing behavior. A green run of
+> that test is not evidence that §10 still matches the live server.
+
+**Citation convention.** Bare `src/…` paths below are repository-prefixed by
+convention, not by coincidence: `src/api/…` and `src/infra/…` always name
+files in `OlyForge3D/PrintFarmer` (the server, at the commits pinned above);
+every other `src/…` prefix (`src/main/`, `src/shared/`, `src/preload/`, etc.)
+names a file in this repository, `OlyForge3D/PrintFarmerDesktop` (PFD). The
+two repositories' `src/` trees do not share a top-level prefix, so a
+citation's repository is determined by its path alone and does not depend on
+filenames staying disjoint between the two trees (this repository already
+has both `src/main/ipc.ts` and `src/shared/ipc.ts`; a bare `ipc.ts:NNNN`
+without the full prefixed path would be ambiguous, so citations below always
+give the full path).
+
 ### 10.1 Four issue-#138 parity routes
 
-The four routes guarded by the parity test (`CALIBRATION_QUEUE_ROUTE_TEMPLATES`):
+The four routes guarded by the parity test (`CALIBRATION_QUEUE_ROUTE_TEMPLATES`).
+The **PFD template** column below is PFD's own desktop-side route-template
+constant, not the server's ASP.NET route attribute — e.g. the server declares
+`[HttpGet("{id:guid}")]` with a `Guid` route constraint, while PFD's
+placeholder name is `{jobId}`; both resolve to the identical wire path, but
+the placeholder text itself is PFD's, not the server's:
 
-| Path template                                                             | Method | Symbol                                                | Line                         |
+| PFD template                                                              | Method | Server symbol                                         | Line                         |
 | ------------------------------------------------------------------------- | ------ | ----------------------------------------------------- | ---------------------------- |
 | `/api/job-queue`                                                          | POST   | `JobQueueController.QueueJobAsync`                    | 101@167a3b13 / 111@9c1d7e4b  |
-| `/api/job-queue/{jobId}`                                                  | GET    | `JobQueueController.GetJobAsync`                      | both                         |
+| `/api/job-queue/{jobId}`                                                  | GET    | `JobQueueController.GetJobAsync`                      | 199@167a3b13 / 209@9c1d7e4b  |
 | `/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job` | POST   | `CalibrationGenerationController.GenerateJobAsync`    | 41 (both)                    |
 | `/api/job-queue/{jobId}/acknowledge-bed-clear-and-start`                  | POST   | `JobQueueController.AcknowledgeBedClearAndStartAsync` | 960@167a3b13 / 1025@9c1d7e4b |
 
