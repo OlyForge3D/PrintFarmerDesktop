@@ -20,11 +20,28 @@
 // still the owning session's own branch to rewrite, per
 // `.squad/skills/git-workflow/SKILL.md`'s "never rebase or merge around" rule
 // for work you do not own). It answers a narrower, safe question: given the
-// set of currently-open pull requests against a base, and which of them are
-// BEHIND, what is the single next one to sync, and how long to wait before
-// considering the next? Driving that queue one entry at a time, waiting for
-// its CI to conclude before starting the next sync, is what keeps the fan-outs
-// from overlapping.
+// set of currently-open pull requests, grouped by the base each targets, and
+// which of them are BEHIND that base, what is the single next one per base to
+// sync, and how long to wait before considering the next? Driving that queue
+// one entry at a time, waiting for its CI to conclude before starting the
+// next sync, is what keeps the fan-outs from overlapping.
+//
+// Grouped by base branch rather than one flat queue (Hicks, pre-PR review
+// round 1): two PRs targeting different bases are not the same queue, and
+// serializing them against each other would be arbitrary — syncing #10
+// (base `development`) says nothing about whether #11 (base `release/1.x`)
+// is safe to sync next. `surveyBehindPrs` already fetches and evaluates
+// ancestry separately per base for this reason; `planSyncOrder` groups by it
+// too, and reports one `{next, queued}` plan per base rather than merging
+// them.
+//
+// A PR that cannot be classified — its base could not be refreshed, its head
+// moved mid-survey, or its ref could not be fetched — is reported in
+// `skipped`, not silently dropped (Hicks, same round): an earlier draft
+// omitted such PRs from the candidate list entirely, which made an
+// INCOMPLETE survey print the identical "nothing to sync" that a genuinely
+// clean one would, collapsing "could not tell" into "confirmed clear" — the
+// exact shape `.squad/known-lying-commands.md` catalogues.
 //
 // planSyncOrder is pure and takes already-classified facts, so its ordering
 // logic is testable without a live repository. surveyBehindPrs is the one
@@ -50,7 +67,11 @@ import { discoverToken } from './check-merge-queue-contexts.mjs';
 import { runGh, resolveRepositorySlug } from './check-required-contexts.mjs';
 
 /**
- * @typedef {{number: number, createdAt: string, behind: boolean}} BehindCandidate
+ * @typedef {{number: number, createdAt: string, baseRefName: string, behind: boolean}} BehindCandidate
+ */
+
+/**
+ * @typedef {{number: number, reason: string}} SkippedPr
  */
 
 /**
@@ -68,61 +89,112 @@ import { runGh, resolveRepositorySlug } from './check-required-contexts.mjs';
  * has reintroduced the exact contention this script exists to prevent; the
  * shape of the return value is deliberately not a flat list of things to do.
  *
+ * Grouped by `baseRefName` (Hicks, pre-PR review round 1): two open PRs
+ * targeting different base branches are not the same queue, and their BEHIND
+ * status is neither comparable nor safe to serialize against each other --
+ * syncing #10 (base `development`) has no bearing on whether #11 (base
+ * `release/1.x`) is safe to sync next. Returning one flat `{next, queued}`
+ * across every base silently merged two unrelated queues into one and picked
+ * an arbitrary "next" that could belong to either. A `Map` keyed by base
+ * mirrors `surveyBehindPrs`'s own `baseCache`, which already fetches and
+ * evaluates ancestry separately per base for exactly this reason -- only the
+ * planning step had not caught up to it.
+ *
  * @param {readonly BehindCandidate[]} candidates
- * @returns {{next: BehindCandidate | null, queued: BehindCandidate[]}}
+ * @returns {Map<string, {next: BehindCandidate | null, queued: BehindCandidate[]}>}
  */
 export function planSyncOrder(candidates) {
-  const behind = candidates
-    .filter((c) => c.behind)
-    .slice()
-    .sort((a, b) => {
+  /** @type {Map<string, BehindCandidate[]>} */
+  const byBase = new Map();
+  for (const c of candidates) {
+    if (!c.behind) continue;
+    const bucket = byBase.get(c.baseRefName) ?? [];
+    bucket.push(c);
+    byBase.set(c.baseRefName, bucket);
+  }
+
+  /** @type {Map<string, {next: BehindCandidate | null, queued: BehindCandidate[]}>} */
+  const plans = new Map();
+  for (const [baseRefName, bucket] of byBase) {
+    const sorted = bucket.slice().sort((a, b) => {
       if (a.createdAt !== b.createdAt) {
         return a.createdAt < b.createdAt ? -1 : 1;
       }
       return a.number - b.number;
     });
-  if (behind.length === 0) {
-    return { next: null, queued: [] };
+    const [next, ...queued] = sorted;
+    plans.set(baseRefName, { next: next ?? null, queued });
   }
-  const [next, ...queued] = behind;
-  return { next, queued };
+  return plans;
 }
 
 /**
- * @param {{next: BehindCandidate | null, queued: BehindCandidate[]}} plan
- * @param {string} baseRefName
+ * @param {Map<string, {next: BehindCandidate | null, queued: BehindCandidate[]}>} plans
+ * @param {readonly SkippedPr[]} skipped
  * @returns {string}
  */
-export function formatPlan(plan, baseRefName) {
-  if (plan.next === null) {
-    return `No open pull request is BEHIND ${baseRefName}. Nothing to sync.`;
+export function formatPlan(plans, skipped) {
+  const lines = [];
+
+  if (plans.size === 0 && skipped.length === 0) {
+    lines.push('No open pull request is BEHIND its base. Nothing to sync.');
   }
-  const lines = [
-    `Sync PR #${plan.next.number} next (BEHIND ${baseRefName}, opened ${plan.next.createdAt}).`,
-    'Rebase it onto the latest base, push, and wait for that CI run to reach a',
-    'conclusion (or for the PR to merge) before starting the next sync -- firing',
-    'multiple base-syncs in the same round is the contention #263 measured.',
-  ];
-  if (plan.queued.length > 0) {
+  for (const [baseRefName, plan] of plans) {
+    if (plan.next === null) continue;
+    lines.push(
+      `Sync PR #${plan.next.number} next (BEHIND ${baseRefName}, opened ${plan.next.createdAt}).`,
+      'Rebase it onto the latest base, push, and wait for that CI run to reach a',
+      'conclusion (or for the PR to merge) before starting the next sync -- firing',
+      'multiple base-syncs in the same round is the contention #263 measured.',
+    );
+    if (plan.queued.length > 0) {
+      lines.push(
+        `Still queued behind it against ${baseRefName}, oldest first (do not sync these yet): ${plan.queued
+          .map((c) => `#${c.number}`)
+          .join(', ')}.`,
+      );
+    }
+    lines.push('');
+  }
+
+  // Hicks, pre-PR review round 1: a PR whose base could not be refreshed, or
+  // whose head moved mid-survey, was previously dropped silently -- so an
+  // incomplete survey printed the same "nothing to sync" as a genuinely clean
+  // one. UNDETERMINED is not "no sync needed"; it has to say so, the same
+  // distinction check-behind-base.mjs's own exit-2 taxonomy insists on for a
+  // single PR.
+  if (skipped.length > 0) {
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
     lines.push('');
     lines.push(
-      `Still queued behind it, oldest first (do not sync these yet): ${plan.queued
-        .map((c) => `#${c.number}`)
-        .join(', ')}.`,
+      'Could not determine BEHIND status for the following -- NOT confirmed clear, ' +
+        'do not read their absence above as "safe":',
     );
+    for (const s of skipped) {
+      lines.push(`  #${s.number}: ${s.reason}`);
+    }
   }
+
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   return lines.join('\n');
 }
 
 /**
  * The one function in this module that touches `gh`/`git`. Surveys every open
- * pull request against `baseRefName` and classifies each as BEHIND or not,
+ * pull request against its own base and classifies each as BEHIND or not,
  * using the same primitives `check-behind-base.mjs` uses for a single PR.
+ *
+ * Every PR that cannot be classified is reported in `skipped` with why, rather
+ * than silently omitted (Hicks, pre-PR review round 1: an omitted PR and a
+ * confirmed-not-BEHIND PR looked identical to `formatPlan`, so an incomplete
+ * survey printed the same "nothing to sync" as a genuinely clean one — the
+ * exact "absence read as a measured clear" shape `.squad/known-lying-commands.md`
+ * exists to catch).
  *
  * @param {{remote?: string}} opts
  * @param {NodeJS.ProcessEnv} env
  * @param {typeof spawnSync} run
- * @returns {{candidates: BehindCandidate[], baseRefName: string} | {error: string}}
+ * @returns {{candidates: BehindCandidate[], skipped: SkippedPr[]} | {error: string}}
  */
 export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
   const remote = opts.remote ?? 'origin';
@@ -167,13 +239,15 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
     return { error: 'could not parse gh pr list output.' };
   }
   if (prs.length === 0) {
-    return { candidates: [], baseRefName: 'development' };
+    return { candidates: [], skipped: [] };
   }
 
   /** @type {Map<string, {ref: string, refreshable: boolean, fresh: boolean}>} */
   const baseCache = new Map();
   /** @type {BehindCandidate[]} */
   const candidates = [];
+  /** @type {SkippedPr[]} */
+  const skipped = [];
   for (const pr of prs) {
     let baseState = baseCache.get(pr.baseRefName);
     if (baseState === undefined) {
@@ -181,14 +255,27 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
       baseCache.set(pr.baseRefName, baseState);
     }
     if (baseState.refreshable && !baseState.fresh) {
-      // This PR's base could not be refreshed; do not guess at its state.
+      skipped.push({
+        number: pr.number,
+        reason: `base ${pr.baseRefName} could not be refreshed from ${remote}.`,
+      });
       continue;
     }
     const headRef = fetchPrHead(String(pr.number), remote);
-    if (!headRef) continue;
+    if (!headRef) {
+      skipped.push({
+        number: pr.number,
+        reason: `could not fetch refs/pull/${pr.number}/head from ${remote}.`,
+      });
+      continue;
+    }
     const fetchedHeadSha = resolveCommit(headRef);
     if (fetchedHeadSha !== null && fetchedHeadSha !== pr.headRefOid) {
-      // Moved mid-survey; skip rather than answer about a stale head.
+      skipped.push({
+        number: pr.number,
+        reason:
+          'moved between gh reporting its head and this fetch resolving it.',
+      });
       continue;
     }
     const result = evaluateBehindBase({
@@ -197,11 +284,11 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
     candidates.push({
       number: pr.number,
       createdAt: pr.createdAt,
+      baseRefName: pr.baseRefName,
       behind: result.state === 'behind',
     });
   }
-  const baseRefName = prs[0]?.baseRefName ?? 'development';
-  return { candidates, baseRefName };
+  return { candidates, skipped };
 }
 
 const USAGE = `usage: node scripts/plan-behind-sync-order.mjs [--remote <name>]
@@ -278,8 +365,8 @@ function runMain(argv, env, run) {
     console.error(`${survey.error} Exit 2, not a pass.`);
     return 2;
   }
-  const plan = planSyncOrder(survey.candidates);
-  console.log(formatPlan(plan, survey.baseRefName));
+  const plans = planSyncOrder(survey.candidates);
+  console.log(formatPlan(plans, survey.skipped));
   return 0;
 }
 

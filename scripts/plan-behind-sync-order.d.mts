@@ -1,7 +1,13 @@
 export interface BehindCandidate {
   number: number;
   createdAt: string;
+  baseRefName: string;
   behind: boolean;
+}
+
+export interface SkippedPr {
+  number: number;
+  reason: string;
 }
 
 export interface SyncPlan {
@@ -11,16 +17,19 @@ export interface SyncPlan {
 
 export function planSyncOrder(
   candidates: readonly BehindCandidate[],
-): SyncPlan;
+): Map<string, SyncPlan>;
 
-export function formatPlan(plan: SyncPlan, baseRefName: string): string;
+export function formatPlan(
+  plans: Map<string, SyncPlan>,
+  skipped: readonly SkippedPr[],
+): string;
 
 export function surveyBehindPrs(
   opts: { remote?: string },
   env?: NodeJS.ProcessEnv,
   run?: (...args: unknown[]) => unknown,
 ):
-  | { candidates: BehindCandidate[]; baseRefName: string }
+  | { candidates: BehindCandidate[]; skipped: SkippedPr[] }
   | { error: string };
 
 export function parseArgs(argv: readonly string[]): {
@@ -34,3 +43,4 @@ export function main(
   env?: NodeJS.ProcessEnv,
   run?: (...args: unknown[]) => unknown,
 ): number;
+
