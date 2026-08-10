@@ -131,6 +131,30 @@ npm run check:behind-base -- --pr <N>
 
 `scripts/check-behind-base.mjs` measures this with `git merge-base --is-ancestor <base> <head>` after refreshing the base — never the `mergeable`/`mergeStateStatus` API fields, which are documented elsewhere in this repo as flapping and going permanently stale.
 
+**Before actually performing that rebase (#263): claim the sync lease first, and check no other sync is in flight.**
+
+Rebasing onto the latest base is a `git push`, and every push launches a full CI fan-out into the
+same shared GitHub-hosted runner pool regardless of which base branch it targets — firing more than
+one base-sync at once (yours plus another session's, even against a _different_ base) is the exact
+runner-contention burst #263 measured, and a starved sync tends to need yet another sync before the
+next trunk commit lands, which is the feedback loop the issue names.
+
+```powershell
+npm run plan:behind-sync-order -- --claim
+```
+
+- If it reports **"already in flight for PR #X"**, do not rebase/push yet — wait for that lease to
+  clear (the sync concludes) or expire, then re-run.
+- Otherwise it recommends the single next PR to sync, oldest-first, across every base combined, and
+  `--claim` atomically reserves it for you (`git push --force-with-lease` against a dedicated ref —
+  a losing racer's claim is rejected server-side, not silently overwritten). If `--claim` reports it
+  lost the race, another session claimed first between your read and your push — treat that exactly
+  like "already in flight" above, not as a transient error to retry immediately.
+
+See `scripts/plan-behind-sync-order.mjs`'s header comment for the full design and
+`.squad/agents/ralph/loop.md` §9.3 for how Ralph itself consults the same tool before recommending or
+dispatching a sync.
+
 ## Merge one PR at a time, and verify each one landed
 
 **This is the most expensive lesson in the repo.** Two `gh pr merge` calls fired ~3 seconds apart against the same base both reported `MERGED`, but one merge commit was silently orphaned — the second merge resolved against the same stale base tip and its ref update dropped the first. `development` lost ~6000 lines of native engine code for hours.

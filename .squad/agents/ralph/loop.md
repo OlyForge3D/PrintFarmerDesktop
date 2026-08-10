@@ -138,6 +138,10 @@ Priority outranks age; age outranks issue number.
 - Every kickoff prompt states: assigned member, issue number, acceptance criteria, the
   `squad/{issue}-{slug}` branch convention, required PR linkage back to the issue, and the targeted
   validation commands to run.
+- **A kickoff whose task includes rebasing a BEHIND PR onto its base states that too** (per #263,
+  `.squad/skills/git-workflow/SKILL.md`'s "Refuse to merge a PR that is BEHIND its base" section):
+  run `npm run plan:behind-sync-order -- --claim` before pushing the rebase, and stand down if it
+  reports a lease already in flight for a different PR. See §9.3.
 - Every kickoff prompt **must end with the closing clause quoted verbatim in §8.1.** A dispatch sent
   without it is a defect: the session is left to guess how its life ends, and guessing produces the
   failing `archive_session` call §8 exists to prevent.

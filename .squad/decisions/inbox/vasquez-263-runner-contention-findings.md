@@ -82,7 +82,7 @@ question — true, and `surveyBehindPrs`'s per-base ancestry cache is correct
 and unchanged. But Ralph's dispatched external reviewers (also named Hicks
 and Vasquez — a naming collision with this session's own local review
 personas, not the same reviewers) posted REJECT verdicts as real PR
-comments identifying that the *scheduling* question is NOT per-base:
+comments identifying that the _scheduling_ question is NOT per-base:
 `.github/workflows/ci.yml`'s `pull_request:` trigger fans every push, on
 every base, into the SAME shared GitHub-hosted runner pool, so
 recommending "sync #10 (development) next" and "sync #99 (release/1.x)
@@ -121,4 +121,3 @@ on it in code (not merely reasoned about):
   header), given the `workflow`-scope gap blocking a `.github/workflows/**`
   wiring. Addresses Hicks's "inert script, nothing calls it" finding within
   this repo's agent-driven (not pure-CI) automation model.
-
