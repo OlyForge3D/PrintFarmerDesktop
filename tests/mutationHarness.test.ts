@@ -202,33 +202,19 @@ describe('proving the file came back', () => {
         actualHash: 'b'.repeat(40),
         porcelainBefore: '',
         porcelainAfter: '',
-        residueCount: 0,
-      }).restored,
-    ).toBe(false);
-  });
-
-  it('catches mutation residue even when the hash somehow agrees', () => {
-    expect(
-      classifyRestore({
-        pinnedHash,
-        actualHash: pinnedHash,
-        porcelainBefore: '',
-        porcelainAfter: '',
-        residueCount: 1,
       }).restored,
     ).toBe(false);
   });
 
   it('catches a dirty tree that the single-file hash cannot see', () => {
     // The hash reading is per-file, so damage to a neighbouring file is
-    // invisible to it. This is why all three readings are required.
+    // invisible to it. This is why both readings are required.
     expect(
       classifyRestore({
         pinnedHash,
         actualHash: pinnedHash,
         porcelainBefore: '',
         porcelainAfter: ' M scripts/other.mjs',
-        residueCount: 0,
       }).restored,
     ).toBe(false);
   });
@@ -246,7 +232,6 @@ describe('proving the file came back', () => {
         actualHash: pinnedHash,
         porcelainBefore: existing,
         porcelainAfter: existing,
-        residueCount: 0,
       }).restored,
     ).toBe(true);
   });
@@ -258,7 +243,6 @@ describe('proving the file came back', () => {
         actualHash: pinnedHash,
         porcelainBefore: '?? scripts/mutation-harness.mjs',
         porcelainAfter: '?? scripts/mutation-harness.mjs\n M src/snapshot.snap',
-        residueCount: 0,
       }).reason,
     ).toContain('src/snapshot.snap');
   });
@@ -271,7 +255,6 @@ describe('proving the file came back', () => {
         actualHash: pinnedHash,
         porcelainBefore: '',
         porcelainAfter: '',
-        residueCount: 0,
       }).restored,
     ).toBe(true);
   });
@@ -280,6 +263,29 @@ describe('proving the file came back', () => {
     expect(() => classifyRestore({ actualHash: pinnedHash })).toThrow(
       /pinnedHash is required/,
     );
+  });
+
+  // Regression for #557: a hash match already entails byte-identity with the
+  // pinned blob, which already entails zero residue. A residue count is no
+  // longer part of this function's inputs, but this test pins the behaviour
+  // that matters -- a restore whose replacement string (here `;`) occurs
+  // naturally, many times, in the restored file must still be accepted as
+  // long as the hash matches the pinned blob. Measured against a real
+  // 14-arm battery (#556) where a replacement of `;` produced a false
+  // CONFOUNDED verdict on a file that restored perfectly.
+  it('does not confound a restore whose replacement occurs naturally many times in the file', () => {
+    const naturalFile = Array(164).fill('combined += chunk;').join('\n');
+    expect(
+      classifyRestore({
+        pinnedHash,
+        actualHash: pinnedHash,
+        porcelainBefore: '',
+        porcelainAfter: '',
+        // A residue count computed the old way would be 164 -- included
+        // here only to prove classifyRestore no longer reads this field.
+        residueCount: countOccurrences(naturalFile, ';'),
+      }).restored,
+    ).toBe(true);
   });
 });
 
@@ -472,6 +478,38 @@ describe('running an arm against a real file in a real repository', () => {
         encoding: 'utf8',
       }).trim(),
     ).toBe('');
+  });
+
+  // Regression for #557, reproducing the real battery it was found in: the
+  // replacement string (`;`) occurs naturally, many times, in the subject
+  // file. A restore that put the file back byte-for-byte must not be reported
+  // CONFOUNDED merely because `;` is common. Uses its own subject file so the
+  // many semicolons don't collide with the other arms in this block.
+  it('does not confound a kill whose replacement string occurs naturally elsewhere in the file', () => {
+    const semicolonTarget = path.join(dir, 'semicolons.mjs');
+    const semicolonOriginal =
+      'export const GUARD = true;\n' + 'const noise = 1;\n'.repeat(163);
+    writeFileSync(semicolonTarget, semicolonOriginal);
+    execFileSync('git', ['add', 'semicolons.mjs'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'add semicolon-heavy subject'], {
+      cwd: dir,
+    });
+    const semicolonPinnedHash = hashWorkingFile(semicolonTarget, dir);
+
+    const arm = runArm({
+      filePath: semicolonTarget,
+      original: semicolonOriginal,
+      pinnedHash: semicolonPinnedHash,
+      anchor: 'GUARD = true;',
+      replacement: ';',
+      testCommand: probe(semicolonTarget),
+      label: 'replace with a semicolon that occurs 164 times naturally',
+      cwd: dir,
+    });
+
+    expect(arm.state).toBe(ARM_KILLED);
+    expect(readFileSync(semicolonTarget, 'utf8')).toBe(semicolonOriginal);
+    expect(hashWorkingFile(semicolonTarget, dir)).toBe(semicolonPinnedHash);
   });
 });
 

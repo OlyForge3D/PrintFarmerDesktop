@@ -131,10 +131,19 @@ export function classifyApplication({
 }
 
 /**
- * Did the file come back? All three readings are required, because each is
- * blind to something the others see: a hash comparison misses damage to other
- * files, the porcelain delta misses nothing but cannot name what changed, and
- * the residue count is the only one that names the specific mutation.
+ * Did the file come back? Two readings are required, because each is blind to
+ * something the other sees: a hash comparison misses damage to other files,
+ * and the porcelain delta misses nothing but cannot name what changed.
+ *
+ * There is deliberately no residue count here. A hash match already entails
+ * byte-identity with the pinned blob, and byte-identity already entails zero
+ * occurrences of the replacement beyond whatever the pinned blob itself
+ * contains -- so a residue check reachable only after the hash has matched
+ * can never confirm anything the hash didn't already confirm, and can only
+ * ever produce a false CONFOUNDED verdict when the replacement string (e.g.
+ * `;`) happens to occur naturally in the file (#557). The residue count is
+ * still meaningful in `classifyApplication`, where it runs BEFORE any hash
+ * check and confirms the mutation actually landed.
  *
  * The porcelain reading is a DELTA, not an absolute. An absolute reading was
  * measured against this very repository and confounded every arm, because the
@@ -149,7 +158,6 @@ export function classifyRestore({
   actualHash,
   porcelainBefore,
   porcelainAfter,
-  residueCount,
 } = {}) {
   if (typeof pinnedHash !== 'string' || pinnedHash === '') {
     throw new Error('pinnedHash is required to verify a restore');
@@ -158,12 +166,6 @@ export function classifyRestore({
     return {
       restored: false,
       reason: `working file hashes ${actualHash}, pinned blob is ${pinnedHash}`,
-    };
-  }
-  if (residueCount !== 0) {
-    return {
-      restored: false,
-      reason: `mutation residue still present ${residueCount} time(s) after restore`,
     };
   }
   const before = normaliseStatus(porcelainBefore);
@@ -396,7 +398,6 @@ export function runArm({
     actualHash: hashWorkingFile(filePath, cwd),
     porcelainBefore,
     porcelainAfter: porcelainStatus(cwd),
-    residueCount: countOccurrences(readFileSync(filePath, 'utf8'), replacement),
   });
 
   return { label, ...classifyArm({ application, restore, summary }) };
