@@ -72,8 +72,8 @@ A checker satisfies this rule only if:
 1. It reads the reference at **both** base and head and reports the 2×2 cell,
    not a boolean.
 2. The four cells map to distinct reported outcomes; in particular `absent at
-   base, absent at head` is reported differently from `present at base, absent
-   at head`.
+base, absent at head` is reported differently from `present at base, absent
+at head`.
 3. The removal fixture asserts symbol **absence at head against symbol
    presence at base** — never against the presence of a removal line in the
    diff, per the six-of-seven measurement above.
@@ -89,7 +89,7 @@ A checker satisfies this rule only if:
 
 ## Scope
 
-This says nothing about whether a reference is *correct* — only about whether
+This says nothing about whether a reference is _correct_ — only about whether
 an absence has been correctly diagnosed. A checker satisfying all five points
 still reports nothing about whether a resolvable reference points at the thing
 its surrounding prose claims. That is a separate question, tracked where each
