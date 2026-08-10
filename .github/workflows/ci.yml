@@ -280,6 +280,15 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true'
         run: npm run check:script-reachability
 
+      # #270: an optional, function-typed class field that is not `declare`d
+      # and never self-assigned is a silently inert prototype-patchable seam
+      # under this project's ES2022 useDefineForClassFields target. Neither
+      # typecheck nor lint below can see this -- it is a runtime fact about
+      # the class-fields spec, not a type error -- so it needs its own gate.
+      - name: Inert class-field seams
+        if: steps.changes.outputs.docs_only != 'true'
+        run: npm run check:inert-class-field-seams
+
       - name: Type-check
         if: steps.changes.outputs.docs_only != 'true'
         run: npm run typecheck

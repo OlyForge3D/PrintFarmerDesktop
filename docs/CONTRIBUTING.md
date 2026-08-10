@@ -22,17 +22,18 @@ npm install
 
 Renderer/main/preload (run from the repo root):
 
-| Command                             | Purpose                                    |
-| ----------------------------------- | ------------------------------------------ |
-| `npm run dev`                       | Launch the app with hot reload             |
-| `npm run typecheck`                 | Strict TypeScript check (no emit)          |
-| `npm run lint`                      | ESLint (type-aware)                        |
-| `npm run format`                    | Prettier check (`format:write` fixes)      |
-| `npm run check:provenance`          | Calibration source/provenance gate         |
-| `npm run test`                      | Vitest unit/component tests                |
-| `npm run make`                      | Build platform installers                  |
-| `npm run verify:target-profiles`    | Verify the pinned printer-profile snapshot |
-| `npm run worktree:remove -- <path>` | Safely force-remove a linked worktree      |
+| Command                                 | Purpose                                         |
+| --------------------------------------- | ----------------------------------------------- |
+| `npm run dev`                           | Launch the app with hot reload                  |
+| `npm run typecheck`                     | Strict TypeScript check (no emit)               |
+| `npm run lint`                          | ESLint (type-aware)                             |
+| `npm run format`                        | Prettier check (`format:write` fixes)           |
+| `npm run check:provenance`              | Calibration source/provenance gate              |
+| `npm run check:inert-class-field-seams` | Guards against #270-style inert prototype seams |
+| `npm run test`                          | Vitest unit/component tests                     |
+| `npm run make`                          | Build platform installers                       |
+| `npm run verify:target-profiles`        | Verify the pinned printer-profile snapshot      |
+| `npm run worktree:remove -- <path>`     | Safely force-remove a linked worktree           |
 
 Rust sidecar (run from `native/`):
 
@@ -71,6 +72,17 @@ exercised in CI.
   primitives to renderer code.
 - Any product change must run the unit tests that cover it; if none exist, add
   them.
+- This project targets ES2022 with `useDefineForClassFields` on, so a plain
+  optional class field (`resolveThing?: (...) => T;`) meant as a
+  prototype-patchable capability seam is silently inert: TypeScript emits an
+  own `undefined` property on every instance, which shadows anything a caller
+  later assigns to the prototype. Typecheck, lint, and any test that only
+  exercises the capability-absent path stay green while the capability can
+  never actually be observed. Use a real prototype method instead, or
+  `declare` the field if something outside the class truly assigns it
+  directly. `npm run check:inert-class-field-seams` guards this mechanically;
+  see `.squad/skills/test-discipline/SKILL.md` for the counterfactual-test
+  requirement this defect shape motivated, and issue #270 for the incident.
 - Source models are read-only. Never move, rename, modify, or upload a user's
   files without an explicit user action.
 - Never commit credentials or signing material (see `.gitignore`).
