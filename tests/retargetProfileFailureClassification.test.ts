@@ -26,7 +26,19 @@
  *
  * @module retargetProfileFailureClassification.test
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 import {
   TargetProfileNativeError,
@@ -34,6 +46,15 @@ import {
 } from '../src/main/targetProfiles.js';
 
 const INIT_FAILURE = 'EPERM: operation not permitted, rmdir';
+
+/*
+ * `/test/userData` is drive-relative on Windows and resolves outside the
+ * repo (e.g. `D:\test\userData`), so the handlers under test would write real
+ * artifacts (scene-cache, upload-snapshots) into a fixed, shared location
+ * across concurrent runs on the same machine. A per-run temp dir keeps the
+ * writes isolated and `afterAll` reaps them.
+ */
+const userDataRoot = mkdtempSync(join(tmpdir(), 'retarget-classification-'));
 
 const electronState = {
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -47,9 +68,9 @@ const faultState: {
 
 vi.mock('electron', () => ({
   app: {
-    getPath: () => '/test/userData',
+    getPath: () => userDataRoot,
     getVersion: () => '0.0.0-test',
-    getAppPath: () => '/test/userData',
+    getAppPath: () => userDataRoot,
     on: () => undefined,
     whenReady: () => Promise.resolve(),
     isPackaged: false,
@@ -135,6 +156,10 @@ describe('retarget profile failure classification', () => {
 
   afterEach(() => {
     vi.resetModules();
+  });
+
+  afterAll(() => {
+    rmSync(userDataRoot, { recursive: true, force: true });
   });
 
   async function invoke(channel: string): Promise<Envelope> {
