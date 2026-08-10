@@ -49,11 +49,15 @@ export interface CleanupEvidence {
   cleanupPaths: string[];
   cleanupDirectories: string[];
   recovery: Pick<CleanupRecovery, 'attempted' | 'recovered' | 'reason'>;
+  productionTreeProblems: string[];
+  productionTreeError: string | null;
   warningExcerpt: string[];
 }
 export function createCleanupEvidence(input: {
   output: string;
   recovery: CleanupRecovery;
+  productionTreeProblems?: string[];
+  productionTreeError?: string | null;
   environment?: NodeJS.ProcessEnv;
   recordedAt?: string;
 }): CleanupEvidence;
