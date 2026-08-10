@@ -572,7 +572,19 @@ const KNOWN_RULESET_ENFORCEMENTS = new Set(['active', 'evaluate', 'disabled']);
 const KNOWN_RULESET_TARGETS = new Set(['branch', 'tag', 'push']);
 
 export function rulesetCoversFeatureBranches(ruleset) {
-  if (!ruleset) return false;
+  if (ruleset === null) return false;
+  // A ruleset entry that is present but not an object (e.g. `0`, `false`,
+  // `''`, a string, a number) is malformed external data, not the
+  // deliberate "no ruleset" signal that `null` represents. Bishop
+  // reproduced this in review of #490/#676 (head f4435a12):
+  // `if (!ruleset) return false;` conflated `null` with any other falsy
+  // value, so a malformed `/rulesets` entry like `0` was silently treated
+  // as "does not cover feature branches" instead of failing loud.
+  if (typeof ruleset !== 'object') {
+    throw new Error(
+      `Ruleset entry is not an object (got ${JSON.stringify(ruleset)}); refusing to treat malformed data as "covers no feature branches".`,
+    );
+  }
   // A non-null ruleset object without a recognized `enforcement` value is
   // malformed/truncated data, not a confirmed-inactive ruleset. Bishop
   // reproduced this in review of #490 (head 670905f4): `!== 'active'`

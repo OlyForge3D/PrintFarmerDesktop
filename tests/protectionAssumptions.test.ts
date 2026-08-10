@@ -678,6 +678,21 @@ describe('a ruleset matters only when it is enabled and reaches a feature branch
       }),
     ).toBe(false);
   });
+
+  // Bishop's finding on review of #490/#676 (head f4435a12): `if (!ruleset)
+  // return false;` conflated the deliberate "no ruleset" signal (`null`)
+  // with any other falsy, non-object value -- a malformed `/rulesets`
+  // entry like `0`, `false`, or `''` was silently treated the same as
+  // "covers no feature branches" instead of failing loud on data that
+  // isn't shaped like a ruleset at all.
+  it('throws rather than silently treating a non-object, non-null ruleset entry as covering nothing (Bishop repro)', () => {
+    expect(() => rulesetCoversFeatureBranches(0)).toThrow(/not an object/i);
+    expect(() => rulesetCoversFeatureBranches(false)).toThrow(/not an object/i);
+    expect(() => rulesetCoversFeatureBranches('')).toThrow(/not an object/i);
+    expect(() => rulesetCoversFeatureBranches(undefined)).toThrow(
+      /not an object/i,
+    );
+  });
 });
 
 describe('the report names the decision, not just the drift', () => {

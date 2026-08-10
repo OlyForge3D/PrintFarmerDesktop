@@ -37,9 +37,7 @@ export declare function evaluatePublicProtectionAssumptions(facts: {
 
 export declare const PRIVILEGED_ONLY_ASSUMPTIONS: readonly string[];
 
-export declare function rulesetCoversFeatureBranches(
-  ruleset: Record<string, unknown> | null | undefined,
-): boolean;
+export declare function rulesetCoversFeatureBranches(ruleset: unknown): boolean;
 
 export declare function formatViolations(
   violations: AssumptionViolation[],
