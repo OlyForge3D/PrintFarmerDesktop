@@ -102,6 +102,12 @@ display.
   instance of this file's general shape: a predicate that answers a
   neighbouring question (`absent at one ref?`) instead of the one asked
   (`was it removed?`), with nothing in the output to tell you it did.
+- `.squad/decisions/inbox/ripley-338-sorting-principle-and-corollaries.md`
+  — row 4 above (`conclusion != "SUCCESS"`) reappears there under a naming
+  framing: `not-success` as a bucket name folds "failed" and "not yet run"
+  into one label, so the bucket is named after its bad member. Same defect,
+  cited as one of #338's four member instances rather than duplicated as a
+  new row here.
 
 This file is the general catalogue; those are the deep dives. When in
 doubt, add a new row here rather than a new standalone decision file — a
