@@ -100,6 +100,19 @@ So, when a review blocks a PR:
 
 The PR is also a delivery channel that does not drop messages. Cross-session chat demonstrably does — a fix list once sat undelivered while its author pinged asking why the PR had no reviews. Put the durable copy where the work is.
 
+### Before trusting a green result, check whether it was first-attempt (#340)
+
+**Green CI is necessary but never sufficient, and "green" is not the same claim as "never failed."** `gh pr checks`, the PR UI, and branch protection all read `GET /commits/{sha}/check-runs`, an object with no `run_attempt` field. A re-run _replaces_ the check runs on the head rather than appending to them, so a commit that failed twice and passed on a third attempt reads back identically to one that passed first try — #340 measured ten merged PRs in a two-week window that were green only on a later attempt, with zero trace of the failed attempts at the head. This is not a claim that any of those merges were wrong, and it does not identify who re-ran anything (attribution here is one account) — it is a claim that the instrument cannot distinguish the two cases, so a reviewer who wants to know must ask a different question than the one `gh pr checks` answers.
+
+Before treating a green check-runs result as a first-attempt pass, run:
+
+```
+npm run report:run-attempt-visibility -- --sha <head-sha>
+   # or: -- --pr <number>
+```
+
+This calls `GET /actions/runs?head_sha=<sha>` directly — the endpoint that actually carries `run_attempt` — and reports the highest attempt observed for that head. Exit 0 means every run is at attempt 1 (never re-run); exit 1 means at least one run reached a later attempt, in which case the green you are looking at may be a green-on-some-attempt. Like the rerun-masked-failures scan above it, this is a report, not a gate: it is not wired to a required context, and a re-run is not on its own evidence of anything improper (`scripts/check-run-attempt-visibility.mjs`).
+
 ### What actually enforces a blocking verdict today, and what will (#480)
 
 **Only one channel currently mechanically refuses a merge: converting the PR to draft** (`gh pr ready <n> --undo`). Everything else — a `BLOCKING` review comment, a `hold:*` label, the `Sequencing hold` check going red — is **advisory**: legible to any reader, refused by no API. #480 measured this directly (PR #349 merged despite a live `BLOCKING` verdict) and this file, `.squad/holds.md`, and `.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md` / `.../vasquez-187-squad-verdict-evidence.md` are the record of why: `required_approving_review_count` cannot move above 0 in a single-collaborator repository (self-review is `422`'d), so a bindable review state is not buildable here, and `Sequencing hold` is not yet a required context (below).
