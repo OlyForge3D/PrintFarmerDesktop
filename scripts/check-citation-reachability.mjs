@@ -61,6 +61,7 @@ import { execFileSync } from 'node:child_process';
 import { isDocumentationPath } from './docs-only-change.mjs';
 import {
   collectCitations,
+  isGitObjectToken,
   loadCorpus,
   refuse,
   requireCorpusFloor,
@@ -205,6 +206,15 @@ const addedLinesOf = (rev) => {
 // Reads a `- `sha` — text` list under a heading, from any of the artifacts. The text comes from
 // the preflight map rather than a fresh read, so a root that disappears mid-run cannot be
 // swallowed here: there is exactly one place a scan root can fail, and it refuses.
+//
+// The leading token is captured wide (any run with no backtick or newline) and then classified
+// with the SAME predicate `collectCitations` uses, rather than a second `[0-9a-f]{7,40}` literal
+// re-typed here. #538: this reader is one of the two "escape hatch" call sites the citation scan
+// has - it is where an author is supposed to be able to name what an orphan actually is - so a
+// fix applied only to the scan and not here would silently misclassify the very entries an author
+// writes to correct a misclassification. A typed forge citation (`comment:5196272727`,
+// `issues/comments/5196272727`) is recognised and skipped here exactly as it is in the scan; it
+// is never a Git object to declare a reason for, because it was never one the scan flagged.
 const readBlock = (heading) => {
   const found = new Map();
   for (const text of sources.values()) {
@@ -214,8 +224,9 @@ const readBlock = (heading) => {
     const end = rest.indexOf('\n## ');
     const block = end < 0 ? rest : rest.slice(0, end);
     for (const m of block.matchAll(
-      /`([0-9a-f]{7,40})`\s*[-\u2014:]\s*([^\n]+)/g,
+      /`([^`\n]{1,80})`\s*[-\u2014:]\s*([^\n]+)/g,
     )) {
+      if (!isGitObjectToken(m[1])) continue;
       found.set(m[1], m[2].trim());
     }
   }
@@ -224,11 +235,16 @@ const readBlock = (heading) => {
 
 const declared = readBlock(DECLARATION_HEADING);
 
-// Declared twins. The value carries prose; the twin is the first backticked revision in it.
+// Declared twins. The value carries prose; the twin is the first backticked revision in it that
+// is itself a Git object token, per the same classification used everywhere else in this file -
+// so a typed forge citation mentioned in passing within the note (e.g. "see `comment:123`, twin
+// is `abc1234`") cannot be mistaken for the twin merely because it appears first.
 const twins = new Map();
 for (const [sha, note] of readBlock(TWIN_HEADING)) {
-  const m = /`([0-9a-f]{7,40})`/.exec(note);
-  if (m) twins.set(sha, m[1]);
+  const candidate = [...note.matchAll(/`([^`\n]{1,80})`/g)].find((m) =>
+    isGitObjectToken(m[1]),
+  );
+  if (candidate) twins.set(sha, candidate[1]);
 }
 
 // Cited SHAs. Only backticked tokens count: prose that happens to contain a hex-looking word is
@@ -700,6 +716,27 @@ if (orphans.length) {
     '\nRepair by naming the live twin, documenting a fetch route, or declaring the absence under:',
   );
   console.error(`  ${DECLARATION_HEADING}`);
+  // #538. This verdict assumes the token names a Git commit - that assumption is what a bare
+  // 7-40 character hex/decimal token *means* here, never something this run established about
+  // the specific token. Decimal digits are valid hex, so a GitHub forge id (an issue, PR, or
+  // review comment id) of the same width is indistinguishable from a Git abbreviation and is
+  // read as one. If that is what happened, this ORPHAN says nothing about whether the forge
+  // object exists - it was never a Git citation to test as one, and no amount of asking the
+  // commits endpoint about it can change that. Re-cite it in the typed form documented in
+  // .squad/fact-checker/policy.md (`comment:<id>` or `issues/comments/<id>`) and this check will
+  // stop treating it as a Git object entirely.
+  console.error(
+    '\nThis check assumes the token names a Git commit; it has not established that it is one.',
+  );
+  console.error(
+    '  If the token is actually a forge id (issue, PR, or review comment), cite it in the typed',
+  );
+  console.error(
+    '  form from .squad/fact-checker/policy.md (`comment:<id>` or `issues/comments/<id>`) instead',
+  );
+  console.error(
+    '  of a bare hex/decimal token, and this check will no longer classify it as a Git object.',
+  );
   // ORPHAN means "no route through the commit graph", which is narrower than "gone". The forge
   // serves single commits by SHA from a content-addressed store that outlives every ref, so an
   // object no branch reaches and no `git fetch` route recovers is often still retrievable -
@@ -709,10 +746,11 @@ if (orphans.length) {
   // would turn an outage into a red and could not run in a clone with no remote. The instrument
   // stays hermetic; the operator gets told where else to look.
   console.error(
-    '\nA graph route is not the only route. To test whether the forge still serves one:',
+    '\nIf the token really does name a commit, a graph route is not the only route. To test',
   );
+  console.error('  whether the forge still serves one:');
   console.error(
-    '  gh api repos/<owner>/<repo>/commits/<sha> --jq .sha   # non-zero exit means genuinely gone',
+    '  gh api repos/<owner>/<repo>/commits/<sha> --jq .sha   # non-zero exit means the assumed commit is genuinely gone',
   );
   process.exit(1);
 }

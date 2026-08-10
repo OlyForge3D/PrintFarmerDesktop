@@ -402,6 +402,13 @@ the moment of use — before routing, holding, reviewing, or publishing," which 
 role reads. This section stays the authoritative procedure for Ralph's own merge gate
 specifically; it is not restated a second time in the shared file.
 
+**#275 generalizes the timestamp/terminal-phrasing/RED-vs-PENDING conventions this
+section already applies to the merge gate to status boards generally** — merge queues,
+CI dashboards, epic trackers, backlog snapshots. See
+`.squad/skills/agent-collaboration/SKILL.md`'s "A status board is a memory wearing the
+costume of a measurement" for the general conventions; this section remains the
+authoritative merge-gate procedure and is not restated there.
+
 ### 9.3 Serializing base-syncs against the shared runner pool — #263
 
 **#263:** six `CI` runs entered within eleven seconds against the shared GitHub-hosted

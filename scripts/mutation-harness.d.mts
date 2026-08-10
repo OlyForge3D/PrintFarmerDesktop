@@ -57,7 +57,6 @@ export function classifyRestore(input?: {
   actualHash?: string;
   porcelainBefore?: string;
   porcelainAfter?: string;
-  residueCount?: number;
 }): RestoreResult;
 
 export function classifyBaseline(summary: TestSummary | null): BaselineResult;

@@ -80,16 +80,62 @@ export function requireScanRoots({ sources, unreadable }) {
 }
 
 /**
+ * A bare Git object token: 7-40 characters, every one of them a hex digit.
+ * Decimal digits are a *subset* of hex, so this also matches an all-digit
+ * token of the same width - #538. That is deliberate, not an oversight: this
+ * repository's own reader-reachable revisions include all-digit abbreviations
+ * (measured: 18 at width 7, 7 at width 10, against HEAD + origin/development),
+ * so excluding all-digit tokens here would silently stop checking those -
+ * trading a loud false ORPHAN for a silent false negative, which #538 §4
+ * measured and rejected as the worse defect. A bare token is therefore always
+ * read as "Git object"; there is no way to read it any other way after the
+ * fact, because the ambiguity is in the token itself, not in this pattern.
+ */
+export const GIT_OBJECT_TOKEN_RE = /^[0-9a-f]{7,40}$/;
+
+/**
+ * A typed forge citation: an id that names something other than a Git object
+ * (an issue, a pull request, a review comment) written with a namespace this
+ * extractor can read, so it is never mistaken for a hex/decimal Git
+ * abbreviation. Two shapes are accepted - see `.squad/fact-checker/policy.md`
+ * for the citation convention this implements:
+ *
+ *   comment:5196272727            (an explicit `kind:id` prefix)
+ *   issues/comments/5196272727     (a forge API path, one or more segments)
+ *
+ * Either shape requires a non-numeric label before the id, which a bare
+ * hex/decimal token can never supply - so this and GIT_OBJECT_TOKEN_RE are
+ * mutually exclusive by construction, and a token can match at most one.
+ */
+export const FORGE_CITATION_RE =
+  /^(?:[a-z][a-z0-9_-]*:|(?:[a-z][a-z0-9_-]*\/)+)\d+$/i;
+
+export const isGitObjectToken = (token) => GIT_OBJECT_TOKEN_RE.test(token);
+export const isForgeCitation = (token) => FORGE_CITATION_RE.test(token);
+
+/**
  * Every distinct backticked commit-SHA in the corpus, mapped to the files it
  * appears in.
+ *
+ * The capture is deliberately wider than a Git object token: it takes any
+ * backticked run with no backtick or newline in it, then classifies what it
+ * found. That is what lets a typed forge citation (`comment:5196272727`,
+ * `issues/comments/5196272727`) be *recognised and skipped* here rather than
+ * merely failing to match the old narrower pattern by accident of its
+ * character class - #538 measured that the accident was real (a colon or
+ * slash already defeats `[0-9a-f]{7,40}`) but undocumented and untested, so a
+ * future tightening of this pattern could remove the accidental protection
+ * without anyone noticing. Explicit skip, not incidental non-match.
  */
 export function collectCitations(sources) {
   const cited = new Map();
 
   for (const [file, text] of sources) {
-    for (const match of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
-      if (!cited.has(match[1])) cited.set(match[1], []);
-      cited.get(match[1]).push(file);
+    for (const match of text.matchAll(/`([^`\n]{1,80})`/g)) {
+      const token = match[1];
+      if (!isGitObjectToken(token)) continue; // forge citation, or not a citation at all
+      if (!cited.has(token)) cited.set(token, []);
+      cited.get(token).push(file);
     }
   }
 

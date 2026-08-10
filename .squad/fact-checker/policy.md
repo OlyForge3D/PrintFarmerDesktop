@@ -209,6 +209,40 @@ Decisions that affect other agents go to `.squad/decisions/inbox/fact-checker-{s
 
 ---
 
+## Citation Token Types: Git Object vs. Forge Reference
+
+`scripts/check-citation-reachability.mjs` extracts every backticked 7–40 character token from
+this ledger (the declaration block, the twin block, and the running text alike) and classifies
+it as one of two mutually exclusive shapes. Which shape a token is read as depends only on its
+own spelling — there is no way to tell them apart after the fact, so the shape has to be chosen
+at the moment the citation is written (issue #538).
+
+- **Git object** (the default, untyped form): a bare token made entirely of the characters
+  `0-9a-f`, 7–40 of them, with no prefix and no path. Decimal digits are valid hex, so an
+  **all-digit** token is still read as a Git object abbreviation and is checked for
+  reachability the same as any other — do not use a bare digit run to cite anything that is
+  not a commit or a blob. (This repository's own reader-reachable history has genuine
+  all-digit abbreviations at more than one width, so excluding all-digit tokens from Git
+  classification was considered and rejected: it would silently stop checking those citations
+  rather than fix anything.)
+- **Forge reference** (typed): a GitHub id that is _not_ a Git object — an issue, pull
+  request, or review comment id — must be cited with a namespace the checker can read, in one
+  of two forms:
+  - a prefixed form, e.g. a comment cited as `comment:` followed by its numeric id
+  - a pathed form, e.g. the same comment cited as `issues/comments/` followed by its numeric
+    id, mirroring the forge API route that serves it
+
+  Either form is recognized and excluded from Git-object classification consistently at all
+  three places the checker reads citations from — it is never flagged ORPHAN for failing to
+  resolve as a commit, because it was never claiming to be one.
+
+A citation with no prefix and no path is always read as a Git object, even when it is entirely
+digits and even when it happens to be a valid GitHub id too. If you are citing a forge object,
+type it; an untyped decimal citation to a forge object is indistinguishable from a Git
+abbreviation of the same width and will be — correctly, given what it says — checked as one.
+
+---
+
 ## Integration with Reviewer Rejection Protocol
 
 When Fact Checker issues a ❌ Contradicted verdict on a user-facing artifact at Pre-Ship time:
