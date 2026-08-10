@@ -474,6 +474,76 @@ export function definedValues(markdown: string): string[] {
 }
 
 /**
+ * A word-shaped status value **mentioned** outside a definition bullet (issue
+ * #262).
+ *
+ * `definedValues` above closes #243 for the one position where a bare word is
+ * unambiguously a value: the bullet that introduces it. Everywhere else a
+ * word-shaped token appears in prose — `A value of \`resumed\` on an
+ * \`orchestration.polled\` record…`, `` `correlationOrigin` = `resumed` ``,
+ * `` `continued` rather than `resumed` `` — none of the shape predicates in
+ * `extractReferences` claim it (no hump, no dot, no colon), so it fell out of
+ * the `else if` chain and was never checked. That is exactly the gap #262
+ * reports: mutating only these mentions, leaving the definition bullet
+ * intact, left the suite green, and both runbook occurrences of `resumed`
+ * were among the four mentions that gap covers.
+ *
+ * A bare word in prose is still ambiguous between a status value and an
+ * ordinary emphasised word — extending the shape predicate itself to all of
+ * prose was proposed for #243 and withdrawn for exactly that reason. So this
+ * does the same trick #243 did, one level up: rather than guessing from
+ * shape, it keys off the small set of syntactic constructs this documentation
+ * actually uses to *say* "this word is the value of a field", each of which
+ * disambiguates by position the same way a definition bullet does:
+ *
+ * - `` `field` = `value` `` — an explicit equation.
+ * - `A value of \`value\`` — the explicit noun phrase.
+ * - `` `value` rather than `value` `` — a contrast between two values of the
+ *   same field.
+ * - `` `value` origin`` — this documentation's own idiom for naming a
+ *   `correlationOrigin` value (`` A `resumed` origin… ``).
+ *
+ * Anything else stays unchecked, same as it does for `extractReferences`:
+ * this is a real, stated limit, not a claim of exhaustive prose coverage.
+ */
+const MENTION_VALUE_OF = /\bvalue\s+of\s+`([^`\n]+)`/gi;
+const MENTION_FIELD_EQUALS = /`[A-Za-z][A-Za-z0-9]*`\s*=\s*`([^`\n]+)`/g;
+const MENTION_RATHER_THAN = /`([^`\n]+)`\s+rather than\s+`([^`\n]+)`/gi;
+const MENTION_ORIGIN_SUFFIX = /`([^`\n]+)`\s+origin\b/gi;
+
+/**
+ * Word-shaped tokens named at one of the mention positions above. Shaped
+ * tokens (camelCase fields, dotted names, channels, scripts) are excluded
+ * because those are already checked everywhere they appear in prose by
+ * `extractReferences`; this only has to cover the class that check cannot
+ * see.
+ */
+export function mentionedValues(markdown: string): string[] {
+  const prose = markdown.replace(FENCED_BLOCK, '');
+  const values: string[] = [];
+  const collect = (token: string): void => {
+    const trimmed = token.trim();
+    if (
+      CHANNEL.test(trimmed) ||
+      DOTTED.test(trimmed) ||
+      CAMEL_FIELD.test(trimmed) ||
+      NPM_SCRIPT.test(trimmed)
+    ) {
+      return;
+    }
+    values.push(trimmed);
+  };
+  for (const match of prose.matchAll(MENTION_VALUE_OF)) collect(match[1]!);
+  for (const match of prose.matchAll(MENTION_FIELD_EQUALS)) collect(match[1]!);
+  for (const match of prose.matchAll(MENTION_RATHER_THAN)) {
+    collect(match[1]!);
+    collect(match[2]!);
+  }
+  for (const match of prose.matchAll(MENTION_ORIGIN_SUFFIX)) collect(match[1]!);
+  return values;
+}
+
+/**
  * Whether a `Diagnose` section names something *relevant*, not merely
  * something that exists (issue #387).
  *
@@ -857,6 +927,80 @@ describe('calibration documentation reference integrity', () => {
       offenders,
       `documentation defines a value the repository does not contain:\n  ${offenders.join('\n  ')}`,
     ).toEqual([]);
+  });
+
+  it('mentions only word-shaped values that exist, not just definitions of them (#262)', () => {
+    // #262: the definition-site guard above only checks the bullet that
+    // *introduces* a value. It says nothing about a *mention* of that value
+    // elsewhere — including in the runbooks, which is where an operator
+    // actually reads it. This checks every mention position named in
+    // `mentionedValues`'s doc comment against the same source-of-truth
+    // vocabulary the definition-site guard uses.
+    const fields = knownFieldNames();
+    const mentioned = DOCUMENTS.flatMap((document) =>
+      mentionedValues(read(document.file)).map((token) => ({
+        label: document.label,
+        token,
+      })),
+    );
+    // Non-vacuity: if every mention pattern stops matching, the assertion
+    // below passes over an empty list and silently stops constraining
+    // anything, which is precisely the failure mode #262 reports.
+    expect(
+      mentioned.length,
+      `only ${String(mentioned.length)} word-shaped value mentions were extracted; the mention patterns have stopped matching`,
+    ).toBeGreaterThanOrEqual(4);
+    const offenders = mentioned
+      .filter(({ token }) => !fields.has(token))
+      .map(({ label, token }) => `${label}: mentions unknown value '${token}'`);
+    expect(
+      offenders,
+      `documentation mentions a value the repository does not contain:\n  ${offenders.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('control: the mention guard rejects a stale mentioned value and accepts a real one (#262)', () => {
+    // Positive control + anti-vacuity pair: a fixture built from the exact
+    // syntactic shapes #262 reports as unguarded (`stuck-orchestration.md:34`
+    // and `:59`), with one real value and one invented one at each position,
+    // proves the guard both fires on the offender and does not reject the
+    // real thing alongside it.
+    const fixture = [
+      '## Diagnose',
+      '',
+      '4. **Check `correlationOrigin` on the polls.** A value of `resumed` on an',
+      '   `orchestration.polled` record means the flow lost correlation. A value',
+      '   of `abandoned` would not, because that word is never emitted.',
+      '',
+      '## Verify',
+      '',
+      '1. Confirm the record now carries `correlationOrigin`',
+      '   `continued` rather than `resumed`, and not `halted` rather than `stalled`.',
+      '2. `outcome` = `failed`, not `outcome` = `nothinghappened`.',
+      '3. A `resumed` origin should not recur; nor should a `phantom` origin.',
+      '',
+    ].join('\n');
+    const fields = knownFieldNames();
+    const mentioned = new Set(mentionedValues(fixture));
+    // The real values survive: the guard does not reject everything it sees.
+    expect(mentioned.has('resumed')).toBe(true);
+    expect(mentioned.has('continued')).toBe(true);
+    expect(mentioned.has('failed')).toBe(true);
+    expect(fields.has('resumed')).toBe(true);
+    expect(fields.has('continued')).toBe(true);
+    expect(fields.has('failed')).toBe(true);
+    // The invented values at each of the four mention positions are extracted
+    // and are not in the known vocabulary, so the guard reports them.
+    for (const invented of [
+      'abandoned',
+      'halted',
+      'stalled',
+      'nothinghappened',
+      'phantom',
+    ]) {
+      expect(mentioned.has(invented)).toBe(true);
+      expect(fields.has(invented)).toBe(false);
+    }
   });
 
   it('documents every correlationOrigin an operator can see', () => {
