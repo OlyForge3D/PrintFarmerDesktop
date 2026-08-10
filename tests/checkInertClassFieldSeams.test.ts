@@ -226,6 +226,39 @@ describe('findInertSeamCandidates', () => {
       findInertSeamCandidates('typeofScopingFalsePositive.fixture.ts', source),
     ).toEqual([]);
   });
+
+  it('FAILS LOUDLY (throws) rather than silently reporting a clean scan when the file has an unresolved import (Bishop, round 4)', () => {
+    // Bishop's review finding (round 4): the `ts.Program`-backed checker's
+    // answer for `typeof somethingImported` is only trustworthy if the
+    // import actually resolved. If it didn't (TS2307 "Cannot find module"),
+    // returning `[]` would report "no inert-seam candidates" for a file
+    // this check could not actually analyze -- the same #270-shaped failure
+    // mode ("an unreadable/unanalyzable input must not report the same
+    // result as a genuinely clean one") the module doc already names for
+    // parse failures. This source is inlined (not a fixture file on disk)
+    // specifically so its deliberately-broken import is never picked up by
+    // the project's own `tsconfig.json` (`tests/**/*.ts` include) and does
+    // not break `npm run typecheck`.
+    const brokenImportSource = [
+      "import { doesNotExist } from './does-not-exist-anywhere';",
+      '',
+      'export class BrokenImportAdapter {',
+      '  readonly resolveConflict?: typeof doesNotExist;',
+      '',
+      '  hasCapability(): boolean {',
+      "    return typeof this.resolveConflict === 'function';",
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+
+    expect(() =>
+      findInertSeamCandidates(
+        'brokenImportSeam.fixture.ts',
+        brokenImportSource,
+      ),
+    ).toThrowError(/unresolved import|Cannot find module/);
+  });
 });
 
 describe('formatViolation', () => {

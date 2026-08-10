@@ -403,6 +403,48 @@ function createVirtualHost(virtualFiles) {
   };
 }
 
+// TS2307 "Cannot find module", TS2306 "File ... is not a module", and TS2792
+// ("Cannot find module ... did you mean to set the 'moduleResolution' option")
+// are the diagnostic codes TypeScript raises when it cannot resolve an
+// import at all. If the Program that backs this check can't resolve one of
+// these, the checker's answer for any field whose type depends on that
+// import (most concretely: `typeof importedThing`) is not "this field is not
+// callable" -- it is "I don't know", and treating "I don't know" as "clean"
+// is exactly the #270-shaped failure mode this check exists to prevent: a
+// broken analysis silently reporting the same all-clear as a working one.
+const MODULE_RESOLUTION_DIAGNOSTIC_CODES = new Set([2307, 2306, 2792]);
+
+/**
+ * Returns the subset of `program`'s semantic diagnostics for `sourceFile`
+ * that indicate module resolution failed outright (as opposed to an
+ * ordinary type error within an otherwise-resolved module). Scoped to one
+ * file so a broken import in a file this check isn't even scanning doesn't
+ * spuriously fail an unrelated scan.
+ */
+function getModuleResolutionDiagnostics(program, sourceFile) {
+  return program
+    .getSemanticDiagnostics(sourceFile)
+    .filter((diagnostic) =>
+      MODULE_RESOLUTION_DIAGNOSTIC_CODES.has(diagnostic.code),
+    );
+}
+
+function formatModuleResolutionFailure(displayPath, diagnostics) {
+  const details = diagnostics
+    .map(
+      (diagnostic) =>
+        `  ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`,
+    )
+    .join('\n');
+  return (
+    `check-inert-class-field-seams: ${displayPath} has an unresolved ` +
+    `import (module resolution failed), so this check cannot reliably ` +
+    `determine whether any of its fields are callable -- a broken import ` +
+    `must not be reported as "no inert-seam candidates found" (see #270 in ` +
+    `the module doc). Fix the import, then re-run this check.\n${details}`
+  );
+}
+
 /**
  * Finds every inert-seam candidate in one source file's text, using a real
  * (small, in-memory) `ts.Program` and its `TypeChecker` -- see the module
@@ -419,7 +461,11 @@ function createVirtualHost(virtualFiles) {
  * instead of returning an empty result, so absence here is a genuine finding
  * of zero, not a silent skip (the #182/#270 shape this repo keeps naming: an
  * unreadable input must not report the same result as a readable one that
- * found nothing).
+ * found nothing). For the same reason, an unresolved import in `filePath`
+ * (module resolution failure, e.g. a broken relative specifier) also
+ * throws rather than returning `[]`: the checker's callable-type answer is
+ * unreliable for a file whose imports didn't resolve, so this check must
+ * fail loudly instead of silently reporting a clean scan (Bishop, round 4).
  */
 export function findInertSeamCandidates(
   filePath,
@@ -441,6 +487,16 @@ export function findInertSeamCandidates(
   });
   const checker = program.getTypeChecker();
   const sourceFile = program.getSourceFile(mainVirtualPath);
+
+  const moduleResolutionDiagnostics = getModuleResolutionDiagnostics(
+    program,
+    sourceFile,
+  );
+  if (moduleResolutionDiagnostics.length > 0) {
+    throw new Error(
+      formatModuleResolutionFailure(filePath, moduleResolutionDiagnostics),
+    );
+  }
 
   return findSeamViolationsInSourceFile(sourceFile, checker, filePath);
 }
@@ -501,6 +557,18 @@ export function scanRepository(repoRoot) {
           `${relativePath}, but the Program did not produce one.`,
       );
     }
+    const moduleResolutionDiagnostics = getModuleResolutionDiagnostics(
+      program,
+      sourceFile,
+    );
+    if (moduleResolutionDiagnostics.length > 0) {
+      throw new Error(
+        formatModuleResolutionFailure(
+          relativePath,
+          moduleResolutionDiagnostics,
+        ),
+      );
+    }
     violations.push(
       ...findSeamViolationsInSourceFile(sourceFile, checker, relativePath),
     );
@@ -510,7 +578,14 @@ export function scanRepository(repoRoot) {
 
 function main() {
   const repoRoot = path.resolve(import.meta.dirname, '..');
-  const violations = scanRepository(repoRoot);
+  let violations;
+  try {
+    violations = scanRepository(repoRoot);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+    return;
+  }
 
   if (violations.length === 0) {
     console.log(
