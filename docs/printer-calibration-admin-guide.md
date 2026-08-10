@@ -480,16 +480,21 @@ Verified from OlyForge3D/PrintFarmer read-only source:
 - **Pinned:** `167a3b134a678a0d9a8c10371da8333d03ddc636`
 - **Contract snapshot (queried 2026-08-05):**
   `9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0`
-- **Default-branch HEAD (re-queried 2026-08-09):**
-  `a91855abb901b97188e04e0aa006345076b2a2bf`
-  — 162 commits ahead of the contract snapshot's then-current HEAD (`09f6cae8`),
-  but zero `.cs` files (and specifically none under `src/api/` or `src/infra/`)
-  differ between `09f6cae8` and this head; the added commits are UI/design,
-  mobile, tooling, and documentation material only. No queue, calibration,
+- **Default-branch HEAD at the time of the contract snapshot (queried
+  2026-08-05):** `09f6cae810c5b48992f905bab89d5e334a3fb98c`
+  — two commits ahead of the contract snapshot; changed files were UI/design
+  material only (theme CSS, ThemeContext, DESIGN_SYSTEM.md).
+- **Default-branch HEAD (re-queried 2026-08-09):** commit
+  `SHA a91855abb901b97188e04e0aa006345076b2a2bf` (`SHA a91855ab` for short)
+  — 162 commits ahead of the `09f6cae8` HEAD above, but zero `.cs` files (and
+  specifically none under `src/api/` or `src/infra/`) differ between
+  `09f6cae8` and this head; the added commits are UI/design, mobile,
+  tooling, and documentation material only. No queue, calibration,
   controller, DTO, or contract file was modified between `9c1d7e4b` and
-  `a91855ab`. All claims below remain accurate at the latest head as of this
-  re-verification. This is a statement about a moving branch and has a shelf
-  life — re-derive it, don't inherit it, whenever §10 is next relied upon.
+  `SHA a91855ab`. All claims below remain accurate at the latest head as of
+  this re-verification. This is a statement about a moving branch and has a
+  shelf life — re-derive it, don't inherit it, whenever §10 is next relied
+  upon.
 
 Every claim is cited to a stable source path and named symbol; line numbers are
 given as `line@commit-prefix` where they differ between commits. The parity
