@@ -776,6 +776,23 @@ async function fetchRecentlyMergedPullRequests({
       );
     }
     for (const pr of batch) {
+      // A well-formed GitHub API response includes `merged_at` as a key on
+      // every closed PR -- either `null` (not merged) or a timestamp string
+      // (merged). A PR entry missing the key entirely is not a legitimate
+      // "not merged" signal, it's a sign the response is malformed or
+      // truncated (e.g. a partial JSON body, or a shape change that dropped
+      // fields) -- and JS's `pr.merged_at === undefined` cannot tell "key
+      // present with value undefined" apart from "key absent altogether",
+      // silently treating both the same as the null case. Bishop reproduced
+      // this in review of #490 (head 327996a) with `{ number: 123 }` and no
+      // `merged_at` property at all. So the key's presence is checked
+      // first and an absent key throws, before the null-vs-other-falsy
+      // check below (which only ever sees a key that is actually present).
+      if (!('merged_at' in pr)) {
+        throw new Error(
+          `Pull request #${JSON.stringify(pr.number)} has no merged_at key at all (expected null for not merged, or a timestamp string); refusing to treat a missing key the same as a legitimate "not merged" signal.`,
+        );
+      }
       // Closed-but-unmerged PRs report `merged_at: null` -- that's a
       // legitimate, well-formed signal to skip and is not an error. But
       // other falsy values (e.g. an empty string) are not what the API

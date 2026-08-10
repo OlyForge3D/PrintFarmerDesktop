@@ -1475,7 +1475,50 @@ describe('measureMergedAgainstBase (#490: derived, not transcribed)', () => {
     ).rejects.toThrow(/merged_at/i);
   });
 
-  // Hicks' finding on review of #490 (head 28051c3): fetchRecentlyMergedPullRequests
+  // Bishop's finding on review of #490 (head 327996a): a PR entry missing
+  // the merged_at key entirely (e.g. `{ number: 123 }`, no merged_at
+  // property at all) was treated identically to an explicit
+  // `merged_at: null` and silently skipped as "not merged." But a
+  // well-formed GitHub API response always includes merged_at as a key
+  // (either null or a timestamp string) on every closed PR -- a key
+  // missing altogether suggests malformed/truncated data, not a
+  // legitimate not-merged signal, and the old `pr.merged_at === undefined`
+  // check could not distinguish "key present with value undefined" from
+  // "key absent." This is the same class of bug as the empty-string case
+  // above, one layer earlier (key presence rather than value validity).
+  it('throws rather than silently skipping a PR whose merged_at key is absent entirely (Bishop repro)', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 702,
+                  merge_commit_sha: 'm702',
+                  head: { sha: 'h702' },
+                  // No merged_at key at all -- Bishop's exact repro shape.
+                },
+              ]
+            : [];
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/merged_at/i);
+  });
+
   // never validated the shape of the /pulls response before iterating it.
   // A malformed 200 OK body that is a string rather than an array is still
   // iterable in JS (strings are iterable), so each "pr" would be a single
