@@ -33,3 +33,7 @@ export function parseAssertions(
 ): AssertionRow[];
 
 export function readerRevisions(): string[];
+
+export function findLiveControlCommit(
+  depth?: number,
+): { commit: string; line: string } | null;

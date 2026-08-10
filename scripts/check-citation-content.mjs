@@ -236,6 +236,47 @@ export function readerRevisions() {
   );
 }
 
+// Bounds how far back `findLiveControlCommit` walks first-parent history looking for a commit
+// with a non-blank added line. A deletion-only or merge commit at HEAD is ordinary -- this check
+// runs on every `synchronize`, and plenty of legitimate commits (reverts, file removals, merges)
+// add nothing. Bounding the walk keeps the search cheap on any real repository while still
+// failing loudly (not silently) in the pathological case none of the last N commits added a line.
+const LIVE_CONTROL_SEARCH_DEPTH = 200;
+
+/**
+ * Finds a real commit to build the live positive control from: the nearest one, walking HEAD's
+ * first-parent history, whose diff contains a non-blank added line. Deliberately not just HEAD --
+ * a deletion-only commit (removing dead code, a revert) or a merge commit is an entirely ordinary
+ * thing to have at HEAD, and treating that as "the control is broken" would make this check red on
+ * every such commit even though nothing about the diff-reading machinery had failed. Merges are
+ * skipped via `addedLinesOf` returning null for them (see its own header comment); this walk does
+ * not special-case merges beyond that.
+ *
+ * Returns `{ commit, line }` for the first hit, or `null` if nothing in the searched depth added a
+ * non-blank line -- at which point the caller correctly treats the control as unbuildable and
+ * fails loudly, per "losing sight costs the control."
+ */
+export function findLiveControlCommit(depth = LIVE_CONTROL_SEARCH_DEPTH) {
+  const { status, stdout } = runGit([
+    'rev-list',
+    '--first-parent',
+    `-n`,
+    String(depth),
+    'HEAD',
+  ]);
+  if (status !== 0) return null;
+
+  for (const commit of stdout.split('\n').filter((line) => line.trim())) {
+    const lines = addedLinesOf(commit);
+    if (lines === null) continue; // a merge in the walk; addedLinesOf already refuses to read it
+    const substantive = lines.find((line) => line.trim().length > 0);
+    if (substantive !== undefined) {
+      return { commit, line: substantive.trim() };
+    }
+  }
+  return null;
+}
+
 function main() {
   const readerRevs = readerRevisions();
   if (readerRevs.length === 0) {
@@ -262,38 +303,37 @@ function main() {
   if (headCommit === null) {
     refuse('HEAD does not resolve to a commit -- cannot build a live control.');
   }
-  const headLines = addedLinesOf(headCommit);
-  const headSubstantiveLine = (headLines ?? []).find(
-    (line) => line.trim().length > 0,
-  );
-  if (headSubstantiveLine === undefined) {
-    // HEAD is a merge, or added nothing non-blank. Reported, not silently skipped: the run must
-    // not read as though this control had passed.
+  // Walk back from HEAD rather than requiring HEAD itself to add a non-blank line: a
+  // deletion-only commit or a merge at HEAD is ordinary, and this check runs on every
+  // `synchronize`. Searching a bounded window of first-parent history keeps the control "live"
+  // (derived at run time, not a hardcoded SHA) while tolerating the commits every repository
+  // actually produces.
+  const liveControl = findLiveControlCommit();
+  if (liveControl === null) {
+    // Nothing in the searched depth added a non-blank line at all. Reported, not silently
+    // skipped: the run must not read as though this control had passed.
     console.log(
-      'control: HEAD is a merge or adds no non-blank line -- the live positive control could not be built from it',
+      `control: no commit in the last ${LIVE_CONTROL_SEARCH_DEPTH} (first-parent from HEAD) adds a non-blank line -- the live positive control could not be built`,
     );
     failures.push(
-      'no live positive control could be built from HEAD -- the diff-reading arm is unverified this run',
+      'no live positive control could be built from recent history -- the diff-reading arm is unverified this run',
     );
   } else {
-    const livePass = classify(
-      headCommit,
-      headSubstantiveLine.trim(),
-      readerRevs,
-    );
+    const { commit: controlCommit, line: controlLine } = liveControl;
+    const livePass = classify(controlCommit, controlLine, readerRevs);
     console.log(
-      `control: HEAD's own added line classifies ${livePass.verdict} (${livePass.detail})`,
+      `control: ${controlCommit.slice(0, 10)}'s added line classifies ${livePass.verdict} (${livePass.detail})`,
     );
     if (livePass.verdict !== 'PASS') {
       failures.push(
-        "a live assertion built from HEAD's own added line did not classify PASS -- the diff-reading arm is broken",
+        "a live assertion built from recent history's own added line did not classify PASS -- the diff-reading arm is broken",
       );
     }
 
     // A sighted FAILING verdict, self-supplied but against the same live commit: proves the
     // instrument can return red on a citation it CAN see, not merely withhold on one it cannot.
-    const fabricated = `NOT-PRESENT-${headSubstantiveLine.length}-${Date.now()}`;
-    const liveFail = classify(headCommit, fabricated, readerRevs);
+    const fabricated = `NOT-PRESENT-${controlLine.length}-${Date.now()}`;
+    const liveFail = classify(controlCommit, fabricated, readerRevs);
     console.log(
       `control: a fabricated assertion against the same reachable commit classifies ${liveFail.verdict}`,
     );

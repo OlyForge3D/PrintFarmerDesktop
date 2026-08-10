@@ -15,6 +15,7 @@ import {
   ancestorStatus,
   addedLinesOf,
   classify,
+  findLiveControlCommit,
   parseAssertions,
   reachabilityOf,
   readerRevisions,
@@ -274,6 +275,128 @@ describe('check-citation-content.mjs is a separate instrument from check-citatio
 
     expect(status).toBe(2);
     expect(out).toMatch(/INCONCLUSIVE|CONTROL FAILED/);
+  });
+
+  /**
+   * Hicks (QA), reviewing #688: a deletion-only commit at HEAD is entirely ordinary - reverts,
+   * dead-code removal, a `.gitignore` trim - and this workflow step runs on every `synchronize`.
+   * The live control must not treat "HEAD itself added nothing" as "the diff-reading machinery is
+   * broken": it walks back to the nearest ancestor that did add a line. This pins that a real
+   * deletion-only commit at HEAD does not spuriously trip CONTROL FAILED, and the run still
+   * reaches and reports the real ledger.
+   */
+  it('HEAD is a deletion-only commit: the live control is still built from an earlier commit, not CONTROL FAILED', () => {
+    const { dir, cited, claim } = fixture();
+    ledger(dir, assertionRow(cited, claim));
+
+    // A commit at HEAD that removes a line and adds nothing.
+    const notes = path.join(dir, 'notes.md');
+    const before = readFileSync(notes, 'utf8');
+    writeFileSync(
+      notes,
+      before.split('\n').slice(0, 1).join('\n') +
+        (before.endsWith('\n') ? '\n' : ''),
+    );
+    commit(dir, 'delete-only: trim a stale line, add nothing');
+
+    const { status, out } = runContentCheck(dir);
+
+    expect(out).not.toMatch(/CONTROL FAILED/);
+    expect(out).toMatch(/PASS 1\s+FAIL 0\s+WITHHOLD 0/);
+    expect(status).toBe(0);
+  });
+
+  /**
+   * Same hazard, the other ordinary shape: HEAD is a merge commit. `addedLinesOf` already refuses
+   * to read a merge's combined diff (see its own header comment), so a control built naively from
+   * HEAD alone would find no lines and report CONTROL FAILED on every merge commit - which, on a
+   * branch that receives routine merges from its base, is not a rare event.
+   */
+  it('HEAD is a merge commit: the live control is still built from an earlier, non-merge commit', () => {
+    const { dir, cited, claim } = fixture();
+    ledger(dir, assertionRow(cited, claim));
+
+    execFileSync('git', ['-C', dir, 'checkout', '-qb', 'side'], {
+      stdio: 'ignore',
+    });
+    writeFileSync(path.join(dir, 'side.md'), 'work done on a side branch\n');
+    commit(dir, 'side-branch commit');
+    execFileSync('git', ['-C', dir, 'checkout', '-q', 'master'], {
+      stdio: 'ignore',
+    });
+    execFileSync(
+      'git',
+      [
+        '-C',
+        dir,
+        'merge',
+        '--no-ff',
+        '-q',
+        '-m',
+        'merge side into master',
+        'side',
+      ],
+      { stdio: 'ignore' },
+    );
+    execFileSync('git', ['-C', dir, 'branch', '-D', 'side'], {
+      stdio: 'ignore',
+    });
+
+    const { status, out } = runContentCheck(dir);
+
+    expect(out).not.toMatch(/CONTROL FAILED/);
+    expect(out).toMatch(/PASS 1\s+FAIL 0\s+WITHHOLD 0/);
+    expect(status).toBe(0);
+  });
+});
+
+describe('findLiveControlCommit walks back past HEAD to build the live control', () => {
+  it('skips a deletion-only HEAD and returns the nearest ancestor with a non-blank added line', () => {
+    const { dir } = fixture();
+    const notes = path.join(dir, 'notes.md');
+    const before = readFileSync(notes, 'utf8');
+    writeFileSync(
+      notes,
+      before.split('\n').slice(0, 1).join('\n') +
+        (before.endsWith('\n') ? '\n' : ''),
+    );
+    commit(dir, 'delete-only, nothing added');
+
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const found = findLiveControlCommit();
+      expect(found).not.toBeNull();
+      // The fixture's own follow-up commit (walked past the deletion-only HEAD) adds this line,
+      // not `claim` -- `claim` is two commits further back, behind that intervening one.
+      expect(found?.line).toBe('unrelated follow-up work');
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it('returns null, rather than throwing, when nothing in the searched depth added a line', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'no-content-'));
+    made.push(dir);
+    execFileSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' });
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    writeFileSync(path.join(dir, 'x.md'), '\n');
+    commit(dir, 'a commit that adds only a blank line');
+
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      expect(findLiveControlCommit(50)).toBeNull();
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });
 
