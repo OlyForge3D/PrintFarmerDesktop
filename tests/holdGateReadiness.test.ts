@@ -57,11 +57,14 @@ const advisoryWorkflow = [
  * review-count findings both name.
  */
 describe('evaluateHoldGateReadiness', () => {
-  it('is NOT ready today: the live workflow is still classified advisory', () => {
+  it('now reports (#480 prerequisite 1 landed): only the branch-protection context remains', () => {
     // Pinned against the real file on disk, not a fixture, so this fails the
     // day someone changes the workflow without updating this expectation —
     // the same reason mergeQueueReadiness.test.ts reads real workflow files
-    // rather than a copy.
+    // rather than a copy. sequencing-hold.yml now subscribes to merge_group
+    // and declares itself "reports"; the sole remaining blocker is the
+    // branch-protection admin write, deliberately left to the repository
+    // owner (see .squad/holds.md's #480 follow-up section).
     const result = evaluateHoldGateReadiness({
       workflowContents: liveWorkflowContents,
       requiredContexts: [
@@ -82,11 +85,10 @@ describe('evaluateHoldGateReadiness', () => {
         },
       ],
     });
-    expect(result.workflowReports).toBe(false);
+    expect(result.workflowReports).toBe(true);
     expect(result.contextRequired).toBe(false);
     expect(result.ready).toBe(false);
     expect(result.blockers.map((b) => b.id)).toEqual([
-      'workflow-merge-group',
       'branch-protection-context',
     ]);
   });
