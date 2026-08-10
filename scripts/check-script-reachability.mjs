@@ -84,24 +84,6 @@ export const UNENFORCED_CHECKS = {
     'repository permanently. #280 asked for the absence to be made VISIBLE, ' +
     'not enforced. Discharge path: a scheduled workflow once someone owns the ' +
     'cadence — it guards a repository-wide property, not any given change.',
-  'check:protection-assumptions':
-    'Its evaluator IS enforced in CI: tests/protectionAssumptions.test.ts pins ' +
-    'every premise as data and fails if one is widened. Its main() reads ' +
-    'branch protection, rulesets, protected branches and the collaborator set, ' +
-    'and every one of those endpoints needs admin scope that the default ' +
-    'GITHUB_TOKEN does not carry, and that a `permissions:` grant cannot supply ' +
-    'either — GITHUB_TOKEN has no path to repo-admin read regardless of which ' +
-    'key is requested (#186, #661: `administration: read` is not a valid ' +
-    '`permissions:` key at all, and broke the workflow outright when tried). ' +
-    'Running it in CI would degrade to the half the tests already cover, and ' +
-    'would do it silently. ' +
-    'STATE THE WEAKNESS PLAINLY: this makes it a tripwire that only fires when ' +
-    'a human runs it, so #151 revisit trigger is faster to check but still not ' +
-    'automatic. That is weaker than intended and better than the paragraph it ' +
-    'replaces, which nothing re-read at all. Discharge path: wire it into a ' +
-    'scheduled workflow the moment a privileged token exists as a repository ' +
-    'secret — at which point it should run on a schedule rather than per-PR, ' +
-    'because it guards repository configuration and not any given change.',
   'check:required-contexts':
     'Its judgement IS enforced in CI: tests/requiredContexts.test.ts drives ' +
     'evaluateRequiredContexts, latestRunNamed and main over plain objects and ' +

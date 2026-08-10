@@ -26,6 +26,17 @@ export declare function evaluateProtectionAssumptions(
   facts: RepositoryFacts,
 ): AssumptionViolation[];
 
+// #491: the two assumptions that depend only on the two GitHub endpoints
+// that return 200 to an unauthenticated request against this repository
+// (`/rulesets`, `/branches?protected=true`) -- protected branches, and
+// rulesets covering feature branches.
+export declare function evaluatePublicProtectionAssumptions(facts: {
+  rulesets?: Array<Record<string, unknown>>;
+  protectedBranches?: string[];
+}): AssumptionViolation[];
+
+export declare const PRIVILEGED_ONLY_ASSUMPTIONS: readonly string[];
+
 export declare function rulesetCoversFeatureBranches(
   ruleset: Record<string, unknown> | null | undefined,
 ): boolean;
@@ -33,6 +44,24 @@ export declare function rulesetCoversFeatureBranches(
 export declare function formatViolations(
   violations: AssumptionViolation[],
 ): string;
+
+export declare function fetchPublicRepositoryFacts(input: {
+  repository: { owner: string; repo: string };
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  rulesets: Array<Record<string, unknown>>;
+  protectedBranches: string[];
+}>;
+
+export declare function fetchPrivilegedRepositoryFacts(input: {
+  repository: { owner: string; repo: string };
+  branch?: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  protection: Record<string, unknown>;
+  collaborators: Collaborator[];
+}>;
 
 export declare function fetchRepositoryFacts(input: {
   repository: { owner: string; repo: string };
