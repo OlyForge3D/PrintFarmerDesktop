@@ -11,7 +11,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const sidecar = path.resolve('resources/sidecar', 'model-core.exe');
+// Mirrors the platform-aware binary name `scripts/stage-sidecar.mjs` stages:
+// `model-core.exe` on Windows, extensionless `model-core` everywhere else.
+const binaryName =
+  process.platform === 'win32' ? 'model-core.exe' : 'model-core';
+const sidecar = path.resolve('resources/sidecar', binaryName);
 const work = mkdtempSync(path.join(tmpdir(), 'pf-mvp-'));
 const catalogDb = path.join(work, 'catalog.sqlite3');
 const modelDir = path.join(work, 'models');
