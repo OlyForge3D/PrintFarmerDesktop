@@ -12,18 +12,18 @@
  * returned list rather than advertised under a fabricated kind.
  *
  * These tests assert against the real adapter and a real transport. Nothing
- * here restates the policy table: the permitted-set expectations are derived
- * by calling `conflictResolutionsFor`, the same function the adapter uses, so
- * a legitimate policy change moves both sides together and this file keeps
- * checking the property it names -- that only a classified conflict is
- * advertised, and it is advertised under the kind the store actually recorded.
+ * here restates the store's resolution policy: the wire fixture below
+ * supplies `availableResolutions` the way the real store would (issue #304 --
+ * the store is now the only place that table exists), and these tests check
+ * only the property they name -- that only a classified conflict is
+ * advertised, under the kind the store actually recorded, with whatever
+ * resolutions the wire said and nothing else.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import {
   SidecarCalibrationAdapter,
-  conflictResolutionsFor,
   mapCalibrationConflictKind,
   supportsConflictResolution,
 } from '../src/main/calibrationService.js';
@@ -49,19 +49,40 @@ const UNMAPPED_ENTITY_TYPES = [
 ] as const;
 
 /**
+ * A single, kind-agnostic stand-in for whatever `available_resolutions()`
+ * (`native/model-core/src/sync.rs`) put on the wire. Deliberately the *same*
+ * value for every classified kind, and deliberately not the real per-kind
+ * policy for any of them (e.g. `stepOrdering` never really gets
+ * `manualFieldMerge`) -- a per-kind table here, correct or not, would be
+ * exactly the second transcription issue #304 removed, just moved into a
+ * test fixture. These tests only exercise "the adapter passes through
+ * whatever the wire said, unfiltered by kind"; they must stay unable to
+ * observe what the real per-kind policy is at all.
+ */
+const FIXTURE_AVAILABLE_RESOLUTIONS = [
+  'keepLocalAsNewRevision',
+  'manualFieldMerge',
+] as const;
+
+/**
  * Builds a wire-shaped conflict row the way the store now produces one:
  * `entityType` carries the entity type, `conflictKind` carries whatever was
  * classified (and persisted) for it at record time -- `null` when
  * `mapCalibrationConflictKind` returned `null`, exactly mirroring what
- * `record_calibration_conflict` would have stored.
+ * `record_calibration_conflict` would have stored -- and `availableResolutions`
+ * carries the fixture value above for any classified kind, mirroring the
+ * *shape* of what `calibration_conflict_from_row` sends without asserting
+ * anything about the real per-kind contents.
  */
 function conflictRow(entityType: string): Record<string, unknown> {
+  const kind = mapCalibrationConflictKind(entityType);
   return {
     conflictId: `conflict-${entityType}`,
     profileId: 'profile-1',
     projectId: 'project-1',
     entityType,
-    conflictKind: mapCalibrationConflictKind(entityType),
+    conflictKind: kind,
+    availableResolutions: kind ? FIXTURE_AVAILABLE_RESOLUTIONS : [],
     entityId: `entity-${entityType}`,
     operationId: null,
     localPayload: { displayName: 'local' },
@@ -154,16 +175,12 @@ describe('#365 conflict_kind, not entity_type, is the source of the listed kind'
     // breaking listing entirely.
     expect(supportsConflictResolution(adapter)).toBe(true);
     for (const conflict of conflicts) {
-      const expected = conflictResolutionsFor(
-        { resolveCalibrationConflict: () => undefined },
-        conflict.kind,
-      );
-      expect(expected.length).toBeGreaterThan(0);
       expect(
         conflict.availableResolutions,
-        `${conflict.entityId} is classifiable, so it must advertise the ` +
-          `policy's set for ${conflict.kind}`,
-      ).toEqual(expected);
+        `${conflict.entityId} is classifiable, so it must advertise exactly ` +
+          'what the store sent, unfiltered by kind -- the adapter has no ' +
+          'per-kind opinion left to filter with',
+      ).toEqual(FIXTURE_AVAILABLE_RESOLUTIONS);
     }
   });
 
