@@ -5,6 +5,7 @@ import {
   formatPlan,
   parseArgs,
   main,
+  surveyBehindPrs,
 } from '../scripts/plan-behind-sync-order.mjs';
 
 // The git-level primitives come from scripts/sha-status.mjs and
@@ -339,6 +340,139 @@ describe('parseArgs', () => {
 
   it('rejects a missing remote value', () => {
     expect(parseArgs(['--remote']).error).toMatch(/needs a value/);
+  });
+});
+
+describe('surveyBehindPrs', () => {
+  it('skips a PR whose ancestry is inconclusive, never reporting it as not-behind', () => {
+    // Hicks, pre-PR review round 2: isAncestor(...) === null (merge-base
+    // --is-ancestor exited neither 0 nor 1) previously reached
+    // evaluateBehindBase, which reports 'undetermined' -- but the caller here
+    // read only `result.state === 'behind'`, so 'undetermined' silently
+    // became `behind: false`, i.e. treated as confirmed clear.
+    vi.mocked(shaStatus.fetchBase).mockReturnValue({
+      ref: 'refs/tmp/sha-status/base',
+      fresh: true,
+      refreshable: true,
+    });
+    vi.mocked(shaStatus.resolveCommit).mockImplementation((rev: string) =>
+      rev === 'refs/tmp/sha-status/base' ? 'base-sha' : 'sha-current',
+    );
+    vi.mocked(shaStatus.fetchPrHead).mockReturnValue('refs/tmp/head');
+    vi.mocked(shaStatus.isAncestor).mockReturnValue(null);
+
+    const run = (
+      _command: string,
+      args: readonly string[],
+    ): { status: number; stdout: string; stderr: string } => {
+      if (args.includes('list')) {
+        return {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              number: 42,
+              createdAt: '2026-08-04T09:00:00Z',
+              baseRefName: 'development',
+              headRefOid: 'sha-current',
+            },
+          ]),
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    };
+
+    const survey = surveyBehindPrs(
+      {},
+      { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
+      run as never,
+    );
+    expect('error' in survey).toBe(false);
+    if ('error' in survey) return;
+    expect(survey.candidates).toEqual([]);
+    expect(survey.skipped).toHaveLength(1);
+    expect(survey.skipped[0]?.number).toBe(42);
+    expect(survey.skipped[0]?.reason).toContain('could not determine whether');
+  });
+
+  it('does not cross-contaminate ancestry checks across two different bases', () => {
+    // Hicks, pre-PR review round 2: fetchBase always refreshes the SAME
+    // shared local ref (refs/tmp/sha-status/base) regardless of which base
+    // it fetched. Caching only the returned ref *name* per baseRefName meant
+    // that once a second, different base was fetched, the first base's
+    // cached entry silently pointed at the second base's commit. This test
+    // uses two PRs against two different bases and asserts the survey only
+    // fetches (and therefore resolves) each distinct base once, and each PR
+    // is correctly labeled with its own base.
+    let fetchBaseCalls = 0;
+    vi.mocked(shaStatus.fetchBase).mockImplementation(() => {
+      fetchBaseCalls += 1;
+      return {
+        ref: 'refs/tmp/sha-status/base',
+        fresh: true,
+        refreshable: true,
+      };
+    });
+    vi.mocked(shaStatus.resolveCommit).mockImplementation((rev: string) => {
+      if (rev === 'refs/tmp/sha-status/base') {
+        // Resolves to whichever base was JUST fetched -- models the shared
+        // ref's current target at the moment resolveCommit is called, right
+        // after that base's own fetchBase call and before any other base is
+        // fetched.
+        return fetchBaseCalls === 1 ? 'development-sha' : 'release-sha';
+      }
+      return 'sha-current';
+    });
+    vi.mocked(shaStatus.fetchPrHead).mockReturnValue('refs/tmp/head');
+    // Neither base is an ancestor of the (different) head -> both BEHIND.
+    vi.mocked(shaStatus.isAncestor).mockReturnValue(false);
+
+    const run = (
+      _command: string,
+      args: readonly string[],
+    ): { status: number; stdout: string; stderr: string } => {
+      if (args.includes('list')) {
+        return {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              number: 10,
+              createdAt: '2026-08-04T09:00:00Z',
+              baseRefName: 'development',
+              headRefOid: 'sha-current',
+            },
+            {
+              number: 99,
+              createdAt: '2026-08-04T08:00:00Z',
+              baseRefName: 'release/1.x',
+              headRefOid: 'sha-current',
+            },
+          ]),
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    };
+
+    const survey = surveyBehindPrs(
+      {},
+      { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
+      run as never,
+    );
+    expect('error' in survey).toBe(false);
+    if ('error' in survey) return;
+    // Both bases are only fetched (and therefore resolved) once each --
+    // proving the survey resolves and caches each base's SHA once, rather
+    // than re-reading the shared ref name after a later base's fetch.
+    expect(fetchBaseCalls).toBe(2);
+    expect(survey.skipped).toEqual([]);
+    expect(survey.candidates.map((c) => c.number).sort()).toEqual([10, 99]);
+    expect(survey.candidates.find((c) => c.number === 10)?.baseRefName).toBe(
+      'development',
+    );
+    expect(survey.candidates.find((c) => c.number === 99)?.baseRefName).toBe(
+      'release/1.x',
+    );
   });
 });
 

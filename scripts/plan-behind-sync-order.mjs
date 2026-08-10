@@ -164,8 +164,10 @@ export function formatPlan(plans, skipped) {
   // distinction check-behind-base.mjs's own exit-2 taxonomy insists on for a
   // single PR.
   if (skipped.length > 0) {
-    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-    lines.push('');
+    if (lines.length > 0) {
+      if (lines[lines.length - 1] === '') lines.pop();
+      lines.push('');
+    }
     lines.push(
       'Could not determine BEHIND status for the following -- NOT confirmed clear, ' +
         'do not read their absence above as "safe":',
@@ -242,7 +244,17 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
     return { candidates: [], skipped: [] };
   }
 
-  /** @type {Map<string, {ref: string, refreshable: boolean, fresh: boolean}>} */
+  // fetchBase always refreshes the *same* shared local ref
+  // (refs/tmp/sha-status/base, per scripts/sha-status.mjs) regardless of which
+  // base branch it was asked to fetch. Caching only the returned `ref` string
+  // per baseRefName is therefore not safe across a loop that fetches more than
+  // one distinct base: a later fetch for a different base repoints that same
+  // local ref, so a cached entry's `.ref` can silently resolve to the WRONG
+  // base's commit by the time it is read again (Hicks, pre-PR review round
+  // 2). Resolving the fetched ref to a full commit id immediately, and
+  // caching that resolved SHA instead of the transient ref name, makes the
+  // cache immune to later fetches overwriting the shared local ref.
+  /** @type {Map<string, {sha: string | null, refreshable: boolean, fresh: boolean}>} */
   const baseCache = new Map();
   /** @type {BehindCandidate[]} */
   const candidates = [];
@@ -251,13 +263,25 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
   for (const pr of prs) {
     let baseState = baseCache.get(pr.baseRefName);
     if (baseState === undefined) {
-      baseState = fetchBase(`${remote}/${pr.baseRefName}`, remote);
+      const fetched = fetchBase(`${remote}/${pr.baseRefName}`, remote);
+      baseState = {
+        sha: fetched.fresh ? resolveCommit(fetched.ref) : null,
+        refreshable: fetched.refreshable,
+        fresh: fetched.fresh,
+      };
       baseCache.set(pr.baseRefName, baseState);
     }
     if (baseState.refreshable && !baseState.fresh) {
       skipped.push({
         number: pr.number,
         reason: `base ${pr.baseRefName} could not be refreshed from ${remote}.`,
+      });
+      continue;
+    }
+    if (baseState.sha === null) {
+      skipped.push({
+        number: pr.number,
+        reason: `base ${pr.baseRefName} could not be resolved to a commit.`,
       });
       continue;
     }
@@ -278,9 +302,21 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
       });
       continue;
     }
-    const result = evaluateBehindBase({
-      baseIsAncestorOfHead: isAncestor(baseState.ref, headRef),
-    });
+    const ancestry = isAncestor(baseState.sha, headRef);
+    if (ancestry === null) {
+      // Hicks, pre-PR review round 2: this branch previously fell through to
+      // evaluateBehindBase, which itself returns 'undetermined' for a null
+      // ancestry check -- but the caller here read only `state === 'behind'`,
+      // silently treating 'undetermined' the same as 'not behind'. Report it
+      // as skipped instead, matching check-behind-base.mjs's own exit-2
+      // taxonomy: undetermined is never evidence of "not behind".
+      skipped.push({
+        number: pr.number,
+        reason: `could not determine whether #${pr.number} is behind ${pr.baseRefName} (git merge-base --is-ancestor was inconclusive).`,
+      });
+      continue;
+    }
+    const result = evaluateBehindBase({ baseIsAncestorOfHead: ancestry });
     candidates.push({
       number: pr.number,
       createdAt: pr.createdAt,
