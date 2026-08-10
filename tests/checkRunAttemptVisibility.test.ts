@@ -9,6 +9,7 @@ import {
   maxRunAttempt,
   parseArgs,
   resolveHeadSha,
+  verifyHeadStillCurrent,
 } from '../scripts/check-run-attempt-visibility.mjs';
 import type { WorkflowRun } from '../scripts/check-rerun-masked-failures.mjs';
 
@@ -173,6 +174,40 @@ describe('error handling contract', () => {
     expect(exitCode).toBe(EXIT_UNDETERMINED);
     expect(exitCode).not.toBe(EXIT_CLEAN);
   });
+
+  it('exits 2 (undetermined) end-to-end when a --pr head moves during the workflow-run scan (Hicks review, #694)', async () => {
+    // Resolving --pr reads the PR head once, then the workflow-run scan runs
+    // against that SHA. If a push lands mid-scan, the SHA the report was
+    // scanned against is no longer the PR's current head -- reporting it as
+    // "PR #185" would be exactly the false assurance #340 exists to
+    // eliminate. Simulate this by having the pulls API return a different
+    // head SHA on its second call (the post-scan recheck) than on its first.
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/pulls/')) {
+        const isFirstPullsCall = !calls.includes('/pulls/');
+        calls.push('/pulls/');
+        return jsonResponse({
+          number: 185,
+          head: { sha: isFirstPullsCall ? HEAD_185 : HEAD_333 },
+          base: { ref: 'development' },
+        }) as unknown as ReturnType<typeof fetch>;
+      }
+      return runsPage([
+        { id: 100, run_attempt: 1, created_at: '2026-01-01T00:00:00Z' },
+      ]) as unknown as ReturnType<typeof fetch>;
+    };
+    const exitCode = await main(
+      ['--pr', '185', '--repo', 'OlyForge3D/PrintFarmerDesktop'],
+      { GITHUB_TOKEN: 'test-token' },
+      undefined,
+      fetchImpl,
+    );
+    expect(exitCode).toBe(EXIT_UNDETERMINED);
+    expect(exitCode).not.toBe(EXIT_CLEAN);
+    expect(exitCode).not.toBe(EXIT_FINDINGS);
+  });
 });
 
 describe('formatReport', () => {
@@ -234,6 +269,60 @@ describe('resolveHeadSha', () => {
     });
     expect(result.headSha).toBe(HEAD_185);
     expect(result.source).toBe('PR #185');
+  });
+});
+
+describe('verifyHeadStillCurrent', () => {
+  it('is a no-op for --sha, since there is no PR head to move', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(
+      verifyHeadStillCurrent({
+        args: { sha: HEAD_185 },
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        token: 'test-token',
+        fetchImpl,
+        headSha: HEAD_185,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('passes silently when a --pr head has not moved', async () => {
+    const fetchImpl = vi.fn(() =>
+      jsonResponse({
+        number: 185,
+        head: { sha: HEAD_185 },
+        base: { ref: 'development' },
+      }),
+    );
+    await expect(
+      verifyHeadStillCurrent({
+        args: { pr: 185 },
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        token: 'test-token',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        headSha: HEAD_185,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('throws when a --pr head moved since it was resolved (Hicks review, #694)', async () => {
+    const fetchImpl = vi.fn(() =>
+      jsonResponse({
+        number: 185,
+        head: { sha: HEAD_333 },
+        base: { ref: 'development' },
+      }),
+    );
+    await expect(
+      verifyHeadStillCurrent({
+        args: { pr: 185 },
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        token: 'test-token',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        headSha: HEAD_185,
+      }),
+    ).rejects.toThrow(/head moved/);
   });
 });
 

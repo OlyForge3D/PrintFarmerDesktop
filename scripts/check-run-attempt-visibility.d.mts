@@ -24,6 +24,14 @@ export declare function resolveHeadSha(input: {
   fetchImpl?: typeof fetch;
 }): Promise<{ headSha: string; source: string }>;
 
+export declare function verifyHeadStillCurrent(input: {
+  args: { sha?: string; pr?: number };
+  repository: Repository;
+  token: string;
+  fetchImpl?: typeof fetch;
+  headSha: string;
+}): Promise<void>;
+
 export declare function formatReport(input: {
   headSha: string;
   source: string;

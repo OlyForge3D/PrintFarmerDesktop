@@ -141,6 +141,36 @@ export async function resolveHeadSha({
   return { headSha: pull.headSha, source: `PR #${args.pr}` };
 }
 
+/**
+ * Guards against reporting a superseded PR head as current. --pr resolves
+ * the head once, then the (potentially slow, paged) workflow-run scan runs
+ * against that SHA; a push during the scan would otherwise leave the report
+ * labelling a now-stale SHA as "PR #<n>" -- the exact false assurance #340
+ * exists to eliminate. --sha has no PR to move against, so it is a no-op
+ * there. Mirrors the final re-fetch-and-compare in
+ * check-rerun-masked-failures.mjs's scanPullRequest.
+ */
+export async function verifyHeadStillCurrent({
+  args,
+  repository,
+  token,
+  fetchImpl = fetch,
+  headSha,
+}) {
+  if (args.pr === undefined) return;
+  const recheck = await fetchPullSnapshot({
+    repository,
+    prNumber: args.pr,
+    token,
+    fetchImpl,
+  });
+  if (recheck.headSha !== headSha) {
+    throw new Error(
+      `PR #${args.pr} head moved from ${headSha} to ${recheck.headSha} while workflow runs were being scanned; discard this result and retry`,
+    );
+  }
+}
+
 export function formatReport({ headSha, source, runs, maxAttempt }) {
   const lines = [
     `head ${headSha} (${source})`,
@@ -218,6 +248,13 @@ export async function main(
       headSha,
       token,
       fetchImpl,
+    });
+    await verifyHeadStillCurrent({
+      args,
+      repository,
+      token,
+      fetchImpl,
+      headSha,
     });
     const maxAttempt = maxRunAttempt(runs);
     console.log(formatReport({ headSha, source, runs, maxAttempt }));
