@@ -67,6 +67,7 @@
     "check:closed-head-dispatch": "node scripts/check-closed-head-dispatch.mjs",
     "check:direct-push-artifact": "node scripts/check-direct-push-artifact.mjs",
     "check:stranded-branches": "node scripts/check-stranded-branches.mjs",
+    "check:hooks-coverage": "node scripts/check-hooks-coverage.mjs",
     "check:squad-verdict": "node scripts/verify-squad-verdict.mjs",
     "check:hold-gate-readiness": "node scripts/check-hold-gate-readiness.mjs",
     "check:squad-coverage": "node scripts/check-squad-coverage.mjs",
