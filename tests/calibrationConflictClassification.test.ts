@@ -49,24 +49,20 @@ const UNMAPPED_ENTITY_TYPES = [
 ] as const;
 
 /**
- * Stands in for what `CalibrationConflictKind::available_resolutions`
- * (`native/model-core/src/sync.rs`) would put on the wire for each kind
- * `MAPPED_ENTITY_TYPES` classifies to. This is a test fixture, not a second
- * copy of the store's policy: nothing in `src/main/` reads this map, it only
- * shapes the fake sidecar response these tests feed to the real adapter, and
- * the adapter's job under test is to pass it through unchanged, not to know
- * what belongs in it.
+ * A single, kind-agnostic stand-in for whatever `available_resolutions()`
+ * (`native/model-core/src/sync.rs`) put on the wire. Deliberately the *same*
+ * value for every classified kind, and deliberately not the real per-kind
+ * policy for any of them (e.g. `stepOrdering` never really gets
+ * `manualFieldMerge`) -- a per-kind table here, correct or not, would be
+ * exactly the second transcription issue #304 removed, just moved into a
+ * test fixture. These tests only exercise "the adapter passes through
+ * whatever the wire said, unfiltered by kind"; they must stay unable to
+ * observe what the real per-kind policy is at all.
  */
-const WIRE_RESOLUTIONS_BY_KIND: Record<string, string[]> = {
-  projectMetadata: [
-    'acceptServer',
-    'keepLocalAsNewRevision',
-    'manualFieldMerge',
-  ],
-  stepDraft: ['acceptServer', 'keepLocalAsNewRevision', 'manualFieldMerge'],
-  outcomeSelection: ['acceptServer', 'keepLocalAsNewRevision'],
-  staleprinterSnapshot: ['acceptServer', 'keepLocalAsNewRevision'],
-};
+const FIXTURE_AVAILABLE_RESOLUTIONS = [
+  'keepLocalAsNewRevision',
+  'manualFieldMerge',
+] as const;
 
 /**
  * Builds a wire-shaped conflict row the way the store now produces one:
@@ -74,8 +70,9 @@ const WIRE_RESOLUTIONS_BY_KIND: Record<string, string[]> = {
  * classified (and persisted) for it at record time -- `null` when
  * `mapCalibrationConflictKind` returned `null`, exactly mirroring what
  * `record_calibration_conflict` would have stored -- and `availableResolutions`
- * carries the fixture policy for that kind, mirroring what
- * `calibration_conflict_from_row` would have computed from it.
+ * carries the fixture value above for any classified kind, mirroring the
+ * *shape* of what `calibration_conflict_from_row` sends without asserting
+ * anything about the real per-kind contents.
  */
 function conflictRow(entityType: string): Record<string, unknown> {
   const kind = mapCalibrationConflictKind(entityType);
@@ -85,7 +82,7 @@ function conflictRow(entityType: string): Record<string, unknown> {
     projectId: 'project-1',
     entityType,
     conflictKind: kind,
-    availableResolutions: kind ? WIRE_RESOLUTIONS_BY_KIND[kind] : [],
+    availableResolutions: kind ? FIXTURE_AVAILABLE_RESOLUTIONS : [],
     entityId: `entity-${entityType}`,
     operationId: null,
     localPayload: { displayName: 'local' },
@@ -178,13 +175,12 @@ describe('#365 conflict_kind, not entity_type, is the source of the listed kind'
     // breaking listing entirely.
     expect(supportsConflictResolution(adapter)).toBe(true);
     for (const conflict of conflicts) {
-      const expected = WIRE_RESOLUTIONS_BY_KIND[conflict.kind];
-      expect(expected?.length).toBeGreaterThan(0);
       expect(
         conflict.availableResolutions,
         `${conflict.entityId} is classifiable, so it must advertise exactly ` +
-          `what the store sent for ${conflict.kind}, unfiltered`,
-      ).toEqual(expected);
+          'what the store sent, unfiltered by kind -- the adapter has no ' +
+          'per-kind opinion left to filter with',
+      ).toEqual(FIXTURE_AVAILABLE_RESOLUTIONS);
     }
   });
 

@@ -795,14 +795,19 @@ impl SqliteCatalog {
     /// Observations with a NULL `bound_snapshot_revision` are not reported. They
     /// were recorded before the binding existed, so "is it superseded?" has no
     /// answer for them, and reporting them would claim knowledge we do not have.
+    ///
+    /// Takes an explicit `&Connection` rather than `&self` so it can be called
+    /// against either `self.conn` (the replay path, which writes nothing) or a
+    /// live `Transaction` (the normal-write path, via its `Deref<Target =
+    /// Connection>`) -- the same read must observe the transaction's own
+    /// uncommitted writes rather than a connection outside it.
     fn observations_superseded_by(
-        &self,
+        conn: &Connection,
         profile_id: &str,
         project_id: &str,
         accepted_revision: i64,
     ) -> Result<Vec<SupersededObservationDto>, String> {
-        let mut stmt = self
-            .conn
+        let mut stmt = conn
             .prepare(
                 "SELECT observation_id, attempt_id, step_id, parameter_key,
                         bound_snapshot_revision
@@ -3624,13 +3629,17 @@ impl CatalogStore for SqliteCatalog {
                     .flatten(),
                 None => None,
             };
-            let superseded_observations = if params.resolution
-                == CalibrationConflictResolutionKind::AcceptServer
-            {
-                self.observations_superseded_by(&params.profile_id, &project_id, server_revision)?
-            } else {
-                Vec::new()
-            };
+            let superseded_observations =
+                if params.resolution == CalibrationConflictResolutionKind::AcceptServer {
+                    Self::observations_superseded_by(
+                        &self.conn,
+                        &params.profile_id,
+                        &project_id,
+                        server_revision,
+                    )?
+                } else {
+                    Vec::new()
+                };
             return Ok(CalibrationConflictResolutionDto {
                 conflict_id: params.conflict_id.clone(),
                 profile_id: params.profile_id.clone(),
@@ -3681,6 +3690,16 @@ impl CatalogStore for SqliteCatalog {
         let mut revision_id: Option<String> = None;
         let mut supersedes_revision_id: Option<String> = None;
 
+        // The revision insert (Q1) and the guarded resolution update (Q3/Q4)
+        // must commit or fail together: a concurrent resolver can win the
+        // UPDATE's `resolved_at IS NULL` guard between this call's INSERT and
+        // its own UPDATE, and without a transaction the INSERT survives that
+        // loss, leaving a `calibration_profile_revisions` row with no
+        // resolved conflict pointing at it. Wrapping both in one transaction
+        // makes "this resolution did not apply" also mean "this resolution
+        // wrote nothing".
+        let tx = self.conn.transaction().map_err(sql_error)?;
+
         // Q1. keepLocalAsNewRevision is not a resurrection. It mints a new
         // identity that *names* the deleted predecessor, and leaves the
         // predecessor deleted. Without the provenance link the row is
@@ -3689,22 +3708,21 @@ impl CatalogStore for SqliteCatalog {
         // "deleted, and a client put it back".
         if params.resolution == CalibrationConflictResolutionKind::KeepLocalAsNewRevision {
             let new_revision_id = uuid_v4_placeholder();
-            self.conn
-                .execute(
-                    "INSERT INTO calibration_profile_revisions
-                         (profile_id, revision_id, project_id, revision_label,
-                          is_promoted, generated_at, supersedes_revision_id)
-                     VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
-                    params![
-                        params.profile_id,
-                        new_revision_id,
-                        project_id,
-                        format!("Local edit kept over server deletion of {entity_id}"),
-                        now,
-                        entity_id
-                    ],
-                )
-                .map_err(sql_error)?;
+            tx.execute(
+                "INSERT INTO calibration_profile_revisions
+                     (profile_id, revision_id, project_id, revision_label,
+                      is_promoted, generated_at, supersedes_revision_id)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+                params![
+                    params.profile_id,
+                    new_revision_id,
+                    project_id,
+                    format!("Local edit kept over server deletion of {entity_id}"),
+                    now,
+                    entity_id
+                ],
+            )
+            .map_err(sql_error)?;
             supersedes_revision_id = Some(entity_id.clone());
             revision_id = Some(new_revision_id);
         }
@@ -3714,19 +3732,24 @@ impl CatalogStore for SqliteCatalog {
         // radius is invisible at the moment of pressing. Staying silent is the
         // other failure: a snapshot accepted while superseded observations still
         // display as valid is one UI state consistent with two realities.
-        let superseded_observations =
-            if params.resolution == CalibrationConflictResolutionKind::AcceptServer {
-                self.observations_superseded_by(&params.profile_id, &project_id, server_revision)?
-            } else {
-                Vec::new()
-            };
+        //
+        // Read through the transaction, not `self.conn`: this is still a pure
+        // read (nothing here writes), but it must see the transaction's own
+        // uncommitted INSERT above, not a connection that might observe the
+        // pre-transaction state.
+        let superseded_observations = if params.resolution
+            == CalibrationConflictResolutionKind::AcceptServer
+        {
+            Self::observations_superseded_by(&tx, &params.profile_id, &project_id, server_revision)?
+        } else {
+            Vec::new()
+        };
 
         // Q3/Q4 guard, expressed in SQL as well as in the branch above. The
         // `resolved_at IS NULL` predicate is the control: if a concurrent writer
         // resolved this conflict between the SELECT and here, this UPDATE
         // matches no row and we refuse rather than overwrite.
-        let updated = self
-            .conn
+        let updated = tx
             .execute(
                 "UPDATE calibration_conflicts
                     SET resolved_at = ?3, resolution = ?4, resolution_revision_id = ?5,
@@ -3746,6 +3769,12 @@ impl CatalogStore for SqliteCatalog {
             )
             .map_err(sql_error)?;
         if updated != 1 {
+            // Roll back explicitly rather than relying on drop: this surfaces a
+            // rollback failure as an error instead of silently discarding it,
+            // and it undoes the Q1 insert above so the losing interleave
+            // leaves no trace, which is the property this transaction exists
+            // to guarantee.
+            tx.rollback().map_err(sql_error)?;
             return Err(format!(
                 "{}: conflict {} was resolved concurrently, so this resolution was \
                  not applied",
@@ -3753,6 +3782,8 @@ impl CatalogStore for SqliteCatalog {
                 params.conflict_id
             ));
         }
+
+        tx.commit().map_err(sql_error)?;
 
         Ok(CalibrationConflictResolutionDto {
             conflict_id: params.conflict_id.clone(),
@@ -7269,6 +7300,17 @@ mod tests {
     /// trigger on that table fires a competing writer inside exactly the window
     /// the predicate defends. One connection, no threads, no timing: the write
     /// lands between the two statements every run.
+    ///
+    /// Issue #304 review (Vasquez): the INSERT and the guarded UPDATE now run
+    /// inside one transaction, so the trigger's write is no longer independent
+    /// of this call's outcome -- it is undone along with everything else when
+    /// the predicate refuses and the transaction rolls back. That is the
+    /// intended effect, not a regression: a real second connection cannot
+    /// interleave here anymore either, because SQLite serializes writers, so
+    /// the race this trigger stands in for cannot occur once this call holds
+    /// the transaction. What the test still proves is that the predicate is
+    /// reached and refuses; what changed is that refusing now means *nothing*
+    /// from this call's transaction survives, including the trigger's write.
     #[test]
     fn the_update_predicate_refuses_a_writer_that_lands_between_the_read_and_the_write() {
         // Counterfactual first, on a store with no interloper: this same call
@@ -7323,10 +7365,11 @@ mod tests {
              when a different rejection fires"
         );
 
-        // The interloper's resolution must survive intact. This is the assertion
-        // the predicate exists for: without it the UPDATE matches the row and
-        // silently overwrites a resolution that was already recorded and already
-        // observable to a reader.
+        // The whole transaction -- this call's own writes AND the trigger's
+        // interleaved write, since both ran inside it -- must be rolled back
+        // together. A conflict left resolved here (by either party) would mean
+        // the transaction wrap is not actually atomic: some of what ran inside
+        // it survived a call that reported failure.
         let (resolved_at, resolution): (Option<String>, Option<String>) = store
             .conn
             .query_row(
@@ -7337,16 +7380,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            resolved_at.as_deref(),
-            Some("2026-07-26T16:00:00.000Z"),
-            "the interleaving writer's resolved_at must be untouched; if this now \
-             reads the current timestamp the UPDATE overwrote a resolved conflict"
+            resolved_at, None,
+            "a failed call must roll back everything that ran inside its \
+             transaction, including the trigger's interleaved write; a \
+             surviving resolved_at means the rollback was partial"
         );
         assert_eq!(
-            resolution.as_deref(),
-            Some("acceptServer"),
-            "the interleaving writer's resolution must be untouched; reading \
-             keepLocalAsNewRevision here means this call overwrote it"
+            resolution, None,
+            "a failed call must roll back everything that ran inside its \
+             transaction, including the trigger's interleaved write; a \
+             surviving resolution means the rollback was partial"
+        );
+
+        let revisions: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            revisions, 0,
+            "the revision row that triggered the interleaved write must itself \
+             be rolled back, not just the conflict's resolved_at/resolution"
         );
     }
 
@@ -7473,11 +7530,17 @@ mod tests {
     /// is concurrent. The defect is a missing predicate, and a reader given that
     /// message goes looking for a lock.
     ///
-    /// Nothing here runs in a transaction -- there is no `transaction()` or
-    /// savepoint anywhere in this path -- so the collateral rows stay written
-    /// after the call returns its error. The scoping property is therefore
-    /// observable, and it is asserted before the outcome of the call is
-    /// unwrapped so that it, rather than the concurrency message, is what fails.
+    /// `resolve_calibration_conflict`'s writes now run inside one transaction
+    /// (issue #304 review: the previous non-transactional version could leave
+    /// an orphaned `calibration_profile_revisions` row behind a losing
+    /// `keepLocalAsNewRevision` resolve), so a missing predicate here would no
+    /// longer leak a collateral write past a failed call -- the whole
+    /// transaction would roll back. That is not what this test checks: it
+    /// asserts the bystander conflict is untouched by a *successful* call,
+    /// which is a property of the UPDATE's own WHERE clause, not of the
+    /// transaction wrapped around it. The scoping property is therefore
+    /// asserted before the outcome of the call is unwrapped so that it, rather
+    /// than any transaction-related message, is what fails.
     #[test]
     fn resolving_one_conflict_leaves_every_other_conflict_untouched() {
         let mut store = SqliteCatalog::open_in_memory().unwrap();
@@ -7543,6 +7606,119 @@ mod tests {
             observed.is_some(),
             "control failed: the resolved conflict reads as unresolved, so the \
              bystander assertions above proved nothing"
+        );
+    }
+
+    /// Review finding on issue #304's PR (Vasquez): `keepLocalAsNewRevision`
+    /// used to INSERT the new `calibration_profile_revisions` row and then run
+    /// the guarded UPDATE as two separate autocommitted statements. If a
+    /// concurrent resolver won the race and flipped `resolved_at` between
+    /// those two statements, the UPDATE's `resolved_at IS NULL` guard would
+    /// correctly refuse (returning `ALREADY_RESOLVED`), but the revision row
+    /// from the INSERT had already been committed and stayed orphaned --
+    /// naming a conflict that a different resolution now owns.
+    ///
+    /// This simulates the losing side of that race directly: mark the
+    /// conflict resolved out from under the call (standing in for a
+    /// concurrent winner), then attempt `keepLocalAsNewRevision`. The call
+    /// must fail, and it must leave the revision table exactly as it found
+    /// it -- proving the INSERT and the guarded UPDATE now commit or roll
+    /// back as one transaction, not two independent writes.
+    #[test]
+    fn a_losing_keep_local_as_new_revision_leaves_no_orphaned_revision_row() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        let revisions_before: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        // Stand in for a concurrent winner: resolve the conflict directly,
+        // bypassing this call entirely, exactly as another process's
+        // `resolve_calibration_conflict` call would have between this call's
+        // SELECT and its UPDATE.
+        store
+            .conn
+            .execute(
+                "UPDATE calibration_conflicts
+                    SET resolved_at = ?2, resolution = 'acceptServer'
+                  WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id, now_ts()],
+            )
+            .unwrap();
+
+        let outcome = store.resolve_calibration_conflict(&resolve_params(
+            &conflict_id,
+            CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+        ));
+
+        let error = outcome.expect_err(
+            "a keepLocalAsNewRevision call losing the race to a concurrent \
+             resolver must fail, not silently proceed",
+        );
+        assert!(
+            error.contains(calibration_resolution_error::ALREADY_RESOLVED),
+            "the losing call must report ALREADY_RESOLVED, not some other \
+             failure mode: {error}"
+        );
+
+        let revisions_after: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            revisions_before, revisions_after,
+            "a losing keepLocalAsNewRevision call inserted a revision row \
+             before losing the race, then failed to roll it back -- this is \
+             the orphaned-write defect the transaction wrap fixes"
+        );
+
+        // Positive control. Without this, a store that always inserts nothing
+        // (e.g. a broken INSERT statement) would pass the assertion above for
+        // the wrong reason.
+        let second_conflict_id = seed_conflict_for(
+            &mut store,
+            "project-2",
+            "operation-2",
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+        let winning_outcome = store
+            .resolve_calibration_conflict(&resolve_params(
+                &second_conflict_id,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .expect("an uncontested keepLocalAsNewRevision must still succeed");
+        assert!(
+            winning_outcome.revision_id.is_some(),
+            "control failed: an uncontested call minted no revision, so the \
+             equal-count assertion above proved nothing"
+        );
+        let revisions_after_win: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            revisions_after_win,
+            revisions_after + 1,
+            "control failed: a successful call must add exactly one revision row"
         );
     }
 
