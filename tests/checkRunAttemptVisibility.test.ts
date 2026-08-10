@@ -66,11 +66,19 @@ describe('maxRunAttempt', () => {
 
 describe('#340 falsifier', () => {
   it('reports attempt 3 for PR #185 head (positive control: re-run occurred)', async () => {
+    // Fixture mirrors the real shape GitHub returns for this head (confirmed
+    // live via `gh api "repos/OlyForge3D/PrintFarmerDesktop/actions/runs?head_sha=..."`
+    // before this test was written): ONE workflow_runs row carrying the
+    // highest run_attempt reached, not one row per historical attempt. A
+    // three-rows-same-id-different-attempt fixture would make
+    // runs.length === max(run_attempt) by construction, so a broken
+    // implementation like `return runs.length` would pass unnoticed (Hicks
+    // review, #694 -- same defect class as #376/#443). Here runs.length (1)
+    // deliberately does not equal maxAttempt (3), so only a real max-over-
+    // run_attempt computation can pass.
     const fetchImpl = vi.fn(() =>
       runsPage([
-        { id: 100, run_attempt: 1, created_at: '2026-01-01T00:00:00Z' },
-        { id: 100, run_attempt: 2, created_at: '2026-01-01T00:05:00Z' },
-        { id: 100, run_attempt: 3, created_at: '2026-01-01T00:10:00Z' },
+        { id: 30863334352, run_attempt: 3, created_at: '2026-01-01T00:10:00Z' },
       ]),
     );
     const exitCode = await main(
@@ -85,9 +93,17 @@ describe('#340 falsifier', () => {
   });
 
   it('reports attempt 1 for PR #333 head (negative control: never re-run)', async () => {
+    // Fixture mirrors the real shape for this head (confirmed live): THREE
+    // distinct workflow_runs rows (different ids, one per workflow name),
+    // each at run_attempt 1. runs.length (3) deliberately does not equal
+    // maxAttempt (1) here either, for the same reason as the #185 fixture
+    // above -- a `return runs.length` implementation would report 3, not 1,
+    // and fail this test.
     const fetchImpl = vi.fn(() =>
       runsPage([
-        { id: 200, run_attempt: 1, created_at: '2026-01-02T00:00:00Z' },
+        { id: 30948527768, run_attempt: 1, created_at: '2026-01-02T00:00:00Z' },
+        { id: 30948527704, run_attempt: 1, created_at: '2026-01-02T00:00:05Z' },
+        { id: 30948527636, run_attempt: 1, created_at: '2026-01-02T00:00:10Z' },
       ]),
     );
     const exitCode = await main(
