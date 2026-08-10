@@ -401,6 +401,52 @@ describe('strict status checks are present and bind nobody', () => {
     };
     expect(statusCheckEnforcement(facts.protection).state).toBe('unconfirmed');
   });
+
+  // Bishop's finding on review of #490/#676 (head 4681cbad), the 6th
+  // instance of the same conflation class: `present:
+  // protection?.required_status_checks?.strict === true` collapsed missing
+  // required_status_checks, a missing strict key, and a confirmed
+  // `strict: false` into one indistinguishable "absent" reading narrated as
+  // the confident claim "strict is not set" -- even when the data never
+  // actually confirmed that. The state stays 'absent' (consistent with how
+  // the other three admin-exemptible settings already report an
+  // unconfirmed node), but the wording must say so honestly instead of
+  // asserting a confirmed "not set".
+  it('reports strict as absent with honest wording when required_status_checks is missing entirely, distinct from a confirmed strict:false', () => {
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>).required_status_checks;
+    const reading = statusCheckEnforcement(facts.protection);
+    expect(reading.state).toBe('absent');
+    expect(reading.why).toMatch(
+      /required_status_checks\.strict is missing or malformed/i,
+    );
+  });
+
+  it('reports strict as absent with honest wording when required_status_checks is present but strict is a non-boolean', () => {
+    const facts = baseline();
+    facts.protection.required_status_checks = {
+      ...facts.protection.required_status_checks,
+      strict: 'yes' as unknown as boolean,
+    };
+    const reading = statusCheckEnforcement(facts.protection);
+    expect(reading.state).toBe('absent');
+    expect(reading.why).toMatch(
+      /required_status_checks\.strict is missing or malformed/i,
+    );
+  });
+
+  it('still reports the confident "strict is not set" wording when strict is confirmed false', () => {
+    const facts = baseline();
+    facts.protection.required_status_checks = {
+      ...facts.protection.required_status_checks,
+      strict: false,
+    };
+    const reading = statusCheckEnforcement(facts.protection);
+    expect(reading.state).toBe('absent');
+    expect(reading.why).toBe(
+      'strict is not set, so a pull request may merge against a base it was never tested against',
+    );
+  });
 });
 
 describe('#489: the admin-exemption reading generalises beyond strict', () => {

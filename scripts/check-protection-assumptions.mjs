@@ -119,6 +119,28 @@ function readAdminsExempt(protection) {
   return { confirmed: true, exempt: fact.value === false };
 }
 
+// Same distinction again, specialised to `required_status_checks.strict`:
+// a plain `protection?.required_status_checks?.strict === true` check
+// collapses "GitHub confirmed strict is false", "required_status_checks is
+// entirely absent", and "required_status_checks is present but strict is
+// missing or not a literal boolean" into one indistinguishable `false` --
+// which is exactly right for the loud violation check above (any of those
+// three still means "do not rely on up-to-date-ness"), but wrong for
+// `statusCheckEnforcement`'s reporting path, which narrated all three as
+// the single confident claim "strict is not set". Bishop's review of
+// #490/#676 (head 4681cbad) reproduced this as the 6th instance of the same
+// silent-conflation class already fixed five times elsewhere in this file.
+function readStrictFact(protection) {
+  const node = protection?.required_status_checks;
+  if (node === undefined || node === null || typeof node !== 'object') {
+    return { confirmed: false };
+  }
+  if (typeof node.strict === 'boolean') {
+    return { confirmed: true, value: node.strict };
+  }
+  return { confirmed: false };
+}
+
 /**
  * Pure. Takes the four reads and returns what has moved.
  *
@@ -494,11 +516,13 @@ function adminExemptionReading({
  * admin. `adminExemptibleSettingEnforcement`, below, reads all four the same way.
  */
 export function statusCheckEnforcement(protection) {
+  const strictFact = readStrictFact(protection);
   return adminExemptionReading({
-    present: protection?.required_status_checks?.strict === true,
+    present: strictFact.confirmed && strictFact.value === true,
     adminsExempt: readAdminsExempt(protection),
-    absentWhy:
-      'strict is not set, so a pull request may merge against a base it was never tested against',
+    absentWhy: strictFact.confirmed
+      ? 'strict is not set, so a pull request may merge against a base it was never tested against'
+      : 'required_status_checks.strict is missing or malformed in the response rather than confirmed either way, so whether up-to-date-ness is enforced cannot be read from this field',
     unconfirmedAdminsExemptWhy:
       'strict is set, but enforce_admins is missing or malformed in the response rather than confirmed either way, so whether administrators are exempt from it cannot be read from this field',
     bindingWhy:
