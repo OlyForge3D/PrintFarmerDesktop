@@ -1005,6 +1005,37 @@ export type CalibrationCapabilityFlags = z.infer<
   typeof CalibrationCapabilityFlags
 >;
 
+/**
+ * Whether the server advertised a value for a capability flag's backing
+ * field at all — `'unknown'` means the field was absent from the response,
+ * so availability could not be determined from what the server sent
+ * (#493). `flags` above fails closed to `false` for `'unknown'` too; this is
+ * the only place a caller can tell "the server said no" apart from "the
+ * server said nothing".
+ */
+export const CalibrationFlagAdvertisement = z.enum([
+  'true',
+  'false',
+  'unknown',
+]);
+export type CalibrationFlagAdvertisement = z.infer<
+  typeof CalibrationFlagAdvertisement
+>;
+
+/** Per-flag advertisement state, keyed the same as {@link CalibrationCapabilityFlags}. */
+export const CalibrationCapabilityFlagAdvertisement = z
+  .object({
+    calibrationApiEnabled: CalibrationFlagAdvertisement,
+    calibrationChangeFeedEnabled: CalibrationFlagAdvertisement,
+    calibrationOfflineDraftEnabled: CalibrationFlagAdvertisement,
+    calibrationPhotoUploadEnabled: CalibrationFlagAdvertisement,
+    calibrationGenerationEnabled: CalibrationFlagAdvertisement,
+  })
+  .passthrough();
+export type CalibrationCapabilityFlagAdvertisement = z.infer<
+  typeof CalibrationCapabilityFlagAdvertisement
+>;
+
 /** Required JWT permission scopes for calibration operations. */
 export const CalibrationRequiredScopes = z.enum([
   'CalibrationRead',
@@ -3157,6 +3188,8 @@ export const CalibrationCapabilitySnapshot = z
     negotiatedSchemaVersion: z.string().max(64).nullable(),
     apiContractVersion: z.string().max(64),
     flags: CalibrationCapabilityFlags,
+    /** Per-flag advertisement state (#493): `'true'` | `'false'` | `'unknown'`. */
+    flagAdvertisement: CalibrationCapabilityFlagAdvertisement,
     grantedScopes: z.array(z.string().max(64)).max(64),
     negotiatedAt: z.string().datetime(),
   })
