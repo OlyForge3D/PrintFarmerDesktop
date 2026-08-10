@@ -30,7 +30,8 @@
 //
 //   - optional (`?`),
 //   - function-typed (the only kind of field a caller "activates" by
-//     assigning a callable),
+//     assigning a callable) -- determined via the real TypeScript type
+//     checker, not name-based AST heuristics (see below),
 //   - not `declare`d,
 //   - not `static` (statics live on the constructor function, not instances,
 //     and are unaffected by useDefineForClassFields),
@@ -44,9 +45,30 @@
 // prototype (as calibrationService.ts now does), which sidesteps
 // useDefineForClassFields entirely because methods are never instance own
 // properties.
+//
+// PR #706 review history (why this uses the real type checker, not AST
+// name-matching): the first version resolved "is this field function-typed"
+// by walking the type annotation's AST and, for a named type, looking up a
+// same-file type alias or interface declaration by name. Reviewers (Ripley,
+// Vasquez, Bishop) found this kept missing real #270 shapes one edge case at
+// a time -- a callable type alias, a callable interface, `typeof
+// someFunction`, `typeof` on an *imported* function, and finally a genuine
+// false positive where an out-of-scope callable happened to share a name
+// with an in-scope non-callable binding (name-based lookup has no concept of
+// lexical scope, so it can match the wrong binding entirely). Each fix
+// closed one gap and reviewers kept finding the next, because the underlying
+// approach -- matching identifiers by text across the whole file -- can
+// never be complete: real scoping and cross-file symbol resolution is
+// exactly what a type checker exists to do. Rather than add a fourth
+// special case, this now builds a real `ts.Program` and asks its
+// `TypeChecker` whether the field's annotated type has call signatures
+// (`isCallableType`, below). That single check correctly and simultaneously
+// handles inline function types, type aliases, callable interfaces,
+// `typeof` on any in-scope binding (local or imported), unions of the above,
+// and lexical scoping/shadowing -- because it is the same resolution
+// TypeScript itself uses, not a re-implementation of a slice of it.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -103,104 +125,25 @@ function isStaticField(member) {
 }
 
 /**
- * Collects every top-level (or nested, e.g. inside a namespace) type alias
- * and interface declaration in a source file, keyed by name, so that a class
- * field typed via a *named* callable type -- a type alias whose aliased type
- * is a function type, or an interface with a call signature -- resolves to
- * "function-typed" the same as an inline `(...) => R` literal would.
+ * True if a checker-resolved `Type` is callable -- has at least one call
+ * signature -- including through a union (e.g. `(() => void) | undefined`,
+ * or a named union type alias): a union type is callable here if *any*
+ * member is, since assigning a callable to the prototype only needs one
+ * arm of the union to be a function for `typeof field === 'function'` to
+ * become observable.
  *
- * Without this, `field?: Handler;` (with `type Handler = (x: T) => R;` or
- * `interface Handler { (x: T): R; }` declared alongside it) is a real #270
- * seam shape -- assigning a callable to the prototype is exactly as inert as
- * the inline-function-type case -- but was invisible to the original
- * inline-only check.
+ * This single function is what replaced the earlier name-based AST walk
+ * (resolving type aliases, callable interfaces, and `typeof` queries by
+ * text-matching identifiers across the file). The checker already resolves
+ * type aliases, interfaces, `typeof` on any in-scope binding (including
+ * imports), and lexical scoping correctly, because that is its job --
+ * asking it directly is both simpler and strictly more correct than
+ * re-implementing a slice of TypeScript's own name resolution.
  */
-function collectCallableTypeNames(sourceFile) {
-  const aliases = new Map(); // name -> TypeNode (the aliased type)
-  const callableInterfaces = new Set(); // names of interfaces with a call signature
-  // names of in-scope identifiers that refer to something callable -- a
-  // function declaration, or a variable initialized with an arrow function
-  // or function expression -- so that a `typeof <identifier>` type query
-  // resolves to "function-typed" too (see `isFunctionTyped`'s TypeQueryNode
-  // branch).
-  const callableIdentifiers = new Set();
-
-  const visit = (node) => {
-    if (ts.isTypeAliasDeclaration(node)) {
-      aliases.set(node.name.text, node.type);
-    } else if (ts.isInterfaceDeclaration(node)) {
-      const hasCallSignature = node.members.some((member) =>
-        ts.isCallSignatureDeclaration(member),
-      );
-      if (hasCallSignature) callableInterfaces.add(node.name.text);
-    } else if (ts.isFunctionDeclaration(node) && node.name) {
-      callableIdentifiers.add(node.name.text);
-    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-      const initializer = node.initializer;
-      if (
-        initializer &&
-        (ts.isArrowFunction(initializer) ||
-          ts.isFunctionExpression(initializer))
-      ) {
-        callableIdentifiers.add(node.name.text);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-
-  return { aliases, callableInterfaces, callableIdentifiers };
-}
-
-/**
- * A field only reads as a capability seam if its type is itself callable --
- * a plain `resolveCalibrationConflict?: string` optional field is ordinary
- * optional data, not a prototype-patchable capability, and flagging it would
- * make this check noisy on the common "optional config value" shape it is
- * not built to guard.
- *
- * `typeNames` resolves same-file type aliases, callable interfaces, and
- * `typeof`-queried identifiers (see `collectCallableTypeNames`); `seen`
- * guards against infinite recursion on a type alias that (directly or
- * through a chain) refers back to itself.
- */
-function isFunctionTyped(typeNode, sourceFile, typeNames, seen = new Set()) {
-  if (!typeNode) return false;
-  if (ts.isFunctionTypeNode(typeNode)) return true;
-  // A parenthesized or unioned function type, e.g. `(() => void) | undefined`
-  // -- walk unions/parentheses looking for at least one function member.
-  if (ts.isParenthesizedTypeNode(typeNode)) {
-    return isFunctionTyped(typeNode.type, sourceFile, typeNames, seen);
-  }
-  if (ts.isUnionTypeNode(typeNode)) {
-    return typeNode.types.some((member) =>
-      isFunctionTyped(member, sourceFile, typeNames, seen),
-    );
-  }
-  // A named type -- `field?: Handler;` -- resolves through a same-file type
-  // alias or callable interface declaration, e.g. `type Handler = (x: T) =>
-  // R;` or `interface Handler { (x: T): R; }`. Only plain identifiers are
-  // resolved (not `Namespace.Handler`-style qualified names, which this
-  // simple AST-only check has no reliable way to locate without a full
-  // multi-file type-checking program).
-  if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) {
-    const name = typeNode.typeName.text;
-    if (seen.has(name)) return false;
-    seen.add(name);
-    if (typeNames.callableInterfaces.has(name)) return true;
-    const aliasedType = typeNames.aliases.get(name);
-    if (aliasedType) {
-      return isFunctionTyped(aliasedType, sourceFile, typeNames, seen);
-    }
-    return false;
-  }
-  // `field?: typeof someFunction;` -- exactly as callable as writing the
-  // function's own type inline, since `typeof` here just borrows the type
-  // of an existing callable in scope. Only resolves a plain identifier
-  // (`typeof foo`), not a qualified name (`typeof ns.foo`), for the same
-  // reason type references above are limited to plain identifiers.
-  if (ts.isTypeQueryNode(typeNode) && ts.isIdentifier(typeNode.exprName)) {
-    return typeNames.callableIdentifiers.has(typeNode.exprName.text);
+function isCallableType(type) {
+  if (type.getCallSignatures().length > 0) return true;
+  if (type.isUnion()) {
+    return type.types.some((member) => isCallableType(member));
   }
   return false;
 }
@@ -324,26 +267,16 @@ function isSelfAssigned(classNode, fieldName, sourceFile) {
 }
 
 /**
- * Finds every inert-seam candidate in one source file's text.
+ * Finds every inert-seam candidate in one already-typechecked source file,
+ * given the `TypeChecker` of the `Program` it belongs to.
  *
- * Returns `[]` for a file with no such shape -- callers should not read an
- * empty array as "the file was not actually parsed"; a parse failure throws
- * instead of returning an empty result, so absence here is a genuine finding
- * of zero, not a silent skip (the #182/#270 shape this repo keeps naming: an
- * unreadable input must not report the same result as a readable one that
- * found nothing).
+ * `displayPath` is used only for the returned violations' `file` field --
+ * callers pass a repo-relative path for real files, or the original fixture
+ * name in tests, independent of whatever virtual/absolute path the file
+ * lives at inside the `Program`.
  */
-export function findInertSeamCandidates(filePath, sourceText) {
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    sourceText,
-    ts.ScriptTarget.ES2022,
-    true,
-    filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-
+function findSeamViolationsInSourceFile(sourceFile, checker, displayPath) {
   const violations = [];
-  const typeNames = collectCallableTypeNames(sourceFile);
 
   const visitClass = (classNode) => {
     for (const member of classNode.members) {
@@ -352,7 +285,9 @@ export function findInertSeamCandidates(filePath, sourceText) {
       if (member.initializer) continue;
       if (isDeclareField(member)) continue;
       if (isStaticField(member)) continue;
-      if (!isFunctionTyped(member.type, sourceFile, typeNames)) continue;
+      if (!member.type) continue;
+      const resolvedType = checker.getTypeFromTypeNode(member.type);
+      if (!isCallableType(resolvedType)) continue;
       if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name))
         continue;
       const fieldName = member.name.getText(sourceFile);
@@ -362,7 +297,7 @@ export function findInertSeamCandidates(filePath, sourceText) {
         member.getStart(sourceFile),
       );
       violations.push({
-        file: filePath,
+        file: displayPath,
         line: line + 1,
         name: fieldName,
         typeText: member.type.getText(sourceFile),
@@ -381,6 +316,135 @@ export function findInertSeamCandidates(filePath, sourceText) {
   return violations;
 }
 
+const VIRTUAL_ROOT = '/virtual-inert-seam-check';
+const VIRTUAL_COMPILER_OPTIONS = {
+  target: ts.ScriptTarget.ES2022,
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  strict: true,
+  exactOptionalPropertyTypes: true,
+  skipLibCheck: true,
+  noEmit: true,
+};
+
+function toVirtualPath(relativePath) {
+  return path.posix.join(VIRTUAL_ROOT, relativePath.replace(/\\/g, '/'));
+}
+
+/**
+ * A `ts.CompilerHost` that serves a small in-memory set of files (a fixture
+ * under test, plus any files it imports) and falls back to the real
+ * filesystem for everything else (lib.d.ts and friends), via
+ * `ts.createCompilerHost`. This is what lets `findInertSeamCandidates` run
+ * a real type-checking `Program` -- and so get real scope/symbol resolution
+ * for callable-type detection -- without needing the fixture to be written
+ * to disk as part of the actual repository tree.
+ */
+function createVirtualHost(virtualFiles) {
+  const realHost = ts.createCompilerHost(VIRTUAL_COMPILER_OPTIONS, true);
+  // Every ancestor directory of a virtual file, so `directoryExists` (which
+  // module resolution consults, e.g. before probing for a sibling
+  // package.json) reports the virtual tree as present -- it does not exist
+  // on the real filesystem, and a `false` here can short-circuit resolution
+  // of a perfectly valid relative import between two virtual files.
+  const virtualDirectories = new Set();
+  for (const fileName of virtualFiles.keys()) {
+    let directory = path.posix.dirname(fileName);
+    while (directory && directory !== '/' && directory !== '.') {
+      virtualDirectories.add(directory);
+      directory = path.posix.dirname(directory);
+    }
+  }
+
+  return {
+    ...realHost,
+    fileExists(fileName) {
+      return virtualFiles.has(fileName) || realHost.fileExists(fileName);
+    },
+    readFile(fileName) {
+      if (virtualFiles.has(fileName)) return virtualFiles.get(fileName);
+      return realHost.readFile(fileName);
+    },
+    directoryExists(directoryName) {
+      return (
+        virtualDirectories.has(directoryName) ||
+        (realHost.directoryExists?.(directoryName) ?? false)
+      );
+    },
+    getSourceFile(
+      fileName,
+      languageVersionOrOptions,
+      onError,
+      shouldCreateNewSourceFile,
+    ) {
+      if (virtualFiles.has(fileName)) {
+        const languageVersion =
+          typeof languageVersionOrOptions === 'object'
+            ? languageVersionOrOptions.languageVersion
+            : languageVersionOrOptions;
+        const scriptKind = fileName.endsWith('.tsx')
+          ? ts.ScriptKind.TSX
+          : ts.ScriptKind.TS;
+        return ts.createSourceFile(
+          fileName,
+          virtualFiles.get(fileName),
+          languageVersion,
+          true,
+          scriptKind,
+        );
+      }
+      return realHost.getSourceFile(
+        fileName,
+        languageVersionOrOptions,
+        onError,
+        shouldCreateNewSourceFile,
+      );
+    },
+  };
+}
+
+/**
+ * Finds every inert-seam candidate in one source file's text, using a real
+ * (small, in-memory) `ts.Program` and its `TypeChecker` -- see the module
+ * doc for why this replaced pure AST name-matching.
+ *
+ * `additionalFiles` is an optional map of `{ relativePath: sourceText }` for
+ * any files `filePath` imports (via a relative specifier resolved next to
+ * it in the same virtual directory), so a fixture can exercise cross-file
+ * resolution -- e.g. `typeof` on an imported function -- without needing a
+ * second file on disk.
+ *
+ * Returns `[]` for a file with no such shape -- callers should not read an
+ * empty array as "the file was not actually parsed"; a parse failure throws
+ * instead of returning an empty result, so absence here is a genuine finding
+ * of zero, not a silent skip (the #182/#270 shape this repo keeps naming: an
+ * unreadable input must not report the same result as a readable one that
+ * found nothing).
+ */
+export function findInertSeamCandidates(
+  filePath,
+  sourceText,
+  additionalFiles = {},
+) {
+  const mainVirtualPath = toVirtualPath(filePath);
+  const virtualFiles = new Map();
+  virtualFiles.set(mainVirtualPath, sourceText);
+  for (const [relativePath, text] of Object.entries(additionalFiles)) {
+    virtualFiles.set(toVirtualPath(relativePath), text);
+  }
+
+  const host = createVirtualHost(virtualFiles);
+  const program = ts.createProgram({
+    rootNames: [...virtualFiles.keys()],
+    options: VIRTUAL_COMPILER_OPTIONS,
+    host,
+  });
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFile(mainVirtualPath);
+
+  return findSeamViolationsInSourceFile(sourceFile, checker, filePath);
+}
+
 export function formatViolation(violation) {
   return (
     `${violation.file}:${violation.line}  ` +
@@ -397,13 +461,49 @@ export function formatViolation(violation) {
   );
 }
 
+/**
+ * Scans the real repository tree: builds one real `ts.Program` from the
+ * project's own `tsconfig.json` (so path mappings like `@shared/*` and real
+ * cross-file/module imports resolve exactly as they do for `npm run
+ * typecheck`), rooted at every file `listSourceFiles` reports, then runs
+ * the same seam-detection pass against each of those files' `SourceFile`
+ * from that program.
+ */
 export function scanRepository(repoRoot) {
   const files = listSourceFiles(repoRoot);
+  const configPath = path.join(repoRoot, 'tsconfig.json');
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  const parsedConfig = ts.parseJsonConfigFileContent(
+    configFile.config,
+    ts.sys,
+    repoRoot,
+  );
+  const rootNames = files.map((relativePath) =>
+    path.join(repoRoot, relativePath),
+  );
+  const program = ts.createProgram({
+    rootNames,
+    options: parsedConfig.options,
+  });
+  const checker = program.getTypeChecker();
+
   const violations = [];
   for (const relativePath of files) {
     const absolutePath = path.join(repoRoot, relativePath);
-    const sourceText = readFileSync(absolutePath, 'utf8');
-    violations.push(...findInertSeamCandidates(relativePath, sourceText));
+    const sourceFile = program.getSourceFile(absolutePath);
+    if (!sourceFile) {
+      // Every file here was passed as a Program root name; if the Program
+      // does not have a SourceFile for it, something is badly wrong with
+      // config resolution -- fail loudly rather than silently skip it (the
+      // #270-shaped failure mode this check exists to prevent).
+      throw new Error(
+        `check-inert-class-field-seams: expected a SourceFile for ` +
+          `${relativePath}, but the Program did not produce one.`,
+      );
+    }
+    violations.push(
+      ...findSeamViolationsInSourceFile(sourceFile, checker, relativePath),
+    );
   }
   return violations;
 }

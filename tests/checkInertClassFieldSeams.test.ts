@@ -196,6 +196,36 @@ describe('findInertSeamCandidates', () => {
       findInertSeamCandidates('typeofNonCallable.fixture.ts', source),
     ).toEqual([]);
   });
+
+  it('POSITIVE CONTROL: flags a seam typed via `typeof <identifier>` where the identifier is imported from another module', () => {
+    // Vasquez's review finding (round 3): the same-file `typeof` fix worked,
+    // but `typeof` on an imported callable still slipped through. Passing
+    // the imported-from file as `additionalFiles` builds a real (small,
+    // in-memory) multi-file Program, so the type checker resolves the
+    // import exactly as it would for real repository code.
+    const mainSource = readFixture('typeofImportedSeam.fixture.ts');
+    const helperSource = readFixture('typeofImportedSeam.helper.fixture.ts');
+    const violations = findInertSeamCandidates(
+      'typeofImportedSeam.fixture.ts',
+      mainSource,
+      { 'typeofImportedSeam.helper.fixture.ts': helperSource },
+    );
+    expect(violations.map((v) => v.name)).toEqual(['resolveConflict']);
+    expect(violations[0]?.typeText).toBe('typeof importedSeam');
+  });
+
+  it('does not flag a field typed via `typeof <identifier>` when a same-named but differently-scoped binding is callable (Ripley, round 3)', () => {
+    // The earlier name-based `typeof` resolution matched an identifier
+    // anywhere in the file by text, not by lexical scope, which could cause
+    // a false positive: an out-of-scope callable happening to share a name
+    // with an in-scope non-callable binding. The real type checker resolves
+    // `typeof helper` to the binding actually in scope at the field
+    // declaration, not any same-named identifier anywhere in the file.
+    const source = readFixture('typeofScopingFalsePositive.fixture.ts');
+    expect(
+      findInertSeamCandidates('typeofScopingFalsePositive.fixture.ts', source),
+    ).toEqual([]);
+  });
 });
 
 describe('formatViolation', () => {

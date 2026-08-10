@@ -10,6 +10,7 @@ export function listSourceFiles(repoRoot: string): string[];
 export function findInertSeamCandidates(
   filePath: string,
   sourceText: string,
+  additionalFiles?: Record<string, string>,
 ): InertSeamViolation[];
 
 export function formatViolation(violation: InertSeamViolation): string;
