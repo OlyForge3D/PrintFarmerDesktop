@@ -588,13 +588,33 @@ describe('a ruleset matters only when it is enabled and reaches a feature branch
     expect(found?.consequence).toMatch(/npm run push:force/);
   });
 
-  it('survives a ruleset with no conditions at all', () => {
-    expect(
+  // Hicks' finding on review of #490 (head 31e0d8e): an active,
+  // branch-targeted ruleset with no conditions.ref_name.include array at
+  // all was silently treated as "covers no feature branches" via `?? []`,
+  // when in fact the targeting data is simply missing/malformed -- the
+  // ruleset could, for all this function knows, reach every branch. Only
+  // an explicit, well-formed empty array is a legitimate "targets nothing"
+  // signal; a missing/non-array include must throw instead.
+  it('throws rather than silently treating a ruleset with no conditions.ref_name.include as covering nothing (Hicks repro)', () => {
+    expect(() =>
       rulesetCoversFeatureBranches({
         enforcement: 'active',
         target: 'branch',
       }),
+    ).toThrow(/conditions\.ref_name\.include/i);
+  });
+
+  it('still ignores an active ruleset with a well-formed, explicitly empty include array', () => {
+    expect(
+      rulesetCoversFeatureBranches({
+        enforcement: 'active',
+        target: 'branch',
+        conditions: { ref_name: { include: [] } },
+      }),
     ).toBe(false);
+  });
+
+  it('ignores a null ruleset entirely (not active, not malformed)', () => {
     expect(rulesetCoversFeatureBranches(null)).toBe(false);
   });
 });

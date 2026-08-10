@@ -571,7 +571,25 @@ export function adminExemptibleSettingEnforcement(protection) {
 export function rulesetCoversFeatureBranches(ruleset) {
   if (!ruleset || ruleset.enforcement !== 'active') return false;
   if (ruleset.target && ruleset.target !== 'branch') return false;
-  const include = ruleset.conditions?.ref_name?.include ?? [];
+  // An active, branch-targeted ruleset without a resolvable
+  // conditions.ref_name.include array is not a ruleset that "covers no
+  // feature branches" -- it is malformed or truncated data. `?? []`
+  // silently defaulted the missing targeting data to an empty array and
+  // returned `false`, the same "silently accept malformed external data"
+  // failure already fixed 14 times over in this file for other fields: a
+  // ruleset that is genuinely active could, for all this function knows,
+  // actually reach every branch, and reporting it as covering none because
+  // the field GitHub uses to say so is absent is exactly the falsely-clean
+  // result this file's other fixes exist to prevent. Hicks reproduced this
+  // in review of #490 (head 31e0d8e). So a missing/non-array `include`
+  // throws instead of defaulting, while an explicit empty array (a
+  // well-formed ruleset that legitimately targets no refs) is unaffected.
+  const include = ruleset.conditions?.ref_name?.include;
+  if (!Array.isArray(include)) {
+    throw new Error(
+      `Active ruleset ${JSON.stringify(ruleset.name ?? ruleset.id ?? '(unnamed)')} has no conditions.ref_name.include array (got ${JSON.stringify(include)}); refusing to treat missing targeting data as "covers no feature branches".`,
+    );
+  }
   return include.some(
     (ref) => ref !== 'refs/heads/development' && ref !== '~DEFAULT_BRANCH',
   );
