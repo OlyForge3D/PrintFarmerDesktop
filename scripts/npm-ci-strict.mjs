@@ -254,6 +254,7 @@ export function resolveCleanupEvidencePath(environment = process.env) {
  *     reason: string | null
  *   },
  *   productionTreeProblems?: string[],
+ *   productionTreeExitProblems?: string[],
  *   productionTreeError?: string | null,
  *   environment?: NodeJS.ProcessEnv,
  *   recordedAt?: string
@@ -300,6 +301,7 @@ export function createCleanupEvidence(input) {
       reason: input.recovery.reason,
     },
     productionTreeProblems: input.productionTreeProblems ?? [],
+    productionTreeExitProblems: input.productionTreeExitProblems ?? [],
     productionTreeError: input.productionTreeError ?? null,
     warningExcerpt,
   };
@@ -638,10 +640,12 @@ export async function main({
       );
     } else {
       let productionTreeProblems = [];
+      let productionTreeExitProblems = [];
       let productionTreeError = null;
       try {
-        const { tree } = readProductionTreeImpl();
+        const { tree, status, stderr } = readProductionTreeImpl();
         productionTreeProblems = findTreeProblems(tree);
+        productionTreeExitProblems = findTreeExitProblems(status, stderr);
       } catch (error) {
         productionTreeError = error.message;
       }
@@ -650,6 +654,7 @@ export async function main({
         output,
         recovery,
         productionTreeProblems,
+        productionTreeExitProblems,
         productionTreeError,
       });
       let evidenceResult;
@@ -661,10 +666,18 @@ export async function main({
         evidenceResult = `Durable evidence could not be staged: ${error.message}`;
       }
 
+      // Fold both channels together, mirroring the primary gate further down:
+      // npm's self-reported `problems`/`error` keys are a different channel
+      // from its exit status, and a non-zero exit without populated
+      // `problems` must not be reported as "no problems". Origin: #255, #700.
+      const allProductionTreeProblems = [
+        ...productionTreeExitProblems,
+        ...productionTreeProblems,
+      ];
       const productionTreeLine = productionTreeError
         ? `\`${NPM_PRODUCTION_TREE_COMMAND}\` could not be read: ${productionTreeError}`
-        : productionTreeProblems.length > 0
-          ? `\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems: ${productionTreeProblems.join('; ')}`
+        : allProductionTreeProblems.length > 0
+          ? `\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems: ${allProductionTreeProblems.join('; ')}`
           : `\`${NPM_PRODUCTION_TREE_COMMAND}\` reports no problems; the residue is outside the production tree.`;
 
       const paths = extractCleanupPaths(output);
