@@ -161,6 +161,46 @@ permissions:
 # tier, exactly as `Desktop` already does for `docs_only` alone. The manifest
 # denylist in `scripts/docs-only-change.mjs` is shared by both predicates, so
 # a dependency manifest can reach neither tier.
+#
+# Rust-untouched tier (#707).
+#
+# The two tiers above are both nested inside "this change is documentation".
+# Neither helps the ordinary case: a pull request that edits TypeScript. Over
+# the twenty pull requests preceding this change, NINETEEN touched no Rust at
+# all, and every one of them paid for a full two-platform cargo matrix --
+# toolchain install, `cargo fmt`, three clippy passes, four `cargo test`
+# invocations and the Windows lib3mf build. That is 13,608 job-seconds of
+# `Sidecar` compute across those nineteen, and it is not merely billed but
+# felt: on PR #697 -- seven files, none of them Rust -- `Sidecar
+# (windows-latest)` ran 982 seconds and was the LONGEST job in the run, the
+# wall-clock critical path deciding when the pull request could merge, while
+# compiling a crate the change never reached.
+#
+# So this tier is orthogonal to the other two rather than nested in them, and
+# it answers a question about the build's inputs rather than about a file's
+# genre: can this change reach the cargo build at all? `native/**`, any `.rs`
+# file anywhere, `Cargo.toml`/`Cargo.lock` anywhere, anything under a
+# `.cargo/` directory, the rustfmt/clippy/toolchain configs
+# (`rustfmt.toml`, `clippy.toml`, `rust-toolchain.toml` and their dot-prefixed
+# spellings) anywhere, this workflow file, and the detector script itself all
+# answer yes. Everything else -- `src/`, `tests/`, `e2e/`, `scripts/`,
+# `.squad/` -- cannot, because `cargo` never reads them.
+#
+# The tool-config half of that list is there because of a false negative Ripley
+# found in review of PR #708: those files change what `cargo fmt --check` and
+# `cargo clippy -- -D warnings` actually enforce, and which compiler runs,
+# without appearing in any crate source or manifest. A change to one can turn
+# this matrix from green to red while touching no `.rs` file, so classifying it
+# as unable to reach the build would stand the job down on exactly the change
+# that needed it. None of them exists in this repository yet, which is the
+# reason to handle them now: the predicate is wrong on the commit that ADDS
+# one.
+#
+# It gates `sidecar` only. `package` also builds the sidecar, but it goes on
+# to package the Electron app and drive Playwright over the result, so a
+# TypeScript change reaches it and it keeps running. See
+# `classifyRustUntouched` in scripts/docs-only-change.mjs for why the three
+# conditions on each `sidecar` step are composed rather than collapsed.
 jobs:
   desktop:
     name: Desktop (${{ matrix.os }})
@@ -181,13 +221,26 @@ jobs:
         id: changes
         run: node scripts/docs-only-change.mjs
 
+      # These three carry the same platform guard as `Format check` and `Test`
+      # below, and for one reason: on a documentation-only change those two are
+      # the only steps left in this job that do anything, so installing a
+      # toolchain and a dependency tree on macOS to run neither of them is the
+      # whole cost this guard exists to remove. Gated together or the guard is
+      # cosmetic -- `npm ci` alone is the larger half of what a stood-down
+      # macOS job would still pay.
+      #
+      # `Git hooks armed` reads what `npm ci`'s `prepare` armed, so it cannot
+      # outlive the install: it must carry the identical condition, not a
+      # weaker one, or it fails on the very runs the install skipped.
       - uses: actions/setup-node@v4
+        if: steps.changes.outputs.docs_only != 'true' || runner.os == 'Windows'
         with:
           node-version: 22
           cache: npm
 
       - name: Install dependencies
         id: npm_ci
+        if: steps.changes.outputs.docs_only != 'true' || runner.os == 'Windows'
         env:
           NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
@@ -212,6 +265,7 @@ jobs:
       # developer's clone is armed (see that script's own header for why it
       # is deliberately not wired in here).
       - name: Git hooks armed
+        if: steps.changes.outputs.docs_only != 'true' || runner.os == 'Windows'
         run: npm run hooks:verify
 
       - name: Calibration provenance
@@ -234,18 +288,40 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true'
         run: npm run lint
 
-      # Format check and Test are NOT gated, and the reason is measured rather
-      # than cautious. `prettier --check .` covers markdown and caught a real
-      # failure on docs PR #577. `vitest run` is a documentation check in this
-      # repository as much as a code one: 16 files under tests/ read `.md` or
-      # `.squad/` paths and assert their contents -- the CI-context list in
-      # `.squad/skills/testing/SKILL.md`, the calibration runbook references, the
-      # licensing text. Skipping them on a documentation change would remove
-      # cover from precisely the change that needs it.
+      # Format check and Test are not gated on `docs_only` at all, and the reason
+      # is measured rather than cautious. `prettier --check .` covers markdown
+      # and caught a real failure on docs PR #577. `vitest run` is a
+      # documentation check in this repository as much as a code one: 16 files
+      # under tests/ read `.md` or `.squad/` paths and assert their contents --
+      # the CI-context list in `.squad/skills/testing/SKILL.md`, the calibration
+      # runbook references, the licensing text. Skipping them on a documentation
+      # change would remove cover from precisely the change that needs it.
+      #
+      # They are, however, gated on the PLATFORM for a documentation change, and
+      # that is a different question from whether to run them at all. Both are
+      # content assertions: `prettier --check` compares bytes against a
+      # formatter that is pinned in `package-lock.json`, and the docs-reading
+      # tests read repository files and assert what is in them. Neither consults
+      # the host OS, so running them a second time on macOS for a prose edit
+      # re-answers a question already answered -- ~220 job-seconds per docs-only
+      # pull request, on the more expensive of the two runners, for a result
+      # that cannot differ.
+      #
+      # Windows is the half that is kept, not an arbitrary pick. It is the
+      # stricter host for exactly these two checks: it is where a line-ending or
+      # path-separator regression in a markdown file or a docs-reading test
+      # surfaces, so if the two platforms ever were to disagree on a prose
+      # change, Windows is the one that would say so.
+      #
+      # This applies to `docs_only` alone. A `docs_and_tests` change contains a
+      # `tests/` file by construction, which is real code that has never been
+      # run on either platform before, so it keeps the full two-platform matrix.
       - name: Format check
+        if: steps.changes.outputs.docs_only != 'true' || runner.os == 'Windows'
         run: npm run format
 
       - name: Test
+        if: steps.changes.outputs.docs_only != 'true' || runner.os == 'Windows'
         run: npm run test
 
   sidecar:
@@ -271,45 +347,45 @@ jobs:
         run: node scripts/docs-only-change.mjs
 
       - name: Install Rust
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - name: Format check
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo fmt --check
 
       - name: Clippy
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Clippy (sqlite feature)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo clippy --locked --all-targets --features sqlite -- -D warnings
 
       - name: Clippy (step feature)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo clippy --locked --all-targets --features step -- -D warnings
 
       - name: Test
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo test --locked
 
       - name: Test (sqlite feature)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo test --locked --features sqlite
 
       - name: Test (step feature)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true'
         run: cargo test --locked --features step
 
       - name: Build (lib3mf feature)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'Windows'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true' && runner.os == 'Windows'
         run: cargo build --locked --features lib3mf
 
       - name: Test (lib3mf feature)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'Windows'
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && steps.changes.outputs.rust_untouched != 'true' && runner.os == 'Windows'
         run: cargo test --locked --features lib3mf
 
   package:
