@@ -143,6 +143,21 @@ The agent emoji/name marker on a cross-session message (e.g. `🏗️` for Riple
 
 Stamping origin in the envelope and preserving attribution across compaction are known, unresolved remedies (#372) — they need a platform-level change this repo does not control. Do not build a marker-based attribution detector as a substitute; `ripley-attribution-carries-no-bits.md` already showed that a field which is occasionally right (like `%an`) is trusted and therefore worse than one that is never right.
 
+## Opening a PR on another session's behalf loses the author unless you name them
+
+#268: a session drafted a correction, held it under a standing restraint ("do not push a small fix without authorization"), and asked for it to be relayed. The relayer opened the PR, it merged, and **nothing in the merged record pointed back to the session that wrote the text.** The hold worked; the relay routed around it. No check on the tree — blob identity, patch-id, `git log -S` — will ever reveal this, because what's missing is not in the tree: it's _who produced the change_, and that lives only in the relay, which left no trace.
+
+This is not the same gap as the marker/provenance rules above (those are about _reading_ an existing signal correctly); there is no existing signal here at all. If you open a PR carrying text someone else drafted:
+
+- **Name the original author in the PR body**, in a fixed, greppable form: `Relayed-from: <session/issue reference>` or `Drafted-by: <session/issue reference>`. Free-text credit in prose is not searchable and will not be found later.
+- **Before opening**, check whether a PR already touches the same file(s) — a duplicate draft from a third session is cheaper to catch here than after two of them merge in conflict:
+  ```
+  gh pr list --state open --json number,files \
+    --jq '.[] | select([.files[].path] | index("<path>")) | .number'
+  ```
+  If one exists, **compare the evidence in both before choosing** — first-to-merge is not best-of-three, and a losing draft that had stronger evidence should not lose silently to a merge race (#256 merged over #221, whose version was demonstrably better-supported, entirely on which PR number opened first).
+- **After it merges, tell the original session the merge SHA as an explicit step** — not as a by-product of the next unrelated status exchange. The session that drafted a change is the one most likely to need to know it landed, and the merge notification does not reach it by default.
+
 ## `session_files` is not an authorship control
 
 Do not use the Copilot session store's `session_files` table (`session_id, file_path, tool_name, turn_index, first_seen_at`) as evidence for _who changed a file_ — #420 measured it against a case with a known answer and it failed in both directions at once. It answers **"which paths did the edit/create tools touch first, per session, per worktree"**, which reads deceptively like the real question because both are tables of file paths.

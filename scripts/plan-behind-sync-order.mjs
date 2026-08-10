@@ -319,9 +319,14 @@ export function isLeaseExpired(lease, now) {
  */
 export function readSyncLease(remote, run) {
   const local = 'refs/tmp/behind-sync-lease/read';
+  // The leading `+` forces the local tracking ref to be updated to match the
+  // remote regardless of fast-forward-ability. Without it, a stale local ref
+  // left over from a prior run combined with a non-fast-forward remote
+  // update (e.g. another process force-claiming the lease) makes the fetch
+  // silently fail, which was misread as "no lease exists" (see issue #701).
   const fetch = run(
     'git',
-    ['fetch', '--quiet', remote, `${SYNC_LEASE_REF}:${local}`],
+    ['fetch', '--quiet', remote, `+${SYNC_LEASE_REF}:${local}`],
     { encoding: 'utf8' },
   );
   if (fetch.status !== 0) {

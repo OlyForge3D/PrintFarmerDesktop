@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import {
   planSyncOrder,
@@ -371,7 +375,7 @@ describe('readSyncLease', () => {
         'fetch',
         '--quiet',
         'origin',
-        `${SYNC_LEASE_REF}:refs/tmp/behind-sync-lease/read`,
+        `+${SYNC_LEASE_REF}:refs/tmp/behind-sync-lease/read`,
       ],
       expect.objectContaining({ encoding: 'utf8' }),
     );
@@ -406,7 +410,7 @@ describe('readSyncLease', () => {
       'fetch',
       '--quiet',
       'origin',
-      `${SYNC_LEASE_REF}:refs/tmp/behind-sync-lease/read`,
+      `+${SYNC_LEASE_REF}:refs/tmp/behind-sync-lease/read`,
     ]);
     expect(calls[1]).toEqual(['rev-parse', 'refs/tmp/behind-sync-lease/read']);
     expect(calls[2]).toEqual([
@@ -428,6 +432,160 @@ describe('readSyncLease', () => {
     });
     const result = readSyncLease('origin', run as never);
     expect(result).toEqual({ lease: null, oid: 'abc123' });
+  });
+
+  // #701: reproduces the real failure mode against actual git repositories
+  // rather than a mocked `run`, because the bug is specifically in how a
+  // NON-forced fetch refspec interacts with a stale local ref and a
+  // non-fast-forward remote update -- behavior real git enforces, not
+  // something a mock can be trusted to model correctly.
+  describe('against a real repository (#701 regression)', () => {
+    const made: string[] = [];
+    afterAll(() => {
+      for (const d of made) rmSync(d, { recursive: true, force: true });
+    });
+
+    const git = (dir: string, args: string[]) =>
+      execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+
+    const realRun = (
+      cmd: string,
+      args: string[],
+      options: Parameters<typeof spawnSync>[2],
+    ) => {
+      // readSyncLease's git calls have no explicit `-C`; it relies on cwd.
+      return spawnSync(cmd, args, options);
+    };
+    const readLease = (remote: string) =>
+      readSyncLease(remote, realRun as never);
+
+    /**
+     * A bare "remote" plus a local working clone whose cwd is used for every
+     * `readSyncLease` call, mirroring how the real caller invokes git from
+     * inside its own checkout.
+     */
+    const fixture = () => {
+      const bare = mkdtempSync(path.join(tmpdir(), 'lease-remote-'));
+      made.push(bare);
+      execFileSync('git', ['-C', bare, 'init', '-q', '--bare'], {
+        stdio: 'ignore',
+      });
+
+      const local = mkdtempSync(path.join(tmpdir(), 'lease-local-'));
+      made.push(local);
+      execFileSync('git', ['-C', local, 'init', '-q'], { stdio: 'ignore' });
+      execFileSync('git', [
+        '-C',
+        local,
+        'config',
+        'user.email',
+        't@example.invalid',
+      ]);
+      execFileSync('git', ['-C', local, 'config', 'user.name', 'T']);
+      writeFileSync(path.join(local, 'seed.txt'), 'seed');
+      execFileSync('git', ['-C', local, 'add', '-A'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', local, 'commit', '-qm', 'seed'], {
+        stdio: 'ignore',
+      });
+      execFileSync('git', ['-C', local, 'remote', 'add', 'origin', bare]);
+
+      return { bare, local };
+    };
+
+    const claim = (
+      dir: string,
+      remote: string,
+      prNumber: number,
+      expect_: string,
+    ) => {
+      const message = JSON.stringify({
+        prNumber,
+        claimedAt: '2026-08-04T09:00:00.000Z',
+        expiresAt: '2026-08-04T09:30:00.000Z',
+      });
+      const oid = git(dir, [
+        'commit-tree',
+        `${git(dir, ['rev-parse', 'HEAD'])}^{tree}`,
+        '-p',
+        git(dir, ['rev-parse', 'HEAD']),
+        '-m',
+        message,
+      ]);
+      git(dir, [
+        'push',
+        remote,
+        `${oid}:${SYNC_LEASE_REF}`,
+        `--force-with-lease=${SYNC_LEASE_REF}:${expect_}`,
+      ]);
+      return oid;
+    };
+
+    it('reads the current remote lease, not stale local state, after a non-fast-forward remote update', () => {
+      const { bare, local } = fixture();
+      const cwd = process.cwd();
+      process.chdir(local);
+      try {
+        // Round 1: PR #7 claims the lease. `readSyncLease` fetches it into
+        // the local temp ref for the first time.
+        const firstOid = claim(local, 'origin', 7, '');
+        const firstRead = readLease('origin');
+        expect(firstRead.oid).toBe(firstOid);
+        expect(firstRead.lease?.prNumber).toBe(7);
+
+        // Round 2, simulating a DIFFERENT process: PR #12 force-claims the
+        // lease directly against the bare remote, replacing the ref with a
+        // commit that is NOT a descendant of the local temp ref left behind
+        // by round 1 -- i.e. a non-fast-forward update from that stale local
+        // ref's point of view.
+        const otherClone = mkdtempSync(path.join(tmpdir(), 'lease-other-'));
+        made.push(otherClone);
+        execFileSync('git', ['clone', '-q', bare, otherClone]);
+        execFileSync('git', [
+          '-C',
+          otherClone,
+          'config',
+          'user.email',
+          't@example.invalid',
+        ]);
+        execFileSync('git', ['-C', otherClone, 'config', 'user.name', 'T']);
+        // An orphan commit shares no history with round 1's lease commit, so
+        // fetching it into the existing local temp ref can never
+        // fast-forward. Git's well-known empty-tree object id lets this be a
+        // parentless commit without needing a real tree of its own.
+        const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+        const orphanOid = execFileSync(
+          'git',
+          [
+            '-C',
+            otherClone,
+            'commit-tree',
+            EMPTY_TREE,
+            '-m',
+            'unrelated lease commit',
+          ],
+          { encoding: 'utf8' },
+        ).trim();
+        execFileSync('git', [
+          '-C',
+          otherClone,
+          'push',
+          'origin',
+          `${orphanOid}:${SYNC_LEASE_REF}`,
+          '--force',
+        ]);
+
+        // This local checkout still has round 1's stale temp ref
+        // (`refs/tmp/behind-sync-lease/read`) from the first readSyncLease
+        // call above. Reading again must reflect PR #12's current remote
+        // lease, not silently keep round 1's stale state or misreport null.
+        const secondRead = readLease('origin');
+        expect(secondRead.oid).toBe(orphanOid);
+        expect(secondRead.lease).toBeNull(); // "unrelated lease commit" is not valid lease JSON, but the read must not fail/misreport as absent.
+        expect(secondRead.oid).not.toBe(firstOid);
+      } finally {
+        process.chdir(cwd);
+      }
+    });
   });
 });
 
