@@ -301,14 +301,14 @@ from a single read:
 read subject identity  ->  measure property  ->  re-read subject identity  ->  compare
 ```
 
-A single read *before* the measurement only pins the start of the window — exactly the
+A single read _before_ the measurement only pins the start of the window — exactly the
 interval in which the subject can move. #307's own worked fix: three separate `gh pr
 checks` runs each reported 7/7 green against a head (`e6a8547`, `667c63d`, `5c72694`) that
 had already been superseded by a base-sync while the check query was in flight. Every
 green was correct for the head it measured. The remedy was bracketing the head read —
-`git ls-remote` (or `gh pr view --json headRefOid`) immediately before *and* immediately
-after the checks query — so the claim becomes head-stability *across* the read, not
-head-identity *at its start*. Concretely, for a merge-readiness verification: read
+`git ls-remote` (or `gh pr view --json headRefOid`) immediately before _and_ immediately
+after the checks query — so the claim becomes head-stability _across_ the read, not
+head-identity _at its start_. Concretely, for a merge-readiness verification: read
 `headRefOid` and `mergeable`/`mergeStateStatus`, run the checks query, re-read
 `headRefOid` and `mergeable`/`mergeStateStatus`, and only trust the result if both reads
 agree.
@@ -317,15 +317,15 @@ agree.
 
 Three distinct axes, distinguished by which repair actually closes the gap:
 
-| | Defect is in the... | Repaired by... |
-|---|---|---|
-| **#214** ("Our verification commands use matching primitives that silently answer a neighbouring question...") | **predicate** — the command answers a neighbouring question, e.g. `--is-ancestor` on reachability instead of tip-identity | choosing a **different command** |
-| **#305** ("A value whose displayed form is a lossy projection of its checked form...") | **display** — the right command is run, but its rendering collapses distinctions the check itself made, e.g. a REST boolean `mergeable` collapsing `CONFLICTING`/`UNKNOWN`/etc. | printing a **different projection** of output already fetched |
-| **#307 (this section)** | **subject** — the right command, correctly rendered, answers truthfully about a subject (a SHA, a PR head) that has since moved out of scope | adding a **subject-liveness assertion** bracketing the property check, not substituting for it |
+|                                                                                                                | Defect is in the...                                                                                                                                                             | Repaired by...                                                                                 |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **#214** ("Our verification commands use matching primitives that silently answer a neighbouring question...") | **predicate** — the command answers a neighbouring question, e.g. `--is-ancestor` on reachability instead of tip-identity                                                       | choosing a **different command**                                                               |
+| **#305** ("A value whose displayed form is a lossy projection of its checked form...")                         | **display** — the right command is run, but its rendering collapses distinctions the check itself made, e.g. a REST boolean `mergeable` collapsing `CONFLICTING`/`UNKNOWN`/etc. | printing a **different projection** of output already fetched                                  |
+| **#307 (this section)**                                                                                        | **subject** — the right command, correctly rendered, answers truthfully about a subject (a SHA, a PR head) that has since moved out of scope                                    | adding a **subject-liveness assertion** bracketing the property check, not substituting for it |
 
 **#214 already names the adjacent discipline this class is missing**: its "positive
 control on the subject" language — prove the corpus is live before trusting an absence —
-is a control *within* a predicate check. #307 is that same discipline being absent from
+is a control _within_ a predicate check. #307 is that same discipline being absent from
 verification queries **entirely**: #214's instances pass the subject-liveness control and
 fail on the predicate; #307's instances pass the predicate and have no subject-liveness
 control at all. If a verification query in front of you is repaired by swapping in a
