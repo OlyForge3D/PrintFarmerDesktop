@@ -403,27 +403,45 @@ function createVirtualHost(virtualFiles) {
   };
 }
 
-// TS2307 "Cannot find module", TS2306 "File ... is not a module", and TS2792
-// ("Cannot find module ... did you mean to set the 'moduleResolution' option")
-// are the diagnostic codes TypeScript raises when it cannot resolve an
-// import at all. If the Program that backs this check can't resolve one of
-// these, the checker's answer for any field whose type depends on that
-// import (most concretely: `typeof importedThing`) is not "this field is not
-// callable" -- it is "I don't know", and treating "I don't know" as "clean"
-// is exactly the #270-shaped failure mode this check exists to prevent: a
-// broken analysis silently reporting the same all-clear as a working one.
-const MODULE_RESOLUTION_DIAGNOSTIC_CODES = new Set([2307, 2306, 2792]);
+// The diagnostic codes TypeScript raises when it cannot resolve (or read)
+// an import at all -- as opposed to an ordinary type error within a module
+// that did resolve. If the Program backing this check can't resolve one of
+// these anywhere in its transitive import graph, the checker's answer for
+// any field whose type depends -- directly or transitively -- on that
+// import (most concretely: `typeof importedThing`, where `importedThing`
+// is re-exported through a chain that includes the broken file) is not
+// "this field is not callable" -- it is "I don't know", and treating "I
+// don't know" as "clean" is exactly the #270-shaped failure mode this
+// check exists to prevent: a broken analysis silently reporting the same
+// all-clear as a working one.
+//
+//   2306 File '{0}' is not a module.
+//   2307 Cannot find module '{0}' or its corresponding type declarations.
+//   2688 Cannot find type definition file for '{0}'.
+//   2732 Cannot find module '{0}'. Consider using '--resolveJsonModule'...
+//   2792 Cannot find module '{0}'. Did you mean to set 'moduleResolution'...
+//   5012 Cannot read file '{0}': {1}.
+//   5083 Cannot read file '{0}'.
+const MODULE_RESOLUTION_DIAGNOSTIC_CODES = new Set([
+  2306, 2307, 2688, 2732, 2792, 5012, 5083,
+]);
 
 /**
- * Returns the subset of `program`'s semantic diagnostics for `sourceFile`
- * that indicate module resolution failed outright (as opposed to an
- * ordinary type error within an otherwise-resolved module). Scoped to one
- * file so a broken import in a file this check isn't even scanning doesn't
- * spuriously fail an unrelated scan.
+ * Returns every diagnostic in `program` (across its *entire* transitive
+ * source-file graph, not just the file(s) this check is directly scanning)
+ * that indicates a module failed to resolve or read. Deliberately whole-
+ * program rather than per-file: a `typeof` seam can resolve through an
+ * import chain (main file -> helper file -> the helper's own broken
+ * import), and the broken-resolution diagnostic is only ever attached to
+ * the file that contains the bad specifier, which may not be the file this
+ * check is nominally scanning (Vasquez, round 5) -- a single `ts.Program`
+ * already contains that whole graph, so there is no need to special-case
+ * "how many hops away" the break is; asking the Program once for every
+ * file it knows about is both simpler and correct.
  */
-function getModuleResolutionDiagnostics(program, sourceFile) {
-  return program
-    .getSemanticDiagnostics(sourceFile)
+function getModuleResolutionDiagnostics(program) {
+  return ts
+    .getPreEmitDiagnostics(program)
     .filter((diagnostic) =>
       MODULE_RESOLUTION_DIAGNOSTIC_CODES.has(diagnostic.code),
     );
@@ -431,17 +449,19 @@ function getModuleResolutionDiagnostics(program, sourceFile) {
 
 function formatModuleResolutionFailure(displayPath, diagnostics) {
   const details = diagnostics
-    .map(
-      (diagnostic) =>
-        `  ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`,
-    )
+    .map((diagnostic) => {
+      const location = diagnostic.file ? `${diagnostic.file.fileName}: ` : '';
+      return `  ${location}${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`;
+    })
     .join('\n');
   return (
-    `check-inert-class-field-seams: ${displayPath} has an unresolved ` +
-    `import (module resolution failed), so this check cannot reliably ` +
-    `determine whether any of its fields are callable -- a broken import ` +
-    `must not be reported as "no inert-seam candidates found" (see #270 in ` +
-    `the module doc). Fix the import, then re-run this check.\n${details}`
+    `check-inert-class-field-seams: while scanning ${displayPath}, the ` +
+    `Program has an unresolved import somewhere in its dependency graph ` +
+    `(module resolution failed), so this check cannot reliably determine ` +
+    `whether any scanned field is callable -- a broken import, direct or ` +
+    `transitive, must not be reported as "no inert-seam candidates found" ` +
+    `(see #270 in the module doc). Fix the import(s) below, then re-run ` +
+    `this check.\n${details}`
   );
 }
 
@@ -461,11 +481,14 @@ function formatModuleResolutionFailure(displayPath, diagnostics) {
  * instead of returning an empty result, so absence here is a genuine finding
  * of zero, not a silent skip (the #182/#270 shape this repo keeps naming: an
  * unreadable input must not report the same result as a readable one that
- * found nothing). For the same reason, an unresolved import in `filePath`
- * (module resolution failure, e.g. a broken relative specifier) also
+ * found nothing). For the same reason, an unresolved import anywhere in
+ * this Program's transitive dependency graph -- not just directly in
+ * `filePath` itself, since a `typeof` seam can resolve through an import
+ * chain whose break is one or more hops away (Vasquez, round 5) -- also
  * throws rather than returning `[]`: the checker's callable-type answer is
- * unreliable for a file whose imports didn't resolve, so this check must
- * fail loudly instead of silently reporting a clean scan (Bishop, round 4).
+ * unreliable once any part of that graph fails to resolve, so this check
+ * must fail loudly instead of silently reporting a clean scan (Bishop,
+ * round 4; broadened to the whole graph in round 5).
  */
 export function findInertSeamCandidates(
   filePath,
@@ -488,10 +511,7 @@ export function findInertSeamCandidates(
   const checker = program.getTypeChecker();
   const sourceFile = program.getSourceFile(mainVirtualPath);
 
-  const moduleResolutionDiagnostics = getModuleResolutionDiagnostics(
-    program,
-    sourceFile,
-  );
+  const moduleResolutionDiagnostics = getModuleResolutionDiagnostics(program);
   if (moduleResolutionDiagnostics.length > 0) {
     throw new Error(
       formatModuleResolutionFailure(filePath, moduleResolutionDiagnostics),
@@ -543,6 +563,18 @@ export function scanRepository(repoRoot) {
   });
   const checker = program.getTypeChecker();
 
+  // Computed once for the whole Program, not per file: a broken import can
+  // live anywhere in the transitive graph a scanned file's `typeof` seam
+  // resolves through, and the diagnostic is only ever attached to the file
+  // that actually contains the bad specifier -- which need not be the file
+  // this loop happens to be looking at (Vasquez, round 5).
+  const moduleResolutionDiagnostics = getModuleResolutionDiagnostics(program);
+  if (moduleResolutionDiagnostics.length > 0) {
+    throw new Error(
+      formatModuleResolutionFailure(repoRoot, moduleResolutionDiagnostics),
+    );
+  }
+
   const violations = [];
   for (const relativePath of files) {
     const absolutePath = path.join(repoRoot, relativePath);
@@ -555,18 +587,6 @@ export function scanRepository(repoRoot) {
       throw new Error(
         `check-inert-class-field-seams: expected a SourceFile for ` +
           `${relativePath}, but the Program did not produce one.`,
-      );
-    }
-    const moduleResolutionDiagnostics = getModuleResolutionDiagnostics(
-      program,
-      sourceFile,
-    );
-    if (moduleResolutionDiagnostics.length > 0) {
-      throw new Error(
-        formatModuleResolutionFailure(
-          relativePath,
-          moduleResolutionDiagnostics,
-        ),
       );
     }
     violations.push(

@@ -259,6 +259,45 @@ describe('findInertSeamCandidates', () => {
       ),
     ).toThrowError(/unresolved import|Cannot find module/);
   });
+
+  it('FAILS LOUDLY (throws) when the unresolved import is TRANSITIVE -- broken in an imported helper, not in the scanned file itself (Vasquez, round 5)', () => {
+    // Vasquez's review finding (round 5): the round-4 fix only inspected
+    // diagnostics on the directly-scanned file, so it missed a broken
+    // import one hop further away. Here, `mainSource` imports `importedSeam`
+    // from `helperSource`, and `helperSource` -- not `mainSource` -- has the
+    // unresolvable import. `mainSource`'s own import of the helper resolves
+    // fine, so a per-file diagnostics check sees nothing wrong with the file
+    // it's looking at; only a whole-Program diagnostics check catches the
+    // break that's actually one file over.
+    const mainSource = [
+      "import { importedSeam } from './helperWithBrokenImport.fixture';",
+      '',
+      'export class TransitiveBrokenImportAdapter {',
+      '  readonly resolveConflict?: typeof importedSeam;',
+      '',
+      '  hasCapability(): boolean {',
+      "    return typeof this.resolveConflict === 'function';",
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    const helperSource = [
+      "import { doesNotExist } from './does-not-exist-anywhere';",
+      '',
+      'export function importedSeam(): void {',
+      '  doesNotExist();',
+      '}',
+      '',
+    ].join('\n');
+
+    expect(() =>
+      findInertSeamCandidates(
+        'transitiveBrokenImportSeam.fixture.ts',
+        mainSource,
+        { 'helperWithBrokenImport.fixture.ts': helperSource },
+      ),
+    ).toThrowError(/unresolved import|Cannot find module/);
+  });
 });
 
 describe('formatViolation', () => {
