@@ -55,11 +55,6 @@ Closes #
 
 ## What changed
 
-
-
 ## Why
 
-
-
 ## Testing
-
