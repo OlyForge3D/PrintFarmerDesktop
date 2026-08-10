@@ -381,6 +381,17 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: node scripts/verify-packaged-sidecar.mjs
 
+      # The only integration-level check of the real sidecar contract: spawns
+      # the staged binary from the "Package app" step above and drives it over
+      # the real newline-delimited JSON-RPC transport (handshake -> loadScene
+      # -> scanRoot -> listModels -> tags -> collections). Runs here rather
+      # than in `desktop` because this job is the one that already builds and
+      # stages a real release sidecar binary; `desktop` never installs a Rust
+      # toolchain at all. See issue #300.
+      - name: MVP smoke test (real sidecar over real transport)
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        run: node scripts/mvp-smoke.mjs
+
       - name: Verify committed lockfiles are unchanged
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: git diff --exit-code -- native/Cargo.lock package-lock.json
