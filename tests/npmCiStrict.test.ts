@@ -237,7 +237,14 @@ describe('npm-ci-strict main orchestration', () => {
     );
   });
 
-  it('stages and marks evidence before hard-failing unrecovered cleanup', async () => {
+  it('measures the production tree before staging evidence and hard-failing unrecovered cleanup', async () => {
+    // #355: the unrecovered path used to call `fail()` (process.exit) without
+    // ever consulting `readProductionTree`/`findTreeProblems` — the one direct
+    // measurement available for the tree the gate is making a claim about.
+    // This asserts the structural walk is reached, and reached in an order
+    // that lets its result reach both the evidence and the failure message —
+    // it goes red if `readProductionTree` were removed from this path or
+    // moved back behind `fail`.
     const recovery = {
       attempted: true,
       recovered: false,
@@ -247,6 +254,7 @@ describe('npm-ci-strict main orchestration', () => {
     const harness = createOrchestrationHarness({
       install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
       recovery,
+      tree: CLEAN_PRODUCTION_TREE,
     });
 
     await main(harness.dependencies);
@@ -254,10 +262,16 @@ describe('npm-ci-strict main orchestration', () => {
     expect(harness.calls).toEqual([
       'npm-ci',
       'cleanup-retry',
+      'production-tree',
       'write-evidence',
       'mark-evidence',
       'fail',
     ]);
+    const productionTreeIndex = harness.calls.indexOf('production-tree');
+    const failIndex = harness.calls.indexOf('fail');
+    expect(productionTreeIndex).toBeGreaterThanOrEqual(0);
+    expect(productionTreeIndex).toBeLessThan(failIndex);
+
     expect(harness.writeCleanupEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanupDirectories: recovery.directories,
@@ -267,6 +281,8 @@ describe('npm-ci-strict main orchestration', () => {
           recovered: recovery.recovered,
           reason: recovery.reason,
         },
+        productionTreeProblems: [],
+        productionTreeError: null,
       }),
     );
     expect(harness.markCleanupEvidenceOutput).toHaveBeenCalledOnce();
@@ -278,6 +294,7 @@ describe('npm-ci-strict main orchestration', () => {
       'and every later step in this job would run against it.',
       'Directories npm named: parse-color, color-convert',
       'Automatic recovery: retry failed: EPERM still locked.',
+      '`npm ls --omit=dev --all --json` reports no problems; the residue is outside the production tree.',
       'Durable evidence staged at C:\\temp\\npm-cleanup-evidence.json.',
       '',
       'Do not rerun this job directly. Follow docs/npm-cleanup-recovery.md;',
@@ -286,7 +303,88 @@ describe('npm-ci-strict main orchestration', () => {
       'mixed or policy failures.',
       '',
     ]);
-    expect(harness.readProductionTree).not.toHaveBeenCalled();
+  });
+
+  it('reports production-tree problems in the unrecovered-cleanup failure message when they also confirm harm', async () => {
+    const problem = 'extraneous: ghost@9.9.9 D:\\repo\\node_modules\\ghost';
+    const recovery = {
+      attempted: true,
+      recovered: false,
+      directories: ['parse-color'],
+      reason: 'retry failed: EPERM still locked',
+    };
+    const harness = createOrchestrationHarness({
+      install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+      recovery,
+      tree: { ...CLEAN_PRODUCTION_TREE, problems: [problem] },
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual([
+      'npm-ci',
+      'cleanup-retry',
+      'production-tree',
+      'write-evidence',
+      'mark-evidence',
+      'fail',
+    ]);
+    expect(harness.writeCleanupEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ productionTreeProblems: [problem] }),
+    );
+    const lines: string[] = harness.fail.mock.calls[0]?.[0] ?? [];
+    expect(
+      lines.some((line) =>
+        line.includes(
+          `\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems: ${problem}`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('reports a production-tree read failure rather than swallowing it, and still fails closed', async () => {
+    const recovery = {
+      attempted: true,
+      recovered: false,
+      directories: ['parse-color'],
+      reason: 'retry failed: EPERM still locked',
+    };
+    const readError = new Error(
+      'npm-ci-strict: `npm ls --omit=dev --all --json` output was not valid JSON: Unexpected token',
+    );
+    const harness = createOrchestrationHarness({
+      install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+      recovery,
+    });
+    harness.readProductionTree.mockImplementationOnce(() => {
+      harness.calls.push('production-tree');
+      throw readError;
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual([
+      'npm-ci',
+      'cleanup-retry',
+      'production-tree',
+      'write-evidence',
+      'mark-evidence',
+      'fail',
+    ]);
+    expect(harness.writeCleanupEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        productionTreeProblems: [],
+        productionTreeError: readError.message,
+      }),
+    );
+    const lines: string[] = harness.fail.mock.calls[0]?.[0] ?? [];
+    expect(
+      lines.some((line) =>
+        line.includes(
+          `\`${NPM_PRODUCTION_TREE_COMMAND}\` could not be read: ${readError.message}`,
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('hard-fails when npm reports production-tree problems after a clean install', async () => {

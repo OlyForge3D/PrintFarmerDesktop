@@ -293,6 +293,12 @@ describe('the shipped supply-chain policy is the validated source of truth', () 
       purl: 'pkg:generic/sqlite3',
       'bom-ref': 'pkg:generic/sqlite3?vendored-by=libsqlite3-sys@0.30.1',
     });
+    // Both operands below pass through optional chaining, so
+    // `undefined === undefined` would go green if the shipped policy lost
+    // its sqlite3 exception entirely. The `toMatchObject` above already
+    // pins `sqlite?.purl` to a real string; this pins the other side so the
+    // comparison cannot be satisfied by two absences.
+    expect(sqliteException).toBeDefined();
     expect(sqliteException?.purl).toBe(sqlite?.purl);
     expect(
       evaluateLicensePolicy(sbom, shippedPolicy.licenses).violations,
