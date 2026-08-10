@@ -435,10 +435,21 @@ describe('SidecarCalibrationAdapter', () => {
         operationId: OP_ID,
         serverRevision: 3,
         createdAt: NOW,
+        // What the store (Rust) actually permits for stepDraft, per
+        // `CalibrationConflictKind::available_resolutions` -- carried on the
+        // wire, not recomputed here (issue #304).
+        availableResolutions: [
+          'acceptServer',
+          'keepLocalAsNewRevision',
+          'manualFieldMerge',
+        ],
       },
     ];
     const sidecarClient = {
       listCalibrationConflicts: vi.fn().mockResolvedValue(raw),
+      // Presence (of any shape) is what the adapter gates advertising on --
+      // see `supportsConflictResolution`/`conflictResolutionsFor`.
+      resolveCalibrationConflict: vi.fn(),
     } as any;
     const adapter = new SidecarCalibrationAdapter(sidecarClient);
     const conflicts = await adapter.listCalibrationConflicts(
@@ -453,10 +464,12 @@ describe('SidecarCalibrationAdapter', () => {
     // the adapter, so it held whatever the conflict was and whether or not any
     // resolution could run.
     //
-    // The set is now non-empty because the adapter can resolve (issue #216),
-    // and it is exactly the set the ratified per-kind policy permits for
-    // stepDraft. Asserting the exact set rather than "non-empty" is what keeps
-    // this from passing against an adapter that offers everything to everyone.
+    // The set is now exactly what the wire payload carried, because the
+    // adapter no longer holds an opinion about per-kind policy at all -- it
+    // only gates on transport capability. Asserting the exact set (rather
+    // than "non-empty") is what keeps this from passing against an adapter
+    // that offers everything to everyone, or drops the wire value on the
+    // floor and returns something else entirely.
     expect(conflicts[0]!.availableResolutions).toEqual([
       'acceptServer',
       'keepLocalAsNewRevision',

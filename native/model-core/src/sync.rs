@@ -1211,16 +1211,22 @@ impl CalibrationConflictKind {
     /// revisions) and exact measurements cannot be silently merged; no
     /// last-write-wins path exists.
     ///
-    /// **This table is transcribed a second time in TypeScript**, by
-    /// `conflictResolutionsFor` in `src/main/calibrationService.ts`, which
-    /// tells the renderer which resolutions to offer. This side enforces; that
-    /// side advertises. They agreed for a while only because two authors were
-    /// careful (issue #304), so `tests/calibrationResolutionPolicyParity.test.ts`
-    /// now parses this function and compares it against the TypeScript answer
-    /// per kind. **Editing an arm here without editing that branch fails that
-    /// test**, which is the intended way to find out. The test asserts no
-    /// policy of its own: change both sides and it goes green without being
-    /// touched.
+    /// **This used to be transcribed a second time in TypeScript** (issue
+    /// #304), by a hard-coded table in `conflictResolutionsFor` in
+    /// `src/main/calibrationService.ts`. That table advertised what this
+    /// function enforces, and the two agreed for a while only because two
+    /// authors were careful.
+    ///
+    /// This is now the *only* copy. `CalibrationConflictDto` and
+    /// `CalibrationConflictResolutionDto` (`calibration.rs`) both carry an
+    /// `available_resolutions` field populated by calling this function --
+    /// nothing else -- at the two sites that build them
+    /// (`calibration_conflict_from_row` and `resolve_calibration_conflict`,
+    /// this file's `sqlite_catalog.rs`). The desktop adapter reads that field
+    /// instead of transcribing a policy of its own, so there is no second
+    /// table left to fall out of sync with this one. `available_resolutions`
+    /// having callers at all was itself issue #219's fix; before that, a
+    /// policy with no reader could not reject anything.
     pub fn available_resolutions(self) -> &'static [CalibrationConflictResolutionKind] {
         match self {
             Self::ProjectMetadata | Self::StepDraft => &[

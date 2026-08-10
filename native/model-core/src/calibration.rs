@@ -269,6 +269,20 @@ pub struct CalibrationConflictDto {
     /// `None` means unclassified, not "guess from `entity_type`" -- a caller
     /// that guesses reintroduces the defect this field exists to end.
     pub conflict_kind: Option<CalibrationConflictKind>,
+    /// The resolutions permitted for `conflict_kind`, per
+    /// `CalibrationConflictKind::available_resolutions` -- the same function
+    /// `resolve_calibration_conflict` enforces against (issue #304).
+    ///
+    /// Carried on the wire rather than re-derived on the TypeScript side: the
+    /// desktop adapter used to hold its own copy of this table
+    /// (`conflictResolutionsFor` in `calibrationService.ts`), which agreed
+    /// with this one only because both authors were careful. Populating this
+    /// field from `available_resolutions()` and nothing else makes the store
+    /// the only place the policy is written down; the adapter now reads this
+    /// field instead of transcribing it. Empty when `conflict_kind` is `None`
+    /// -- an unclassified conflict has no ratified policy to report, and the
+    /// store already refuses to resolve it.
+    pub available_resolutions: Vec<CalibrationConflictResolutionKind>,
 }
 
 /// Parameters for `settleCalibrationOperation`.
@@ -384,6 +398,11 @@ pub struct CalibrationConflictResolutionDto {
     pub superseded_observations: Vec<SupersededObservationDto>,
     /// True when this call replayed an already-recorded resolution.
     pub replayed: bool,
+    /// The resolutions permitted for `kind`, per
+    /// `CalibrationConflictKind::available_resolutions` -- see the field of
+    /// the same name on [`CalibrationConflictDto`] for why this is carried
+    /// rather than re-derived on the TypeScript side (issue #304).
+    pub available_resolutions: Vec<CalibrationConflictResolutionKind>,
 }
 
 /// Parameters for `getCalibrationCursorState`.
