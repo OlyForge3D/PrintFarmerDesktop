@@ -757,6 +757,14 @@ describe('workflow enforcement', () => {
         /name: Upload npm cleanup failure evidence/g,
       );
       expect(installs?.length).toBeGreaterThan(0);
+      // Both operands below pass through optional chaining, so
+      // `undefined === undefined` would go green if the upload-step regex
+      // stopped matching entirely (`.match()` returns `null`, not
+      // `undefined`, on a miss, so `toBeDefined()` alone would not catch
+      // it). The line above already pins `installs?.length` to a positive
+      // number; this pins `uploads` itself so the count comparison cannot
+      // be satisfied by two absent matches.
+      expect(uploads).not.toBeNull();
       expect(uploads?.length).toBe(installs?.length);
       expect(contents).toContain(
         "steps.npm_ci.outputs.cleanup_evidence == 'true'",
