@@ -13,6 +13,11 @@ import {
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import {
+  collectCitations,
+  isForgeCitation,
+  isGitObjectToken,
+} from '../scripts/citation-corpus.mjs';
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1251,6 +1256,280 @@ describe('a declared twin is checked for being a twin', () => {
     expect(out).not.toContain('NOT EXERCISED');
     expect(out).not.toContain('verdict withheld');
     expect(status).toBe(0);
+  });
+});
+
+/**
+ * #538. A decimal comment id is valid hex, so a GitHub forge reference (an issue, PR, or review
+ * comment id) of the same 7-40 character width is indistinguishable from a Git object
+ * abbreviation - and the extractor resolved that ambiguity silently in one direction, at three
+ * separate call sites: the declaration-block reader, the twin reader, and the citation scan.
+ *
+ * The repair is a typed citation form for non-Git references (`comment:<id>` or
+ * `issues/comments/<id>`, documented in `.squad/fact-checker/policy.md`), applied identically at
+ * all three sites via the shared predicates in citation-corpus.mjs - never a second inline
+ * `[0-9a-f]{7,40}` literal re-typed per call site, which is exactly the shape of partial fix the
+ * issue warns leaves the escape hatch (the declaration and twin readers) broken while repairing
+ * only the scan.
+ *
+ * The obvious cheaper repair - excluding all-digit tokens outright - is explicitly rejected: this
+ * repository's own reader-reachable revisions (HEAD + origin/development) include real,
+ * unambiguous all-digit abbreviations, so bare hex/decimal tokens must keep meaning "Git object".
+ */
+describe('typed forge citations are distinguished from Git objects (#538)', () => {
+  const made: string[] = [];
+
+  const run = (dir: string, args: string[] = []) =>
+    execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+
+  const commit = (dir: string, message: string, allowEmpty = false) => {
+    if (!allowEmpty)
+      execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync(
+      'git',
+      [
+        '-C',
+        dir,
+        'commit',
+        ...(allowEmpty ? ['--allow-empty'] : []),
+        '-qm',
+        message,
+      ],
+      { stdio: 'ignore' },
+    );
+    return run(dir, ['rev-parse', 'HEAD']);
+  };
+
+  const stage = (dir: string) => {
+    execFileSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' });
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+    mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
+    for (const script of HARNESS_MODULES) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
+    writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
+  };
+
+  const ledger = (dir: string, lines: string[]) =>
+    writeFileSync(
+      path.join(dir, '.squad', 'fact-checker', 'audit-trail.md'),
+      ['# Audit trail', '', ...lines, ''].join('\n'),
+    );
+
+  const newRepo = (prefix: string) => {
+    const dir = mkdtempSync(path.join(tmpdir(), prefix));
+    made.push(dir);
+    stage(dir);
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    commit(dir, 'seed');
+    return dir;
+  };
+
+  // These fixtures build a hand-written ledger, well below the corpus floor this repository is
+  // calibrated against. `--floor=0` says so explicitly - see the note on the sibling describe
+  // block above for why no armed invocation is permitted to pass this flag.
+  const runHarness = (dir: string) => {
+    const r = spawnSync(
+      'node',
+      ['scripts/check-citation-reachability.mjs', '--floor=0'],
+      { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28 },
+    );
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    assertHarnessStarted(out);
+    return { status: r.status, out };
+  };
+
+  afterAll(() => {
+    for (const d of made) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('classifies bare hex vs. typed forge tokens at the predicate level', () => {
+    // The two predicates are mutually exclusive by construction: a forge citation requires a
+    // non-numeric label (a `kind:` prefix or a path segment) that a bare hex/decimal run can
+    // never supply.
+    expect(isGitObjectToken('5196272727')).toBe(true);
+    expect(isForgeCitation('5196272727')).toBe(false);
+
+    expect(isForgeCitation('comment:5196272727')).toBe(true);
+    expect(isGitObjectToken('comment:5196272727')).toBe(false);
+
+    expect(isForgeCitation('issues/comments/5196272727')).toBe(true);
+    expect(isGitObjectToken('issues/comments/5196272727')).toBe(false);
+
+    // All-digit stays a Git object token at every width the repository's own reader-reachable
+    // history was measured to contain one at (#538 §4: widths 7 and 10).
+    expect(isGitObjectToken('7791258')).toBe(true);
+    expect(isGitObjectToken('2636997074')).toBe(true);
+
+    // Neither predicate accepts prose that merely contains digits or hex-looking words.
+    expect(isForgeCitation('npm install')).toBe(false);
+    expect(isGitObjectToken('npm install')).toBe(false);
+  });
+
+  it('TEST 1: a typed forge citation is not classified as a Git object by the scan', () => {
+    const dir = newRepo('forge-typed-');
+    ledger(dir, [
+      'The correction was recorded at `comment:5196272727` on issue #388.',
+      'See also `issues/comments/5196272727` for the same object.',
+    ]);
+
+    // Direct predicate-level assertion on the exact extraction the scan performs.
+    const cited = collectCitations(
+      new Map([
+        [
+          'audit-trail.md',
+          readFileSync(
+            path.join(dir, '.squad', 'fact-checker', 'audit-trail.md'),
+            'utf8',
+          ),
+        ],
+      ]),
+    );
+    expect(cited.has('comment:5196272727')).toBe(false);
+    expect(cited.has('5196272727')).toBe(false);
+    expect(cited.has('issues/comments/5196272727')).toBe(false);
+    expect(cited.size).toBe(0);
+
+    const { status, out } = runHarness(dir);
+    expect(out).toContain('cited SHAs: 0');
+    expect(out).not.toContain('5196272727');
+    expect(out).not.toContain('ORPHANED CITATIONS');
+    expect(status).toBe(0);
+  });
+
+  it('TEST 2: a real, reader-reachable all-digit Git abbreviation classifies REACHABLE', () => {
+    const dir = newRepo('alldigit-reachable-');
+
+    // Manufactured rather than hard-coded against this repository's own drifting history (#538
+    // §6: the counts and specific SHAs are not stable across commits). Empty commits are cheap
+    // and each one's hash is effectively independent, so a short loop reliably produces a real,
+    // currently-reachable commit whose abbreviation happens to be all-digit - the exact
+    // collision class in dispute, guarding the false negative a digit-exclusion fix would cause.
+    let shortSha = '';
+    for (let i = 0; i < 3000 && !shortSha; i += 1) {
+      commit(dir, `attempt ${i}`, true);
+      const candidate = run(dir, ['rev-parse', '--short=7', 'HEAD']);
+      if (/^[0-9]{7}$/.test(candidate)) shortSha = candidate;
+    }
+    // Premise: without a real all-digit abbreviation this test proves nothing.
+    expect(shortSha).toMatch(/^[0-9]{7}$/);
+    expect(
+      spawnSync('git', [
+        '-C',
+        dir,
+        'merge-base',
+        '--is-ancestor',
+        shortSha,
+        'HEAD',
+      ]).status,
+    ).toBe(0);
+
+    ledger(dir, [`The finding was recorded at \`${shortSha}\`.`]);
+    const { status, out } = runHarness(dir);
+
+    expect(out).not.toContain('ORPHANED CITATIONS');
+    expect(out).toMatch(/REACHABLE 1\s+TWIN 0\s+DECLARED 0\s+ORPHAN 0/);
+    expect(status).toBe(0);
+  });
+
+  it('TEST 3: a bare all-digit token resolving to nothing still classifies ORPHAN', () => {
+    const dir = newRepo('alldigit-orphan-');
+    const absent = '9999999999';
+    // Premise: the token must not resolve, or the arm proves nothing about the ORPHAN path.
+    expect(
+      spawnSync(
+        'git',
+        ['-C', dir, 'rev-parse', '--verify', `${absent}^{commit}`],
+        {
+          stdio: 'ignore',
+        },
+      ).status,
+    ).not.toBe(0);
+
+    ledger(dir, [`An undeclared, unreachable finding cited \`${absent}\`.`]);
+    const { status, out } = runHarness(dir);
+
+    expect(out).toContain(`${absent}`);
+    expect(out).toContain('ORPHAN');
+    expect(out).toContain('ORPHANED CITATIONS');
+    expect(status).toBe(1);
+    // The amended failure message names its assumption instead of asserting the object is
+    // "genuinely gone" without ever having tested that it was a commit at all.
+    expect(out).toContain(
+      'This check assumes the token names a Git commit; it has not established that it is one.',
+    );
+    expect(out).toContain('comment:<id>');
+  });
+
+  it('TEST 4: the declaration reader and twin reader skip typed forge tokens exactly as the scan does', () => {
+    const dir = newRepo('typed-consistency-');
+
+    // The mechanism is shared, not re-typed per call site: both readers in the harness import
+    // and use the same predicate the scan uses, rather than an independent `[0-9a-f]{7,40}`
+    // literal that could silently diverge from it. A partial fix - repairing only the scan -
+    // would leave these two literals unchanged and this assertion would fail.
+    const harnessSource = readFileSync(
+      path.join(repositoryRoot, HARNESS),
+      'utf8',
+    );
+    // Whitespace-tolerant: prettier reflows import lists, and a formatter is a mutation
+    // operator this file does not control (same reasoning as the floor-arg assertion above).
+    expect(harnessSource).toMatch(
+      /import\s*\{[^}]*\bisGitObjectToken\b[^}]*\}\s*from\s*'\.\/citation-corpus\.mjs'/,
+    );
+    const readerUses = [...harnessSource.matchAll(/isGitObjectToken\(/g)]
+      .length;
+    // One call in readBlock's filter, one in the twin-candidate search - the two "escape hatch"
+    // sites #538 names, both keyed off the same predicate the scan (in citation-corpus.mjs)
+    // already uses.
+    expect(readerUses).toBeGreaterThanOrEqual(2);
+
+    // Behavioural half: a typed forge citation named in a twin's free-text note, ahead of the
+    // real Git twin, must not be mistaken for the twin merely because it appears first in the
+    // note - the twin reader has to apply the same classification the scan does to tell them
+    // apart.
+    const notes = path.join(dir, 'notes.md');
+    writeFileSync(notes, 'opening line\n');
+    commit(dir, 'seed content');
+    writeFileSync(notes, 'opening line\nthe finding\n');
+    const cited = commit(dir, 'the finding');
+    execFileSync('git', ['-C', dir, 'reset', '-q', '--hard', 'HEAD~1'], {
+      stdio: 'ignore',
+    });
+    writeFileSync(notes, 'opening line\npadding that moves the context\n');
+    commit(dir, 'padding');
+    writeFileSync(
+      notes,
+      'opening line\npadding that moves the context\nthe finding\n',
+    );
+    const genuineTwin = commit(dir, 'the finding, rebased');
+
+    ledger(dir, [
+      `The finding was recorded at \`${cited}\`.`,
+      '',
+      '## Superseded citations and their live twins',
+      '',
+      `- \`${cited}\` - discussed at \`comment:5196272727\`, rebased at \`${genuineTwin}\`.`,
+    ]);
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).toBe(0);
+    expect(out).not.toContain('ORPHANED CITATIONS');
+    // The twin found is the real Git commit, not the forge id that happened to appear first.
+    expect(out).toContain(genuineTwin.slice(0, 8));
+    expect(out).not.toContain('5196272727');
   });
 });
 
