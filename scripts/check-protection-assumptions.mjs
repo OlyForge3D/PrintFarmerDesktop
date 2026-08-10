@@ -569,6 +569,7 @@ export function adminExemptibleSettingEnforcement(protection) {
  * `development`. `enforcement: 'disabled'` and `evaluate` (dry-run) grant nothing.
  */
 const KNOWN_RULESET_ENFORCEMENTS = new Set(['active', 'evaluate', 'disabled']);
+const KNOWN_RULESET_TARGETS = new Set(['branch', 'tag', 'push']);
 
 export function rulesetCoversFeatureBranches(ruleset) {
   if (!ruleset) return false;
@@ -588,7 +589,22 @@ export function rulesetCoversFeatureBranches(ruleset) {
     );
   }
   if (ruleset.enforcement !== 'active') return false;
-  if (ruleset.target && ruleset.target !== 'branch') return false;
+  // An active ruleset without a recognized `target` value is malformed/
+  // truncated data, not a confirmed non-branch ruleset. Hicks reproduced
+  // this in review of #490 (head 7a822636): `ruleset.target &&
+  // ruleset.target !== 'branch'` silently treated a missing/falsy `target`
+  // the same as confirmed `target: 'branch'` semantics -- which happens to
+  // be safe only by coincidence, since the same code would also silently
+  // accept e.g. `target: 0` or `target: ''` and fall through as if it were
+  // branch-targeted. GitHub's ruleset target values are `'branch'`,
+  // `'tag'`, and `'push'`; anything else (absent, null, unrecognized)
+  // throws instead of guessing which semantics apply.
+  if (!KNOWN_RULESET_TARGETS.has(ruleset.target)) {
+    throw new Error(
+      `Active ruleset ${JSON.stringify(ruleset.name ?? ruleset.id ?? '(unnamed)')} has an unrecognized target value (got ${JSON.stringify(ruleset.target)}); refusing to guess whether it targets branches.`,
+    );
+  }
+  if (ruleset.target !== 'branch') return false;
   // An active, branch-targeted ruleset without a resolvable
   // conditions.ref_name.include array is not a ruleset that "covers no
   // feature branches" -- it is malformed or truncated data. `?? []`

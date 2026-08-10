@@ -642,6 +642,42 @@ describe('a ruleset matters only when it is enabled and reaches a feature branch
       }),
     ).toThrow(/enforcement/i);
   });
+
+  // Hicks' finding on review of #490/#676 (head 7a822636): an active
+  // ruleset with a missing `target` field was silently treated as
+  // confirmed `target: 'branch'` via `ruleset.target && ruleset.target
+  // !== 'branch'` -- a falsy `target` short-circuited straight past the
+  // `!== 'branch'` check, so malformed/truncated data could still produce
+  // a falsely-clean "does not cover feature branches" (or falsely
+  // "covers") result instead of failing loud.
+  it('throws rather than silently treating an active ruleset with a missing target as branch-targeted (Hicks repro)', () => {
+    expect(() =>
+      rulesetCoversFeatureBranches({
+        enforcement: 'active',
+        conditions: { ref_name: { include: ['refs/heads/development'] } },
+      }),
+    ).toThrow(/target/i);
+  });
+
+  it('throws on an unrecognized target value rather than guessing branch semantics', () => {
+    expect(() =>
+      rulesetCoversFeatureBranches({
+        enforcement: 'active',
+        target: 'not-a-real-target',
+        conditions: { ref_name: { include: ['~ALL'] } },
+      }),
+    ).toThrow(/target/i);
+  });
+
+  it('still ignores an active, well-formed ruleset that legitimately targets tags rather than branches', () => {
+    expect(
+      rulesetCoversFeatureBranches({
+        enforcement: 'active',
+        target: 'tag',
+        conditions: { ref_name: { include: ['~ALL'] } },
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('the report names the decision, not just the drift', () => {
