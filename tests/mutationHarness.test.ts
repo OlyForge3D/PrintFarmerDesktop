@@ -266,24 +266,23 @@ describe('proving the file came back', () => {
   });
 
   // Regression for #557: a hash match already entails byte-identity with the
-  // pinned blob, which already entails zero residue. A residue count is no
-  // longer part of this function's inputs, but this test pins the behaviour
-  // that matters -- a restore whose replacement string (here `;`) occurs
-  // naturally, many times, in the restored file must still be accepted as
-  // long as the hash matches the pinned blob. Measured against a real
-  // 14-arm battery (#556) where a replacement of `;` produced a false
+  // pinned blob, which already entails zero residue. `classifyRestore` no
+  // longer accepts a residue count at all -- this test pins the behaviour
+  // that matters: a restore whose replacement string (here `;`) occurs
+  // naturally, many times, in the file (computed below only to document that
+  // the old residue count would have been 164, not to pass it in) must still
+  // be accepted as long as the hash matches the pinned blob. Measured against
+  // a real 14-arm battery (#556) where a replacement of `;` produced a false
   // CONFOUNDED verdict on a file that restored perfectly.
   it('does not confound a restore whose replacement occurs naturally many times in the file', () => {
     const naturalFile = Array(164).fill('combined += chunk;').join('\n');
+    expect(countOccurrences(naturalFile, ';')).toBe(164);
     expect(
       classifyRestore({
         pinnedHash,
         actualHash: pinnedHash,
         porcelainBefore: '',
         porcelainAfter: '',
-        // A residue count computed the old way would be 164 -- included
-        // here only to prove classifyRestore no longer reads this field.
-        residueCount: countOccurrences(naturalFile, ';'),
       }).restored,
     ).toBe(true);
   });
