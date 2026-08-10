@@ -13,7 +13,7 @@ mutation) and its five thread comments each measure a different shape of the
 same asymmetry:
 
 1. A positive control upgrades an abstention from a self-report to a
-   measurement of conduct — it never upgrades a claim about the *rule*, which
+   measurement of conduct — it never upgrades a claim about the _rule_, which
    is what this issue is about.
 2. A compliance null needs a **denominator** (`0 / 6`, not bare `0`) and a
    **coverage boundary** (the ref range, the query frontier) or a vacuous
@@ -44,7 +44,7 @@ same asymmetry:
    work.** It was already filed and landed as **#299**, and lives today as
    `scripts/check-label-index-usage.mjs` (enforced by
    `tests/labelIndexUsage.test.ts`), which bans the label-search index as an
-   *authorizing* read in scripts/workflows for exactly the reason this
+   _authorizing_ read in scripts/workflows for exactly the reason this
    thread's fourth comment measured (5 phantom `hold:sequenced` rows
    surviving PR closure, byte-identical across independent re-runs). No
    further mechanical change is required to close that residue.
