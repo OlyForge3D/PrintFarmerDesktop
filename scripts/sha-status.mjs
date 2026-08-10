@@ -75,10 +75,13 @@
 //     told to trust it, so a caller must test the OUTPUT, never the status.
 //     Question 2 and question 3 both read a fetched ref by ancestry instead
 //     of trusting `ls-remote`'s own output; the `twin`/`local-only` split
-//     does the same — it fetches every branch the remote currently
-//     advertises into a private ref and asks `--contains`, rather than
-//     string-matching `ls-remote`'s printed lines against the SHA, because a
-//     published object need not be a ref's exact tip.
+//     does the same — it fetches every ref the remote currently advertises
+//     (branches AND tags, not branches alone — a first pass fetched only
+//     `refs/heads/*` and two reviewers independently reproduced a
+//     tag-only-published commit still reported `local-only`) into a private
+//     ref and asks `--contains`, rather than string-matching `ls-remote`'s
+//     printed lines against the SHA, because a published object need not be
+//     a ref's exact tip.
 //   * The exit codes in this family have no convention to intuit. Measured:
 //     `cat-file -e` misses with 1, the peeled form and `--is-ancestor` with
 //     128, and `for-each-ref --contains` with 129 — while `ls-remote`,
@@ -321,13 +324,18 @@ export function classify(facts) {
     // — `ls-remote` finds nothing and `gh api commits/<sha>` 422s, and both
     // are exactly the two claims that would tell a reader the object is
     // recoverable elsewhere. `remotePublished` is measured, not assumed:
-    // `true`/`false` only when `fetchRemoteHeads` actually ran.
+    // `true`/`false` only when `fetchRemoteRefs` actually ran. It checks
+    // every ref the remote advertises, not only branches — a first pass at
+    // this fix measured `refs/heads/*` only, and two reviewers independently
+    // reproduced a commit published solely via a tag still being reported
+    // `local-only`, which is exactly the false "nobody else has this" claim
+    // this fix exists to remove.
     const { remotePublished = null } = facts;
     if (remotePublished === true) {
       return {
         verdict: 'twin',
         summary:
-          'a real object on a chain the named PR does not contain. `cat-file` and an ancestry check against every branch this remote currently advertises both succeed on this — it is reachable from at least one other chain; only the PR-ref ancestry separates it from a genuine head.' +
+          'a real object on a chain the named PR does not contain. `cat-file` and an ancestry check against every ref this remote currently advertises both succeed on this — it is reachable from at least one other chain; only the PR-ref ancestry separates it from a genuine head.' +
           alsoShipped,
       };
     }
@@ -335,14 +343,14 @@ export function classify(facts) {
       return {
         verdict: 'local-only',
         summary:
-          'a real object, not on the named PR, and not reachable from any branch this remote currently advertises. Unlike a twin, nobody else can retrieve this — `ls-remote` and `gh api commits/<sha>` would both fail on it. Do not hand this off as though a copy exists on another chain.' +
+          'a real object, not on the named PR, and not reachable from any ref this remote currently advertises. Unlike a twin, nobody else can retrieve this — `ls-remote` and `gh api commits/<sha>` would both fail on it. Do not hand this off as though a copy exists on another chain.' +
           alsoShipped,
       };
     }
     return {
       verdict: 'twin',
       summary:
-        'not on the named PR\u2019s ref, and `cat-file` succeeds. Whether it is reachable from any other chain this remote advertises was NOT checked — fetching the remote\u2019s heads failed — so publication elsewhere is unconfirmed, not assumed.' +
+        'not on the named PR\u2019s ref, and `cat-file` succeeds. Whether it is reachable from any other chain this remote advertises was NOT checked — fetching the remote\u2019s refs failed — so publication elsewhere is unconfirmed, not assumed.' +
         alsoShipped,
     };
   }
@@ -374,17 +382,26 @@ export function fetchPrHead(pr, remote = 'origin') {
 }
 
 /**
- * Fetch every branch this remote currently advertises into a private
- * namespace, so the `twin` arm can ask a question it previously only
- * asserted the answer to: is the object reachable from ANY chain the remote
- * has, not merely from the one named PR ref.
+ * Fetch every ref this remote currently advertises — branches, tags,
+ * anything `git ls-remote` would list — into a private namespace, so the
+ * `twin` arm can ask a question it previously only asserted the answer to:
+ * is the object reachable from ANY chain the remote has, not merely from the
+ * one named PR ref.
  *
  * #443: the twin verdict's rationale claimed `cat-file`, `ls-remote` and
  * `gh api commits/<sha>` all succeed on a twin, without running any of the
  * three. For a local-only object — real, `cat-file`-visible, never
  * pushed — `ls-remote` finds nothing and `gh api` 422s, and the tool said the
- * opposite. This is the `ls-remote`-shaped half of actually measuring it:
- * fetched into `refs/tmp/sha-status/remote-heads/*` for the same reason
+ * opposite. First fix measured only `refs/heads/*`, which is narrower than
+ * "every remote ref" and than what `ls-remote`/`gh api` actually attest to:
+ * an object published solely under a tag (`refs/tags/<name>`, never on any
+ * branch) is real, retained, and advertised by the remote, yet was still
+ * being classified `local-only`. Fetching `refs/*` rather than
+ * `refs/heads/*` closes that gap — measured against a throwaway remote with
+ * a tag-only commit, the same shape as the counterexamples both reviewers
+ * reproduced on this PR.
+ *
+ * Fetched into `refs/tmp/sha-status/remote-refs/*` for the same reason
  * `fetchBase` and `fetchPrHead` use a private ref rather than
  * `refs/remotes/*` — determinism against a concurrent sibling fetch, not
  * merely freshness.
@@ -394,44 +411,49 @@ export function fetchPrHead(pr, remote = 'origin') {
  * applies to a missing ref, and for the same reason: a network hiccup must
  * not be reported as "nobody else has this".
  */
-export function fetchRemoteHeads(remote = 'origin') {
-  const local = 'refs/tmp/sha-status/remote-heads';
+export function fetchRemoteRefs(remote = 'origin') {
+  const local = 'refs/tmp/sha-status/remote-refs';
   const status = gitStatus([
     'fetch',
     '--quiet',
     '--prune',
     remote,
-    `+refs/heads/*:${local}/*`,
+    `+refs/*:${local}/*`,
   ]);
   return status === 0 ? local : null;
 }
 
 /**
- * Is `sha` an ancestor of (or equal to) any head this remote currently
- * advertises? `headsRef` is the private namespace `fetchRemoteHeads` fetched
- * into, so this only reasons about branches that exist on the remote right
- * now — a branch deleted since the last fetch is correctly invisible, the
- * same way `git ls-remote` would report it gone.
+ * Is `sha` an ancestor of (or equal to) any ref this remote currently
+ * advertises? `refsRef` is the private namespace `fetchRemoteRefs` fetched
+ * into, so this only reasons about refs that exist on the remote right
+ * now — a branch or tag deleted since the last fetch is correctly invisible,
+ * the same way `git ls-remote` would report it gone.
  *
  * `for-each-ref --contains` is the instrument already pinned in this file's
  * header as reporting absence by SUCCEEDING with empty output, so the answer
  * is read from the OUTPUT, never from the exit status alone — the same
  * mistake `ls-remote` invites on a deleted branch.
  *
- * Returns null when `headsRef` is null (the fetch failed) or the query
- * itself could not run, so an unmeasured answer is never folded into
- * `false`.
+ * The pattern passed is `refsRef` itself, with no `/*` suffix. `for-each-ref`
+ * matches a pattern with no wildcard as a path PREFIX, so this alone reaches
+ * every ref nested under it regardless of depth — `remote-refs/heads/<name>`
+ * *and* `remote-refs/tags/<name>`. Appending `/*` would NOT do that: git's
+ * glob here is pathname-aware, so a single `*` does not cross a `/`, and
+ * `<ns>/*` matches only refs exactly one segment below `<ns>` — measured
+ * directly: it matched `<ns>/heads/main` but silently matched NONE of
+ * `<ns>/tags/<name>`, which sits two segments down. That silent zero is
+ * exactly how the `refs/heads/*`-only version of this function first shipped
+ * without anyone noticing the pattern was narrower than the fetch spec feeding it.
+ *
+ * Returns null when `refsRef` is null (the fetch failed) or the query itself
+ * could not run, so an unmeasured answer is never folded into `false`.
  */
-export function reachableFromAnyRemoteHead(sha, headsRef) {
-  if (!headsRef) return null;
-  const status = gitStatus([
-    'for-each-ref',
-    '--contains',
-    sha,
-    `${headsRef}/*`,
-  ]);
+export function reachableFromAnyRemoteRef(sha, refsRef) {
+  if (!refsRef) return null;
+  const status = gitStatus(['for-each-ref', '--contains', sha, refsRef]);
   if (status !== 0) return null;
-  const output = git(['for-each-ref', '--contains', sha, `${headsRef}/*`]);
+  const output = git(['for-each-ref', '--contains', sha, refsRef]);
   return output.trim().length > 0;
 }
 
@@ -544,7 +566,7 @@ export function inspect(
     base = 'origin/development',
     prRef = null,
     baseFresh = true,
-    remoteHeadsRef = null,
+    remoteRefsRef = null,
   } = {},
 ) {
   const exists = objectExists(sha);
@@ -584,7 +606,7 @@ export function inspect(
     // #443: only asked where the old code asserted an answer it never
     // measured — the `twin` arm. Every other arm already has a sound
     // rationale and does not need a third fetch to earn it.
-    facts.remotePublished = reachableFromAnyRemoteHead(sha, remoteHeadsRef);
+    facts.remotePublished = reachableFromAnyRemoteRef(sha, remoteRefsRef);
   }
   return { ...facts, ...classify(facts) };
 }
@@ -653,12 +675,12 @@ export function main(argv = process.argv.slice(2), out = console) {
   // that arm is never reached. Gated the same way `prRef` is, so a caller
   // that never asked question 3 does not pay for question "reachable from
   // any other chain" either.
-  let remoteHeadsRef = null;
+  let remoteRefsRef = null;
   if (options.pr) {
-    remoteHeadsRef = fetchRemoteHeads(options.remote);
-    if (!remoteHeadsRef) {
+    remoteRefsRef = fetchRemoteRefs(options.remote);
+    if (!remoteRefsRef) {
       out.error(
-        `[sha-status] could not fetch ${options.remote}'s branch heads; a twin verdict cannot be told apart from a local-only object without it`,
+        `[sha-status] could not fetch ${options.remote}'s refs; a twin verdict cannot be told apart from a local-only object without it`,
       );
     }
   }
@@ -676,7 +698,7 @@ export function main(argv = process.argv.slice(2), out = console) {
       base: baseState.ref,
       prRef,
       baseFresh: baseState.fresh,
-      remoteHeadsRef,
+      remoteRefsRef,
     });
     // `pr-head` is the ref's own answer and not a failure of the check, but it
     // is also not a clean bill: the ref survives a merge. The exit code answers

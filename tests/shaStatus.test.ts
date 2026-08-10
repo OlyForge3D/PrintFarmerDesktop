@@ -192,6 +192,7 @@ describe('a SHA quoted in a handoff has three failure modes and one instrument e
   let supersededHead: string;
   let twin: string;
   let localOnly: string;
+  let tagOnly: string;
   let prHead: string;
 
   beforeAll(() => {
@@ -243,6 +244,23 @@ describe('a SHA quoted in a handoff has three failure modes and one instrument e
     git(['checkout', '-q', '-b', 'never-pushed', supersededHead], work);
     localOnly = commit(work, 'local only work', 'local-only');
     git(['checkout', '-q', 'development'], work);
+
+    // Review counterexample (Vasquez, Ripley on PR #699): a real object
+    // published SOLELY via a tag — never on any branch, never on the PR ref.
+    // A first pass at this fix fetched only `refs/heads/*`, which cannot see
+    // this: both reviewers independently reproduced this exact shape still
+    // being reported `local-only`, even though `git ls-remote origin` shows
+    // the tag pointing at it and `gh api commits/<sha>` would find it. The
+    // branch it was committed on is deleted locally after tagging and pushing
+    // the tag, so the ONLY way the remote can see this object is the tag —
+    // same discipline as `localOnly`'s "never pushed anywhere" but for the
+    // opposite claim: this one genuinely IS retrievable elsewhere.
+    git(['checkout', '-q', '-b', 'tag-only-branch', supersededHead], work);
+    tagOnly = commit(work, 'tag only work', 'tag-only');
+    git(['tag', 'published-tag', tagOnly], work);
+    git(['push', '-q', '--no-verify', 'origin', 'published-tag'], work);
+    git(['checkout', '-q', 'development'], work);
+    git(['branch', '-q', '-D', 'tag-only-branch'], work);
 
     git(['fetch', '-q', 'origin'], work);
   });
@@ -328,6 +346,42 @@ describe('a SHA quoted in a handoff has three failure modes and one instrument e
     expect(published.stdout).toContain('TWIN');
     expect(unpublished.stdout).toContain('LOCAL-ONLY');
     expect(unpublished.stdout).not.toContain('TWIN');
+  });
+
+  it('#443: a commit published only via a tag is a twin, not local-only (Vasquez/Ripley counterexample)', () => {
+    // Same shape check as above, run against `tagOnly` instead of `twin`:
+    // exists, not on the base, not on the PR ref. The branch it was committed
+    // on was deleted locally, so `git branch -r` cannot see it either — the
+    // ONLY remote-side evidence for this object is the tag.
+    expect(gitExit(['cat-file', '-e', `${tagOnly}^{commit}`], work)).toBe(0);
+    expect(
+      gitExit(
+        ['merge-base', '--is-ancestor', tagOnly, 'origin/development'],
+        work,
+      ),
+    ).toBe(1);
+    expect(
+      gitExit(['merge-base', '--is-ancestor', tagOnly, prHead], work),
+    ).toBe(1);
+
+    // Positive control: `ls-remote` itself finds this object only via the
+    // tag, never via a branch. If the fixture ever accidentally left this
+    // reachable from a branch, the counterexample this test exists to guard
+    // would be vacuous.
+    const remoteBranches = git(['branch', '-r'], work);
+    expect(remoteBranches).not.toContain('origin/tag-only-branch');
+    const tagRefs = git(['ls-remote', '--tags', 'origin'], work);
+    expect(tagRefs).toContain('published-tag');
+    expect(tagRefs).toContain(tagOnly);
+
+    const result = run(
+      [tagOnly, '--base', 'origin/development', '--pr', '1'],
+      work,
+    );
+
+    expect(result.stdout).toContain('TWIN');
+    expect(result.stdout).not.toContain('LOCAL-ONLY');
+    expect(result.stdout).not.toContain('nobody else can retrieve');
   });
 
   it('says it cannot tell them apart when no PR is named, rather than guessing', () => {
@@ -573,7 +627,7 @@ describe('the classifier does not soften a git failure into an answer', () => {
   });
 
   it('#443: does not assert twin when publication elsewhere could not be checked at all', () => {
-    // `remotePublished` is `null` when `fetchRemoteHeads` itself failed — a
+    // `remotePublished` is `null` when `fetchRemoteRefs` itself failed — a
     // network problem, not a fact about the object. The old bug was
     // asserting success it never measured; the fix must not repeat that
     // mistake in the other direction by asserting `local-only` on a fetch

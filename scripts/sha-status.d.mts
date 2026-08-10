@@ -62,10 +62,10 @@ export function classify(facts: ShaFacts): {
   summary: string;
 };
 export function fetchPrHead(pr: string, remote?: string): string | null;
-export function fetchRemoteHeads(remote?: string): string | null;
-export function reachableFromAnyRemoteHead(
+export function fetchRemoteRefs(remote?: string): string | null;
+export function reachableFromAnyRemoteRef(
   sha: string,
-  headsRef: string | null,
+  refsRef: string | null,
 ): boolean | null;
 export function resolveCommit(rev: string): string | null;
 export function distanceToTip(sha: string, base: string): number | null;
@@ -83,7 +83,7 @@ export function inspect(
     base?: string;
     prRef?: string | null;
     baseFresh?: boolean;
-    remoteHeadsRef?: string | null;
+    remoteRefsRef?: string | null;
   },
 ): ShaStatus;
 export function parseArgs(argv: string[]): ShaStatusOptions;
