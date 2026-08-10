@@ -617,6 +617,31 @@ describe('a ruleset matters only when it is enabled and reaches a feature branch
   it('ignores a null ruleset entirely (not active, not malformed)', () => {
     expect(rulesetCoversFeatureBranches(null)).toBe(false);
   });
+
+  // Bishop's finding on review of #490/#676 (head 670905f4): a non-null
+  // ruleset object with a missing/unrecognized `enforcement` field was
+  // silently treated the same as `enforcement: 'disabled'` via the
+  // `!== 'active'` check, producing a falsely-clean "does not cover
+  // feature branches" result for a ruleset whose enforcement state was
+  // never actually confirmed by GitHub.
+  it('throws rather than silently treating a ruleset with a missing enforcement field as inactive (Bishop repro)', () => {
+    expect(() =>
+      rulesetCoversFeatureBranches({
+        target: 'branch',
+        conditions: { ref_name: { include: ['~ALL'] } },
+      }),
+    ).toThrow(/enforcement/i);
+  });
+
+  it('throws on an unrecognized enforcement value rather than treating it as inactive', () => {
+    expect(() =>
+      rulesetCoversFeatureBranches({
+        enforcement: 'not-a-real-value',
+        target: 'branch',
+        conditions: { ref_name: { include: ['~ALL'] } },
+      }),
+    ).toThrow(/enforcement/i);
+  });
 });
 
 describe('the report names the decision, not just the drift', () => {

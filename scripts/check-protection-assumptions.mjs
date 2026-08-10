@@ -568,8 +568,26 @@ export function adminExemptibleSettingEnforcement(protection) {
  * A ruleset matters here only if it is ENABLED and reaches something other than
  * `development`. `enforcement: 'disabled'` and `evaluate` (dry-run) grant nothing.
  */
+const KNOWN_RULESET_ENFORCEMENTS = new Set(['active', 'evaluate', 'disabled']);
+
 export function rulesetCoversFeatureBranches(ruleset) {
-  if (!ruleset || ruleset.enforcement !== 'active') return false;
+  if (!ruleset) return false;
+  // A non-null ruleset object without a recognized `enforcement` value is
+  // malformed/truncated data, not a confirmed-inactive ruleset. Bishop
+  // reproduced this in review of #490 (head 670905f4): `!== 'active'`
+  // silently treated a missing/garbled `enforcement` field the same as an
+  // explicit `'disabled'`, producing a falsely-clean "does not cover
+  // feature branches" result for a ruleset whose actual enforcement state
+  // GitHub never confirmed. `'active'`/`'evaluate'`/`'disabled'` are the
+  // only enforcement values GitHub's API defines; anything else (absent,
+  // null, a typo, a future/unknown value) throws instead of defaulting to
+  // "not active".
+  if (!KNOWN_RULESET_ENFORCEMENTS.has(ruleset.enforcement)) {
+    throw new Error(
+      `Ruleset ${JSON.stringify(ruleset.name ?? ruleset.id ?? '(unnamed)')} has an unrecognized enforcement value (got ${JSON.stringify(ruleset.enforcement)}); refusing to treat unconfirmed enforcement state as "not active".`,
+    );
+  }
+  if (ruleset.enforcement !== 'active') return false;
   if (ruleset.target && ruleset.target !== 'branch') return false;
   // An active, branch-targeted ruleset without a resolvable
   // conditions.ref_name.include array is not a ruleset that "covers no
