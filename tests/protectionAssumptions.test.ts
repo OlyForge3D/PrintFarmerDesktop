@@ -1226,8 +1226,117 @@ describe('measureMergedAgainstBase (#490: derived, not transcribed)', () => {
     ).rejects.toThrow(/ahead_by/i);
   });
 
-  // Both Hicks and Vasquez independently reproduced this in review of #490
-  // (head 9ef8526): the `ahead_by` validation checked `typeof === 'number'`
+  // Vasquez/Hicks reproduced this in review of #490 (head 327996a): a
+  // truthy but non-string `head.sha` -- e.g. `{ bogus: true }` -- passed the
+  // old `!pr.merge_commit_sha || !headSha` check (an object is truthy) and
+  // was stringified straight into the `/compare/{head}...{parent}` request
+  // path, producing a broken endpoint that could still return *a* response
+  // this function would trust as genuine. A non-empty string is required
+  // before either sha is used to build a request; anything else throws.
+  it('throws rather than silently building a compare request from a non-string head.sha', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 410,
+                  merged_at: '2026-08-01T00:00:00Z',
+                  merge_commit_sha: 'm410',
+                  head: { sha: { bogus: true } },
+                },
+              ]
+            : [];
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/head\.sha/i);
+  });
+
+  it('throws rather than silently building a commit-lookup request from a non-string merge_commit_sha', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 411,
+                  merged_at: '2026-08-01T00:00:00Z',
+                  merge_commit_sha: 12345,
+                  head: { sha: 'h411' },
+                },
+              ]
+            : [];
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/merge_commit_sha/i);
+  });
+
+  it('throws rather than silently building a compare request from a non-string first-parent sha', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      const path = new URL(url).pathname;
+      let body: unknown;
+      if (path.endsWith('/pulls')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        body =
+          page === 1
+            ? [
+                {
+                  number: 412,
+                  merged_at: '2026-08-01T00:00:00Z',
+                  merge_commit_sha: 'm412',
+                  head: { sha: 'h412' },
+                },
+              ]
+            : [];
+      } else if (path.includes('/commits/')) {
+        // A malformed commit lookup response: a parent whose sha is not a
+        // string, the same class of bug as the head.sha/merge_commit_sha
+        // cases but one API call further down the chain.
+        body = { parents: [{ sha: false }] };
+      } else {
+        throw new Error(`unexpected endpoint ${path}`);
+      }
+      return { ok: true, json: () => body };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      measureMergedAgainstBase({
+        repository,
+        token: 't',
+        fetchImpl,
+        sampleSize: 1,
+      }),
+    ).rejects.toThrow(/first-parent sha/i);
+  });
+
   // only, which accepts -1, NaN, and Infinity -- all numbers in JS, none of
   // them a sensible count of commits. -1 would still count as "behind"
   // (fails the `=== 0` up-to-date check) and could become `worst` with a

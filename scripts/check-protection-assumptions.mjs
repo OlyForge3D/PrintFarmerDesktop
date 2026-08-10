@@ -586,6 +586,19 @@ export function formatViolations(violations) {
     .join('\n');
 }
 
+// `head.sha`/`merge_commit_sha` (and the first-parent sha resolved from a
+// merge commit) must be non-empty strings to be used in a URL path. A truthy
+// non-string -- an object like `{ bogus: true }`, a number, a boolean --
+// would otherwise get coerced into the request path via template-literal
+// stringification and could still receive *a* response, which this function
+// would then trust, producing a falsely-clean reading instead of failing
+// loud. This deliberately does not require a specific SHA shape (e.g. 40 hex
+// characters): GitHub's own abbreviated-SHA support and this file's tests
+// both use shorter opaque identifiers, and the actual failure mode being
+// guarded against is "not a string at all", not "a string that doesn't look
+// like a real SHA".
+const isShaLike = (value) => typeof value === 'string' && value.length > 0;
+
 const api = async (fetchImpl, repository, token, endpoint) => {
   const response = await fetchImpl(
     `https://api.github.com/repos/${repository.owner}/${repository.repo}${endpoint}`,
@@ -896,7 +909,29 @@ export async function measureMergedAgainstBase({
     }
 
     const headSha = pr.head?.sha;
-    if (!pr.merge_commit_sha || !headSha) {
+    const mergeCommitSha = pr.merge_commit_sha;
+    // Absent fields (null/undefined) are a legitimate reason a PR can't be
+    // measured -- see the docblock above. But a *truthy* value that is not a
+    // real SHA string (e.g. `{ bogus: true }`, a number, or an empty string)
+    // is not "missing", it's malformed: silently passing it through to the
+    // `/commits/{sha}` and `/compare/{head}...{parent}` URLs below would
+    // stringify it into a broken request path and could still receive a
+    // response that this function then trusted, producing a falsely-clean
+    // reading instead of failing loud -- the same "silently accept malformed
+    // external data" class of bug already fixed for `pr.number`, `ahead_by`,
+    // and `merged_at` on this same function. Vasquez/Hicks reproduced this on
+    // head 327996a with a malformed `head.sha`.
+    if (headSha != null && !isShaLike(headSha)) {
+      throw new Error(
+        `Pull request #${pr.number} has a malformed head.sha (expected a non-empty string, got ${JSON.stringify(headSha)}); refusing to build a compare request from it.`,
+      );
+    }
+    if (mergeCommitSha != null && !isShaLike(mergeCommitSha)) {
+      throw new Error(
+        `Pull request #${pr.number} has a malformed merge_commit_sha (expected a non-empty string, got ${JSON.stringify(mergeCommitSha)}); refusing to build a commit-lookup request from it.`,
+      );
+    }
+    if (!mergeCommitSha || !headSha) {
       unmeasured += 1;
       continue;
     }
@@ -905,9 +940,18 @@ export async function measureMergedAgainstBase({
       fetchImpl,
       repository,
       token,
-      `/commits/${pr.merge_commit_sha}`,
+      `/commits/${mergeCommitSha}`,
     );
     const baseTipAtMerge = mergeCommit.parents?.[0]?.sha;
+    // Same reasoning as headSha/mergeCommitSha above, one API call further
+    // down the chain: a missing first parent is a legitimate "can't measure
+    // this PR" case, but a truthy, non-SHA value here would build an equally
+    // broken `/compare` request while looking like a resolved parent.
+    if (baseTipAtMerge != null && !isShaLike(baseTipAtMerge)) {
+      throw new Error(
+        `Pull request #${pr.number}'s merge commit (${mergeCommitSha}) has a malformed first-parent sha (expected a non-empty string, got ${JSON.stringify(baseTipAtMerge)}); refusing to build a compare request from it.`,
+      );
+    }
     if (!baseTipAtMerge) {
       unmeasured += 1;
       continue;
