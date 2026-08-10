@@ -333,7 +333,7 @@ export const UNENFORCED_CHECKS = {
     '— and a pull_request workflow does a fresh clone plus one `npm ci`, so ' +
     'exactly one worktree exists and `prepare` (scripts/install-git-hooks.mjs) ' +
     'arms it during that same install. Running this on a runner would report ' +
-    'CLEAN on every single run, forever, regardless of whether #382\'s coverage ' +
+    "CLEAN on every single run, forever, regardless of whether #382's coverage " +
     'defect exists anywhere in the actual population of developer worktrees — ' +
     'not a weaker signal but a category error, the same one #382 names: a ' +
     'runner-scoped result cannot speak for a fleet it never sees. ' +
@@ -344,7 +344,7 @@ export const UNENFORCED_CHECKS = {
     'It is invoked by hand (`npm run check:hooks-coverage`) against a real, ' +
     'multi-worktree clone, which is the only place this question is askable. ' +
     'Discharge path: the day a scheduled workflow runs on a self-hosted ' +
-    "runner with a persistent, multi-worktree clone on disk, wire it in on a " +
+    'runner with a persistent, multi-worktree clone on disk, wire it in on a ' +
     'cron and delete this entry.',
   'check:test-narrowing':
     'Its judgement IS enforced in CI: tests/checkTestNarrowing.test.ts drives ' +

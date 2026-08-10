@@ -87,7 +87,11 @@ function armWorktree(worktree: string) {
 }
 
 function addLinkedWorktree(mainRepo: string, branch: string) {
-  const sibling = path.join(mainRepo, '..', `${path.basename(mainRepo)}-${branch}`);
+  const sibling = path.join(
+    mainRepo,
+    '..',
+    `${path.basename(mainRepo)}-${branch}`,
+  );
   temps.push(sibling);
   git(['worktree', 'add', '--quiet', '-b', branch, sibling, 'HEAD'], mainRepo);
   return realpathSync.native(sibling);
@@ -156,7 +160,11 @@ describe('parsePorcelainWorktreeList', () => {
 
   it('marks a detached-HEAD worktree as detached with a null branch', () => {
     const repo = tempRepo();
-    const detachedDir = path.join(repo, '..', `${path.basename(repo)}-detached`);
+    const detachedDir = path.join(
+      repo,
+      '..',
+      `${path.basename(repo)}-detached`,
+    );
     temps.push(detachedDir);
     const headSha = git(['rev-parse', 'HEAD'], repo);
     git(['worktree', 'add', '--quiet', '--detach', detachedDir, headSha], repo);
@@ -173,9 +181,9 @@ describe('parsePorcelainWorktreeList', () => {
 
   it('returns an empty array for output with no worktree line at all', () => {
     expect(parsePorcelainWorktreeList('')).toEqual([]);
-    expect(parsePorcelainWorktreeList('garbage, not porcelain output\n')).toEqual(
-      [],
-    );
+    expect(
+      parsePorcelainWorktreeList('garbage, not porcelain output\n'),
+    ).toEqual([]);
   });
 });
 
@@ -246,7 +254,14 @@ describe('evaluateCoverage — both arms', () => {
         path: '/repo',
         branch: 'main',
         detached: false,
-        status: { armed: true, reason: null, configured: HOOKS_PATH, hooksDir: null, hookPath: null, toplevel: null },
+        status: {
+          armed: true,
+          reason: null,
+          configured: HOOKS_PATH,
+          hooksDir: null,
+          hookPath: null,
+          toplevel: null,
+        },
       },
     ]);
     expect(result.exitCode).toBe(EXIT_CLEAN);
@@ -259,7 +274,14 @@ describe('evaluateCoverage — both arms', () => {
         path: '/repo/main',
         branch: 'main',
         detached: false,
-        status: { armed: true, reason: null, configured: HOOKS_PATH, hooksDir: null, hookPath: null, toplevel: null },
+        status: {
+          armed: true,
+          reason: null,
+          configured: HOOKS_PATH,
+          hooksDir: null,
+          hookPath: null,
+          toplevel: null,
+        },
       },
       {
         path: '/repo/feature-wt',
