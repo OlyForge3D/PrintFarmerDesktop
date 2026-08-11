@@ -938,6 +938,26 @@ export const RemoteCalibrationPrinterContext =
         material: toolhead.nozzleMaterial,
       },
     }));
+    // Machine limits the DTO does publish, taken across the toolheads it
+    // describes. The most permissive toolhead sets the ceiling because a
+    // baseline value is only unsafe if no installed hardware can accept it.
+    const maximumVolumetricRateMm3S = snapshot?.toolheads.reduce<number | null>(
+      (highest, toolhead) =>
+        toolhead.maxVolumetricFlow === null
+          ? highest
+          : Math.max(highest ?? 0, toolhead.maxVolumetricFlow),
+      null,
+    );
+    const maximumNozzleTemperatureC = snapshot?.toolheads.reduce<number | null>(
+      (highest, toolhead) => {
+        const declared = (toolhead as { maxHotendTemperature?: unknown })
+          .maxHotendTemperature;
+        return typeof declared === 'number' && Number.isFinite(declared)
+          ? Math.max(highest ?? 0, declared)
+          : highest;
+      },
+      null,
+    );
     return {
       printerId: dto.id,
       displayName: dto.name,
@@ -979,24 +999,45 @@ export const RemoteCalibrationPrinterContext =
        */
       snapshotRevision: snapshot?.configurationRevision ?? null,
       /**
-       * `CalibrationContextDto` exposes no safety-interlock block: there is no
-       * server field for emergency-stop availability, thermal-protection
-       * confirmation or ventilation assessment. Reporting `null` reflects that
-       * absence without inventing safety assurances the server never made.
-       * Enforcement for generation and print start is the server's own
-       * refusal plus the `calibrationGenerationEnabled` capability flag — this
-       * module performs no additional client-side safety-interlock check.
-       * Discovery and local profile inspection do not depend on it.
+       * Machine limits come from the snapshot; the interlock assertions do not
+       * exist at all.
+       *
+       * `CalibrationContextDto` publishes real physical limits — build volume,
+       * maximum bed temperature, per-toolhead maximum volumetric flow and nozzle
+       * temperature — and those are carried through here so baseline values can
+       * be range-checked against the machine the operator actually selected.
+       *
+       * What it does not publish is any statement about emergency-stop
+       * availability, thermal-protection confirmation or ventilation assessment.
+       * Those stay `false`: absent evidence is not a safety assurance, and the
+       * app must never claim the server confirmed something it never mentioned.
+       *
+       * Reporting the whole block as `null` (as an earlier revision did) conflated
+       * the two. It discarded limits the server *had* supplied and made
+       * `bindingFromContext` unsatisfiable, so no calibration project could be
+       * created against any real server at all.
+       *
+       * Enforcement for generation and print start lives in
+       * `calibrationActionGate.ts`, not here.
        */
-      safety: null as {
-        buildVolumeMm: { x: number; y: number; z: number };
-        maximumNozzleTemperatureC: number;
-        maximumBedTemperatureC: number;
-        maximumVolumetricRateMm3S: number;
-        emergencyStopAvailable: boolean;
-        thermalProtectionConfirmed: boolean;
-        ventilationAssessed: boolean;
-      } | null,
+      safety:
+        snapshot?.buildVolume == null
+          ? null
+          : {
+              buildVolumeMm: {
+                x: snapshot.buildVolume.x,
+                y: snapshot.buildVolume.y,
+                z: snapshot.buildVolume.z,
+              },
+              maximumNozzleTemperatureC: maximumNozzleTemperatureC ?? 0,
+              maximumBedTemperatureC: snapshot.maxBedTemperature ?? 0,
+              maximumVolumetricRateMm3S: maximumVolumetricRateMm3S ?? 0,
+              // Never asserted by PrintFarmer. Machine-moving actions are gated
+              // in `calibrationActionGate.ts` on evidence that does exist.
+              emergencyStopAvailable: false,
+              thermalProtectionConfirmed: false,
+              ventilationAssessed: false,
+            },
       /**
        * Likewise, per-printer calibration permissions are not part of the
        * context DTO. Authorisation is enforced by the server on every call and

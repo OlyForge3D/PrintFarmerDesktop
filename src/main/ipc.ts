@@ -52,6 +52,15 @@ import {
 } from './calibrationHttp.js';
 
 /**
+ * How many local profile names a diagnostic carries to the renderer.
+ *
+ * The renderer needs enough to show that profiles were genuinely read; it has
+ * never needed the whole install. Shipping up to two thousand names across the
+ * IPC boundary made a diagnostic message cost more than the lookup it explained.
+ */
+const LOCAL_PROFILE_EXEMPLAR_LIMIT = 5;
+
+/**
  * Turns a failed calibration-candidate request into an operator-facing
  * diagnosis.
  *
@@ -649,6 +658,44 @@ export function registerIpcHandlers(
   const bedClearLedger = new BedClearAcknowledgementLedger();
 
   /**
+   * Minimal shape used to fence a request on the selected server profile.
+   *
+   * Deliberately independent of every channel's own schema. Each handler used
+   * to strict-parse its full payload *before* checking the profile, which made
+   * cross-profile refusal a downstream consequence of validation succeeding:
+   * add a required field to a request and every cross-profile test for that
+   * channel starts failing on a validation error instead, reporting a refusal
+   * that the profile check never actually performed. Fencing first keeps
+   * "this request is for a profile you do not have selected" a separate and
+   * unconditional answer.
+   */
+  const CalibrationProfileFence = z
+    .object({ profileId: z.string().uuid() })
+    .passthrough();
+
+  /**
+   * Register a calibration IPC handler behind the profile fence.
+   *
+   * Channels whose payload carries no `profileId` (availability negotiation,
+   * for instance) pass through untouched; they have no profile to fence on.
+   */
+  const registerCalibrationHandler = (
+    channel: string,
+    handler: (
+      event: Parameters<Parameters<typeof ipcMain.handle>[1]>[0],
+      rawRequest: unknown,
+    ) => unknown,
+  ): void => {
+    ipcMain.handle(channel, async (event, rawRequest: unknown) => {
+      const fenced = CalibrationProfileFence.safeParse(rawRequest);
+      if (fenced.success) {
+        await requireSelectedCalibrationProfile(fenced.data.profileId);
+      }
+      return handler(event, rawRequest);
+    });
+  };
+
+  /**
    * Verify a mutating or machine-moving action against authoritative evidence
    * *before* anything is dispatched.
    *
@@ -731,6 +778,40 @@ export function registerIpcHandlers(
       binding,
       ...acknowledgement,
     });
+  };
+
+  /**
+   * Refuse a mutating action on permission and capability alone.
+   *
+   * For boundaries that mutate server state but are not scoped to one printer —
+   * pushing the outbox, resolving a conflict — where a printer/revision binding
+   * has no meaning. Costs no network call, so a refusal here happens strictly
+   * before anything is dispatched.
+   */
+  const gateCalibrationPermission = (
+    action: CalibrationGatedAction,
+  ): CalibrationGateResult => {
+    const capability = calibrationDiagnostics.capabilitySnapshot();
+    const result = evaluateCalibrationActionGate({
+      action,
+      capability:
+        capability === null
+          ? null
+          : { grantedScopes: capability.grantedScopes, flags: capability.flags },
+      context: null,
+      binding: null,
+    });
+    // Only the permission and capability verdicts are meaningful here; the
+    // context and binding refusals below them are artefacts of passing null.
+    if (
+      !result.allowed &&
+      (result.code === 'capabilityUnknown' ||
+        result.code === 'permissionDenied' ||
+        result.code === 'capabilityDisabled')
+    ) {
+      return result;
+    }
+    return { allowed: true, code: null, message: null };
   };
 
   /** Maps a gate refusal onto the calibration API error vocabulary. */
@@ -1367,7 +1448,7 @@ export function registerIpcHandlers(
     return ipcSchemas[IpcChannel.OpenModelFile].response.parse(response);
   });
 
-  ipcMain.handle(IpcChannel.OpenCalibrationPhoto, async (event) => {
+  registerCalibrationHandler(IpcChannel.OpenCalibrationPhoto, async (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const options = {
       title: 'Select calibration photo',
@@ -1577,7 +1658,7 @@ export function registerIpcHandlers(
   // The renderer never receives credentials, raw JWT tokens, or arbitrary
   // file/network primitives. All HTTP routes are fixed in calibrationHttp.ts.
 
-  ipcMain.handle(IpcChannel.CalibrationGetAvailability, async () => {
+  registerCalibrationHandler(IpcChannel.CalibrationGetAvailability, async () => {
     // Real capability negotiation: fetch the calibration capabilities endpoint
     // from the selected server profile and validate the flags calibration
     // cannot run without. Optional feature switches (photos, generation) are
@@ -1702,7 +1783,7 @@ export function registerIpcHandlers(
   // Calibration channels that require a valid server profile and IPC request.
   // Each validates its request schema before dispatching.
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationListPrinters,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -1768,7 +1849,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetPrinterContext,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -1792,7 +1873,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationListWorkspaceStates,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -1811,7 +1892,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetWorkspaceState,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -1831,7 +1912,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationSaveWorkspaceState,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -1841,6 +1922,20 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      // Saving is the create/mutate boundary for a calibration project, so it is
+      // gated like one. The printer binding is verified separately below by the
+      // freshness check, which compares the workspace against the authoritative
+      // context; what was missing was any check that this account is allowed to
+      // write calibration data at all.
+      const permission = gateCalibrationPermission('createProject');
+      if (!permission.allowed) {
+        throw Object.assign(
+          new Error(
+            permission.message ?? 'Calibration changes are not permitted.',
+          ),
+          { code: 'CALIBRATION_FORBIDDEN' },
+        );
+      }
       const rawExisting = await sidecar.getCalibrationWorkspaceState(
         selectedId,
         request.projectId,
@@ -1877,7 +1972,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationListProjects,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -1931,7 +2026,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetProject,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2018,7 +2113,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationSaveDraft,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2033,7 +2128,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationListAttempts,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2071,7 +2166,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetAttempt,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2109,7 +2204,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationStagePhoto,
     async (event, rawRequest: unknown) => {
       const request =
@@ -2157,7 +2252,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationListConflicts,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2178,7 +2273,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationResolveConflict,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2186,6 +2281,17 @@ export function registerIpcHandlers(
           rawRequest,
         );
       await requireSelectedCalibrationProfile(request.profileId);
+      // Resolving a conflict writes the chosen side back to the server, so it
+      // is gated on the same permission as any other calibration mutation.
+      const permission = gateCalibrationPermission('startPrint');
+      if (!permission.allowed) {
+        throw Object.assign(
+          new Error(
+            permission.message ?? 'Conflict resolution is not permitted.',
+          ),
+          { code: 'CALIBRATION_FORBIDDEN' },
+        );
+      }
       // Same predicate that decides CalibrationConflict.availableResolutions.
       // If this handler refused on its own hard-coded assumption, the two could
       // disagree -- the UI offering actions this channel rejects, or the
@@ -2210,7 +2316,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationSyncNow,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2218,6 +2324,18 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      // Sync applies the local outbox to the server. It mutates, so it is gated
+      // before any controller is created or any request is sent.
+      const permission = gateCalibrationPermission('startPrint');
+      if (!permission.allowed) {
+        return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+          phase: 'failed',
+          conflictCount: 0,
+          error:
+            permission.message ??
+            'Calibration synchronization is not permitted.',
+        });
+      }
       // Cancel any existing sync for this profile.
       const syncKey = `${selectedId}:${request.projectId ?? 'all'}`;
       const existing = activeSyncControllers.get(syncKey);
@@ -2242,7 +2360,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetDiagnostics,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2291,7 +2409,7 @@ export function registerIpcHandlers(
   // Generation, queue, bed-clear, and print start require all mutations to be
   // synchronized and printer context to be freshly validated before proceeding.
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationStartGeneration,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2427,7 +2545,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetOrchestrationStatus,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2549,7 +2667,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetQueueState,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2720,7 +2838,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationAcknowledgeBedClear,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -2895,7 +3013,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationStartPrint,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3000,7 +3118,7 @@ export function registerIpcHandlers(
 
   // --- Queue reconciliation (issue #54) ------------------------------------
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationPollQueueChanges,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3086,7 +3204,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGetSubscriptionResources,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3136,7 +3254,7 @@ export function registerIpcHandlers(
 
   // --- External calibration asset manifest (issue #54) ---------------------
 
-  ipcMain.handle(IpcChannel.CalibrationGetAssetManifest, async () => {
+  registerCalibrationHandler(IpcChannel.CalibrationGetAssetManifest, async () => {
     try {
       const manifest = await calibrationAssetManifest.load();
       return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse(
@@ -3151,7 +3269,7 @@ export function registerIpcHandlers(
     }
   });
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationPickAssetFile,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3176,7 +3294,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationValidateAssetFile,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3204,7 +3322,7 @@ export function registerIpcHandlers(
   );
 
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationOpenManifestUrl,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3234,7 +3352,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationListOrcaProfiles,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3279,18 +3397,17 @@ export function registerIpcHandlers(
         });
 
       /**
-       * Explain the state of this machine's OrcaSlicer install.
+       * Explain the state of this machine's OrcaSlicer install when the server
+       * never named a profile to look for.
        *
-       * Only ever called to explain a failure — a server refusal, or a scoped
-       * lookup that matched nothing. It never runs on the happy path and never
-       * before a printer is selected, so the full-tree scan cannot become the
-       * per-selection cost it used to be. It is retained for failures because a
-       * server refusal says nothing about the profiles sitting on this machine,
-       * and collapsing the two hid a healthy install behind a server outage.
+       * Reached only when there is no context to bind a lookup to — a server
+       * refusal, or a printer the server does not consider a candidate. Once a
+       * context exists, the bound lookup reports its own traversal instead, so
+       * this never runs as a *second* pass over an install that was already
+       * walked. A server refusal still cannot hide a healthy local install,
+       * which is the property this scan exists for.
        */
-      const diagnoseLocalInstall = async (
-        matchedNothingForPrinter: boolean,
-      ): Promise<{
+      const diagnoseLocalInstallWithoutContext = async (): Promise<{
         localProfiles: Array<{
           name: string;
           source: 'systemInstall' | 'userImported';
@@ -3298,7 +3415,9 @@ export function registerIpcHandlers(
         }>;
         localDiscovery: { kind: string; message: string };
       }> => {
-        const scan = await listLocalOrcaFilamentProfiles().catch(() => ({
+        const scan = await listLocalOrcaFilamentProfiles({
+          limit: LOCAL_PROFILE_EXEMPLAR_LIMIT,
+        }).catch(() => ({
           installFound: false,
           profiles: [] as Array<{
             name: string;
@@ -3318,16 +3437,10 @@ export function registerIpcHandlers(
                 message:
                   'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
               }
-            : matchedNothingForPrinter
-              ? {
-                  kind: 'noMatchForSelectedPrinter',
-                  message:
-                    'OrcaSlicer is installed and its profiles were read, but none matches the profile name and nozzle the selected printer reports.',
-                }
-              : {
-                  kind: 'ok',
-                  message: 'Local OrcaSlicer profile scan completed.',
-                };
+            : {
+                kind: 'ok',
+                message: 'Local OrcaSlicer profile scan completed.',
+              };
         return { localProfiles: scan.profiles, localDiscovery };
       };
 
@@ -3347,7 +3460,7 @@ export function registerIpcHandlers(
       } catch (error) {
         return answer({
           discovery: classifyDiscoveryFailure(error),
-          ...(await diagnoseLocalInstall(false)),
+          ...(await diagnoseLocalInstallWithoutContext()),
         });
       }
 
@@ -3369,7 +3482,7 @@ export function registerIpcHandlers(
                 : 'PrintFarmer no longer lists the selected printer as a calibration candidate. Choose a printer again.',
             serverCode: null,
           },
-          ...(await diagnoseLocalInstall(false)),
+          ...(await diagnoseLocalInstallWithoutContext()),
         });
       }
 
@@ -3419,7 +3532,7 @@ export function registerIpcHandlers(
                   message: classified.message,
                   serverCode: classified.serverCode,
                 },
-          ...(await diagnoseLocalInstall(false)),
+          ...(await diagnoseLocalInstallWithoutContext()),
         });
       }
 
@@ -3428,31 +3541,49 @@ export function registerIpcHandlers(
       // Bound to this printer's exact profile name, nozzle and content hash.
       // The server's GUID identifies the profile; only the name can be matched
       // against a file in the local OrcaSlicer installation, and the two are
-      // never interchanged.
-      const localEntries = await discoverLocalOrcaFilamentProfiles(
-        context,
-      ).catch(() => []);
+      // never interchanged. One traversal answers both "did it match" and, on a
+      // miss, "why not".
+      const local = await discoverLocalOrcaFilamentProfiles(context).catch(
+        () => ({
+          entries: [] as Awaited<
+            ReturnType<typeof discoverLocalOrcaFilamentProfiles>
+          >['entries'],
+          diagnostic: {
+            installFound: false,
+            enumeratedFileCount: 0,
+            parsedFileCount: 0,
+            exemplars: [] as readonly string[],
+          },
+        }),
+      );
+      const localEntries = local.entries;
 
       const resolved = [...(pfEntry === null ? [] : [pfEntry]), ...localEntries];
 
-      if (localEntries.length > 0) {
-        return answer({
-          profiles: resolved,
-          configurationRevision,
-          printersUnreadable: candidates.unreadable,
-          printersTruncated: candidates.truncated,
-          discovery: {
-            kind: 'ok',
-            message: 'Server profile discovery completed.',
-            serverCode: null,
-          },
-          localDiscovery: {
-            kind: 'ok',
-            message:
-              'A local OrcaSlicer profile matching the selected printer was found.',
-          },
-        });
-      }
+      const localDiscovery =
+        localEntries.length > 0
+          ? {
+              kind: 'ok',
+              message:
+                'A local OrcaSlicer profile matching the selected printer was found.',
+            }
+          : !local.diagnostic.installFound
+            ? {
+                kind: 'noInstallFound',
+                message:
+                  'No OrcaSlicer installation was found in the standard locations for this operating system.',
+              }
+            : local.diagnostic.parsedFileCount === 0
+              ? {
+                  kind: 'noProfilesFound',
+                  message:
+                    'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                }
+              : {
+                  kind: 'noMatchForSelectedPrinter',
+                  message:
+                    'OrcaSlicer is installed and its profiles were read, but none matches the profile name and nozzle the selected printer reports.',
+                };
 
       return answer({
         profiles: resolved,
@@ -3472,12 +3603,19 @@ export function registerIpcHandlers(
                 message: 'Server profile discovery completed.',
                 serverCode: null,
               },
-        ...(await diagnoseLocalInstall(true)),
+        // A few names for orientation, never the whole install. The exemplars
+        // come from the traversal that already ran.
+        localProfiles: local.diagnostic.exemplars.map((name) => ({
+          name,
+          source: 'systemInstall' as const,
+          material: null,
+        })),
+        localDiscovery,
       });
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationExportOrcaProfile,
     async (event, rawRequest: unknown) => {
       const request =
@@ -3757,7 +3895,7 @@ export function registerIpcHandlers(
     'filament_shrinkage_compensation_z',
   ]);
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationGenerateOrcaProfile,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3949,7 +4087,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationInstallOrcaProfile,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -3958,6 +4096,13 @@ export function registerIpcHandlers(
         );
       await requireSelectedCalibrationProfile(request.profileId);
 
+      // Local-only authorisation, deliberately separate from the server action
+      // interlock. Installing writes to this machine's OrcaSlicer directory and
+      // sends nothing to PrintFarmer, so a server permission is not the relevant
+      // authority. What matters is the same selection fencing applied above plus
+      // the platform and root guards below, which run before any filesystem
+      // write. Gating this on a server permission would refuse an operator with
+      // read-only farm access the right to manage their own local install.
       if (process.platform !== 'win32') {
         return ipcSchemas[
           IpcChannel.CalibrationInstallOrcaProfile
@@ -4043,7 +4188,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationRestoreOrcaProfile,
     async (_event, rawRequest: unknown) => {
       const request =

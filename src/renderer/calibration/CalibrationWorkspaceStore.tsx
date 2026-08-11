@@ -223,11 +223,13 @@ export function CalibrationWorkspaceStoreProvider({
     useState<MetadataDraft>(emptyMetadataDraft);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [creation, setCreation] = useState<CreationDataState>(emptyCreation);
-  // Read inside async selection work so a candidate can be named in a live
-  // message without making the callback depend on — and be recreated by —
-  // every creation-state change.
+  // Kept in sync from an effect rather than assigned during render: React may
+  // render speculatively and discard the result, and a ref written on a
+  // discarded render would hold a value the committed tree never had.
   const creationRef = useRef<CreationDataState>(emptyCreation);
-  creationRef.current = creation;
+  useEffect(() => {
+    creationRef.current = creation;
+  }, [creation]);
   const [orcaProfiles, setOrcaProfiles] = useState<readonly OrcaProfileEntry[]>(
     [],
   );
@@ -240,9 +242,32 @@ export function CalibrationWorkspaceStoreProvider({
 
   const requestEpochRef = useRef(0);
   const creationRequestEpochRef = useRef(0);
+  /**
+   * One generation counter for every selection-scoped fetch.
+   *
+   * `selectPrinter` and the open project's context refresh both write
+   * `orcaProfiles`, so separate counters let each ignore only its own stale
+   * replies and happily overwrite the other's fresh ones. Sharing the counter
+   * makes any newer selection-scoped request invalidate every older one,
+   * whichever path started it.
+   */
   const contextRequestEpochRef = useRef(0);
   const projectRequestEpochRef = useRef(0);
-  const projectContextRequestEpochRef = useRef(0);
+  /**
+   * Set when the provider unmounts. Every in-flight continuation checks it, so
+   * a reply that lands after teardown updates nothing.
+   */
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      // Invalidate everything in flight so late replies are discarded rather
+      // than applied to a store nobody is reading.
+      contextRequestEpochRef.current += 1;
+      creationRequestEpochRef.current += 1;
+    };
+  }, []);
   const profileIdRef = useRef(selectedProfileId);
   profileIdRef.current = selectedProfileId;
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -537,7 +562,7 @@ export function CalibrationWorkspaceStoreProvider({
     creationRequestEpochRef.current += 1;
     contextRequestEpochRef.current += 1;
     projectRequestEpochRef.current += 1;
-    projectContextRequestEpochRef.current += 1;
+    contextRequestEpochRef.current += 1;
     setView('dashboard');
     setSelectedStageId('temperature');
     hydrateActiveProject(null);
@@ -865,6 +890,7 @@ export function CalibrationWorkspaceStoreProvider({
         `Loading calibration context for ${candidate?.displayName ?? 'the selected printer'}.`,
       );
       const stale = (): boolean =>
+        unmountedRef.current ||
         profileIdRef.current !== profileId ||
         contextRequestEpochRef.current !== epoch;
       try {
@@ -894,12 +920,32 @@ export function CalibrationWorkspaceStoreProvider({
             ? { ...current, context }
             : current,
         );
+        // A new selection without a configuration revision or snapshot cannot be
+        // bound: those two identify *which* configuration a calibration project
+        // is pinned to, and a project bound to "whatever was current" is not
+        // pinned to anything. Treated as unbindable rather than null-permissive,
+        // so the wizard refuses here instead of producing a project that cannot
+        // be verified later.
+        if (
+          context.configurationRevision === null ||
+          context.snapshotId === null
+        ) {
+          setCreation((current) =>
+            current.selectedPrinterId === printerId
+              ? {
+                  ...current,
+                  contextLoading: false,
+                  error:
+                    'PrintFarmer did not report a configuration revision and snapshot for this printer, so a calibration project cannot be bound to it. Refresh the printer in PrintFarmer and try again.',
+                }
+              : current,
+          );
+          return;
+        }
         const profileResponse = await calibrationApi().listOrcaProfiles({
           profileId,
           printerId,
-          ...(context.configurationRevision === null
-            ? {}
-            : { configurationRevision: context.configurationRevision }),
+          configurationRevision: context.configurationRevision,
         });
         if (stale()) return;
         // Fenced on printer *and* revision: a reply resolved against a revision
@@ -908,7 +954,6 @@ export function CalibrationWorkspaceStoreProvider({
         if (
           profileResponse.printerId !== printerId ||
           (profileResponse.configurationRevision !== null &&
-            context.configurationRevision !== null &&
             profileResponse.configurationRevision !==
               context.configurationRevision)
         ) {
@@ -1259,7 +1304,7 @@ export function CalibrationWorkspaceStoreProvider({
       }
       const profileId = selectedProfileId;
       const projectId = project.record.projectId;
-      const epoch = ++projectContextRequestEpochRef.current;
+      const epoch = ++contextRequestEpochRef.current;
       setLiveMessage(
         'Refreshing the authoritative printer configuration snapshot.',
       );
@@ -1274,7 +1319,7 @@ export function CalibrationWorkspaceStoreProvider({
         });
         if (
           profileIdRef.current !== profileId ||
-          projectContextRequestEpochRef.current !== epoch ||
+          contextRequestEpochRef.current !== epoch ||
           activeProjectRef.current?.record.projectId !== projectId
         )
           return null;
@@ -1287,7 +1332,7 @@ export function CalibrationWorkspaceStoreProvider({
         });
         if (
           profileIdRef.current !== profileId ||
-          projectContextRequestEpochRef.current !== epoch ||
+          contextRequestEpochRef.current !== epoch ||
           activeProjectRef.current?.record.projectId !== projectId ||
           profileResponse.printerId !== project.record.printerId
         )
@@ -1300,7 +1345,7 @@ export function CalibrationWorkspaceStoreProvider({
       } catch (cause) {
         if (
           profileIdRef.current !== profileId ||
-          projectContextRequestEpochRef.current !== epoch ||
+          contextRequestEpochRef.current !== epoch ||
           activeProjectRef.current?.record.projectId !== projectId
         )
           return null;

@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverLocalOrcaFilamentProfiles } from '../src/main/orcaProfileDiscovery.js';
+import { discoverLocalOrcaFilamentProfilesEntries } from '../src/main/orcaProfileDiscovery.js';
 import { RemoteCalibrationPrinterContext } from '../src/main/calibrationWire.js';
 
 const TARGET_PROFILE_NAME = 'Voron Generic PLA @0.4 nozzle';
@@ -160,7 +160,7 @@ describe('local Orca discovery at real install scale', () => {
   it('finds a profile that sorts after more than 500 decoy files', async () => {
     const systemRoot = await seedLargeSystemRoot();
 
-    const entries = await discoverLocalOrcaFilamentProfiles(
+    const entries = await discoverLocalOrcaFilamentProfilesEntries(
       contextForTarget(TARGET_PROFILE_NAME),
       { roots: { userRoots: [], systemRoots: [systemRoot] } },
     );
@@ -176,7 +176,7 @@ describe('local Orca discovery at real install scale', () => {
   it('still returns nothing when the requested profile is genuinely absent', async () => {
     const systemRoot = await seedLargeSystemRoot();
 
-    const entries = await discoverLocalOrcaFilamentProfiles(
+    const entries = await discoverLocalOrcaFilamentProfilesEntries(
       contextForTarget('Profile That Was Never Installed'),
       { roots: { userRoots: [], systemRoots: [systemRoot] } },
     );
@@ -186,7 +186,7 @@ describe('local Orca discovery at real install scale', () => {
   });
 
   it('reports no profiles when the OrcaSlicer roots do not exist', async () => {
-    const entries = await discoverLocalOrcaFilamentProfiles(
+    const entries = await discoverLocalOrcaFilamentProfilesEntries(
       contextForTarget(TARGET_PROFILE_NAME),
       {
         roots: {
