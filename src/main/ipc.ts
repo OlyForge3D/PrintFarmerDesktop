@@ -2952,14 +2952,37 @@ export function registerIpcHandlers(
         serverCode: null,
       };
       try {
-        candidates = (
-          await calibrationHttp.getPrinters(
-            selectedId,
-            profileContext.profile.baseUrl,
-            signal,
-          )
-        ).printers;
-        if (candidates.length === 0) {
+        const candidateList = await calibrationHttp.getPrinters(
+          selectedId,
+          profileContext.profile.baseUrl,
+          signal,
+        );
+        candidates = candidateList.printers;
+        // `unreadable` is the difference between what the server sent and what
+        // this client could read. Discarding it turned two different failures
+        // into the same reassuring sentence: a farm whose every record was
+        // malformed reported "the server returned no candidate printers for
+        // this account", which is a statement about the account and is false —
+        // the printers are there, this client could not parse them. The
+        // operator would go looking for an enrolment problem that does not
+        // exist.
+        if (candidates.length === 0 && candidateList.unreadable > 0) {
+          discovery = {
+            kind: 'malformedResponse',
+            message:
+              'The server returned calibration candidates, but none of them matched the calibration contract, so none could be read.',
+            serverCode: null,
+          };
+        } else if (candidateList.unreadable > 0) {
+          discovery = {
+            kind: 'partiallyUnreadable',
+            // A count, never the offending values: the whole point of parsing
+            // candidates separately is that unreadable server content stops
+            // here rather than travelling on.
+            message: `${candidateList.unreadable} calibration candidate${candidateList.unreadable === 1 ? '' : 's'} did not match the calibration contract and could not be read. The printers listed are the ones that could.`,
+            serverCode: null,
+          };
+        } else if (candidates.length === 0) {
           discovery = {
             kind: 'noEligiblePrinters',
             message:

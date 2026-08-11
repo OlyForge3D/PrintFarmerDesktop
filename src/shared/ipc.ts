@@ -4860,6 +4860,17 @@ export const CalibrationProfileDiscoveryDiagnostic = z
       'serverDependencyUnavailable',
       /** The response did not match the calibration contract. */
       'malformedResponse',
+      /**
+       * Some candidate records could not be read; the rest were.
+       *
+       * Distinct from `malformedResponse`, which says nothing usable came
+       * back, and from `ok`, which claims the list is complete. Candidates are
+       * parsed one at a time so a single bad record cannot empty the farm —
+       * but reporting the survivors as `ok` would trade one silent loss for
+       * another, telling the operator a printer is absent when the truth is
+       * that this client could not read it.
+       */
+      'partiallyUnreadable',
       /** The server answered normally and returned no eligible printer. */
       'noEligiblePrinters',
       /** The request could not reach the server at all. */

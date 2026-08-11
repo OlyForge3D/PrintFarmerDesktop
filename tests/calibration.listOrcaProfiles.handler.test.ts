@@ -57,6 +57,38 @@ const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
 const BASE_URL = 'http://farm.local';
 const TARGET_PROFILE = 'Generic PLA @0.4 nozzle';
 
+/** A candidate shaped as PrintFarmer emits it, so "readable" means readable. */
+function candidateDto(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'aaaaaaaa-1111-4111-8111-222222222222',
+    name: 'Rack A cell 3',
+    enabled: true,
+    inMaintenance: false,
+    configurationRevision: 4,
+    reachability: 'online',
+    operationalState: 'idle',
+    observedAtUtc: '2026-08-11T12:00:00Z',
+    isStale: false,
+    firmware: {
+      family: 'Klipper',
+      gcodeDialect: 'Klipper',
+      detectionSource: 'moonraker',
+      version: 'v0.12.0',
+      verified: true,
+    },
+    slicer: {
+      engine: 'OrcaSlicer',
+      distribution: 'upstream',
+      version: '2.4.2',
+      profileFormat: 'orca-json',
+    },
+    eligible: true,
+    missingInputs: [],
+    rejectionReasons: [],
+    ...overrides,
+  };
+}
+
 function fakeProfiles() {
   return {
     list: () =>
@@ -266,6 +298,74 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     expect(response.discovery.kind).toBe('noEligiblePrinters');
     expect(response.localProfiles.map((p) => p.name)).toContain(TARGET_PROFILE);
+  });
+
+  it('does not call an unreadable farm an empty one', async () => {
+    // Every candidate is malformed. Parsing them separately means one bad
+    // record no longer empties the farm — but the farm *is* empty here, and
+    // saying "no candidate printers for this account" is a statement about
+    // the account that is simply false. The printers exist; this client could
+    // not read them, and an operator told otherwise goes hunting an enrolment
+    // problem that does not exist.
+    respondWith([{ id: 'not-a-guid', name: '' }, null, 7]);
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('malformedResponse');
+    expect(response.discovery.kind).not.toBe('noEligiblePrinters');
+    // The local scan is unaffected, as with every other server-side failure.
+    expect(response.localProfiles.map((p) => p.name)).toContain(TARGET_PROFILE);
+  });
+
+  it('qualifies a partially unreadable farm instead of reporting plain ok', async () => {
+    respondWith([{ id: 'not-a-guid', name: '' }, candidateDto()]);
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
+    expect(response.discovery.message).toContain('1 calibration candidate');
+  });
+
+  it('reports plain ok when every candidate was readable', async () => {
+    respondWith([candidateDto()]);
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('ok');
+  });
+
+  it('leaks no server-supplied value through the unreadable diagnostic', async () => {
+    // The count crosses the boundary; the offending content must not, or
+    // parsing candidates separately would have moved the leak rather than
+    // closed it.
+    respondWith([
+      {
+        id: 'not-a-guid',
+        name: '<script>alert(1)</script>',
+        secret: 'hunter2',
+      },
+      candidateDto(),
+    ]);
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
+    const serialised = JSON.stringify(response);
+    expect(serialised).not.toContain('hunter2');
+    expect(serialised).not.toContain('<script>');
+    expect(serialised).not.toContain('not-a-guid');
   });
 
   it('never puts a filesystem path in the response', async () => {
