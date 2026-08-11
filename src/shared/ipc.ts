@@ -4389,10 +4389,15 @@ export const CalibrationListOrcaProfilesResponse = z
   .object({
     profiles: z.array(OrcaProfileEntry).max(5000),
     /**
-     * Why server-derived discovery produced what it did. Present on every
-     * response so an empty list is never silently ambiguous.
+     * Why server-derived discovery produced what it did, so an empty list is
+     * never silently ambiguous. Defaulted for callers that predate the field;
+     * the production handler always sets it explicitly.
      */
-    discovery: CalibrationProfileDiscoveryDiagnostic,
+    discovery: CalibrationProfileDiscoveryDiagnostic.default({
+      kind: 'ok',
+      message: 'Server profile discovery completed.',
+      serverCode: null,
+    }),
   })
   .strict();
 export type CalibrationListOrcaProfilesResponse = z.infer<
