@@ -144,12 +144,28 @@ export interface CalibrationDiagnosticsOutboxSource {
  */
 export class CalibrationDiagnosticsStore {
   private capability: CalibrationCapabilitySnapshot | null = null;
+  /**
+   * Which server profile {@link capability} describes.
+   *
+   * A capability snapshot is one farm's answer about one account. Holding it
+   * without recording whose answer it was made it usable as evidence for a
+   * different profile entirely: negotiate a permissive profile A, switch to B
+   * whose own negotiation is still in flight or has failed, and every gate would
+   * read A's permissions and flags and authorise a mutation against B.
+   *
+   * Kept beside the snapshot rather than inside it so the diagnostics wire shape
+   * is unchanged; the report already names the selected profile separately.
+   */
+  private capabilityProfileId: string | null = null;
   private lastSync: CalibrationLastSyncSnapshot | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
   /** Called at every successful capability negotiation. */
-  recordCapabilities(capabilities: RemoteCalibrationCapabilities): void {
+  recordCapabilities(
+    profileId: string,
+    capabilities: RemoteCalibrationCapabilities,
+  ): void {
     this.capability = {
       negotiatedApiVersion: capabilities.apiVersion,
       negotiatedSchemaVersion: capabilities.schemaVersion,
@@ -159,6 +175,7 @@ export class CalibrationDiagnosticsStore {
       grantedScopes: [...capabilities.grantedScopes],
       negotiatedAt: this.now().toISOString(),
     };
+    this.capabilityProfileId = profileId;
   }
 
   /** Called at the end of every calibration sync, successful or not. */
@@ -175,21 +192,51 @@ export class CalibrationDiagnosticsStore {
     };
   }
 
-  capabilitySnapshot(): CalibrationCapabilitySnapshot | null {
+  /**
+   * The negotiated capabilities for exactly this server profile.
+   *
+   * Returns null when the stored snapshot belongs to another profile, which is
+   * the whole point: an unmatched read is indistinguishable from never having
+   * negotiated, so every gate fails closed on a profile switch instead of
+   * inheriting the previous farm's permissions.
+   *
+   * The profile must be named. There is no "current" reading, because the caller
+   * that knows which profile it is acting for is the only one that can say.
+   */
+  capabilitySnapshot(profileId: string): CalibrationCapabilitySnapshot | null {
+    if (this.capabilityProfileId !== profileId) return null;
     return this.capability;
   }
 
   /**
-   * Forget every observation, returning the store to its just-started state.
+   * Drop the capability snapshot before an attempt to replace it.
    *
-   * A capability snapshot describes one server profile's negotiation. Carrying
-   * it across a profile switch would let the permissions and flags of one farm
-   * authorise an action against another, so the correct response to "the
-   * selected profile changed" is to forget rather than to keep stale evidence
-   * that still looks valid.
+   * Called before every negotiation and before a post-refusal refresh, so a
+   * fetch that fails, times out or is itself refused leaves *no* evidence rather
+   * than the previous positive answer. Clearing afterwards would be too late:
+   * the window between starting a fetch and failing it is exactly when a gate
+   * would read the stale snapshot.
+   */
+  clearCapabilities(): void {
+    this.capability = null;
+    this.capabilityProfileId = null;
+  }
+
+  /**
+   * Forget everything recorded for one server profile.
+   *
+   * The correct response to a profile being selected away from, or deleted: its
+   * observations describe a farm this app is no longer acting against.
+   */
+  forgetProfile(profileId: string): void {
+    if (this.capabilityProfileId === profileId) this.clearCapabilities();
+  }
+
+  /**
+   * Forget every observation, returning the store to its just-started state.
    */
   reset(): void {
-    this.capability = null;
+    this.clearCapabilities();
     this.lastSync = null;
   }
 
@@ -237,7 +284,13 @@ export class CalibrationDiagnosticsStore {
     const diagnostics: Omit<CalibrationDiagnostics, 'report'> = {
       generatedAt: this.now().toISOString(),
       profileId,
-      capability: this.capability,
+      // Reported only when it belongs to the profile being reported on. A
+      // report that showed another profile's permissions beside this profile's
+      // id would be actively misleading in exactly the situation it is run for.
+      capability:
+        profileId !== null && this.capabilityProfileId === profileId
+          ? this.capability
+          : null,
       outbox: outboxSnapshot,
       outboxUnavailableReason,
       lastSync: this.lastSync,

@@ -672,6 +672,472 @@ describe('a refusal invalidates the cached permissions without replaying anythin
   });
 });
 
+describe('capability evidence never crosses server profiles', () => {
+  // The defect this covers: the capability snapshot was process-global and
+  // carried no owner, so it could be read as evidence for whichever profile
+  // happened to be selected. Negotiate a permissive profile A, switch to B, and
+  // every gate read A's permissions and flags — authorising save, sync,
+  // generate, print start and bed-clear dispatch against a farm that had never
+  // said yes to any of them.
+
+  /**
+   * A profile service whose selected profile the test controls, so a switch can
+   * be performed against the real registered handlers rather than simulated.
+   */
+  function switchableProfiles(selected: { id: string }) {
+    return {
+      list: () =>
+        Promise.resolve({ profiles: [], selectedProfileId: selected.id }),
+      getAuthenticatedContext: () =>
+        Promise.resolve({
+          profile: { id: selected.id, baseUrl: BASE_URL },
+          token: 'test-jwt',
+          serverBinding: 'binding-abc',
+        }),
+      getAuthenticatedServerContext: () =>
+        Promise.resolve({
+          baseUrl: BASE_URL,
+          token: 'test-jwt',
+          binding: 'binding-abc',
+        }),
+      onBindingChanged: () => () => undefined,
+      // The `SelectServerProfile` response is a full `ServerProfile`, which this
+      // stub does not attempt to synthesise: the property under test is that
+      // calibration evidence is discarded, and the handler discards it *before*
+      // calling through here. `switchProfile` below tolerates the response
+      // parse failing for exactly that reason, and the refusals that follow are
+      // what prove the discard actually happened.
+      select: (id: string) => {
+        selected.id = id;
+        return Promise.resolve({ selectedProfileId: id });
+      },
+      delete: (id: string) => {
+        void id;
+        selected.id = '';
+        return Promise.resolve({ profiles: [], selectedProfileId: null });
+      },
+    };
+  }
+
+  const PROFILE_B = '22222222-2222-4222-8222-222222222222';
+
+  function registerWith(selected: { id: string }): Map<string, Handler> {
+    electronState.handlers.clear();
+    registerIpcHandlers(
+      undefined,
+      switchableProfiles(selected) as never,
+      sidecar as never,
+      sidecar as never,
+      {
+        initialize: () => Promise.resolve(),
+        dispose: () => undefined,
+      } as never,
+      {
+        canonicalizePickerFile: (p: string) => Promise.resolve(p),
+        authorizeFile: () => Promise.reject(new Error('denied')),
+        resolve: () => Promise.reject(new Error('denied')),
+        approveFromPicker: () => Promise.reject(new Error('denied')),
+        reset: () => Promise.resolve(),
+      } as never,
+      {
+        initialize: () => Promise.resolve(),
+        purge: () => Promise.resolve(),
+      } as never,
+    );
+    return electronState.handlers;
+  }
+
+  /**
+   * Select a different profile through the real handler.
+   *
+   * The response parse is allowed to fail: the stub does not synthesise a whole
+   * `ServerProfile`, and it does not need to. Calibration state is discarded
+   * before `profiles.select` is called, so a failure on the way back cannot
+   * restore it — which is itself the ordering this suite depends on.
+   */
+  async function switchProfile(
+    registeredHandlers: Map<string, Handler>,
+    id: string,
+  ): Promise<void> {
+    try {
+      await Promise.resolve(
+        registeredHandlers.get(IpcChannel.SelectServerProfile)?.(undefined, {
+          id,
+        }),
+      );
+    } catch {
+      // See above: the discard has already happened.
+    }
+  }
+
+  /** Every mutating and machine-moving entry point, with a valid payload. */
+  const mutations: ReadonlyArray<[string, string, Record<string, unknown>]> = [
+    [
+      'generation',
+      IpcChannel.CalibrationStartGeneration,
+      generationRequest({ profileId: PROFILE_B }),
+    ],
+    [
+      'print start',
+      IpcChannel.CalibrationStartPrint,
+      {
+        profileId: PROFILE_B,
+        projectId: PROJECT_ID,
+        attemptId: ATTEMPT_ID,
+        orchestrationId: ORCHESTRATION_ID,
+        gcodeFileId: GCODE_FILE_ID,
+        assignedPrinterId: CALIBRATION_FIXTURE_IDS.printerId,
+        operationId: OPERATION_ID,
+        pinnedPrinterConfigRevision:
+          CALIBRATION_FIXTURE_IDS.configurationRevision,
+        gcodeContentSha256: null,
+        specificationSha256: null,
+        machineProfileSha256: null,
+        processProfileSha256: null,
+        filamentProfileSha256: null,
+        printerConfigSnapshotSha256: null,
+        requiredFirmwareFamily: 'Klipper',
+        requiredGcodeDialect: 'Klipper',
+        requiredSlicerEngine: null,
+        requiredSlicerDistribution: null,
+        requiredSlicerVersion: null,
+        requiredSlicerContainerDigest: null,
+      },
+    ],
+    [
+      'bed-clear dispatch',
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest({ profileId: PROFILE_B }),
+    ],
+  ];
+
+  for (const [label, channel, request] of mutations) {
+    it(`refuses ${label} for a newly selected profile that has not negotiated`, async () => {
+      const selected: { id: string } = { id: PROFILE_ID };
+      const { calls } = server();
+      const registeredHandlers = registerWith(selected);
+
+      // Profile A negotiates permissively. This is the precondition that made
+      // the defect exploitable: without a positive snapshot there is nothing to
+      // inherit.
+      await Promise.resolve(
+        registeredHandlers.get(IpcChannel.CalibrationGetAvailability)?.(
+          undefined,
+          undefined,
+        ),
+      );
+
+      // Switch to B through the real handler, then make B's own negotiation
+      // impossible — in flight, failing, or refused all look the same to a gate.
+      await switchProfile(registeredHandlers, PROFILE_B);
+      const before = calls.length;
+
+      const response = (await Promise.resolve(
+        registeredHandlers.get(channel)?.(undefined, request),
+      )) as { status: string; error?: { code: string } };
+
+      expect(response.status).toBe('error');
+      expect(response.error?.code).toBe('forbidden');
+      // Refused before dispatch: nothing was sent for profile B at all.
+      expect(calls.slice(before).some((call) => call.startsWith('POST'))).toBe(
+        false,
+      );
+    });
+  }
+
+  it('refuses when the selected profile changes without a select handler call', async () => {
+    // Isolates the ownership check from the discard. A profile can become
+    // current by a route other than `SelectServerProfile` — a binding change, a
+    // restored session, a race between the switch and an in-flight request — and
+    // in that case nothing has cleared the snapshot. Binding it to the profile
+    // it describes is what refuses here; deleting that check alone makes this
+    // test fail while every other cross-profile test still passes, because they
+    // are also protected by the discard.
+    const selected: { id: string } = { id: PROFILE_ID };
+    const { calls } = server();
+    const handlersB = registerWith(selected);
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+
+    // The selection moves underneath, with A's positive snapshot still held.
+    selected.id = PROFILE_B;
+    const before = calls.length;
+
+    const response = (await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationStartGeneration)?.(
+        undefined,
+        generationRequest({ profileId: PROFILE_B }),
+      ),
+    )) as { status: string; error: { code: string } };
+
+    expect(response.status).toBe('error');
+    expect(response.error.code).toBe('forbidden');
+    expect(calls.slice(before).some((call) => call.startsWith('POST'))).toBe(
+      false,
+    );
+  });
+
+  it('does not restore the original profile\u2019s evidence when it is selected again', async () => {
+    // Isolates the discard from the ownership check. Ownership alone would let
+    // A's snapshot spring back into force the moment A is current again, even
+    // though its permissions may have been revoked while B was selected — and
+    // the app would authorise a mutation on evidence it had every reason to
+    // consider suspect. Selecting away from a profile discards its answer, so
+    // returning to it requires asking again.
+    const selected: { id: string } = { id: PROFILE_ID };
+    const { calls } = server();
+    const handlersB = registerWith(selected);
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+    await switchProfile(handlersB, PROFILE_B);
+    // Straight back to A, without re-negotiating.
+    await switchProfile(handlersB, PROFILE_ID);
+    const before = calls.length;
+
+    const response = (await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationStartGeneration)?.(
+        undefined,
+        generationRequest(),
+      ),
+    )) as { status: string; error: { code: string } };
+
+    expect(response.status).toBe('error');
+    expect(response.error.code).toBe('forbidden');
+    expect(calls.slice(before).some((call) => call.startsWith('POST'))).toBe(
+      false,
+    );
+
+    // Control: re-negotiating restores the ability, so the refusal above is the
+    // discard and not a profile switch breaking calibration permanently.
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+    const after = (await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationStartGeneration)?.(
+        undefined,
+        generationRequest(),
+      ),
+    )) as { status: string };
+    expect(after.status).toBe('submitted');
+  });
+
+  it('discards the previous answer when a re-negotiation for the same profile fails', async () => {
+    // Isolates clearing-before-fetch from the profile switch. Permissions can be
+    // revoked without the selected profile changing at all: the workspace
+    // re-negotiates, the request fails or times out, and the old positive
+    // snapshot is still sitting there. Clearing after a successful fetch would
+    // leave exactly that window open; clearing before it closes it.
+    let capabilitiesShouldFail = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: URL | string) => {
+        const href = typeof url === 'string' ? url : url.href;
+        if (href.includes('/api/calibration/capabilities')) {
+          return Promise.resolve(
+            capabilitiesShouldFail
+              ? json({ status: 503 }, 503)
+              : json(
+                  printFarmerCapabilitiesResponse({
+                    effectivePermissions: CANONICAL_PERMISSIONS,
+                  }),
+                ),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+        return Promise.resolve(json({}, 404));
+      }),
+    );
+    registered = handlers();
+    await negotiate();
+
+    // Same profile throughout. Only the negotiation outcome changes.
+    capabilitiesShouldFail = true;
+    await negotiate();
+
+    const response = (await invoke(
+      IpcChannel.CalibrationStartGeneration,
+      generationRequest(),
+    )) as { status: string; error: { code: string } };
+    expect(response.status).toBe('error');
+    expect(response.error.code).toBe('forbidden');
+  });
+
+  it('refuses when profile B\u2019s own negotiation fails', async () => {
+    const selected: { id: string } = { id: PROFILE_ID };
+    let capabilitiesShouldFail = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: URL | string) => {
+        const href = typeof url === 'string' ? url : url.href;
+        if (href.includes('/api/calibration/capabilities')) {
+          return Promise.resolve(
+            capabilitiesShouldFail
+              ? json({ status: 503 }, 503)
+              : json(
+                  printFarmerCapabilitiesResponse({
+                    effectivePermissions: CANONICAL_PERMISSIONS,
+                  }),
+                ),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+        return Promise.resolve(json({}, 404));
+      }),
+    );
+    const handlersB = registerWith(selected);
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+    await switchProfile(handlersB, PROFILE_B);
+    // B tries and fails. A failed negotiation must leave *no* evidence, not the
+    // previous profile's positive one.
+    capabilitiesShouldFail = true;
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+
+    const response = (await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationStartGeneration)?.(
+        undefined,
+        generationRequest({ profileId: PROFILE_B }),
+      ),
+    )) as { status: string; error: { code: string } };
+    expect(response.status).toBe('error');
+    expect(response.error.code).toBe('forbidden');
+  });
+
+  it('permits the action only once profile B has negotiated for itself', async () => {
+    // The positive control. Without it, every refusal above is satisfied by a
+    // switch that simply breaks calibration permanently.
+    const selected: { id: string } = { id: PROFILE_ID };
+    server();
+    const handlersB = registerWith(selected);
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+    await switchProfile(handlersB, PROFILE_B);
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+
+    const response = (await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationStartGeneration)?.(
+        undefined,
+        generationRequest({ profileId: PROFILE_B }),
+      ),
+    )) as { status: string };
+    expect(response.status).toBe('submitted');
+  });
+
+  it('forgets a profile\u2019s evidence when it is deleted', async () => {
+    const selected: { id: string } = { id: PROFILE_ID };
+    const { calls } = server();
+    const handlersB = registerWith(selected);
+    await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationGetAvailability)?.(
+        undefined,
+        undefined,
+      ),
+    );
+    await Promise.resolve(
+      handlersB.get(IpcChannel.DeleteServerProfile)?.(undefined, {
+        id: PROFILE_ID,
+      }),
+    );
+    selected.id = PROFILE_B;
+    const before = calls.length;
+
+    const response = (await Promise.resolve(
+      handlersB.get(IpcChannel.CalibrationStartGeneration)?.(
+        undefined,
+        generationRequest({ profileId: PROFILE_B }),
+      ),
+    )) as { status: string; error: { code: string } };
+    expect(response.status).toBe('error');
+    expect(response.error.code).toBe('forbidden');
+    expect(calls.slice(before).some((call) => call.startsWith('POST'))).toBe(
+      false,
+    );
+  });
+
+  it('leaves no evidence when the post-refusal refresh itself fails', async () => {
+    // The stale-positive window in its most direct form: a 403 says the cached
+    // answer is wrong, so a refresh that cannot replace it must not leave the
+    // contradicted answer in place.
+    let capabilityCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: URL | string) => {
+        const href = typeof url === 'string' ? url : url.href;
+        if (href.includes('/api/calibration/capabilities')) {
+          capabilityCalls += 1;
+          return Promise.resolve(
+            capabilityCalls === 1
+              ? json(
+                  printFarmerCapabilitiesResponse({
+                    effectivePermissions: CANONICAL_PERMISSIONS,
+                  }),
+                )
+              : json({ status: 503 }, 503),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+        if (href.includes('generate-job')) {
+          return Promise.resolve(json({ status: 403 }, 403));
+        }
+        return Promise.resolve(json({}, 404));
+      }),
+    );
+    registered = handlers();
+    await negotiate();
+
+    // First attempt reaches the server and is refused; the refresh then fails.
+    const first = (await invoke(
+      IpcChannel.CalibrationStartGeneration,
+      generationRequest(),
+    )) as { status: string };
+    expect(first.status).toBe('error');
+
+    // Second attempt is refused *locally*, because no evidence survives.
+    const second = (await invoke(
+      IpcChannel.CalibrationStartGeneration,
+      generationRequest(),
+    )) as { status: string; error: { code: string; message: string } };
+    expect(second.status).toBe('error');
+    expect(second.error.code).toBe('forbidden');
+    expect(second.error.message).toMatch(/not authorised|does not grant/i);
+  });
+});
+
 describe('discovery needs only the read permission', () => {
   it('reports calibration available to an account that can read but not write', async () => {
     // Requiring every calibration permission to *open* the workspace would
