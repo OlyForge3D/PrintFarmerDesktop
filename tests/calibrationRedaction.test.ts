@@ -58,6 +58,12 @@ import { once } from 'node:events';
 import osDefault from 'node:os';
 import * as osNamespace from 'node:os';
 import { IpcChannel } from '@shared/ipc';
+import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
+import {
+  CALIBRATION_FIXTURE_IDS,
+  calibrationActionBindingFixture,
+  calibrationContextDto,
+} from './fixtures/calibrationContract.js';
 import {
   captureCalibrationLogs,
   resetCalibrationLogSink,
@@ -485,6 +491,27 @@ describe('correlation across one calibration operation', () => {
     capture = captureCalibrationLogs();
     fetchMock = vi.fn((url: URL | string) => {
       const href = typeof url === 'string' ? url : url.href;
+      // Capability negotiation and the authoritative context read are served
+      // here because generation now verifies both before dispatching. A stub
+      // that omitted them would make the flow refuse, and a test that removed
+      // the interlock to keep passing would be testing nothing.
+      if (href.includes('/api/calibration/capabilities')) {
+        return Promise.resolve(
+          json(
+            printFarmerCapabilitiesResponse({
+              effectivePermissions: [
+                'calibration:read',
+                'calibration:create',
+                'calibration:update',
+                'calibration:generate',
+              ],
+            }),
+          ),
+        );
+      }
+      if (href.includes('calibration-context')) {
+        return Promise.resolve(json(calibrationContextDto()));
+      }
       if (href.includes('generate-job')) {
         return Promise.resolve(json(orchestrationFixture(GENERATION_OP)));
       }
@@ -516,6 +543,10 @@ describe('correlation across one calibration operation', () => {
 
   async function runWholeFlow(): Promise<CalibrationLogRecord[]> {
     const registered = handlers();
+    // Negotiate first so the interlock has real capability evidence to read.
+    // This is what a running app does before the workspace opens; doing it here
+    // keeps the flow exercising the production gate rather than sidestepping it.
+    await invoke(registered, IpcChannel.CalibrationGetAvailability, undefined);
     await invoke(registered, IpcChannel.CalibrationStartGeneration, {
       profileId: PROFILE_ID,
       projectId: PROJECT_ID,
@@ -525,6 +556,7 @@ describe('correlation across one calibration operation', () => {
       definitionVersion: '1.0',
       options: {},
       baseRevision: null,
+      binding: calibrationActionBindingFixture(),
     });
     await invoke(registered, IpcChannel.CalibrationGetOrchestrationStatus, {
       profileId: PROFILE_ID,
@@ -538,11 +570,12 @@ describe('correlation across one calibration operation', () => {
     await invoke(registered, IpcChannel.CalibrationAcknowledgeBedClear, {
       profileId: PROFILE_ID,
       jobId: JOB_ID,
-      printerId: PRINTER_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
       operationId: ACK_OP,
       rowVersion: 'AAAAAAAAAAAA==',
       dispatchStateRowVersion: 'BBBBBBBBBBBB==',
-      expectedPrinterConfigRevision: 42,
+      expectedPrinterConfigRevision:
+        CALIBRATION_FIXTURE_IDS.configurationRevision,
     });
     return capture.records;
   }
@@ -690,8 +723,39 @@ describe('redaction on real calibration failure paths', () => {
    * reaches neither `CalibrationApiError.message` nor
    * `CalibrationSyncStatus.error`.
    */
-  function leakyServer(): ReturnType<typeof vi.fn> {
-    const fetchMock = vi.fn(() => {
+  function leakyServer(
+    options: { readonly serveActionGate?: boolean } = {},
+  ): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn((url: URL | string) => {
+      // Defensive: this stub is shared with call sites that pass a `Request`,
+      // where `.href` is undefined.
+      const href =
+        typeof url === 'string' ? url : (((url as URL).href ?? '') as string);
+      // Opt-in, because it must not apply to every caller. The action interlock
+      // reads capabilities and the authoritative context before dispatching, so
+      // the generation test needs both to succeed or the action is refused and
+      // there is no failing generation left to assert redaction on. The sync
+      // test needs the opposite: its leak *is* the request under test, and
+      // answering anything here would stop it reaching the leaky branch.
+      if (options.serveActionGate === true) {
+        if (href.includes('/api/calibration/capabilities')) {
+          return Promise.resolve(
+            json(
+              printFarmerCapabilitiesResponse({
+                effectivePermissions: [
+                  'calibration:read',
+                  'calibration:create',
+                  'calibration:update',
+                  'calibration:generate',
+                ],
+              }),
+            ),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+      }
       const response = json(
         {
           title: 'Calibration worker rejected the request',
@@ -738,8 +802,9 @@ describe('redaction on real calibration failure paths', () => {
   }
 
   it('keeps every secret class out of the records emitted by a failing generation', async () => {
-    const fetchMock = leakyServer();
+    const fetchMock = leakyServer({ serveActionGate: true });
     const registered = handlers();
+    await invoke(registered, IpcChannel.CalibrationGetAvailability, undefined);
     const response = (await invoke(
       registered,
       IpcChannel.CalibrationStartGeneration,
@@ -752,6 +817,7 @@ describe('redaction on real calibration failure paths', () => {
         definitionVersion: '1.0',
         options: {},
         baseRevision: null,
+        binding: calibrationActionBindingFixture(),
       },
     )) as { status: string; error?: { message?: string } };
 

@@ -4420,16 +4420,6 @@ export const CalibrationStartPrintRequest = z
     gcodeFileId: z.string().uuid(),
     /** Printer to assign the job to (must be the same printer the context was snapshotted for). */
     assignedPrinterId: z.string().uuid(),
-    /**
-     * Explicit operator confirmation that the machine is clear and safe to move.
-     *
-     * Required to be `true` before the job is enqueued unless the server itself
-     * publishes a safety assurance, which no current PrintFarmer build does.
-     * Optional in the schema only so the absence is a *refusal* produced by the
-     * interlock with a clear reason, rather than a validation error the operator
-     * cannot act on. It is never defaulted to `true`.
-     */
-    operatorAcknowledgedBedClear: z.boolean().optional(),
     /** Client-generated idempotency key. */
     operationId: z.string().uuid(),
     /** Pinned printer config revision — guards against config advancing after snapshot. */
