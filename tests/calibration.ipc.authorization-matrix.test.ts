@@ -324,6 +324,12 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
       method: 'temperature',
       operationId: uuid(5),
       baseRevision: null,
+      binding: {
+        printerId: uuid(9),
+        configurationRevision: 7,
+        snapshotId: 'a'.repeat(64),
+        toolId: uuid(3),
+      },
     }),
   },
   {
@@ -380,7 +386,9 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
   },
   {
     channel: IpcChannel.CalibrationListOrcaProfiles,
-    request: (profileId) => ({ profileId }),
+    // `printerId` is required: profile resolution is scoped to one selected
+    // printer, so there is no farm-wide form of this request to send.
+    request: (profileId) => ({ profileId, printerId: uuid(9) }),
   },
   {
     channel: IpcChannel.CalibrationImportLegacyBackupV4,

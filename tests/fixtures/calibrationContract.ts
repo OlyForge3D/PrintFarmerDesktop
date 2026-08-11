@@ -96,6 +96,7 @@ export function calibrationContextDto(
           nozzleMaterial: 'brass',
           isDirectDrive: true,
           maxVolumetricFlow: 30,
+          maxHotendTemperature: 300,
         },
       ],
       maxBedTemperature: 120,

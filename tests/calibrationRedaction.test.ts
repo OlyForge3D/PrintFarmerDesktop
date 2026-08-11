@@ -527,7 +527,19 @@ describe('correlation across one calibration operation', () => {
         );
       }
       if (href.includes('job-queue')) {
-        return Promise.resolve(json(QUEUE_JOB_FIXTURE));
+        // Assigned to the same printer the ack targets, and pinned to the same
+        // configuration revision the context reports. The bed-clear interlock
+        // mints its ledger record only after seeing the server agree on both,
+        // so a fixture that disagreed would refuse the dispatch — correctly,
+        // but it would stop this test exercising the acknowledged path at all.
+        return Promise.resolve(
+          json({
+            ...QUEUE_JOB_FIXTURE,
+            assignedPrinterId: CALIBRATION_FIXTURE_IDS.printerId,
+            pinnedPrinterConfigRevision:
+              CALIBRATION_FIXTURE_IDS.configurationRevision,
+          }),
+        );
       }
       return Promise.resolve(json({}, 404));
     });

@@ -863,12 +863,21 @@ describe('ipcSchemas calibration channel registry', () => {
     ).toThrow();
   });
 
-  it('CalibrationListOrcaProfiles requires the selected profile fence', () => {
+  it('CalibrationListOrcaProfiles requires a selected printer as well as the profile fence', () => {
+    const printerId = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
     expect(
       ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].request.parse({
         profileId: PROFILE_UUID,
+        printerId,
       }),
-    ).toEqual({ profileId: PROFILE_UUID });
+    ).toEqual({ profileId: PROFILE_UUID, printerId });
+    // Profile resolution is scoped to one selected printer, so a request that
+    // names only the server profile has no farm-wide meaning left to give it.
+    expect(() =>
+      ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].request.parse({
+        profileId: PROFILE_UUID,
+      }),
+    ).toThrow();
     expect(() =>
       ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].request.parse({}),
     ).toThrow();
