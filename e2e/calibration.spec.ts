@@ -1322,12 +1322,19 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
 
 // ─── D-07/B-02: acknowledgeCalibrationBedClear ────────────────────────────────
 
-test('calibration: acknowledgeCalibrationBedClear rejects request with missing rowVersion field (D-07/B-02)', async () => {
-  // All required fields present except rowVersion.
-  // Production handler: request.parse() rejects because rowVersion is
-  //   z.string().min(1).max(256) (required).
-  // Zod error message JSON contains "rowVersion" in the path.
-  // Mutation target: CalibrationAcknowledgeBedClearRequest.rowVersion → optional
+test('calibration: acknowledgeCalibrationBedClear fences the selected profile before it validates the payload (D-07/B-02)', async () => {
+  // This app has no selected server profile, so the request is refused for that
+  // reason and never reaches `request.parse()`.
+  //
+  // The ordering is deliberate, not incidental. Every calibration handler used
+  // to strict-parse its whole payload before checking the profile, which made
+  // cross-profile refusal a downstream consequence of validation succeeding:
+  // add a required field to a request and every cross-profile test for that
+  // channel starts passing for the wrong reason — a validation error standing in
+  // for a refusal the profile check never performed. This test pins the order.
+  //
+  // Mutation target: move `requireSelectedCalibrationProfile` after the schema
+  // parse and the assertion below fails.
   const msg = await page.evaluate(async () => {
     try {
       await (
@@ -1341,7 +1348,8 @@ test('calibration: acknowledgeCalibrationBedClear rejects request with missing r
         jobId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
         printerId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
         operationId: '44444444-4444-4444-8444-444444444444',
-        // rowVersion intentionally absent
+        // rowVersion intentionally absent: the payload is invalid *as well as*
+        // being for an unselected profile, and the profile refusal wins.
         dispatchStateRowVersion: 'W/"def456"',
       });
       return null;
@@ -1350,8 +1358,10 @@ test('calibration: acknowledgeCalibrationBedClear rejects request with missing r
     }
   });
   expect(msg).not.toBeNull();
-  // Zod path ["rowVersion"] serialises into the error message JSON
-  expect(msg).toMatch(/rowVersion/i);
+  expect(msg).toMatch(/does not match the selected profile/i);
+  // Control: the refusal is the profile fence, not the schema. If the schema
+  // spoke first this would name the missing field instead.
+  expect(msg).not.toMatch(/rowVersion/i);
 });
 
 test('calibration: acknowledgeCalibrationBedClear preload response schema parses valid fixture response (D-07/B-02)', async () => {

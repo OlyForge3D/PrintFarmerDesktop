@@ -188,6 +188,11 @@ export interface CalibrationWorkspaceStoreValue {
    * cancel whatever the previous selection had in flight.
    */
   readonly selectPrinter: (printerId: string | null) => Promise<void>;
+  /**
+   * Resolve OrcaSlicer profiles for the open project's own printer, scoped to
+   * the printer and configuration revision that project is bound to.
+   */
+  readonly loadProjectProfiles: () => Promise<void>;
   readonly createProject: (input: NewProjectInput) => Promise<boolean>;
   readonly dispatchEvent: (event: CalibrationEvent) => Promise<boolean>;
   readonly updateMetadata: (
