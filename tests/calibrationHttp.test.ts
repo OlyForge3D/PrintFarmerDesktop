@@ -224,7 +224,7 @@ describe('CalibrationHttpClient capability contract', () => {
 // ==========================================================================
 
 describe('CalibrationHttpClient token refresh (one bounded retry)', () => {
-  it('retries once on 401 and succeeds with a fresh token', async () => {
+  it('retries a read once on 401 and succeeds with a fresh token', async () => {
     const getAuthCtx = vi
       .fn()
       .mockResolvedValueOnce({
@@ -244,38 +244,35 @@ describe('CalibrationHttpClient token refresh (one bounded retry)', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(json({ message: 'Unauthorized' }, 401))
-      .mockResolvedValueOnce(
-        json({
-          serverRevision: 5,
-          appliedOperationIds: ['33333333-3333-4333-8333-333333333333'],
-        }),
-      );
+      .mockResolvedValueOnce(json(printFarmerCapabilitiesResponse()));
 
     const client = makeClient(fetchMock, {
       getAuthenticatedContext: getAuthCtx,
     });
-    const signal = AbortSignal.timeout(5000);
-    const result = await client.apply(
+    const caps = await client.getCapabilities(
       PROFILE_ID,
       BASE_URL,
-      applyRequest,
-      '33333333-3333-4333-8333-333333333333',
-      null,
-      signal,
+      AbortSignal.timeout(5000),
     );
 
-    expect(result.kind).toBe('success');
+    expect(caps.apiVersion).toBe('1.0');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     // After 401, getAuthenticatedContext called with forceRefresh=true
     expect(getAuthCtx).toHaveBeenCalledWith(PROFILE_ID, BASE_URL, true);
   });
 
-  it('throws authentication error when 401 persists after refresh', async () => {
+  it('does not retry a mutation after a 401, however idempotent it is', async () => {
+    const getAuthCtx = vi.fn().mockResolvedValue({
+      baseUrl: BASE_URL,
+      token: 'stale-jwt',
+      binding: BINDING,
+    });
     const fetchMock = vi
       .fn()
       .mockResolvedValue(json({ message: 'Unauthorized' }, 401));
-    const client = makeClient(fetchMock);
-    const signal = AbortSignal.timeout(5000);
+    const client = makeClient(fetchMock, {
+      getAuthenticatedContext: getAuthCtx,
+    });
 
     await expect(
       client.apply(
@@ -284,8 +281,26 @@ describe('CalibrationHttpClient token refresh (one bounded retry)', () => {
         applyRequest,
         '33333333-3333-4333-8333-333333333333',
         null,
-        signal,
+        AbortSignal.timeout(5000),
       ),
+    ).rejects.toMatchObject({ code: 'authentication', status: 401 });
+
+    // One attempt. A renewed token authenticates whatever principal the
+    // configured key currently resolves to, which is not guaranteed to be the
+    // one the operator was acting as — so the outbox push is surfaced rather
+    // than re-issued under an identity nobody chose.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAuthCtx).not.toHaveBeenCalledWith(PROFILE_ID, BASE_URL, true);
+  });
+
+  it('throws authentication error when 401 persists after refresh', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json({ message: 'Unauthorized' }, 401));
+    const client = makeClient(fetchMock);
+
+    await expect(
+      client.getCapabilities(PROFILE_ID, BASE_URL, AbortSignal.timeout(5000)),
     ).rejects.toMatchObject({ code: 'authentication' });
 
     // Exactly 2 attempts (initial + one refresh)
