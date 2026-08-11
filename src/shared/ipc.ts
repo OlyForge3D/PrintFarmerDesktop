@@ -1186,6 +1186,13 @@ export const CalibrationUnavailableReason = z.enum([
   'operatorDisabled',
   /** Server profile is legacy/incompatible (no API negotiation). */
   'legacyServer',
+  /**
+   * The token was rejected outright: the short-lived desktop JWT expired or was
+   * revoked. Distinct from `missingScopes`, which means the identity was
+   * accepted and the rights were not there — that one needs an administrator,
+   * this one needs a reconnect.
+   */
+  'sessionExpired',
   /** No server profile is selected. */
   'noProfile',
 ]);

@@ -43,6 +43,21 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 /**
+ * How long a forced exchange is reused instead of performed again.
+ *
+ * Two layers react to the same rejection: the HTTP client renews the token for
+ * a read it is allowed to retry, and the calibration recovery path renews it to
+ * re-read capabilities. Both are correct, and both exchanging is not — a single
+ * expired token would cost two round trips to the identity endpoint, and a
+ * revoked key would cost two per failing request.
+ *
+ * Coalescing over a window this short cannot suppress a genuine second episode:
+ * a token minted moments ago has not aged out, so a second rejection inside the
+ * window is the same rejection reaching the other layer.
+ */
+const FORCED_EXCHANGE_COALESCE_MS = 2_000;
+
+/**
  * Implements `CalibrationTokenProvider` using `ServerProfileService`.
  *
  * Each request sequence calls `getAuthenticatedContext()` (or
@@ -50,7 +65,16 @@ import { z } from 'zod';
  * fence the profile identity before and after every request.
  */
 export class ServerProfileCalibrationTokenProvider implements CalibrationTokenProvider {
-  constructor(private readonly profiles: ServerProfileService) {}
+  private readonly lastForcedAt = new Map<string, number>();
+  private readonly forcedInFlight = new Map<
+    string,
+    Promise<{ baseUrl: string; token: string; binding: string }>
+  >();
+
+  constructor(
+    private readonly profiles: ServerProfileService,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
   async getAuthenticatedContext(
     profileId: string,
@@ -58,17 +82,36 @@ export class ServerProfileCalibrationTokenProvider implements CalibrationTokenPr
     forceRefresh = false,
   ): Promise<{ baseUrl: string; token: string; binding: string }> {
     if (forceRefresh) {
+      const inFlight = this.forcedInFlight.get(profileId);
+      if (inFlight !== undefined) return inFlight;
+      const last = this.lastForcedAt.get(profileId);
+      if (
+        last !== undefined &&
+        this.now() - last < FORCED_EXCHANGE_COALESCE_MS
+      ) {
+        // Already exchanged for this rejection. Hand back what that produced.
+        return this.getAuthenticatedContext(profileId, expectedBaseUrl, false);
+      }
       // Force a fresh token from the network — used after a 401 response.
-      const ctx = await this.profiles.getAuthenticatedServerContext(
-        profileId,
-        expectedBaseUrl,
-        true,
-      );
-      return {
-        baseUrl: ctx.baseUrl,
-        token: ctx.token,
-        binding: ctx.binding,
-      };
+      const run = (async () => {
+        try {
+          const ctx = await this.profiles.getAuthenticatedServerContext(
+            profileId,
+            expectedBaseUrl,
+            true,
+          );
+          return {
+            baseUrl: ctx.baseUrl,
+            token: ctx.token,
+            binding: ctx.binding,
+          };
+        } finally {
+          this.lastForcedAt.set(profileId, this.now());
+          this.forcedInFlight.delete(profileId);
+        }
+      })();
+      this.forcedInFlight.set(profileId, run);
+      return run;
     }
 
     // Normal path: use the cached context (acquires a new token if expired).

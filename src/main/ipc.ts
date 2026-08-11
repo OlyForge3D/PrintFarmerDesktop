@@ -171,6 +171,10 @@ import {
 import { CalibrationSelectionCache } from './calibrationSelectionCache.js';
 import { BedClearAcknowledgementLedger } from './calibrationBedClearLedger.js';
 import { CalibrationCapabilityRefresher } from './calibrationCapabilityRefresh.js';
+import {
+  CalibrationAuthRecovery,
+  type CalibrationAuthRecoveryOutcome,
+} from './calibrationAuthRecovery.js';
 import { CalibrationSyncEngine } from './calibrationEngine.js';
 import {
   ServerProfileCalibrationTokenProvider,
@@ -659,6 +663,8 @@ export function registerIpcHandlers(
   const bedClearLedger = new BedClearAcknowledgementLedger();
   /** Bounded capability re-read after the server refuses an operation. */
   const capabilityRefresher = new CalibrationCapabilityRefresher();
+  /** Bounded re-exchange after the server rejects this profile's token. */
+  const authRecovery = new CalibrationAuthRecovery();
 
   /**
    * Monotonic counter for everything that invalidates in-flight calibration
@@ -718,9 +724,11 @@ export function registerIpcHandlers(
     if (profileId === undefined) {
       selectionCache.clear();
       capabilityRefresher.clear();
+      authRecovery.clear();
     } else {
       selectionCache.forgetProfile(profileId);
       capabilityRefresher.forgetProfile(profileId);
+      authRecovery.forgetProfile(profileId);
     }
   };
 
@@ -782,14 +790,165 @@ export function registerIpcHandlers(
     return outcome.accessMayHaveChanged;
   };
 
+  /**
+   * Re-establish identity once after the server rejects this profile's token.
+   *
+   * A 401 is not a refusal of the operator's rights; it says the JWT is no
+   * longer valid, which happens on its own every fifteen minutes and again the
+   * moment an administrator forces a revocation. Everything derived from that
+   * token is discarded — capabilities, remembered contexts, a bed-clear
+   * acknowledgement, in-flight outbox pushes — and the action epoch advances so
+   * a verification already in flight cannot dispatch on evidence that predates
+   * the rejection.
+   *
+   * The API key is then re-exchanged exactly once and capabilities re-read, so
+   * the gate is evaluated against whatever principal the *new* token resolves
+   * to. Nothing is replayed: a fresh principal is precisely the case where
+   * silently repeating a queue or dispatch would act for the operator without
+   * being asked.
+   */
+  const noteCalibrationUnauthenticated = async (
+    selectedId: string,
+    options: { reauthenticate?: boolean } = {},
+  ): Promise<CalibrationAuthRecoveryOutcome> => {
+    calibrationStateEpoch += 1;
+    calibrationDiagnostics.clearCapabilities();
+    bedClearLedger.clear();
+    clearProfileCache();
+    selectionCache.forgetProfile(selectedId);
+    abortActiveCalibrationSyncs();
+    if (options.reauthenticate === false) {
+      return {
+        status: 'exchangeFailed',
+        attempted: false,
+        authenticated: false,
+      };
+    }
+    return authRecovery.noteUnauthenticated(selectedId, async () => {
+      let baseUrl: string;
+      try {
+        // forceRefresh: exchange the configured API key for a new JWT rather
+        // than reusing the cached one the server just rejected.
+        const refreshed = await calibrationTokens.getAuthenticatedContext(
+          selectedId,
+          undefined,
+          true,
+        );
+        baseUrl = refreshed.baseUrl;
+      } catch {
+        return 'exchangeFailed';
+      }
+      // Capabilities are read against the new token *before* the workspace is
+      // told it is authenticated again, because the key may now resolve to a
+      // different principal with different rights.
+      const negotiationToken =
+        calibrationDiagnostics.beginCapabilityNegotiation();
+      try {
+        const caps = await calibrationHttp.getCapabilities(
+          selectedId,
+          baseUrl,
+          AbortSignal.timeout(10_000),
+        );
+        calibrationDiagnostics.recordCapabilities(
+          negotiationToken,
+          selectedId,
+          caps,
+        );
+      } catch (error) {
+        // A second 401, from the read taken immediately after a successful
+        // exchange, terminates recovery. Recursing here is how a revoked key
+        // turns into an exchange storm.
+        if (isUnauthenticated(error)) return 'stillUnauthenticated';
+        return 'exchangeFailed';
+      }
+      emitCalibrationLog({
+        level: 'info',
+        component: 'calibration.http',
+        event: 'capabilities.negotiated',
+        profileId: selectedId,
+        outcome: 'ok',
+      });
+      return 'reauthenticated';
+    });
+  };
+
   /** Whether a thrown error is the server refusing on authorisation grounds. */
   const isForbidden = (error: unknown): boolean =>
     error instanceof CalibrationHttpError &&
     (error.code === 'authorization' || error.code === 'forbidden');
 
+  /**
+   * Whether a thrown error is the server rejecting the token itself.
+   *
+   * Keyed on the status rather than the code, because `authentication` is also
+   * raised locally when the server profile is removed or re-bound mid-request.
+   * Those discard evidence too, but they are not something a re-exchange fixes.
+   */
+  const isUnauthenticated = (error: unknown): boolean =>
+    error instanceof CalibrationHttpError && error.status === 401;
+
+  /**
+   * Single entry point for "the server would not let this through".
+   *
+   * Every calibration path funnels its authorisation and authentication
+   * failures here so the two can never diverge: each new channel would
+   * otherwise have to remember both, and the ones that convert their error into
+   * a response kept forgetting.
+   */
+  const noteCalibrationAccessFailure = async (
+    selectedId: string,
+    error: unknown,
+  ): Promise<{ staleAccess: boolean; reauthenticationRequired: boolean }> =>
+    applyCalibrationAccessFailure(
+      selectedId,
+      isUnauthenticated(error)
+        ? 'unauthenticated'
+        : isForbidden(error)
+          ? 'forbidden'
+          : 'none',
+    );
+
+  /**
+   * The same invalidation, reached from a typed result code rather than a
+   * thrown error — synchronization reports its authorization outcome instead of
+   * raising it, and must not therefore get a weaker response.
+   */
+  const applyCalibrationAccessFailure = async (
+    selectedId: string,
+    kind: 'unauthenticated' | 'forbidden' | 'none',
+  ): Promise<{ staleAccess: boolean; reauthenticationRequired: boolean }> => {
+    if (kind === 'unauthenticated') {
+      const outcome = await noteCalibrationUnauthenticated(selectedId);
+      return {
+        staleAccess: true,
+        reauthenticationRequired: !outcome.authenticated,
+      };
+    }
+    if (kind === 'forbidden') {
+      const staleAccess = await noteCalibrationForbidden(selectedId);
+      return { staleAccess, reauthenticationRequired: false };
+    }
+    return { staleAccess: false, reauthenticationRequired: false };
+  };
+
   /** Appended when a refusal means the cached permissions may be stale. */
   const ACCESS_MAY_HAVE_CHANGED =
     'Your calibration access may have changed. Reconnect or sign in again, then retry.';
+
+  /** Appended when the session expired or was revoked and must be re-established. */
+  const REAUTHENTICATION_REQUIRED =
+    'Your PrintFarmer session expired or was revoked. Reconnect to sign in again, then retry.';
+
+  /** Guidance for whichever way the server rejected the request. */
+  const accessFailureGuidance = (failure: {
+    staleAccess: boolean;
+    reauthenticationRequired: boolean;
+  }): string =>
+    failure.reauthenticationRequired
+      ? REAUTHENTICATION_REQUIRED
+      : failure.staleAccess
+        ? ACCESS_MAY_HAVE_CHANGED
+        : '';
 
   /**
    * Minimal shape used to fence a request on the selected server profile.
@@ -842,8 +1001,11 @@ export function registerIpcHandlers(
         //
         // The error is rethrown unchanged, and nothing is replayed: correcting
         // the evidence is a read, and repeating the caller's action is not.
-        if (fencedProfileId !== null && isForbidden(error)) {
-          await noteCalibrationForbidden(fencedProfileId);
+        // This covers both ways the server can reject — a refused action and a
+        // rejected token — because a channel that remembered only one of them
+        // is exactly the hole this wrapper exists to close.
+        if (fencedProfileId !== null) {
+          await noteCalibrationAccessFailure(fencedProfileId, error);
         }
         throw error;
       }
@@ -942,12 +1104,13 @@ export function registerIpcHandlers(
           selectionCache.rememberContext(selectedId, context);
         }
       } catch (error) {
-        // A 403 here is the server refusing this account's context read, and it
-        // must invalidate exactly as any other refusal does. This catch converts
-        // the exception into a refusal, so nothing reaches the central wrapper —
-        // without this the one path where a mutation is *about* to happen was
-        // the one path that never corrected its evidence.
-        if (isForbidden(error)) await noteCalibrationForbidden(selectedId);
+        // A 403 here is the server refusing this account's context read, and a
+        // 401 is it rejecting the token outright; both must invalidate exactly
+        // as they do anywhere else. This catch converts the exception into a
+        // refusal, so nothing reaches the central wrapper — without this the one
+        // path where a mutation is *about* to happen was the one path that never
+        // corrected its evidence.
+        await noteCalibrationAccessFailure(selectedId, error);
         return {
           allowed: false,
           code: 'contextUnavailable',
@@ -2020,6 +2183,44 @@ export function registerIpcHandlers(
         // demands. Auth failures are classified as what they are and run the same
         // non-replaying state discard as every other 403 — without recursing into
         // a capability refresh, since the capability endpoint is what just refused.
+        if (isUnauthenticated(error)) {
+          // An expired or revoked token is recoverable without the operator
+          // doing anything, so recovery is attempted once. Its own capability
+          // read is what settles the answer; it cannot recurse, because a second
+          // 401 terminates it.
+          const outcome = await noteCalibrationUnauthenticated(selectedId);
+          if (outcome.authenticated) {
+            const recovered =
+              calibrationDiagnostics.capabilitySnapshot(selectedId);
+            if (recovered !== null) {
+              return ipcSchemas[
+                IpcChannel.CalibrationGetAvailability
+              ].response.parse({
+                available: true,
+                unavailableReason: null,
+                unavailableDetail: null,
+                negotiatedApiVersion: recovered.negotiatedApiVersion,
+                negotiatedSchemaVersion: recovered.negotiatedSchemaVersion,
+                capabilityFlags: recovered.flags,
+                grantedScopes: recovered.grantedScopes,
+                offlineEditingEnabled:
+                  recovered.flags.calibrationOfflineDraftEnabled,
+              });
+            }
+          }
+          return ipcSchemas[
+            IpcChannel.CalibrationGetAvailability
+          ].response.parse({
+            available: false,
+            unavailableReason: 'sessionExpired',
+            unavailableDetail: `PrintFarmer rejected this session's credentials. ${REAUTHENTICATION_REQUIRED}`,
+            negotiatedApiVersion: null,
+            negotiatedSchemaVersion: null,
+            capabilityFlags: null,
+            grantedScopes: null,
+            offlineEditingEnabled: false,
+          });
+        }
         if (isForbidden(error)) {
           calibrationStateEpoch += 1;
           calibrationDiagnostics.clearCapabilities();
@@ -2673,17 +2874,29 @@ export function registerIpcHandlers(
         // The outbox operation is not replayed. Correcting the evidence is a
         // read; pushing the operator's queued changes again is not, and doing it
         // because a permission check changed its mind would act on their behalf.
-        if (
-          result.phase === 'failed' &&
-          (outcome.errorCode === 'authorization' ||
-            outcome.errorCode === 'forbidden')
-        ) {
-          const staleAccess = await noteCalibrationForbidden(selectedId);
+        // A rejected token is treated the same way: recovery re-establishes
+        // identity, and the operator decides whether to push again.
+        const syncFailureKind =
+          result.phase !== 'failed'
+            ? 'none'
+            : outcome.errorCode === 'authorization' ||
+                outcome.errorCode === 'forbidden'
+              ? 'forbidden'
+              : outcome.errorCode === 'authentication'
+                ? 'unauthenticated'
+                : 'none';
+        if (syncFailureKind !== 'none') {
+          const accessFailure = await applyCalibrationAccessFailure(
+            selectedId,
+            syncFailureKind,
+          );
+          const accessGuidance = accessFailureGuidance(accessFailure);
           return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
             ...result,
-            error: staleAccess
-              ? `${result.error ?? 'Calibration synchronization was refused.'} ${ACCESS_MAY_HAVE_CHANGED}`
-              : result.error,
+            error:
+              accessGuidance !== ''
+                ? `${result.error ?? 'Calibration synchronization was refused.'} ${accessGuidance}`
+                : result.error,
           });
         }
         return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse(result);
@@ -2885,9 +3098,12 @@ export function registerIpcHandlers(
         // stale. Re-read them so the workspace stops offering what the server
         // will keep refusing — and do not replay the generation, which is the
         // operator's decision to make.
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(correlationId)
@@ -2905,7 +3121,7 @@ export function registerIpcHandlers(
             error: staleAccess
               ? {
                   ...apiError,
-                  message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                  message: `${apiError.message} ${accessGuidance}`,
                 }
               : apiError,
           },
@@ -3017,9 +3233,12 @@ export function registerIpcHandlers(
         // this. A refusal must still invalidate the evidence it contradicts —
         // handling it per action left a new hole every time a channel was added.
         // Nothing is replayed.
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(correlationId)
@@ -3040,7 +3259,7 @@ export function registerIpcHandlers(
           error: staleAccess
             ? {
                 ...apiError,
-                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                message: `${apiError.message} ${accessGuidance}`,
               }
             : apiError,
         });
@@ -3194,9 +3413,12 @@ export function registerIpcHandlers(
         // this. A refusal must still invalidate the evidence it contradicts —
         // handling it per action left a new hole every time a channel was added.
         // Nothing is replayed.
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(flowId())
@@ -3215,7 +3437,7 @@ export function registerIpcHandlers(
           error: staleAccess
             ? {
                 ...apiError,
-                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                message: `${apiError.message} ${accessGuidance}`,
               }
             : apiError,
         });
@@ -3294,12 +3516,15 @@ export function registerIpcHandlers(
         //
         // In every case the ledger is not minted and the gate does not proceed:
         // a read failure is not evidence that the bed is clear.
-        if (isForbidden(error)) {
-          await noteCalibrationForbidden(selectedId);
+        if (isForbidden(error) || isUnauthenticated(error)) {
+          const accessFailure = await noteCalibrationAccessFailure(
+            selectedId,
+            error,
+          );
           jobReadFailure = {
             allowed: false,
             code: 'permissionDenied',
-            message: `PrintFarmer refused to read this queue job. ${ACCESS_MAY_HAVE_CHANGED}`,
+            message: `PrintFarmer refused to read this queue job. ${accessFailureGuidance(accessFailure)}`,
           };
         } else {
           jobReadFailure = {
@@ -3467,9 +3692,12 @@ export function registerIpcHandlers(
         // this. A refusal must still invalidate the evidence it contradicts —
         // handling it per action left a new hole every time a channel was added.
         // Nothing is replayed.
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(correlationId)
@@ -3488,7 +3716,7 @@ export function registerIpcHandlers(
           error: staleAccess
             ? {
                 ...apiError,
-                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                message: `${apiError.message} ${accessGuidance}`,
               }
             : apiError,
         });
@@ -3582,9 +3810,12 @@ export function registerIpcHandlers(
           replayed: result.replayed,
         });
       } catch (error) {
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? // No reference: this handler neither begins a correlated flow nor
@@ -3606,7 +3837,7 @@ export function registerIpcHandlers(
           error: staleAccess
             ? {
                 ...apiError,
-                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                message: `${apiError.message} ${accessGuidance}`,
               }
             : apiError,
         });
@@ -3685,9 +3916,12 @@ export function registerIpcHandlers(
         // this. A refusal must still invalidate the evidence it contradicts —
         // handling it per action left a new hole every time a channel was added.
         // Nothing is replayed.
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? // No reference: see the note on the print-start handler (#177).
@@ -3709,7 +3943,7 @@ export function registerIpcHandlers(
           error: staleAccess
             ? {
                 ...apiError,
-                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                message: `${apiError.message} ${accessGuidance}`,
               }
             : apiError,
         });
@@ -3748,9 +3982,12 @@ export function registerIpcHandlers(
         // this. A refusal must still invalidate the evidence it contradicts —
         // handling it per action left a new hole every time a channel was added.
         // Nothing is replayed.
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
+        const staleAccess = accessGuidance !== '';
         const apiError =
           error instanceof CalibrationHttpError
             ? // No reference: see the note on the print-start handler (#177).
@@ -3772,7 +4009,7 @@ export function registerIpcHandlers(
           error: staleAccess
             ? {
                 ...apiError,
-                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                message: `${apiError.message} ${accessGuidance}`,
               }
             : apiError,
         });
@@ -3995,14 +4232,19 @@ export function registerIpcHandlers(
         // the cached snapshot is re-read here too — without retrying the
         // listing, which the operator can repeat themselves.
         const classified = classifyDiscoveryFailure(error);
-        if (isForbidden(error)) await noteCalibrationForbidden(selectedId);
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const accessGuidance = accessFailureGuidance(accessFailure);
         return answer({
-          discovery: isForbidden(error)
-            ? {
-                ...classified,
-                message: `${classified.message} ${ACCESS_MAY_HAVE_CHANGED}`,
-              }
-            : classified,
+          discovery:
+            accessGuidance !== ''
+              ? {
+                  ...classified,
+                  message: `${classified.message} ${accessGuidance}`,
+                }
+              : classified,
           ...(await diagnoseLocalInstallWithoutContext()),
         });
       }
@@ -4070,8 +4312,9 @@ export function registerIpcHandlers(
       } catch (error) {
         const classified = classifyDiscoveryFailure(error);
         // Converted, so the wrapper never sees it. A refusal on the selected
-        // printer's context is still a refusal and invalidates accordingly.
-        if (isForbidden(error)) await noteCalibrationForbidden(selectedId);
+        // printer's context is still a refusal, and a rejected token is still a
+        // rejected token; both invalidate accordingly.
+        await noteCalibrationAccessFailure(selectedId, error);
         // A context failure describes one printer. It must never be reported in
         // a way the renderer could render as "there are no printers": the list
         // the operator selected from is still valid and still on screen.

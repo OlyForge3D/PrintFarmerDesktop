@@ -496,6 +496,20 @@ async function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Whether a request may be re-issued once its token has been renewed.
+ *
+ * Only requests that change nothing. See the 401 branch in `request()`: a
+ * renewed token can resolve to a different principal, so replaying a mutation
+ * would perform it as somebody the operator never chose to be.
+ */
+function isReplayableAfterReauthentication(
+  method: string | undefined,
+): boolean {
+  const verb = (method ?? 'GET').toUpperCase();
+  return verb === 'GET' || verb === 'HEAD';
+}
+
 function mapError(
   error: unknown,
   signal: AbortSignal,
@@ -1485,9 +1499,26 @@ export class CalibrationHttpClient {
           };
         }
 
-        // 401 on first attempt → refresh token and retry
+        // 401 on first attempt → refresh token and retry, but only for a read.
+        //
+        // A rejected token is normally just an expired one, and silently
+        // renewing it keeps a fifteen-minute JWT from interrupting an operator
+        // mid-task. That reasoning holds for a GET and fails for anything that
+        // changes state: the exchange authenticates whatever principal the
+        // configured key *currently* resolves to, which is not guaranteed to be
+        // the principal the operator was acting as when they pressed the button.
+        // Re-issuing a queue, dispatch, generate or delete under a freshly
+        // minted identity is an action nobody asked for. Mutations therefore
+        // surface the 401 and wait for a deliberate retry.
         await discard(response);
         combined.dispose();
+        if (!isReplayableAfterReauthentication(init.method)) {
+          throw new CalibrationHttpError(
+            'authentication',
+            'Calibration authentication expired; the request was not retried.',
+            401,
+          );
+        }
         try {
           context = await this.tokens.getAuthenticatedContext(
             profileId,
