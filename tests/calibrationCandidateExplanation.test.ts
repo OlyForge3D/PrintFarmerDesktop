@@ -1486,6 +1486,70 @@ describe('no single candidate can empty the farm', () => {
     expect(response.printers).toHaveLength(2);
     expect(response.printersUnreadable).toBe(0);
   });
+
+  it('isolates a record the wire accepts but the renderer contract refuses', async () => {
+    // The seam the corruption sweep above could not see. It asserts against
+    // the wire schema, so a value that *passes* the wire and fails only at the
+    // IPC boundary slipped through: `ServerInstant` accepted an out-of-range
+    // instant and rendered it as an ECMAScript expanded year
+    // (`+010000-01-01T00:00:00.000Z`), which `z.string().datetime()` rejects.
+    // The candidate was therefore classified readable, the response schema
+    // covers the whole list, and one such timestamp discarded every healthy
+    // printer while reporting nothing lost.
+    for (const instant of [
+      '+010000-01-01T00:00:00.000Z',
+      '10000-01-01',
+      'January 1, 12345',
+    ]) {
+      const response = await listPrintersResponse([
+        candidateDto({ observedAtUtc: instant, lastSeenAtUtc: null }),
+        candidateDto({ id: HEALTHY_ID }),
+      ]);
+
+      expect(
+        response.printers.some((printer) => printer.printerId === HEALTHY_ID),
+        instant,
+      ).toBe(true);
+      expect(response.printers, instant).toHaveLength(1);
+      // Counted, not silently dropped: the whole point of the count is that a
+      // shorter list than the operator owns is visible as a fault.
+      expect(response.printersUnreadable, instant).toBe(1);
+    }
+  });
+
+  it('drives the corruption sweep through the registered handler too', async () => {
+    // The sweep above runs at the wire schema for speed. This runs a smaller
+    // corpus through the production handler, so a value that is only refused
+    // further downstream — as the expanded-year instant was — cannot hide in
+    // the gap between the two layers again.
+    const throughHandler = [
+      { label: 'expanded-year instant', dto: { observedAtUtc: '10000-01-01' } },
+      { label: 'null id', dto: { id: null } },
+      { label: 'numeric reachability', dto: { reachability: 7 } },
+      { label: 'array firmware', dto: { firmware: [1, 2, 3] } },
+      {
+        label: 'long operational state',
+        dto: { operationalState: 'x'.repeat(5_000) },
+      },
+      { label: 'fractional revision', dto: { configurationRevision: 1.5 } },
+    ];
+
+    for (const entry of throughHandler) {
+      const response = await listPrintersResponse([
+        candidateDto(entry.dto),
+        candidateDto({ id: HEALTHY_ID }),
+      ]);
+
+      expect(
+        response.printers.some((printer) => printer.printerId === HEALTHY_ID),
+        entry.label,
+      ).toBe(true);
+      expect(
+        response.printers.length + response.printersUnreadable,
+        entry.label,
+      ).toBe(2);
+    }
+  });
 });
 
 describe('the unreadable count is bounded and required at the schema itself', () => {

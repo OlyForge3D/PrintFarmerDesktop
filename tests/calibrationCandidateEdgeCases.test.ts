@@ -17,6 +17,7 @@ import {
   RemoteCalibrationPrinters,
   projectCalibrationEligibility,
   isExplicitCalibrationEligibilityComplete,
+  projectPrintFarmerOrcaProfile,
 } from '../src/main/calibrationWire.js';
 
 const PRINTER_GUID = 'aaaaaaaa-1111-4111-8111-222222222222';
@@ -199,5 +200,125 @@ describe('OrcaProfileEntry carries both identities', () => {
     expect(resolveOrcaBaseProfileLookupName(entry)).toBe(
       'Generic PLA @0.4 nozzle',
     );
+  });
+});
+
+describe('a value the wire accepts but the renderer contract refuses', () => {
+  it('classifies an unrepresentable instant as unreadable, not as readable', () => {
+    // `ServerInstant` accepts anything Date.parse finds finite, and an
+    // out-of-range instant renders as an ECMAScript expanded year
+    // (`+010000-01-01T00:00:00.000Z`). That is a real instant but not one
+    // `z.string().datetime()` accepts, so the record used to be classified
+    // readable here and then fail the IPC boundary, where the response is one
+    // parsed value — emptying the farm while reporting nothing lost.
+    for (const instant of [
+      '+010000-01-01T00:00:00.000Z',
+      '10000-01-01',
+      'January 1, 12345',
+    ]) {
+      const { printers, unreadable } = RemoteCalibrationPrinters.parse([
+        neverObservedCandidateDto({ observedAtUtc: instant }),
+        neverObservedCandidateDto({
+          id: 'dddddddd-1111-4111-8111-222222222222',
+        }),
+      ]);
+
+      expect(printers, instant).toHaveLength(1);
+      expect(printers[0]!.printerId, instant).toBe(
+        'dddddddd-1111-4111-8111-222222222222',
+      );
+      expect(unreadable, instant).toBe(1);
+    }
+  });
+
+  it('keeps ordinary instants working, so the guard is a bound not a blanket', () => {
+    const { printers, unreadable } = RemoteCalibrationPrinters.parse([
+      neverObservedCandidateDto({ observedAtUtc: '2026-08-11T12:00:00Z' }),
+    ]);
+
+    expect(unreadable).toBe(0);
+    expect(printers[0]!.updatedAt).toBe('2026-08-11T12:00:00.000Z');
+  });
+});
+
+describe('one printer context cannot reject the whole profiles request', () => {
+  /**
+   * The wire bounds are looser than the renderer contract in places:
+   * `profileRevision` and `snapshotSha256` admit `""` upstream but are
+   * `.min(1)` on `OrcaProfileEntry`. A bare throwing `.parse` here escaped the
+   * per-printer catch in the profiles handler, rejected the `Promise.all` it
+   * ran inside, and discarded every other printer's profiles *and* the local
+   * OrcaSlicer scan the handler deliberately performs outside the server path.
+   */
+  function eligibleContext(overrides: Record<string, unknown> = {}) {
+    return {
+      printerId: PRINTER_GUID,
+      displayName: 'Rack A cell 3',
+      isCurrent: true,
+      configurationRevision: 7,
+      snapshotId: 'snapshot-7',
+      orcaProfileId: 'orca-base',
+      orcaProfileName: 'Generic PLA @0.4 nozzle',
+      orcaProfileDisplayName: 'Generic PLA',
+      nozzleDiameterMm: 0.4,
+      profileRevision: 'rev-1',
+      contentHash: null,
+      firmwareFamily: 'Klipper',
+      gcodeDialect: 'Klipper',
+      slicerFamily: 'OrcaSlicer',
+      slicerDistribution: 'upstream',
+      slicerIdentity: 'OrcaSlicer',
+      hardwareContextComplete: true,
+      safetyContextComplete: true,
+      permissionsComplete: true,
+      toolheads: [
+        {
+          toolId: 'tool-a',
+          toolheadId: 'head-a',
+          nozzle: { id: 'nozzle-a', diameterMm: 0.4 },
+        },
+      ],
+      ...overrides,
+    } as unknown as Parameters<typeof projectPrintFarmerOrcaProfile>[1];
+  }
+
+  const eligibleCandidate = {
+    printerId: PRINTER_GUID,
+    isOnline: true,
+    eligibility: {
+      firmwareFamily: 'Klipper',
+      gcodeDialect: 'Klipper',
+      slicerFamily: 'OrcaSlicer',
+      slicerDistribution: 'upstream',
+      slicerIdentity: 'OrcaSlicer',
+      hardwareContextComplete: true,
+      safetyContextComplete: true,
+      permissionsComplete: true,
+      reasons: [],
+    },
+  } as unknown as Parameters<typeof projectPrintFarmerOrcaProfile>[0];
+
+  it('returns null for a revision the renderer contract refuses, rather than throwing', () => {
+    expect(() =>
+      projectPrintFarmerOrcaProfile(
+        eligibleCandidate,
+        eligibleContext({ profileRevision: '' }),
+      ),
+    ).not.toThrow();
+    expect(
+      projectPrintFarmerOrcaProfile(
+        eligibleCandidate,
+        eligibleContext({ profileRevision: '' }),
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null for an empty snapshot id, rather than throwing', () => {
+    expect(() =>
+      projectPrintFarmerOrcaProfile(
+        eligibleCandidate,
+        eligibleContext({ snapshotId: '' }),
+      ),
+    ).not.toThrow();
   });
 });

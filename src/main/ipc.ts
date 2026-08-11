@@ -28,6 +28,7 @@ import {
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_PRINTER_CANDIDATES,
+  CalibrationPrinterCandidate,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -1527,33 +1528,50 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         signal,
       );
+      // Projected and validated one candidate at a time, for the same reason
+      // the wire layer parses them one at a time: the response schema covers
+      // the whole list, so a single candidate this projection cannot render
+      // would otherwise fail `.parse` and discard every healthy printer with
+      // it. Isolating only the wire layer left that seam open — a timestamp
+      // the wire accepted but the renderer contract refused emptied the farm
+      // while reporting nothing lost. A candidate that fails here joins the
+      // ones that failed upstream: dropped alone, and counted.
+      const projected: unknown[] = [];
+      let unprojectable = 0;
+      for (const printer of printers.printers) {
+        const eligibility = projectCalibrationEligibility(printer);
+        const candidate = CalibrationPrinterCandidate.safeParse({
+          printerId: printer.printerId,
+          displayName: printer.displayName,
+          printerModel: printer.printerModel,
+          firmwareCompatible: isExplicitCalibrationEligibilityComplete(printer),
+          orcaProfileId: printer.orcaProfileId,
+          isOnline: printer.isOnline,
+          updatedAt: printer.updatedAt,
+          // Carried so an ineligible printer can explain itself. Codes only,
+          // and each is checked against the known catalogue before it
+          // crosses the boundary, so an unfamiliar or hostile "code" cannot
+          // arrive at the renderer as arbitrary text.
+          rejectionReasonCodes:
+            eligibility === null ? explainIneligibility(printer) : [],
+          missingInputs:
+            eligibility === null
+              ? printer.missingInputs.map(normalizeCalibrationMissingInput)
+              : [],
+          eligibility,
+        });
+        if (candidate.success) {
+          projected.push(candidate.data);
+        } else {
+          unprojectable += 1;
+        }
+      }
       return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
-        printers: printers.printers.map((printer) => {
-          const eligibility = projectCalibrationEligibility(printer);
-          return {
-            printerId: printer.printerId,
-            displayName: printer.displayName,
-            printerModel: printer.printerModel,
-            firmwareCompatible:
-              isExplicitCalibrationEligibilityComplete(printer),
-            orcaProfileId: printer.orcaProfileId,
-            isOnline: printer.isOnline,
-            updatedAt: printer.updatedAt,
-            // Carried so an ineligible printer can explain itself. Codes only,
-            // and each is checked against the known catalogue before it
-            // crosses the boundary, so an unfamiliar or hostile "code" cannot
-            // arrive at the renderer as arbitrary text.
-            rejectionReasonCodes:
-              eligibility === null ? explainIneligibility(printer) : [],
-            missingInputs:
-              eligibility === null
-                ? printer.missingInputs.map(normalizeCalibrationMissingInput)
-                : [],
-            eligibility,
-          };
-        }),
+        printers: projected,
         printersTruncated: printers.truncated,
-        printersUnreadable: printers.unreadable,
+        // Both losses are the same loss to the operator: a printer the server
+        // named that this client cannot show.
+        printersUnreadable: printers.unreadable + unprojectable,
         fetchedAt: new Date().toISOString(),
       });
     },
@@ -3057,6 +3075,7 @@ export function registerIpcHandlers(
               localEntries: [] as Awaited<
                 ReturnType<typeof discoverLocalOrcaFilamentProfiles>
               >,
+              failed: false,
             };
           }
           try {
@@ -3073,15 +3092,37 @@ export function registerIpcHandlers(
             const localEntries = await discoverLocalOrcaFilamentProfiles(
               context,
             ).catch(() => []);
-            return { pfEntries: pfEntry ? [pfEntry] : [], localEntries };
+            return {
+              pfEntries: pfEntry ? [pfEntry] : [],
+              localEntries,
+              failed: false,
+            };
           } catch (error) {
+            // 404 means this printer simply has no calibration context — a
+            // legitimate answer, not a fault, so it must not be counted as an
+            // unreadable one or every printer without a context would read as
+            // a server defect.
             if (
               error instanceof CalibrationHttpError &&
-              ['notFound', 'invalidResponse'].includes(error.code)
+              error.code === 'notFound'
             ) {
-              return { pfEntries: [], localEntries: [] };
+              return { pfEntries: [], localEntries: [], failed: false };
             }
-            throw error;
+            // One printer's context failing must not take the others — or the
+            // local OrcaSlicer scan — with it. This ran inside `Promise.all`,
+            // so a rethrow rejected the whole handler and discarded a scan the
+            // handler performs outside the server path precisely so a server
+            // fault cannot hide the profiles installed on this machine.
+            // Cancellation is the exception: it means the caller stopped
+            // waiting, and pretending the printer merely had no profiles would
+            // report a result for a request that was abandoned.
+            if (
+              error instanceof CalibrationHttpError &&
+              error.code === 'cancelled'
+            ) {
+              throw error;
+            }
+            return { pfEntries: [], localEntries: [], failed: true };
           }
         }),
       );
@@ -3089,6 +3130,22 @@ export function registerIpcHandlers(
         string,
         NonNullable<(typeof discovered)[number]['pfEntries'][number]>
       >();
+      // Printers whose context could not be read. Their profiles are missing
+      // from the list below, so reporting an unqualified `ok` would describe a
+      // complete answer that is not one.
+      const unreadableContexts = discovered.filter(
+        (entry) => entry.failed,
+      ).length;
+      if (
+        unreadableContexts > 0 &&
+        (discovery.kind === 'ok' || discovery.kind === 'farmTruncated')
+      ) {
+        discovery = {
+          kind: 'partiallyUnreadable',
+          message: `${unreadableContexts} printer context${unreadableContexts === 1 ? '' : 's'} could not be read, so profiles for ${unreadableContexts === 1 ? 'that printer' : 'those printers'} are missing from this list.`,
+          serverCode: null,
+        };
+      }
       for (const { pfEntries, localEntries } of discovered) {
         for (const profile of pfEntries) {
           if (profile === null) continue;

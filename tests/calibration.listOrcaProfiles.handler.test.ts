@@ -22,7 +22,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { IpcChannel } from '@shared/ipc';
+import { CALIBRATION_MAX_PRINTER_CANDIDATES, IpcChannel } from '@shared/ipc';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -161,6 +161,7 @@ interface OrcaProfilesResponse {
   profiles: unknown[];
   discovery: { kind: string; message: string };
   printersUnreadable: number;
+  printersTruncated: boolean;
   localProfiles: Array<{ name: string; source: string }>;
   localDiscovery: { kind: string; message: string };
 }
@@ -353,7 +354,11 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
   });
 
   it('reports plain ok and zero unreadable when every candidate was readable', async () => {
-    respondWith([candidateDto()]);
+    // Offline, so no per-printer context request is made. The claim under test
+    // is about candidate readability; a candidate whose *context* call is
+    // served the candidate array by this single-route stub would be an
+    // unreadable context, which is a different (and separately tested) thing.
+    respondWith([candidateDto({ reachability: 'offline' })]);
 
     const response = (await listOrcaProfilesHandler()(
       {},
@@ -361,6 +366,49 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     )) as OrcaProfilesResponse;
 
     expect(response.discovery.kind).toBe('ok');
+    expect(response.printersUnreadable).toBe(0);
+  });
+
+  it('does not report an unqualified ok when a printer context is unreadable', async () => {
+    // The candidate parses; its context does not. Those profiles are missing
+    // from the list, so `ok` would describe a complete answer that is not one.
+    // Previously this rejected the entire handler, discarding the local scan
+    // with it.
+    respondWith([candidateDto()]);
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
+    expect(response.discovery.message).toContain('printer context');
+    // The local scan survives, which is the whole point of running it outside
+    // the server path.
+    expect(response.localProfiles.map((p) => p.name)).toContain(TARGET_PROFILE);
+  });
+
+  it('reports a truncated farm rather than plain ok', async () => {
+    // Reachable and previously untested: every record readable, but more were
+    // offered than were considered, so `ok` would describe a farm this handler
+    // never saw the whole of. Offline candidates, so no context request is
+    // made and the truncation branch is what is under test.
+    respondWith(
+      Array.from({ length: CALIBRATION_MAX_PRINTER_CANDIDATES + 5 }, (_u, i) =>
+        candidateDto({
+          id: `${i.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+          reachability: 'offline',
+        }),
+      ),
+    );
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('farmTruncated');
+    expect(response.printersTruncated).toBe(true);
     expect(response.printersUnreadable).toBe(0);
   });
 

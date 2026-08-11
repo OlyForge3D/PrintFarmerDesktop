@@ -216,7 +216,23 @@ const ServerInstant = z
       });
       return z.NEVER;
     }
-    return new Date(parsed).toISOString();
+    const iso = new Date(parsed).toISOString();
+    // An instant outside the four-digit-year range renders as an ECMAScript
+    // expanded year (`+010000-01-01T00:00:00.000Z`), which is a real instant
+    // but not one `z.string().datetime()` accepts. Letting it through here
+    // classified the record as *readable* and then failed the IPC boundary,
+    // where the response is parsed as one value — so a single unrepresentable
+    // timestamp discarded the whole farm while the unreadable count sat at
+    // zero, reporting nothing lost. Refusing it here makes the record
+    // unreadable in the ordinary way: dropped alone, and counted.
+    if (!/^\d{4}-/.test(iso)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Instant is outside the representable year range.',
+      });
+      return z.NEVER;
+    }
+    return iso;
   });
 
 /**
@@ -1101,7 +1117,16 @@ export function projectPrintFarmerOrcaProfile(
     return null;
   }
   const toolhead = matchingToolheads[0]!;
-  return OrcaProfileEntry.parse({
+  // `safeParse`, returning null on failure like the eight other unusable
+  // -context conditions above. A bare throwing `.parse` here escaped the
+  // per-printer catch in the profiles handler, rejected the `Promise.all` it
+  // ran inside, and took the whole response with it — including the local
+  // OrcaSlicer scan that the handler deliberately performs outside the server
+  // path so a server fault cannot hide the profiles on this machine. The wire
+  // bounds are looser than this contract in places (`profileRevision` and
+  // `snapshotSha256` admit `""` upstream but are `.min(1)` here), so an empty
+  // string from an ordinary serializer was enough to trigger it.
+  const entry = OrcaProfileEntry.safeParse({
     orcaProfileId: context.orcaProfileId,
     // The GUID above identifies the profile; only this name can be matched
     // against a file in the local OrcaSlicer installation.
@@ -1125,6 +1150,7 @@ export function projectPrintFarmerOrcaProfile(
         : null,
     exportable: false,
   });
+  return entry.success ? entry.data : null;
 }
 
 export function projectCalibrationPrinterContext(
