@@ -472,18 +472,31 @@ function deriveCandidateEligibility(
 /**
  * How, if at all, the server's own eligibility verdict fails to hold together.
  *
- * PrintFarmer computes `Eligible = reasons.Count == 0`, and `RejectMissing`
- * always records a reason alongside the missing input, so a coherent response
- * satisfies `eligible === (nothing was said against it)`. Both ways of
- * breaking that are detectable, and only one of them used to be:
+ * There are two server invariants here, not one, and conflating them is what
+ * let a real violation escape:
  *
- * - `contradiction` — eligible, and here is why it is not. Caught before.
- * - `unexplainedRefusal` — not eligible, and nothing to say about it. Its
- *   mirror, and the one that slipped through: it arrived as an ordinary
- *   ineligible printer carrying an empty explanation, which is precisely the
- *   silent, unreportable refusal this detection exists to prevent.
+ * - `Eligible = reasons.Count == 0`. Defined purely on `rejectionReasons`.
+ * - `RejectMissing` records a reason beside every missing input, so a missing
+ *   input without a reason cannot occur either.
  *
- * The client fails both closed. Naming which one occurred is what lets an
+ * The predicate used to test a single merged notion of "was anything said
+ * against it", folding `missingInputs` in with `rejectionReasons`. That reads
+ * naturally and is wrong: `{ eligible: false, rejectionReasons: [],
+ * missingInputs: ['firmware.family'] }` violates the first invariant outright,
+ * yet counted as *explained* and so matched neither branch. It fell through to
+ * the unverified-eligibility fallback — a code whose meaning is the opposite,
+ * that the server granted eligibility it had not evidenced — so a genuine
+ * invariant violation was reported as the weaker, wrong diagnosis. Testing the
+ * invariants separately is what makes each verdict mean what it says.
+ *
+ * - `contradiction` — the server said this printer is ready and, in the same
+ *   breath, said why it is not: either a rejection reason beside `eligible`,
+ *   or a missing input with no reason to go with it.
+ * - `unexplainedRefusal` — the server refused without a single rejection
+ *   reason. It may still name missing inputs; that is a second violation of
+ *   the same pair, not evidence that the refusal was explained.
+ *
+ * The client fails all of them closed. Naming which occurred is what lets an
  * operator report a server defect instead of doubting the printer.
  */
 export type CalibrationServerIncoherence =
@@ -492,10 +505,19 @@ export type CalibrationServerIncoherence =
 function detectServerEligibilityIncoherence(
   dto: z.infer<typeof RemoteCalibrationCandidateDto>,
 ): CalibrationServerIncoherence | null {
-  const explained =
-    dto.rejectionReasons.length > 0 || dto.missingInputs.length > 0;
-  if (dto.eligible && explained) return 'contradiction';
-  if (!dto.eligible && !explained) return 'unexplainedRefusal';
+  const reasoned = dto.rejectionReasons.length > 0;
+
+  // `Eligible = reasons.Count == 0`, tested on reasons alone as the server
+  // defines it.
+  if (dto.eligible && reasoned) return 'contradiction';
+  if (!dto.eligible && !reasoned) return 'unexplainedRefusal';
+
+  // A missing input the server never raised a reason for. Only reachable
+  // while `eligible` is true, since the refusal case is already caught above:
+  // the server is simultaneously claiming readiness and naming an input it is
+  // still waiting on.
+  if (dto.missingInputs.length > 0 && !reasoned) return 'contradiction';
+
   return null;
 }
 

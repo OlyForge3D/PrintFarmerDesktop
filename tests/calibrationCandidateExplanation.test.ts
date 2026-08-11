@@ -858,6 +858,121 @@ describe('an incoherent verdict is named in whichever direction it breaks', () =
     expect(granted!.rejectionReasonCodes).toEqual([]);
   });
 
+  it('refuses without a reason, even while naming missing inputs', async () => {
+    // The shape that escaped: `Eligible = reasons.Count == 0` is defined on
+    // rejection reasons alone, so this violates it outright — yet a predicate
+    // that folded `missingInputs` into one merged "was anything said against
+    // it" counted the printer as explained, matched neither branch, and let it
+    // fall through to the unverified-eligibility fallback, whose meaning is
+    // the opposite. A real invariant violation reported as a weaker, wrong
+    // diagnosis.
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [],
+        missingInputs: ['firmware.family'],
+      }),
+    ]);
+
+    expect(printer!.eligibility).toBeNull();
+    expect(printer!.rejectionReasonCodes).toEqual([
+      CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+    ]);
+    expect(printer!.rejectionReasonCodes).not.toContain(
+      CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+    );
+    // The inputs it did name are still carried; they are simply not a reason.
+    expect(printer!.missingInputs).toEqual(['firmware.family']);
+  });
+
+  it('classifies every combination of the two server invariants', async () => {
+    // `Eligible = reasons.Count == 0`, and RejectMissing records a reason
+    // beside every missing input. Spelled out as a table so a future change to
+    // the predicate has to confront each cell rather than the one case that
+    // happened to be exercised.
+    const reason = {
+      code: 'printer_offline',
+      field: 'reachability',
+      message: 'Printer is offline.',
+    };
+    const cases: {
+      label: string;
+      dto: Record<string, unknown>;
+      expected: string | null;
+    }[] = [
+      {
+        label: 'eligible, silent — coherent',
+        dto: { eligible: true, rejectionReasons: [], missingInputs: [] },
+        expected: null,
+      },
+      {
+        label: 'eligible with a reason — contradiction',
+        dto: { eligible: true, rejectionReasons: [reason], missingInputs: [] },
+        expected: CALIBRATION_SERVER_CONTRADICTION_CODE,
+      },
+      {
+        label: 'eligible with a missing input and no reason — contradiction',
+        dto: {
+          eligible: true,
+          rejectionReasons: [],
+          missingInputs: ['firmware.family'],
+        },
+        expected: CALIBRATION_SERVER_CONTRADICTION_CODE,
+      },
+      {
+        label: 'refused with a reason — coherent',
+        dto: { eligible: false, rejectionReasons: [reason], missingInputs: [] },
+        expected: null,
+      },
+      {
+        label: 'refused with a reason and a missing input — coherent',
+        dto: {
+          eligible: false,
+          rejectionReasons: [reason],
+          missingInputs: ['firmware.family'],
+        },
+        expected: null,
+      },
+      {
+        label: 'refused saying nothing — unexplained refusal',
+        dto: { eligible: false, rejectionReasons: [], missingInputs: [] },
+        expected: CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+      },
+      {
+        label:
+          'refused with a missing input but no reason — unexplained refusal',
+        dto: {
+          eligible: false,
+          rejectionReasons: [],
+          missingInputs: ['firmware.family'],
+        },
+        expected: CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+      },
+    ];
+
+    const printers = await listPrinters(
+      cases.map((entry) => candidateDto(entry.dto)),
+    );
+
+    expect(printers).toHaveLength(cases.length);
+    cases.forEach((entry, index) => {
+      const codes = printers[index]!.rejectionReasonCodes;
+      if (entry.expected === null) {
+        expect(
+          codes.some((code) =>
+            [
+              CALIBRATION_SERVER_CONTRADICTION_CODE,
+              CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+            ].includes(code),
+          ),
+          entry.label,
+        ).toBe(false);
+      } else {
+        expect(codes, entry.label).toContain(entry.expected);
+      }
+    });
+  });
+
   it('keeps both incoherence markers unforgeable from the wire', () => {
     for (const sentinel of [
       CALIBRATION_SERVER_CONTRADICTION_CODE,

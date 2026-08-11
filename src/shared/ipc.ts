@@ -1346,8 +1346,8 @@ export const CALIBRATION_MAX_PRINTER_CANDIDATES = 500;
 export const CALIBRATION_SERVER_CONTRADICTION_CODE = 'server_contradiction';
 
 /**
- * Emitted when the server declares a printer ineligible and then says nothing
- * about why.
+ * Emitted when the server declares a printer ineligible without raising a
+ * single rejection reason.
  *
  * The mirror of {@link CALIBRATION_SERVER_CONTRADICTION_CODE}, and incoherent
  * for the same reason: PrintFarmer computes `Eligible = reasons.Count == 0`,
@@ -1355,6 +1355,11 @@ export const CALIBRATION_SERVER_CONTRADICTION_CODE = 'server_contradiction';
  * was refused and that there was nothing to refuse it for. Detecting only the
  * first direction left this one arriving as a printer that is simply not
  * calibratable, with an empty explanation and nothing to report.
+ *
+ * The response may still name missing inputs. That does not make the refusal
+ * explained — `RejectMissing` records a reason beside every missing input, so
+ * missing inputs without one is a second violation of the same pair, not
+ * evidence against the first.
  *
  * Client-authored, like every sentinel here, and therefore excluded from
  * {@link CalibrationServerReasonCode}.
