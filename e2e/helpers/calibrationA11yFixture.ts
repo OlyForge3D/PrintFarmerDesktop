@@ -580,10 +580,14 @@ export async function applyCalibrationScenario(
           calibrationGenerationEnabled:
             availabilityKind !== 'missingCapabilityFlags',
         },
+        // Canonical `resource:action` permissions, exactly as PrintFarmer's
+        // capability payload spells them in `effectivePermissions`. The former
+        // PascalCase values matched nothing in production, so a fixture using
+        // them proved only that the assertion never fired.
         grantedScopes:
           availabilityKind === 'missingScopes'
-            ? ['CalibrationRead']
-            : ['CalibrationRead', 'CalibrationWrite'],
+            ? ['calibration:read']
+            : ['calibration:read', 'calibration:create', 'calibration:update'],
         offlineEditingEnabled: true,
       };
     });
@@ -703,6 +707,10 @@ export async function applyCalibrationScenario(
           exportable: true,
         },
       ],
+      // Echoed so the renderer's printer/revision fence has something to match
+      // against, exactly as the production handler does.
+      printerId: ids.printerId,
+      configurationRevision: ids.configurationRevision,
       discovery: {
         kind: 'ok',
         message: 'Server profile discovery completed.',

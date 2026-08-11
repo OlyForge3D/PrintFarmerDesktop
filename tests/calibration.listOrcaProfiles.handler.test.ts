@@ -56,6 +56,11 @@ const { registerIpcHandlers } = await import('../src/main/ipc.js');
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
 const BASE_URL = 'http://farm.local';
 const TARGET_PROFILE = 'Generic PLA @0.4 nozzle';
+/**
+ * The printer the operator selected. Required by the handler now: profile
+ * resolution is scoped to one printer, so there is no way to ask for the farm.
+ */
+const SELECTED_PRINTER = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
 
 /** A candidate shaped as PrintFarmer emits it, so "readable" means readable. */
 function candidateDto(overrides: Record<string, unknown> = {}) {
@@ -159,6 +164,8 @@ function respondWith(body: unknown, status = 200): void {
 
 interface OrcaProfilesResponse {
   profiles: unknown[];
+  printerId: string;
+  configurationRevision: number | null;
   discovery: { kind: string; message: string };
   printersUnreadable: number;
   printersTruncated: boolean;
@@ -254,12 +261,12 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     const response = (await listOrcaProfilesHandler()(
       {},
-      { profileId: PROFILE_ID },
+      { profileId: PROFILE_ID, printerId: SELECTED_PRINTER },
     )) as OrcaProfilesResponse;
 
     // Server-bound profiles are legitimately empty; the local ones are not.
     expect(response.profiles).toEqual([]);
-    expect(response.discovery.kind).toBe('serverDependencyUnavailable');
+    expect(response.discovery.kind).toBe('profileResolverUnavailable');
     expect(response.localProfiles.map((p) => p.name)).toContain(TARGET_PROFILE);
     expect(response.localDiscovery.kind).toBe('ok');
   });
@@ -269,7 +276,7 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     const response = (await listOrcaProfilesHandler()(
       {},
-      { profileId: PROFILE_ID },
+      { profileId: PROFILE_ID, printerId: SELECTED_PRINTER },
     )) as OrcaProfilesResponse;
 
     expect(response.discovery.kind).toBe('routeUnavailable');
@@ -281,7 +288,7 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     const response = (await listOrcaProfilesHandler()(
       {},
-      { profileId: PROFILE_ID },
+      { profileId: PROFILE_ID, printerId: SELECTED_PRINTER },
     )) as OrcaProfilesResponse;
 
     expect(response.discovery.kind).toBe('unauthenticated');
@@ -295,7 +302,7 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     const response = (await listOrcaProfilesHandler()(
       {},
-      { profileId: PROFILE_ID },
+      { profileId: PROFILE_ID, printerId: SELECTED_PRINTER },
     )) as OrcaProfilesResponse;
 
     expect(response.discovery.kind).toBe('noEligiblePrinters');
@@ -625,7 +632,7 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     const response = (await listOrcaProfilesHandler()(
       {},
-      { profileId: PROFILE_ID },
+      { profileId: PROFILE_ID, printerId: SELECTED_PRINTER },
     )) as OrcaProfilesResponse;
 
     expect(JSON.stringify(response)).not.toContain(sandbox);

@@ -1036,15 +1036,87 @@ export type CalibrationCapabilityFlagAdvertisement = z.infer<
   typeof CalibrationCapabilityFlagAdvertisement
 >;
 
-/** Required JWT permission scopes for calibration operations. */
-export const CalibrationRequiredScopes = z.enum([
-  'CalibrationRead',
-  'CalibrationWrite',
-  'CalibrationGenerate',
+/**
+ * What an action claims to act on, so it can be verified against the
+ * authoritative context before anything is dispatched.
+ *
+ * Carried explicitly rather than inferred from the project record because
+ * selection fencing and action fencing must agree: the printer and revision an
+ * action runs against have to be the ones the operator actually selected and
+ * saw, not whatever happens to be current when the request lands.
+ */
+export const CalibrationActionBinding = z
+  .object({
+    printerId: z.string().min(1).max(256),
+    configurationRevision: z.number().int().nonnegative().nullable(),
+    snapshotId: z.string().min(1).max(256).nullable(),
+    toolId: z.string().min(1).max(256).nullable(),
+  })
+  .strict();
+export type CalibrationActionBinding = z.infer<typeof CalibrationActionBinding>;
+
+/**
+ * Canonical calibration permissions, spelled exactly as PrintFarmer emits them
+ * in the capability payload's `effectivePermissions` member.
+ *
+ * These are `resource:action` strings. Earlier desktop builds asserted a
+ * PascalCase JWT-scope vocabulary (`CalibrationRead`, `CalibrationWrite`) that
+ * no PrintFarmer build has ever produced, so every check against it was dead:
+ * `grantedScopes` is populated straight from `effectivePermissions`, and a
+ * PascalCase needle can never be found in a `resource:action` haystack.
+ */
+export const CALIBRATION_PERMISSIONS = {
+  /** List candidates, read a printer's calibration context, resolve profiles. */
+  read: 'calibration:read',
+  /** Create a calibration project. */
+  create: 'calibration:create',
+  /** Mutate an existing project: steps, attempts, measurements. */
+  update: 'calibration:update',
+  /** Request profile generation from recorded results. */
+  generate: 'calibration:generate',
+} as const;
+export const CalibrationPermission = z.enum([
+  CALIBRATION_PERMISSIONS.read,
+  CALIBRATION_PERMISSIONS.create,
+  CALIBRATION_PERMISSIONS.update,
+  CALIBRATION_PERMISSIONS.generate,
 ]);
-export type CalibrationRequiredScopes = z.infer<
-  typeof CalibrationRequiredScopes
->;
+export type CalibrationPermission = z.infer<typeof CalibrationPermission>;
+
+/**
+ * Legacy spellings accepted *only* when the server literally advertises them.
+ *
+ * This is not a grant-widening fallback: a permission is satisfied by an alias
+ * solely because the server named that alias in its own response. Nothing is
+ * inferred, defaulted, or synthesised, so a server that grants no calibration
+ * permission still reads as granting none.
+ */
+const CALIBRATION_PERMISSION_ALIASES: Readonly<
+  Record<CalibrationPermission, readonly string[]>
+> = {
+  [CALIBRATION_PERMISSIONS.read]: ['CalibrationRead'],
+  [CALIBRATION_PERMISSIONS.create]: ['CalibrationWrite'],
+  [CALIBRATION_PERMISSIONS.update]: ['CalibrationWrite'],
+  [CALIBRATION_PERMISSIONS.generate]: ['CalibrationGenerate'],
+};
+
+/**
+ * Whether the server granted one exact calibration permission.
+ *
+ * `null` scopes mean "never negotiated", which is not the same as "denied" and
+ * is reported as not-granted here; callers that must distinguish the two should
+ * test the null themselves before asking.
+ */
+export function hasCalibrationPermission(
+  grantedScopes: readonly string[] | null | undefined,
+  permission: CalibrationPermission,
+): boolean {
+  if (grantedScopes == null) return false;
+  if (grantedScopes.includes(permission)) return true;
+  return CALIBRATION_PERMISSION_ALIASES[permission].some((alias) =>
+    grantedScopes.includes(alias),
+  );
+}
 
 /**
  * Typed reason why calibration is unavailable on a given server profile.
@@ -1790,6 +1862,15 @@ export const CalibrationGetPrinterContextRequest = z
   .object({
     profileId: z.string().uuid(),
     printerId: z.string().min(1).max(256),
+    /**
+     * Configuration revision the caller believes is current for this printer.
+     *
+     * Sent through to the server as `configurationRevision` so the snapshot
+     * returned is pinned to a revision the caller already reasoned about rather
+     * than to whatever happens to be current when the request lands. Omitted
+     * when the caller has no prior revision, which is the first load.
+     */
+    configurationRevision: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type CalibrationGetPrinterContextRequest = z.infer<
@@ -4051,6 +4132,12 @@ export const CalibrationStartGenerationRequest = z
      * This is an integer revision counter, NOT a base-64 ETag.
      */
     baseRevision: z.number().int().nullable(),
+    /**
+     * The printer context this generation is bound to. Required: generation is
+     * verified against the authoritative context before dispatch, and an action
+     * that names no binding cannot be verified at all.
+     */
+    binding: CalibrationActionBinding,
   })
   .strict();
 export type CalibrationStartGenerationRequest = z.infer<
@@ -4333,6 +4420,16 @@ export const CalibrationStartPrintRequest = z
     gcodeFileId: z.string().uuid(),
     /** Printer to assign the job to (must be the same printer the context was snapshotted for). */
     assignedPrinterId: z.string().uuid(),
+    /**
+     * Explicit operator confirmation that the machine is clear and safe to move.
+     *
+     * Required to be `true` before the job is enqueued unless the server itself
+     * publishes a safety assurance, which no current PrintFarmer build does.
+     * Optional in the schema only so the absence is a *refusal* produced by the
+     * interlock with a clear reason, rather than a validation error the operator
+     * cannot act on. It is never defaulted to `true`.
+     */
+    operatorAcknowledgedBedClear: z.boolean().optional(),
     /** Client-generated idempotency key. */
     operationId: z.string().uuid(),
     /** Pinned printer config revision — guards against config advancing after snapshot. */
@@ -4859,8 +4956,28 @@ export const OrcaProfileEntry = z
   .strict();
 export type OrcaProfileEntry = z.infer<typeof OrcaProfileEntry>;
 
+/**
+ * Resolve OrcaSlicer profiles for exactly one already-selected printer.
+ *
+ * `printerId` is required, and that is the point: the calibration wizard must
+ * ask which printer to calibrate *before* it resolves anything, so there is no
+ * legal way to spell "list profiles for the whole farm". Earlier builds took
+ * only a `profileId`, listed every candidate, and then fetched a context plus
+ * ran a local OrcaSlicer scan per printer — work that grew with farm size,
+ * pulled snapshots the operator never asked for, and made an unselected printer
+ * indistinguishable from a selected one.
+ */
 export const CalibrationListOrcaProfilesRequest = z
-  .object({ profileId: z.string().uuid() })
+  .object({
+    profileId: z.string().uuid(),
+    /** The single printer the operator selected. Never a list, never absent. */
+    printerId: z.string().min(1).max(256),
+    /**
+     * Configuration revision the selection was made against. Carried so the
+     * resolved profiles can be fenced to the same revision the operator saw.
+     */
+    configurationRevision: z.number().int().nonnegative().optional(),
+  })
   .strict();
 export type CalibrationListOrcaProfilesRequest = z.infer<
   typeof CalibrationListOrcaProfilesRequest
@@ -4887,6 +5004,29 @@ export const CalibrationProfileDiscoveryDiagnostic = z
       'routeUnavailable',
       /** 503 — a server dependency calibration needs is not configured. */
       'serverDependencyUnavailable',
+      /**
+       * 503 from the profile resolver specifically. Distinct from the generic
+       * dependency outage because the remedy differs: the printer is fine and
+       * its context is readable, but no profile can be resolved right now.
+       */
+      'profileResolverUnavailable',
+      /**
+       * The selected printer's calibration context could not be read, so no
+       * profile could be resolved for it. Says nothing about other printers and
+       * must never be rendered as "there are no printers".
+       */
+      'selectedPrinterContextUnavailable',
+      /**
+       * The selected printer is not a calibration candidate on this server, or
+       * is no longer present in the candidate set.
+       */
+      'selectedPrinterNotACandidate',
+      /**
+       * The server answered for the selected printer and resolved no profile
+       * bound to it. The printer exists and is readable; it simply has no
+       * profile identity that calibration can bind to.
+       */
+      'noProfilesForSelectedPrinter',
       /** The response did not match the calibration contract. */
       'malformedResponse',
       /**
@@ -4950,6 +5090,14 @@ export const LocalOrcaDiscoveryDiagnostic = z
       'noInstallFound',
       /** OrcaSlicer is installed but no filament profiles were readable. */
       'noProfilesFound',
+      /**
+       * Profiles were readable, but none matches the selected printer's exact
+       * profile name and nozzle. The install is healthy and the printer is
+       * fine; the specific profile the server named is simply not on this
+       * machine. Kept separate so the operator is told to install *that*
+       * profile rather than to repair an OrcaSlicer install that is not broken.
+       */
+      'noMatchForSelectedPrinter',
     ]),
     message: z.string().max(512),
   })
@@ -4961,6 +5109,21 @@ export type LocalOrcaDiscoveryDiagnostic = z.infer<
 export const CalibrationListOrcaProfilesResponse = z
   .object({
     profiles: z.array(OrcaProfileEntry).max(5000),
+    /**
+     * The printer this answer is about, echoed back from the request.
+     *
+     * The renderer fences on it: a reply that names a printer other than the
+     * currently selected one is discarded rather than rendered. Without the
+     * echo a late reply for printer A is indistinguishable from a reply for
+     * printer B and would silently populate the wrong selection.
+     */
+    printerId: z.string().min(1).max(256),
+    /**
+     * Configuration revision these profiles were resolved at, from the server
+     * snapshot. Null when the server did not report one, which is itself a
+     * reason the result cannot be bound.
+     */
+    configurationRevision: z.number().int().nonnegative().nullable(),
     /**
      * Why server-derived discovery produced what it did, so an empty list is
      * never silently ambiguous. Defaulted for callers that predate the field;

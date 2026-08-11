@@ -140,11 +140,19 @@ const ROUTES = {
   /**
    * GET — canonical per-printer calibration context. `slicerType` is pinned to
    * the constant the server requires; it is never taken from a response.
+   *
+   * `configurationRevision` is appended when the caller has one, pinning the
+   * snapshot to the revision the caller already reasoned about.
    */
-  printerContext: (printerId: string) =>
-    buildRoute(CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationContext, {
-      printerId,
-    }),
+  printerContext: (printerId: string, configurationRevision?: number) => {
+    const route = buildRoute(
+      CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationContext,
+      { printerId },
+    );
+    return configurationRevision === undefined
+      ? route
+      : `${route}&configurationRevision=${encodeURIComponent(String(configurationRevision))}`;
+  },
   changes: '/api/calibration-sync/changes',
   apply: '/api/calibration-sync/apply',
   project: (id: string) =>
@@ -662,11 +670,12 @@ export class CalibrationHttpClient {
     baseUrl: string,
     printerId: string,
     signal: AbortSignal,
+    configurationRevision?: number,
   ): Promise<RemoteCalibrationPrinterContext> {
     return this.get(
       profileId,
       baseUrl,
-      ROUTES.printerContext(printerId),
+      ROUTES.printerContext(printerId, configurationRevision),
       PrinterContextSchema,
       signal,
     );
