@@ -1552,6 +1552,7 @@ export function registerIpcHandlers(
           };
         }),
         printersTruncated: printers.truncated,
+        printersUnreadable: printers.unreadable,
         fetchedAt: new Date().toISOString(),
       });
     },

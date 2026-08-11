@@ -1619,6 +1619,16 @@ export const CalibrationListPrintersResponse = z
      * printers as the whole farm.
      */
     printersTruncated: z.boolean(),
+    /**
+     * How many candidates the server sent that this client could not read.
+     *
+     * Counted rather than thrown. A candidate whose `id`, timestamp, firmware
+     * identity or any other member fails validation is dropped on its own; it
+     * used to fail the array, and the array is the whole farm. Reported so a
+     * shorter list than the operator owns is visible as a fault rather than
+     * mistaken for the truth.
+     */
+    printersUnreadable: z.number().int().nonnegative(),
     fetchedAt: z.string().datetime(),
   })
   .strict();

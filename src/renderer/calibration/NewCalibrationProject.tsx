@@ -482,6 +482,16 @@ export function NewCalibrationProject(): React.JSX.Element {
                   below.
                 </p>
               ) : null}
+              {!store.creation.loading &&
+              store.creation.printersUnreadable > 0 ? (
+                <p role="status" className="cal-hint">
+                  {store.creation.printersUnreadable} printer record
+                  {store.creation.printersUnreadable === 1 ? '' : 's'} could not
+                  be read and{' '}
+                  {store.creation.printersUnreadable === 1 ? 'is' : 'are'} not
+                  listed below. The rest of the list is unaffected.
+                </p>
+              ) : null}
               <div
                 className="cal-choice-list"
                 role="radiogroup"

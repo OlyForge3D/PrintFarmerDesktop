@@ -603,18 +603,51 @@ export type RemoteCalibrationPrinterCandidate = z.infer<
  * from the payload, so a server can neither claim completeness it does not
  * have nor manufacture a truncation warning.
  */
-const boundedCandidateList = z
-  .array(z.unknown())
-  .transform((items) => ({
-    printers: items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES),
+/**
+ * The farm, assembled candidate by candidate so no single record can empty it.
+ *
+ * This is the general form of a defect this contract has now met five times in
+ * different clothes: an over-long code, a code list one past its cap, a missing
+ * -input list a legitimate five-toolhead printer exceeds, a farm larger than
+ * the IPC bound. Each was fixed where it was found, and each time the next
+ * field over had the same shape. `z.array(candidate)` fails the *array* when
+ * any element fails, and the whole `/calibration-candidates` body is parsed as
+ * one value, so any hard-rejecting member anywhere in any candidate — a
+ * malformed `id`, an unparseable `observedAtUtc`, a `reachability` that came
+ * back as a number, a nested firmware string that ran long — discards every
+ * healthy printer in the farm.
+ *
+ * Parsing each candidate on its own removes the class rather than the
+ * instance. A record this client cannot read is dropped and counted; the
+ * printers either side of it are unaffected. The count is reported so the
+ * operator learns the list is incomplete instead of quietly seeing fewer
+ * printers than they own, and so a server returning garbage is diagnosable
+ * rather than merely invisible.
+ *
+ * `truncated` is derived from the raw wire length *before* the slice and is not
+ * read from the payload, so a server can neither claim completeness it does not
+ * have nor manufacture a truncation warning.
+ */
+const boundedCandidateList = z.array(z.unknown()).transform((items) => {
+  const considered = items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES);
+  const printers: RemoteCalibrationPrinterCandidate[] = [];
+  let unreadable = 0;
+
+  for (const item of considered) {
+    const parsed = RemoteCalibrationPrinterCandidate.safeParse(item);
+    if (parsed.success) {
+      printers.push(parsed.data);
+    } else {
+      unreadable += 1;
+    }
+  }
+
+  return {
+    printers,
     truncated: items.length > CALIBRATION_MAX_PRINTER_CANDIDATES,
-  }))
-  .pipe(
-    z.object({
-      printers: z.array(RemoteCalibrationPrinterCandidate),
-      truncated: z.boolean(),
-    }),
-  );
+    unreadable,
+  };
+});
 
 export const RemoteCalibrationPrinters = z.union([
   boundedCandidateList,

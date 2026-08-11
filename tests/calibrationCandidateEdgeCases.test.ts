@@ -103,13 +103,21 @@ describe('a printer with no observation timestamps', () => {
     expect(parsed[1]!.updatedAt).toBe('2026-08-11T12:00:00.000Z');
   });
 
-  it('still rejects a timestamp that is present but not an instant', () => {
-    // Accepting absence must not become accepting nonsense.
-    expect(() =>
-      RemoteCalibrationPrinters.parse([
-        neverObservedCandidateDto({ observedAtUtc: 'yesterday' }),
-      ]),
-    ).toThrow();
+  it('still refuses a timestamp that is present but not an instant', () => {
+    // Accepting absence must not become accepting nonsense. The candidate is
+    // still refused — it is simply refused on its own now, rather than taking
+    // the rest of the farm with it, so the assertion is that it does not
+    // appear rather than that everything threw.
+    const { printers, unreadable } = RemoteCalibrationPrinters.parse([
+      neverObservedCandidateDto({ observedAtUtc: 'yesterday' }),
+      neverObservedCandidateDto({
+        id: 'cccccccc-1111-4111-8111-222222222222',
+      }),
+    ]);
+
+    expect(printers).toHaveLength(1);
+    expect(printers[0]!.printerId).toBe('cccccccc-1111-4111-8111-222222222222');
+    expect(unreadable).toBe(1);
   });
 });
 

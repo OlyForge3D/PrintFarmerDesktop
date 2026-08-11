@@ -383,6 +383,7 @@ function makeApi(savedRecord = record()) {
       CalibrationListPrintersResponse.parse({
         printers: candidates,
         printersTruncated: false,
+        printersUnreadable: 0,
         fetchedAt: now,
       }),
     ),

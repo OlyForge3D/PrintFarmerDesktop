@@ -240,13 +240,41 @@ describe('calibration candidate DTO normalisation', () => {
     expect(printers[0]!.eligibility).toBeNull();
   });
 
-  it('rejects a malformed candidate payload instead of silently emptying', async () => {
+  it('drops a malformed candidate and counts it, rather than emptying silently', async () => {
+    // This used to assert that the whole request rejected. That was the right
+    // instinct — a malformed payload must never be swallowed — but the wrong
+    // mechanism: the response is parsed as one value, so failing it discarded
+    // every healthy printer alongside the bad one. The intent is preserved by
+    // reporting the loss instead of hiding it.
     const { fetch } = recordingFetch([{ id: 'not-a-guid', name: '' }]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    await expect(
-      client.getPrinters(PROFILE_ID, BASE_URL, AbortSignal.timeout(5_000)),
-    ).rejects.toBeInstanceOf(CalibrationHttpError);
+    const result = await client.getPrinters(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.printers).toEqual([]);
+    expect(result.unreadable).toBe(1);
+  });
+
+  it('keeps the healthy printers when one candidate beside them is malformed', async () => {
+    const { fetch } = recordingFetch([
+      { id: 'not-a-guid', name: '' },
+      eligibleCandidateDto(),
+    ]);
+    const client = new CalibrationHttpClient(tokens(), { fetch });
+
+    const result = await client.getPrinters(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.printers).toHaveLength(1);
+    expect(result.printers[0]!.printerId).toBe(PRINTER_ID);
+    expect(result.unreadable).toBe(1);
   });
 });
 

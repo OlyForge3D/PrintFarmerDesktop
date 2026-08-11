@@ -36,6 +36,7 @@ import {
   normalizeCalibrationMissingInput,
   normalizeCalibrationReasonCode,
 } from '@shared/ipc';
+import { RemoteCalibrationPrinters } from '../src/main/calibrationWire.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -173,6 +174,7 @@ interface ProjectedCandidate {
 async function listPrintersResponse(candidates: unknown[]): Promise<{
   printers: ProjectedCandidate[];
   printersTruncated: boolean;
+  printersUnreadable: number;
   fetchedAt: string;
 }> {
   vi.stubGlobal(
@@ -189,6 +191,7 @@ async function listPrintersResponse(candidates: unknown[]): Promise<{
   return (await listPrintersHandler()({}, { profileId: PROFILE_ID })) as {
     printers: ProjectedCandidate[];
     printersTruncated: boolean;
+    printersUnreadable: number;
     fetchedAt: string;
   };
 }
@@ -1333,6 +1336,153 @@ describe('a large farm is not a reason to show an empty one', () => {
     )) as { printers: ProjectedCandidate[]; printersTruncated: boolean };
 
     expect(response.printersTruncated).toBe(true);
+  });
+});
+
+describe('no single candidate can empty the farm', () => {
+  /**
+   * The invariant, asserted as itself rather than one more instance of it.
+   *
+   * Five review rounds each found a different member that hard-rejected and
+   * therefore discarded the whole response: an over-long code, a code list one
+   * past its cap, a missing-input list a real five-toolhead printer exceeds, a
+   * farm larger than the IPC bound. Each was fixed where it was found, and
+   * each time the next field over had the same shape. What follows does not
+   * name a field: it corrupts every member of a real candidate, one at a time,
+   * with values chosen to break length, count, type and shape, and requires
+   * that a healthy printer standing beside the broken one always survives.
+   *
+   * A sixth round finding field N+1 would fail here first.
+   */
+  const CORRUPTIONS: { label: string; value: unknown }[] = [
+    { label: 'null', value: null },
+    { label: 'a number', value: 42 },
+    { label: 'a negative number', value: -1 },
+    { label: 'a fraction', value: 1.5 },
+    { label: 'true', value: true },
+    { label: 'an empty string', value: '' },
+    { label: 'a very long string', value: 'x'.repeat(2_000) },
+    { label: 'an empty array', value: [] },
+    { label: 'an array of numbers', value: [1, 2, 3] },
+    { label: 'an empty object', value: {} },
+    { label: 'a deeply nested object', value: { a: { b: { c: { d: 1 } } } } },
+    { label: 'a huge array', value: Array.from({ length: 300 }, () => 'x') },
+    { label: 'text where an instant belongs', value: 'yesterday' },
+    { label: 'a malformed guid', value: 'not-a-guid' },
+  ];
+
+  const HEALTHY_ID = '99999999-9999-4999-8999-999999999999';
+
+  function candidateKeys(): string[] {
+    return Object.keys(candidateDto());
+  }
+
+  it('survives every corruption of every top-level member', () => {
+    // Asserted at the wire schema, which is the seam that decides whether one
+    // candidate can fail the array. Driven directly rather than through the
+    // handler so the corpus can be exhaustive: this is ~300 cases, and each
+    // round trip through the HTTP client's retry and timeout machinery costs
+    // far more than the parse being measured. Handler-level cases below cover
+    // the same property end to end.
+    const failures: string[] = [];
+
+    for (const key of candidateKeys()) {
+      for (const corruption of CORRUPTIONS) {
+        const broken = candidateDto({ [key]: corruption.value });
+        const healthy = candidateDto({ id: HEALTHY_ID });
+
+        let parsed;
+        try {
+          parsed = RemoteCalibrationPrinters.parse([broken, healthy]);
+        } catch (error) {
+          failures.push(
+            `${key} = ${corruption.label}: threw ${String(error).slice(0, 120)}`,
+          );
+          continue;
+        }
+
+        if (
+          !parsed.printers.some((printer) => printer.printerId === HEALTHY_ID)
+        ) {
+          failures.push(
+            `${key} = ${corruption.label}: the healthy printer was discarded`,
+          );
+        }
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  it('survives every corruption of the nested firmware and slicer identities', () => {
+    const failures: string[] = [];
+    const nested: [string, string[]][] = [
+      ['firmware', ['family', 'gcodeDialect', 'detectionSource', 'version']],
+      ['slicer', ['engine', 'distribution', 'version', 'profileFormat']],
+    ];
+
+    for (const [parent, keys] of nested) {
+      for (const key of keys) {
+        for (const corruption of CORRUPTIONS) {
+          const base = candidateDto();
+          const broken = candidateDto({
+            [parent]: {
+              ...(base[parent as keyof typeof base] as object),
+              [key]: corruption.value,
+            },
+          });
+          const healthy = candidateDto({ id: HEALTHY_ID });
+
+          try {
+            const parsed = RemoteCalibrationPrinters.parse([broken, healthy]);
+            if (
+              !parsed.printers.some(
+                (printer) => printer.printerId === HEALTHY_ID,
+              )
+            ) {
+              failures.push(
+                `${parent}.${key} = ${corruption.label}: healthy printer discarded`,
+              );
+            }
+          } catch (error) {
+            failures.push(
+              `${parent}.${key} = ${corruption.label}: threw ${String(error).slice(0, 120)}`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  it('survives a candidate that is not an object at all', async () => {
+    for (const junk of [null, 7, 'printer', [], true]) {
+      const printers = await listPrinters([junk, candidateDto()]);
+      expect(printers).toHaveLength(1);
+      expect(printers[0]!.printerId).toBe(PRINTER_GUID);
+    }
+  });
+
+  it('counts what it could not read instead of hiding the gap', async () => {
+    const response = await listPrintersResponse([
+      candidateDto({ id: 'not-a-guid' }),
+      null,
+      candidateDto(),
+    ]);
+
+    expect(response.printers).toHaveLength(1);
+    expect(response.printersUnreadable).toBe(2);
+  });
+
+  it('reports nothing unreadable when the whole farm parses', async () => {
+    const response = await listPrintersResponse([
+      candidateDto(),
+      candidateDto({ id: HEALTHY_ID }),
+    ]);
+
+    expect(response.printers).toHaveLength(2);
+    expect(response.printersUnreadable).toBe(0);
   });
 });
 
