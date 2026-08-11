@@ -8,6 +8,7 @@ import {
   type CalibrationWorkspacePayload as CalibrationWorkspacePayloadType,
 } from '@shared/ipc';
 import {
+  isCalibrationContextSafetyAssured,
   isExplicitCalibrationContextComplete,
   isExplicitCalibrationEligibilityComplete,
   prepareCalibrationWorkspaceSave,
@@ -27,6 +28,13 @@ const OPERATION_ID = '33333333-3333-4333-8333-333333333333';
 const ATTEMPT_ID = '44444444-4444-4444-8444-444444444444';
 const OBSERVATION_ID = '55555555-5555-4555-8555-555555555555';
 const NOW = '2026-07-26T15:00:00.000Z';
+// Identities shaped like the server's: PrintFarmer keys printers, toolheads and
+// profiles by Guid, and identifies a snapshot by its content hash.
+const PRINTER_GUID = 'aaaaaaaa-1111-4111-8111-222222222222';
+const OTHER_PRINTER_GUID = 'bbbbbbbb-1111-4111-8111-222222222222';
+const FILAMENT_PROFILE_GUID = 'cccccccc-1111-4111-8111-222222222222';
+const TOOLHEAD_GUID = 'dddddddd-1111-4111-8111-222222222222';
+const SNAPSHOT_SHA = 'a'.repeat(64);
 const STAGE_IDS = [
   'temperature',
   'flowPass1',
@@ -73,16 +81,16 @@ function validWorkspace(): CalibrationWorkspacePayloadType {
     STAGE_IDS.map((stageId) => [stageId, blankWorkflowDraft()]),
   );
   const snapshot = {
-    snapshotId: 'snapshot-1',
-    snapshotRevision: 1,
+    snapshotId: SNAPSHOT_SHA,
+    snapshotRevision: 7,
     capturedAt: NOW,
     configurationRevision: 7,
     toolheads: [
       {
-        toolId: 'tool-1',
-        toolheadId: 'toolhead-1',
+        toolId: TOOLHEAD_GUID,
+        toolheadId: TOOLHEAD_GUID,
         nozzle: {
-          nozzleId: 'nozzle-1',
+          nozzleId: TOOLHEAD_GUID,
           diameterMm: 0.4,
           material: 'brass',
         },
@@ -119,14 +127,14 @@ function validWorkspace(): CalibrationWorkspacePayloadType {
       binding: {
         printer: {
           backendProfileId: PROFILE_ID,
-          backendPrinterId: 'printer-1',
-          printerConfigurationId: 'configuration-1',
+          backendPrinterId: PRINTER_GUID,
+          printerConfigurationId: PRINTER_GUID,
           printerConfigurationRevision: 7,
         },
         snapshot,
-        selectedToolId: 'tool-1',
-        selectedToolheadId: 'toolhead-1',
-        selectedNozzleId: 'nozzle-1',
+        selectedToolId: TOOLHEAD_GUID,
+        selectedToolheadId: TOOLHEAD_GUID,
+        selectedNozzleId: TOOLHEAD_GUID,
         filament: {
           filamentProjectId: 'filament-1',
           provider: 'PrintFarmer',
@@ -148,21 +156,21 @@ function validWorkspace(): CalibrationWorkspacePayloadType {
     photos: [],
     physicalMatch: null,
     selectedBaseProfile: {
-      orcaProfileId: 'base-pla',
+      orcaProfileId: FILAMENT_PROFILE_GUID,
       displayName: 'Upstream PLA',
       source: 'printFarmer',
       upstreamVerified: true,
-      printerId: 'printer-1',
+      printerId: PRINTER_GUID,
       configurationRevision: 7,
-      snapshotId: 'snapshot-1',
-      toolId: 'tool-1',
-      toolheadId: 'toolhead-1',
-      nozzleId: 'nozzle-1',
+      snapshotId: SNAPSHOT_SHA,
+      toolId: TOOLHEAD_GUID,
+      toolheadId: TOOLHEAD_GUID,
+      nozzleId: TOOLHEAD_GUID,
       nozzleDiameterMm: 0.4,
       profileRevision: 'profile-r7',
       contentHash: null,
     },
-    selectedBaseProfileId: 'base-pla',
+    selectedBaseProfileId: FILAMENT_PROFILE_GUID,
     autosaveRevision: 0,
   });
 }
@@ -239,7 +247,7 @@ function request(workspace = validWorkspace()) {
     projectId: PROJECT_ID,
     displayName: workspace.metadata.displayName,
     description: workspace.metadata.description || null,
-    printerId: 'printer-1',
+    printerId: PRINTER_GUID,
     status: projection.status,
     completedStepCount: projection.completedStepCount,
     totalStepCount: projection.totalStepCount,
@@ -287,7 +295,7 @@ describe('calibration workspace IPC', () => {
       displayName: 'Remote calibration',
       description: null,
       status: 'draft',
-      printerId: 'printer-1',
+      printerId: PRINTER_GUID,
       revision: 1,
       concurrencyToken: 'revision-1',
       createdAt: NOW,
@@ -485,9 +493,9 @@ describe('calibration workspace IPC', () => {
     const physical = validWorkspace();
     physical.physicalMatch = {
       snapshotId: 'wrong',
-      toolId: 'tool-1',
-      toolheadId: 'toolhead-1',
-      nozzleId: 'nozzle-1',
+      toolId: TOOLHEAD_GUID,
+      toolheadId: TOOLHEAD_GUID,
+      nozzleId: TOOLHEAD_GUID,
       nozzleDiameterMm: 0.4,
       confirmedAt: NOW,
     };
@@ -552,166 +560,248 @@ describe('calibration workspace IPC', () => {
 });
 
 describe('explicit printer eligibility', () => {
-  const candidate = {
-    printerId: 'printer-1',
-    displayName: 'Any arbitrary printer name',
-    printerModel: null,
-    firmwareCompatible: false,
-    orcaProfileId: null,
-    isOnline: true,
-    updatedAt: NOW,
-  };
-  const completeEligibility = {
-    firmwareFamily: 'Klipper',
-    gcodeDialect: 'Klipper',
-    slicerFamily: 'OrcaSlicer',
-    slicerDistribution: 'upstream',
-    slicerIdentity: 'OrcaSlicer',
-    hardwareContextComplete: true,
-    safetyContextComplete: true,
-    permissionsComplete: true,
-    reasons: [],
-  };
-
   it('maps incomplete and unknown remote assertions to null', () => {
-    const old = RemoteCalibrationPrinterCandidate.parse(candidate);
-    expect(projectCalibrationEligibility(old)).toBeNull();
-    expect(isExplicitCalibrationEligibilityComplete(old)).toBe(false);
+    // A printer the server explicitly refuses.
+    const refused = RemoteCalibrationPrinterCandidate.parse(
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          {
+            code: 'firmware_family_not_klipper',
+            field: 'firmware.family',
+            message: 'Firmware family is not Klipper.',
+          },
+        ],
+      }),
+    );
+    expect(projectCalibrationEligibility(refused)).toBeNull();
+    expect(isExplicitCalibrationEligibilityComplete(refused)).toBe(false);
 
-    const incomplete = RemoteCalibrationPrinterCandidate.parse({
-      ...candidate,
-      eligibility: {
-        firmwareFamily: 'Klipper',
-        gcodeDialect: 'Klipper',
-      },
-    });
+    // Firmware identity the server could not determine.
+    const incomplete = RemoteCalibrationPrinterCandidate.parse(
+      candidateDto({
+        firmware: {
+          family: 'Unknown',
+          gcodeDialect: 'Unknown',
+          detectionSource: 'unknown',
+          version: null,
+          verified: false,
+        },
+      }),
+    );
     expect(projectCalibrationEligibility(incomplete)).toBeNull();
     expect(isExplicitCalibrationEligibilityComplete(incomplete)).toBe(false);
 
-    const unknown = RemoteCalibrationPrinterCandidate.parse({
-      ...candidate,
-      eligibility: {
-        ...completeEligibility,
-        slicerDistribution: 'vendorFork',
-      },
-    });
-    expect(projectCalibrationEligibility(unknown)).toBeNull();
-    expect(isExplicitCalibrationEligibilityComplete(unknown)).toBe(false);
+    // A slicer distribution outside the upstream allow-list.
+    const fork = RemoteCalibrationPrinterCandidate.parse(
+      candidateDto({
+        slicer: {
+          engine: 'OrcaSlicer',
+          distribution: 'vendorFork',
+          version: '2.4.2',
+          profileFormat: 'orca-json',
+        },
+      }),
+    );
+    expect(projectCalibrationEligibility(fork)).toBeNull();
+    expect(isExplicitCalibrationEligibilityComplete(fork)).toBe(false);
   });
 
   it('accepts only the five canonical literals independent of names', () => {
-    const remote = RemoteCalibrationPrinterCandidate.parse({
-      ...candidate,
-      displayName: 'No Klipper hint',
-      eligibility: {
-        ...completeEligibility,
-        futureEligibilityField: 'ignored',
-      },
-    });
+    const remote = RemoteCalibrationPrinterCandidate.parse(
+      candidateDto({
+        name: 'No Klipper hint',
+        futureRemoteField: 'ignored',
+      }),
+    );
     const eligibility = projectCalibrationEligibility(remote);
     const parsed = CalibrationPrinterCandidate.parse({
-      ...candidate,
+      printerId: remote.printerId,
+      displayName: remote.displayName,
+      printerModel: null,
       firmwareCompatible: true,
+      orcaProfileId: null,
+      isOnline: true,
+      updatedAt: NOW,
       eligibility,
     });
-    expect(parsed.eligibility).toEqual(completeEligibility);
+    expect(parsed.eligibility).toEqual({
+      firmwareFamily: 'Klipper',
+      gcodeDialect: 'Klipper',
+      slicerFamily: 'OrcaSlicer',
+      slicerDistribution: 'upstream',
+      slicerIdentity: 'OrcaSlicer',
+      hardwareContextComplete: true,
+      safetyContextComplete: true,
+      permissionsComplete: true,
+      reasons: [],
+    });
     expect(isExplicitCalibrationEligibilityComplete(remote)).toBe(true);
+  });
+
+  it('never grants eligibility the server withheld, whatever the name says', () => {
+    // Every identity field reads as compatible, but PrintFarmer's own verdict
+    // is false. The client must follow the server, not re-derive a verdict.
+    const misleading = RemoteCalibrationPrinterCandidate.parse(
+      candidateDto({
+        name: 'Klipper OrcaSlicer upstream',
+        eligible: false,
+      }),
+    );
+    expect(projectCalibrationEligibility(misleading)).toBeNull();
   });
 });
 
-function remoteContext() {
+/**
+ * A `CalibrationCandidateDto` shaped exactly as PrintFarmer serialises it.
+ * Source: `CalibrationContracts.cs` on OlyForge3D/PrintFarmer@development.
+ */
+function candidateDto(overrides: Record<string, unknown> = {}) {
   return {
-    printerId: 'printer-1',
-    displayName: 'Arbitrary',
-    printerModel: null,
-    firmware: {
-      firmware: 'Klipper',
-      gcodeDialect: 'Klipper',
-      firmwareVersion: null,
-      klipperConfigHash: null,
-    },
-    orcaProfileId: 'base-pla',
-    orcaProfileDisplayName: 'Upstream PLA',
-    bedWidthMm: 220,
-    bedDepthMm: 220,
-    nozzleDiameterMm: 0.4,
-    snapshotAt: NOW,
-    isCurrent: true,
-    configurationId: 'configuration-1',
+    id: PRINTER_GUID,
+    name: 'Any arbitrary printer name',
+    enabled: true,
+    inMaintenance: false,
+    backend: 'Moonraker',
     configurationRevision: 7,
-    snapshotId: 'snapshot-1',
-    snapshotRevision: 1,
-    slicerIdentity: 'OrcaSlicer',
-    slicerDistribution: 'upstream',
-    profileRevision: 'profile-r7',
-    contentHash: null,
-    toolheads: [
-      {
-        toolId: 'tool-1',
-        toolheadId: 'toolhead-1',
-        extruderType: 'directDrive',
-        nozzle: { id: 'nozzle-1', diameterMm: 0.4, material: 'brass' },
+    reachability: 'online',
+    operationalState: 'idle',
+    statusSource: 'moonraker',
+    observedAtUtc: NOW,
+    lastSeenAtUtc: NOW,
+    isStale: false,
+    toolheads: [],
+    firmware: {
+      family: 'Klipper',
+      gcodeDialect: 'Klipper',
+      detectionSource: 'moonraker',
+      version: 'v0.12.0',
+      verified: true,
+    },
+    slicer: {
+      engine: 'OrcaSlicer',
+      distribution: 'upstream',
+      version: '2.4.2',
+      profileFormat: 'orca-json',
+    },
+    eligible: true,
+    missingInputs: [],
+    rejectionReasons: [],
+    ...overrides,
+  };
+}
+
+/** A `CalibrationContextDto`, i.e. a candidate plus the nested snapshot. */
+function contextDto(overrides: Record<string, unknown> = {}) {
+  const { snapshot: snapshotOverride, ...rest } = overrides;
+  return {
+    ...candidateDto(),
+    schemaVersion: '1.0',
+    snapshotSha256: SNAPSHOT_SHA,
+    capturedAtUtc: NOW,
+    capturedBySubject: 'subject-1',
+    supportsPressureAdvance: true,
+    supportsFirmwareRetraction: true,
+    snapshot: {
+      schemaVersion: '1.0',
+      printerId: PRINTER_GUID,
+      configurationRevision: 7,
+      capturedAtUtc: NOW,
+      buildVolume: { x: 220, y: 220, z: 250 },
+      bedOrigin: { x: 0, y: 0 },
+      toolheads: [
+        {
+          id: TOOLHEAD_GUID,
+          index: 0,
+          name: 'T0',
+          isPrimary: true,
+          nozzleDiameter: 0.4,
+          nozzleType: 'brass',
+          nozzleMaterial: 'brass',
+          isDirectDrive: true,
+          maxVolumetricFlow: 30,
+        },
+      ],
+      maxBedTemperature: 120,
+      hasHeatedBed: true,
+      firmware: {
+        family: 'Klipper',
+        gcodeDialect: 'Klipper',
+        detectionSource: 'moonraker',
+        version: 'v0.12.0',
+        verified: true,
       },
-    ],
-    safety: {
-      buildVolumeMm: { x: 220, y: 220, z: 250 },
-      maximumNozzleTemperatureC: 300,
-      maximumBedTemperatureC: 120,
-      maximumVolumetricRateMm3S: 30,
-      emergencyStopAvailable: true,
-      thermalProtectionConfirmed: true,
-      ventilationAssessed: true,
+      slicer: {
+        engine: 'OrcaSlicer',
+        distribution: 'upstream',
+        version: '2.4.2',
+        profileFormat: 'orca-json',
+      },
+      profiles: {
+        machine: null,
+        process: null,
+        filament: {
+          id: FILAMENT_PROFILE_GUID,
+          kind: 'filament',
+          name: 'Upstream PLA',
+          slicerType: 'OrcaSlicer',
+          slicerDistribution: 'upstream',
+          slicerVersion: '2.4.2',
+          profileFormat: 'orca-json',
+          profileRevision: 'profile-r7',
+          sha256: null,
+        },
+      },
+      baselineSettings: { activeNozzleDiameter: 0.4 },
+      snapshotSha256: SNAPSHOT_SHA,
+      ...(typeof snapshotOverride === 'object' && snapshotOverride !== null
+        ? snapshotOverride
+        : {}),
     },
-    permissions: {
-      readPrinter: true,
-      writeCalibration: true,
-      generateCalibration: true,
-      startPrint: true,
-    },
+    ...rest,
   };
 }
 
 function remoteCandidate(overrides: Record<string, unknown> = {}) {
-  const eligibility = {
-    firmwareFamily: 'Klipper',
-    gcodeDialect: 'Klipper',
-    slicerFamily: 'OrcaSlicer',
-    slicerDistribution: 'upstream',
-    slicerIdentity: 'OrcaSlicer',
-    hardwareContextComplete: true,
-    safetyContextComplete: true,
-    permissionsComplete: true,
-    reasons: [],
-    ...(typeof overrides.eligibility === 'object' &&
-    overrides.eligibility !== null
-      ? overrides.eligibility
-      : {}),
-  };
-  return RemoteCalibrationPrinterCandidate.parse({
-    printerId: 'printer-1',
-    displayName: 'Any arbitrary printer name',
-    printerModel: null,
-    firmwareCompatible: true,
-    orcaProfileId: 'base-pla',
-    isOnline: true,
-    updatedAt: NOW,
-    ...overrides,
-    eligibility,
-  });
+  return RemoteCalibrationPrinterCandidate.parse(candidateDto(overrides));
 }
 
 describe('explicit printer context', () => {
   it('blocks missing and non-upstream identities', () => {
-    const missing = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      profileRevision: null,
-    });
+    // A filament profile with no revision cannot be pinned.
+    const missing = RemoteCalibrationPrinterContext.parse(
+      contextDto({
+        snapshot: {
+          profiles: {
+            machine: null,
+            process: null,
+            filament: {
+              id: FILAMENT_PROFILE_GUID,
+              kind: 'filament',
+              name: 'Upstream PLA',
+              slicerType: 'OrcaSlicer',
+              slicerDistribution: 'upstream',
+              slicerVersion: '2.4.2',
+              profileFormat: 'orca-json',
+              profileRevision: null,
+              sha256: null,
+            },
+          },
+        },
+      }),
+    );
     expect(isExplicitCalibrationContextComplete(missing)).toBe(false);
 
-    const fork = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      slicerDistribution: 'vendorFork',
-    });
+    const fork = RemoteCalibrationPrinterContext.parse(
+      contextDto({
+        slicer: {
+          engine: 'OrcaSlicer',
+          distribution: 'vendorFork',
+          version: '2.4.2',
+          profileFormat: 'orca-json',
+        },
+      }),
+    );
     expect(isExplicitCalibrationContextComplete(fork)).toBe(false);
     expect(
       projectCalibrationPrinterContext(fork).slicerDistribution,
@@ -719,10 +809,9 @@ describe('explicit printer context', () => {
   });
 
   it('projects only strict known IPC fields from a complete remote context', () => {
-    const context = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      futureRemoteField: { secret: 'not projected' },
-    });
+    const context = RemoteCalibrationPrinterContext.parse(
+      contextDto({ futureRemoteField: { secret: 'not projected' } }),
+    );
     expect(isExplicitCalibrationContextComplete(context)).toBe(true);
     const projected = projectCalibrationPrinterContext(context);
     expect(projected.isCurrent).toBe(true);
@@ -777,17 +866,10 @@ describe('printer-context freshness policy', () => {
   });
 
   it('marks authoritative mismatches stale and exact rebases fresh', async () => {
-    const exact = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      safety: {
-        ...remoteContext().safety,
-        futureSafetyField: 'ignored',
-      },
-    });
-    const mismatch = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      snapshotId: 'new-snapshot',
-    });
+    const exact = RemoteCalibrationPrinterContext.parse(contextDto());
+    const mismatch = RemoteCalibrationPrinterContext.parse(
+      contextDto({ snapshotSha256: 'b'.repeat(64) }),
+    );
     await expect(
       resolveCalibrationWorkspaceFreshness(
         request(),
@@ -816,29 +898,32 @@ describe('printer-context freshness policy', () => {
 describe('PrintFarmer Orca profile discovery projection', () => {
   it('projects a complete eligible current context without remote extras', () => {
     const completeCandidate = remoteCandidate({
-      displayName: 'Unrelated candidate name',
+      name: 'Unrelated candidate name',
       futureRemoteField: 'must not leak',
     });
-    const completeContext = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      futureRemoteField: 'must not leak',
-    });
+    const completeContext = RemoteCalibrationPrinterContext.parse(
+      contextDto({ futureRemoteField: 'must not leak' }),
+    );
 
     expect(
       projectPrintFarmerOrcaProfile(completeCandidate, completeContext),
     ).toEqual({
-      orcaProfileId: 'base-pla',
+      // The immutable server identity, not the display name.
+      orcaProfileId: FILAMENT_PROFILE_GUID,
+      // The OrcaSlicer-facing name, carried separately so local file lookup
+      // has something it can actually match.
+      orcaProfileName: 'Upstream PLA',
       displayName: 'Upstream PLA',
       vendor: null,
       material: null,
       source: 'printFarmer',
       upstreamVerified: true,
-      printerId: 'printer-1',
+      printerId: PRINTER_GUID,
       configurationRevision: 7,
-      snapshotId: 'snapshot-1',
-      toolId: 'tool-1',
-      toolheadId: 'toolhead-1',
-      nozzleId: 'nozzle-1',
+      snapshotId: SNAPSHOT_SHA,
+      toolId: TOOLHEAD_GUID,
+      toolheadId: TOOLHEAD_GUID,
+      nozzleId: TOOLHEAD_GUID,
       nozzleDiameterMm: 0.4,
       profileRevision: 'profile-r7',
       contentHash: null,
@@ -847,29 +932,40 @@ describe('PrintFarmer Orca profile discovery projection', () => {
   });
 
   it('omits incomplete or ineligible contexts regardless of names', () => {
+    // Reads as fully compatible; the server's verdict says otherwise.
     const misleadingName = remoteCandidate({
-      displayName: 'Klipper OrcaSlicer upstream',
-      eligibility: {
-        firmwareFamily: 'Marlin',
-        gcodeDialect: 'Klipper',
-        slicerFamily: 'OrcaSlicer',
-        slicerDistribution: 'upstream',
-        slicerIdentity: 'OrcaSlicer',
-      },
+      name: 'Klipper OrcaSlicer upstream',
+      eligible: false,
     });
-    const missingRevision = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      profileRevision: null,
-    });
-    const wrongPrinter = RemoteCalibrationPrinterContext.parse({
-      ...remoteContext(),
-      printerId: 'another-printer',
-    });
+    const missingRevision = RemoteCalibrationPrinterContext.parse(
+      contextDto({
+        snapshot: {
+          profiles: {
+            machine: null,
+            process: null,
+            filament: {
+              id: FILAMENT_PROFILE_GUID,
+              kind: 'filament',
+              name: 'Upstream PLA',
+              slicerType: 'OrcaSlicer',
+              slicerDistribution: 'upstream',
+              slicerVersion: '2.4.2',
+              profileFormat: 'orca-json',
+              profileRevision: null,
+              sha256: null,
+            },
+          },
+        },
+      }),
+    );
+    const wrongPrinter = RemoteCalibrationPrinterContext.parse(
+      contextDto({ id: OTHER_PRINTER_GUID }),
+    );
 
     expect(
       projectPrintFarmerOrcaProfile(
         misleadingName,
-        RemoteCalibrationPrinterContext.parse(remoteContext()),
+        RemoteCalibrationPrinterContext.parse(contextDto()),
       ),
     ).toBeNull();
     expect(
@@ -878,5 +974,14 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     expect(
       projectPrintFarmerOrcaProfile(remoteCandidate(), wrongPrinter),
     ).toBeNull();
+  });
+
+  it('keeps generate and start fail-closed when the server asserts no safety block', () => {
+    // PrintFarmer's context DTO carries no safety or permission members, so
+    // the assurance can never be present. Listing a profile must still work,
+    // but anything that would move the machine must not.
+    const context = RemoteCalibrationPrinterContext.parse(contextDto());
+    expect(isExplicitCalibrationContextComplete(context)).toBe(true);
+    expect(isCalibrationContextSafetyAssured(context)).toBe(false);
   });
 });

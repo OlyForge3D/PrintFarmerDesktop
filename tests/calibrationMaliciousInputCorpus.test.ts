@@ -548,24 +548,73 @@ async function v4ControlAccepted(
 const CORPUS_PROFILE_NAME = 'PFD Corpus Filament';
 
 function corpusPrinterContext() {
+  // Shaped as PrintFarmer's `CalibrationContextDto` actually serialises: the
+  // configuration lives under `snapshot`, and the profile the local scanner
+  // matches on is the filament profile's *name* (its Guid identifies it, but
+  // only the name appears in an OrcaSlicer profile file).
   return RemoteCalibrationPrinterContext.parse({
-    printerId: 'printer-corpus-1',
-    displayName: 'Corpus Printer',
-    firmware: { firmware: 'Klipper', gcodeDialect: 'Klipper' },
-    orcaProfileId: CORPUS_PROFILE_NAME,
-    snapshotAt: '2026-07-01T12:00:00.000Z',
-    configurationId: 'configuration-corpus-1',
+    id: 'aaaaaaaa-c0d5-4111-8111-222222222222',
+    name: 'Corpus Printer',
+    enabled: true,
     configurationRevision: 1,
-    snapshotId: 'snapshot-corpus-1',
-    contentHash: null,
-    toolheads: [
-      {
-        toolId: 'tool-1',
-        toolheadId: 'toolhead-1',
-        extruderType: 'directDrive',
-        nozzle: { id: 'nozzle-1', diameterMm: 0.4, material: 'hardened steel' },
+    reachability: 'online',
+    operationalState: 'idle',
+    observedAtUtc: '2026-07-01T12:00:00.000Z',
+    isStale: false,
+    firmware: {
+      family: 'Klipper',
+      gcodeDialect: 'Klipper',
+      detectionSource: 'moonraker',
+      version: null,
+      verified: true,
+    },
+    slicer: {
+      engine: 'OrcaSlicer',
+      distribution: 'upstream',
+      version: '2.4.2',
+      profileFormat: 'orca-json',
+    },
+    eligible: true,
+    missingInputs: [],
+    rejectionReasons: [],
+    schemaVersion: '1.0',
+    snapshotSha256: 'c'.repeat(64),
+    capturedAtUtc: '2026-07-01T12:00:00.000Z',
+    capturedBySubject: 'corpus-subject',
+    snapshot: {
+      schemaVersion: '1.0',
+      printerId: 'aaaaaaaa-c0d5-4111-8111-222222222222',
+      configurationRevision: 1,
+      capturedAtUtc: '2026-07-01T12:00:00.000Z',
+      buildVolume: { x: 220, y: 220, z: 250 },
+      toolheads: [
+        {
+          id: 'dddddddd-c0d5-4111-8111-222222222222',
+          index: 0,
+          isPrimary: true,
+          nozzleDiameter: 0.4,
+          nozzleMaterial: 'hardened steel',
+          isDirectDrive: true,
+        },
+      ],
+      profiles: {
+        machine: null,
+        process: null,
+        filament: {
+          id: 'cccccccc-c0d5-4111-8111-222222222222',
+          kind: 'filament',
+          name: CORPUS_PROFILE_NAME,
+          slicerType: 'OrcaSlicer',
+          slicerDistribution: 'upstream',
+          slicerVersion: '2.4.2',
+          profileFormat: 'orca-json',
+          profileRevision: 'corpus-r1',
+          sha256: null,
+        },
       },
-    ],
+      baselineSettings: { activeNozzleDiameter: 0.4 },
+      snapshotSha256: 'c'.repeat(64),
+    },
   });
 }
 

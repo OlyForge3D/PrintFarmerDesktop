@@ -19,6 +19,8 @@ import {
   type OpenModelFileResponse,
   type OpenFolderResponse,
   type SidecarPingResponse,
+  type CalibrationProfileDiscoveryDiagnostic,
+  resolveOrcaBaseProfileLookupName,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -37,6 +39,91 @@ import {
   CalibrationHttpClient,
   CalibrationHttpError,
 } from './calibrationHttp.js';
+
+/**
+ * Turns a failed calibration-candidate request into an operator-facing
+ * diagnosis.
+ *
+ * Each branch names a *different* remedy, which is the whole point: an empty
+ * printer list previously looked the same whether the operator needed to sign
+ * in, be granted a permission, upgrade the server, configure a server
+ * dependency, or simply had no eligible printer. Only server-supplied codes and
+ * this module's own literals are used — no server-controlled prose, no URLs and
+ * no filesystem paths are echoed.
+ */
+function classifyDiscoveryFailure(
+  error: unknown,
+): CalibrationProfileDiscoveryDiagnostic {
+  if (!(error instanceof CalibrationHttpError)) {
+    return {
+      kind: 'unreachable',
+      message: 'PrintFarmer could not be reached to list calibration printers.',
+      serverCode: null,
+    };
+  }
+  // The server's ProblemDetails extension code is in-process-only by the #177
+  // disposition, so it is deliberately NOT forwarded to the renderer here.
+  // Only this module's own literals cross the boundary.
+  const serverCode = null;
+  switch (error.code) {
+    case 'authentication':
+      return {
+        kind: 'unauthenticated',
+        message:
+          'Sign in to PrintFarmer again: this session is not authenticated for calibration.',
+        serverCode,
+      };
+    case 'authorization':
+    case 'forbidden':
+      return {
+        kind: 'forbidden',
+        message:
+          'This PrintFarmer account lacks the calibration read permission. Ask a farm admin to grant it.',
+        serverCode,
+      };
+    case 'notFound':
+      return {
+        kind: 'routeUnavailable',
+        message:
+          'This PrintFarmer server does not expose the calibration candidate endpoint. Upgrade the server to a build that supports calibration.',
+        serverCode,
+      };
+    case 'profileServiceUnavailable':
+      return {
+        kind: 'serverDependencyUnavailable',
+        message:
+          'PrintFarmer cannot reach its upstream OrcaSlicer profile resolver, so it cannot list calibration printers. This is a server configuration issue.',
+        serverCode,
+      };
+    case 'printerStatusUnavailable':
+      return {
+        kind: 'serverDependencyUnavailable',
+        message:
+          'PrintFarmer could not read live printer status, so calibration candidates are unavailable right now.',
+        serverCode,
+      };
+    case 'workerUnavailable':
+      return {
+        kind: 'serverDependencyUnavailable',
+        message:
+          'A PrintFarmer service required for calibration is unavailable.',
+        serverCode,
+      };
+    case 'invalidResponse':
+      return {
+        kind: 'malformedResponse',
+        message:
+          'PrintFarmer returned a calibration response this version cannot read.',
+        serverCode,
+      };
+    default:
+      return {
+        kind: 'unreachable',
+        message: 'PrintFarmer could not list calibration printers.',
+        serverCode,
+      };
+  }
+}
 import {
   REQUIRED_FIRMWARE_FAMILY,
   REQUIRED_SLICER_ENGINE,
@@ -64,6 +151,7 @@ import {
 import {
   discoverLocalOrcaFilamentProfiles,
   findLocalOrcaProfileRaw,
+  listLocalOrcaFilamentProfiles,
 } from './orcaProfileDiscovery.js';
 import { generateOrcaProfile } from './orcaProfileGenerator.js';
 import type { OrcaPatchEntry } from './orcaProfileGenerator.js';
@@ -1398,6 +1486,13 @@ export function registerIpcHandlers(
             orcaProfileId: printer.orcaProfileId,
             isOnline: printer.isOnline,
             updatedAt: printer.updatedAt,
+            // Carried so an ineligible printer can explain itself. Codes only:
+            // the server's `message` text stays in the main process (#177).
+            rejectionReasonCodes:
+              eligibility === null
+                ? printer.rejectionReasons.map((reason) => reason.code)
+                : [],
+            missingInputs: eligibility === null ? printer.missingInputs : [],
             eligibility,
           };
         }),
@@ -2787,11 +2882,66 @@ export function registerIpcHandlers(
       );
       const profileContext = await profiles.getAuthenticatedContext(selectedId);
       const signal = AbortSignal.timeout(15_000);
-      const candidates = await calibrationHttp.getPrinters(
-        selectedId,
-        profileContext.profile.baseUrl,
-        signal,
-      );
+      // Server-derived discovery is attempted first, but a failure here must
+      // not erase the answer entirely: the operator still needs to know *why*
+      // the list is short, and a refusal by the server says nothing about the
+      // OrcaSlicer profiles installed on this machine.
+      let candidates: Awaited<ReturnType<typeof calibrationHttp.getPrinters>> =
+        [];
+      let discovery: CalibrationProfileDiscoveryDiagnostic = {
+        kind: 'ok',
+        message: 'Server profile discovery completed.',
+        serverCode: null,
+      };
+      try {
+        candidates = await calibrationHttp.getPrinters(
+          selectedId,
+          profileContext.profile.baseUrl,
+          signal,
+        );
+        if (candidates.length === 0) {
+          discovery = {
+            kind: 'noEligiblePrinters',
+            message:
+              'The server returned no calibration candidate printers for this account.',
+            serverCode: null,
+          };
+        }
+      } catch (error) {
+        discovery = classifyDiscoveryFailure(error);
+      }
+      // Scanned unconditionally, outside the candidate loop. Bound discovery
+      // below can only run once the server has named a printer, so gating this
+      // on `candidates` would mean a server refusal also hid the OrcaSlicer
+      // profiles sitting on this machine — the exact symptom being fixed.
+      const localScan = await listLocalOrcaFilamentProfiles()
+        .then((result) => ({
+          profiles: result.profiles,
+          diagnostic: result.installFound
+            ? result.profiles.length > 0
+              ? {
+                  kind: 'ok' as const,
+                  message: 'Local OrcaSlicer profile scan completed.',
+                }
+              : {
+                  kind: 'noProfilesFound' as const,
+                  message:
+                    'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                }
+            : {
+                kind: 'noInstallFound' as const,
+                message:
+                  'No OrcaSlicer installation was found in the standard locations for this operating system.',
+              },
+        }))
+        .catch(() => ({
+          profiles: [],
+          diagnostic: {
+            kind: 'noInstallFound' as const,
+            message:
+              'No OrcaSlicer installation was found in the standard locations for this operating system.',
+          },
+        }));
       const discovered = await Promise.all(
         candidates.map(async (candidate) => {
           if (
@@ -2870,6 +3020,9 @@ export function registerIpcHandlers(
       }
       return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
         profiles: [...profilesByScope.values()],
+        discovery,
+        localProfiles: localScan.profiles,
+        localDiscovery: localScan.diagnostic,
       });
     },
   );
@@ -3221,7 +3374,13 @@ export function registerIpcHandlers(
 
       const wsPayload = stateRecord.data.workspaceState;
       const domainState = wsPayload.domainState;
-      const orcaProfileId = wsPayload.selectedBaseProfile.orcaProfileId;
+      // The on-disk lookup key is the profile *name*, never the identity. For a
+      // PrintFarmer-sourced base profile the identity is a server GUID that
+      // appears in no OrcaSlicer file, so searching by it always reported the
+      // base profile missing.
+      const orcaProfileLookupName = resolveOrcaBaseProfileLookupName(
+        wsPayload.selectedBaseProfile,
+      );
 
       // Build calibration patch entries from completed attempts.
       const patchEntries: OrcaPatchEntry[] = [];
@@ -3281,8 +3440,21 @@ export function registerIpcHandlers(
         });
       }
 
-      // Find the local base profile.
-      const localProfile = await findLocalOrcaProfileRaw(orcaProfileId);
+      // Find the local base profile, by name rather than by identity.
+      if (orcaProfileLookupName === null) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'baseProfileMissing',
+            message:
+              'This calibration project recorded a PrintFarmer base profile without its OrcaSlicer profile name, so it cannot be located on disk. Re-select the base profile to repair the project.',
+            retryable: false,
+          },
+        });
+      }
+      const localProfile = await findLocalOrcaProfileRaw(orcaProfileLookupName);
       if (!localProfile) {
         return ipcSchemas[
           IpcChannel.CalibrationGenerateOrcaProfile
@@ -3290,7 +3462,7 @@ export function registerIpcHandlers(
           status: 'error',
           error: {
             code: 'baseProfileMissing',
-            message: `Local OrcaSlicer base profile "${orcaProfileId}" was not found. Ensure OrcaSlicer is installed and the profile exists.`,
+            message: `Local OrcaSlicer base profile "${orcaProfileLookupName}" was not found. Ensure OrcaSlicer is installed and the profile exists.`,
             retryable: false,
           },
         });

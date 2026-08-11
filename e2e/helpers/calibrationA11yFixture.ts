@@ -662,6 +662,8 @@ export async function applyCalibrationScenario(
           orcaProfileId: ids.orcaProfileId,
           isOnline: scenario.offline !== true,
           updatedAt: ids.now,
+          rejectionReasonCodes: [],
+          missingInputs: [],
           eligibility: {
             firmwareFamily: 'Klipper',
             gcodeDialect: 'Klipper',
@@ -699,6 +701,16 @@ export async function applyCalibrationScenario(
           exportable: true,
         },
       ],
+      discovery: {
+        kind: 'ok',
+        message: 'Server profile discovery completed.',
+        serverCode: null,
+      },
+      localProfiles: [],
+      localDiscovery: {
+        kind: 'ok',
+        message: 'Local OrcaSlicer profile scan completed.',
+      },
     }));
 
     handle('calibration:startGeneration', () => ({

@@ -1152,7 +1152,38 @@ export const CalibrationPrinterCandidate = z
     orcaProfileId: z.string().max(512).nullable(),
     /** Whether PrintFarmer considers this printer currently online. */
     isOnline: z.boolean(),
-    updatedAt: z.string().datetime(),
+    /**
+     * When PrintFarmer last observed this printer, or null when it never has.
+     *
+     * Nullable because `ObservedAtUtc` and `LastSeenAtUtc` are both `DateTime?`
+     * on `CalibrationCandidateDto`: a printer that is enabled but has never
+     * been reached carries neither. Requiring a string here meant one such
+     * printer threw a ZodError that failed the *entire* list — reintroducing
+     * the empty-discovery failure this contract fix exists to remove, through
+     * a different field. Fabricating a timestamp instead would assert an
+     * observation that never happened.
+     */
+    updatedAt: z.string().datetime().nullable(),
+    /**
+     * Machine-readable codes for why PrintFarmer judged this printer
+     * ineligible, e.g. `firmware_family_not_klipper`.
+     *
+     * Codes only, never the server's `message` text. The server controls that
+     * string, and the #177 disposition keeps server-controlled free text out of
+     * the renderer; a bounded code the client maps to its own catalogued
+     * wording carries the same explanation without that exposure.
+     */
+    rejectionReasonCodes: z
+      .array(z.string().min(1).max(128))
+      .max(64)
+      .optional()
+      .default([]),
+    /** Inputs PrintFarmer still needs before this printer can be calibrated. */
+    missingInputs: z
+      .array(z.string().min(1).max(128))
+      .max(64)
+      .optional()
+      .default([]),
     eligibility: CalibrationPrinterEligibility.nullable()
       .optional()
       .default(null),
@@ -1165,6 +1196,20 @@ export const CalibrationPrinterCandidate = z
         path: ['firmwareCompatible'],
         message:
           'Firmware compatibility must be backed by complete explicit eligibility.',
+      });
+    }
+    // An eligible printer has nothing to explain. If both were allowed at once
+    // the renderer could show a printer as ready and as refused simultaneously.
+    if (
+      candidate.eligibility !== null &&
+      (candidate.rejectionReasonCodes.length > 0 ||
+        candidate.missingInputs.length > 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rejectionReasonCodes'],
+        message:
+          'An eligible printer cannot also carry rejection reasons or missing inputs.',
       });
     }
   });
@@ -2285,6 +2330,14 @@ const WorkspacePhotoMetadata = z
 export const CalibrationSelectedBaseProfile = z
   .object({
     orcaProfileId: z.string().min(1).max(512),
+    /**
+     * The OrcaSlicer-facing profile name used to locate this profile on disk.
+     * See {@link OrcaProfileEntry.orcaProfileName}: for a PrintFarmer-sourced
+     * profile the id is a server `Guid` that no local file carries, so
+     * generation must resolve the base profile by this name instead.
+     * Optional so workspaces persisted before the split still load.
+     */
+    orcaProfileName: z.string().min(1).max(512).optional(),
     displayName: z.string().min(1).max(512),
     /**
      * 'printFarmer' — server-supplied, upstream-verified profile.
@@ -2310,6 +2363,26 @@ export const CalibrationSelectedBaseProfile = z
 export type CalibrationSelectedBaseProfile = z.infer<
   typeof CalibrationSelectedBaseProfile
 >;
+
+/**
+ * Resolves the OrcaSlicer profile *name* to look up on disk for a selected
+ * base profile.
+ *
+ * Returns null when the name cannot be determined, which is the only honest
+ * answer for a PrintFarmer-sourced profile persisted before `orcaProfileName`
+ * existed: its `orcaProfileId` is a server `Guid`, and falling back to it would
+ * search local files for a name that cannot exist and report the profile
+ * missing for the wrong reason. Local sources are safe to fall back on, because
+ * their id is the name.
+ */
+export function resolveOrcaBaseProfileLookupName(profile: {
+  orcaProfileId: string;
+  orcaProfileName?: string | undefined;
+  source: string;
+}): string | null {
+  if (profile.orcaProfileName !== undefined) return profile.orcaProfileName;
+  return profile.source === 'printFarmer' ? null : profile.orcaProfileId;
+}
 
 /**
  * A single append-only observation recorded after a print completes.
@@ -4317,6 +4390,20 @@ export type OrcaProfileSource = z.infer<typeof OrcaProfileSource>;
 export const OrcaProfileEntry = z
   .object({
     orcaProfileId: z.string().min(1).max(512),
+    /**
+     * The OrcaSlicer-facing profile name, used to locate the profile on disk.
+     *
+     * Distinct from `orcaProfileId` and not interchangeable with it. For a
+     * PrintFarmer-sourced entry the id is the server's immutable `Guid`, which
+     * appears nowhere in an OrcaSlicer profile file, so matching local files by
+     * id can never succeed — only this name can. For a locally discovered
+     * entry the two happen to coincide.
+     *
+     * Optional for back-compat with entries persisted before the split; the
+     * resolver falls back to `orcaProfileId` only for local sources, where that
+     * fallback is exactly the name.
+     */
+    orcaProfileName: z.string().min(1).max(512).optional(),
     displayName: z.string().min(1).max(512),
     vendor: z.string().max(256).nullable(),
     material: z.string().max(256).nullable(),
@@ -4346,8 +4433,104 @@ export const CalibrationListOrcaProfilesRequest = z
 export type CalibrationListOrcaProfilesRequest = z.infer<
   typeof CalibrationListOrcaProfilesRequest
 >;
+/**
+ * Why a profile listing came back without server-derived entries.
+ *
+ * An empty `profiles` array is ambiguous on its own: it reads identically
+ * whether the server refused the request, the route drifted, the deployment
+ * has calibration disabled, or the farm genuinely has no eligible printer.
+ * Callers need to tell those apart to say anything useful to the operator.
+ */
+export const CalibrationProfileDiscoveryDiagnostic = z
+  .object({
+    /** Coarse machine-readable cause. */
+    kind: z.enum([
+      /** Server-derived discovery succeeded. */
+      'ok',
+      /** 401 — the session is not authenticated for calibration. */
+      'unauthenticated',
+      /** 403 — authenticated but lacking the calibration permission. */
+      'forbidden',
+      /** 404 — the route is absent on this server build (contract drift). */
+      'routeUnavailable',
+      /** 503 — a server dependency calibration needs is not configured. */
+      'serverDependencyUnavailable',
+      /** The response did not match the calibration contract. */
+      'malformedResponse',
+      /** The server answered normally and returned no eligible printer. */
+      'noEligiblePrinters',
+      /** The request could not reach the server at all. */
+      'unreachable',
+    ]),
+    /** Operator-facing explanation. Never contains credentials or paths. */
+    message: z.string().max(512),
+    /** Server-supplied problem code, when one was provided. */
+    serverCode: z.string().max(64).nullable().default(null),
+  })
+  .strict();
+export type CalibrationProfileDiscoveryDiagnostic = z.infer<
+  typeof CalibrationProfileDiscoveryDiagnostic
+>;
+
+/**
+ * One locally installed OrcaSlicer filament profile, for inspection only.
+ *
+ * Deliberately carries no printer, toolhead, nozzle or snapshot identity, so it
+ * cannot be mistaken for — or used as — a bound calibration base profile. It
+ * also carries no filesystem path: the renderer needs to know a profile exists,
+ * not where the user keeps it.
+ */
+export const LocalOrcaProfileSummary = z
+  .object({
+    name: z.string().min(1).max(512),
+    source: z.enum(['systemInstall', 'userImported']),
+    material: z.string().max(64).nullable(),
+  })
+  .strict();
+export type LocalOrcaProfileSummary = z.infer<typeof LocalOrcaProfileSummary>;
+
+/** Outcome of scanning this machine's OrcaSlicer installation. */
+export const LocalOrcaDiscoveryDiagnostic = z
+  .object({
+    kind: z.enum([
+      /** Profiles were found locally. */
+      'ok',
+      /** No canonical OrcaSlicer root exists — OrcaSlicer is likely not installed. */
+      'noInstallFound',
+      /** OrcaSlicer is installed but no filament profiles were readable. */
+      'noProfilesFound',
+    ]),
+    message: z.string().max(512),
+  })
+  .strict();
+export type LocalOrcaDiscoveryDiagnostic = z.infer<
+  typeof LocalOrcaDiscoveryDiagnostic
+>;
+
 export const CalibrationListOrcaProfilesResponse = z
-  .object({ profiles: z.array(OrcaProfileEntry).max(5000) })
+  .object({
+    profiles: z.array(OrcaProfileEntry).max(5000),
+    /**
+     * Why server-derived discovery produced what it did, so an empty list is
+     * never silently ambiguous. Defaulted for callers that predate the field;
+     * the production handler always sets it explicitly.
+     */
+    discovery: CalibrationProfileDiscoveryDiagnostic.default({
+      kind: 'ok',
+      message: 'Server profile discovery completed.',
+      serverCode: null,
+    }),
+    /**
+     * Locally installed OrcaSlicer profiles, scanned independently of the
+     * server. Populated even when the server refused, so "PrintFarmer is
+     * unreachable" stays distinguishable from "this machine has no profiles".
+     */
+    localProfiles: z.array(LocalOrcaProfileSummary).max(5000).default([]),
+    localDiscovery: LocalOrcaDiscoveryDiagnostic.default({
+      kind: 'ok',
+      message: 'Local OrcaSlicer profile scan completed.',
+    }),
+  })
   .strict();
 export type CalibrationListOrcaProfilesResponse = z.infer<
   typeof CalibrationListOrcaProfilesResponse

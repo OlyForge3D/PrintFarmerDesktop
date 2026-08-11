@@ -238,6 +238,10 @@ const candidates: CalibrationPrinterCandidate[] = [
     orcaProfileId: 'orca-base',
     isOnline: true,
     updatedAt: now,
+    // Explicitly ineligible: the server named a reason, so the renderer can
+    // explain the refusal instead of showing an unexplained absence.
+    rejectionReasonCodes: ['firmware_family_not_klipper'],
+    missingInputs: [],
     eligibility: null,
   },
   {
@@ -248,6 +252,8 @@ const candidates: CalibrationPrinterCandidate[] = [
     orcaProfileId: null,
     isOnline: true,
     updatedAt: now,
+    rejectionReasonCodes: [],
+    missingInputs: [],
     eligibility: {
       firmwareFamily: 'Klipper',
       gcodeDialect: 'Klipper',

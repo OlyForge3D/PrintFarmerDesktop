@@ -89,6 +89,14 @@ export const CALIBRATION_LOG_ERROR_CODES = [
   'idempotencyPayloadChanged',
   'invalidData',
   'workerUnavailable',
+  // The two non-worker causes of a calibration 503. Mirrored here so a
+  // profile-resolver or printer-status outage is nameable in logs and runbooks
+  // instead of being coerced into 'workerUnavailable' or 'unknownErrorCode'.
+  'profileServiceUnavailable',
+  'printerStatusUnavailable',
+  // A 400 from the calibration-context route caused by a missing or mis-cased
+  // `slicerType`, i.e. client contract drift rather than bad user data.
+  'unsupportedSlicerType',
   'forbidden',
   'jobNotFound',
   'wrongJob',
@@ -276,6 +284,12 @@ const ERROR_MESSAGES: Record<CalibrationLogErrorCode, string> = {
     'The idempotency key was reused with a different payload.',
   invalidData: 'The server rejected the request as invalid.',
   workerUnavailable: 'No generation worker is available.',
+  profileServiceUnavailable:
+    'The server cannot reach its upstream OrcaSlicer profile resolver, so calibration printers cannot be listed.',
+  printerStatusUnavailable:
+    'The server could not read live printer status for this calibration request.',
+  unsupportedSlicerType:
+    'The calibration context request did not name a slicer type the server supports.',
   forbidden: 'The operation is not permitted for the granted scopes.',
   jobNotFound: 'The queue job does not exist.',
   wrongJob: 'The queue job does not match the requested operation.',
