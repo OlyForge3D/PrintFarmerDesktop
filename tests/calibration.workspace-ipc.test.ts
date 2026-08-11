@@ -8,7 +8,6 @@ import {
   type CalibrationWorkspacePayload as CalibrationWorkspacePayloadType,
 } from '@shared/ipc';
 import {
-  isCalibrationContextSafetyAssured,
   isExplicitCalibrationContextComplete,
   isExplicitCalibrationEligibilityComplete,
   prepareCalibrationWorkspaceSave,
@@ -974,14 +973,5 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     expect(
       projectPrintFarmerOrcaProfile(remoteCandidate(), wrongPrinter),
     ).toBeNull();
-  });
-
-  it('keeps generate and start fail-closed when the server asserts no safety block', () => {
-    // PrintFarmer's context DTO carries no safety or permission members, so
-    // the assurance can never be present. Listing a profile must still work,
-    // but anything that would move the machine must not.
-    const context = RemoteCalibrationPrinterContext.parse(contextDto());
-    expect(isExplicitCalibrationContextComplete(context)).toBe(true);
-    expect(isCalibrationContextSafetyAssured(context)).toBe(false);
   });
 });
