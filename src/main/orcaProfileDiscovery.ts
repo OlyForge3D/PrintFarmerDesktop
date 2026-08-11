@@ -400,6 +400,7 @@ async function enumerateJsonFiles(
   depth: number,
   budget: { value: number },
   found: string[],
+  failures: { value: number } = { value: 0 },
 ): Promise<void> {
   if (depth > MAX_TRAVERSAL_DEPTH) return;
   if (budget.value >= MAX_ENUMERATED_ENTRIES_PER_ROOT) return;
@@ -408,6 +409,11 @@ async function enumerateJsonFiles(
   try {
     entries = await readdir(dirPath, { withFileTypes: true, encoding: 'utf8' });
   } catch {
+    // Counted, not just swallowed. "We could not read this directory" and "we
+    // read it and it held nothing" lead to different advice, and reporting the
+    // first as the second sent operators looking for missing profiles instead
+    // of at the permissions on the folder.
+    failures.value += 1;
     return;
   }
 
@@ -430,7 +436,7 @@ async function enumerateJsonFiles(
       }
       if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) continue;
 
-      await enumerateJsonFiles(entryPath, depth + 1, budget, found);
+      await enumerateJsonFiles(entryPath, depth + 1, budget, found, failures);
     } else if (entry.isFile() && entry.name.endsWith('.json')) {
       found.push(entryPath);
     }
@@ -484,9 +490,16 @@ async function collectProfilesFromRoot(
   source: 'systemInstall' | 'userImported',
   targetNames: ReadonlySet<string>,
   profiles: ParsedProfile[],
+  failures: { value: number } = { value: 0 },
 ): Promise<number> {
   const candidatePaths: string[] = [];
-  await enumerateJsonFiles(canonicalRoot, 0, { value: 0 }, candidatePaths);
+  await enumerateJsonFiles(
+    canonicalRoot,
+    0,
+    { value: 0 },
+    candidatePaths,
+    failures,
+  );
 
   const ordered = prioritiseCandidatePaths(candidatePaths, targetNames);
   let parsed = 0;
@@ -631,6 +644,12 @@ export async function listLocalOrcaFilamentProfiles(
 ): Promise<{
   /** Whether any canonical OrcaSlicer root actually exists on this machine. */
   installFound: boolean;
+  /**
+   * How many directories existed but could not be read. Non-zero means the
+   * answer below is incomplete for a reason the operator can act on, which is
+   * not the same as "there is nothing here".
+   */
+  readFailureCount: number;
   profiles: Array<{
     name: string;
     source: 'systemInstall' | 'userImported';
@@ -643,6 +662,7 @@ export async function listLocalOrcaFilamentProfiles(
 
   let installFound = false;
   const parsed: ParsedProfile[] = [];
+  const failures = { value: 0 };
 
   for (const [roots, source] of [
     [userRoots, 'userImported'],
@@ -663,6 +683,7 @@ export async function listLocalOrcaFilamentProfiles(
         source,
         new Set<string>(),
         parsed,
+        failures,
       );
     }
   }
@@ -694,6 +715,7 @@ export async function listLocalOrcaFilamentProfiles(
 
   return {
     installFound,
+    readFailureCount: failures.value,
     profiles: [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
@@ -727,6 +749,11 @@ export interface LocalOrcaLookupDiagnostic {
   readonly parsedFileCount: number;
   /** A few profile names that were read, for orientation only. */
   readonly exemplars: readonly string[];
+  /**
+   * How many directories existed but could not be read. Distinguishes a scan
+   * that found nothing from a scan that could not look.
+   */
+  readonly readFailureCount: number;
 }
 
 /** How many profile names a diagnostic carries. */
@@ -755,6 +782,7 @@ export async function discoverLocalOrcaFilamentProfiles(
     enumeratedFileCount: 0,
     parsedFileCount: 0,
     exemplars: [],
+    readFailureCount: 0,
   };
   if (
     !targetName ||
@@ -777,6 +805,7 @@ export async function discoverLocalOrcaFilamentProfiles(
 
   let installFound = false;
   let enumeratedFileCount = 0;
+  const failures = { value: 0 };
 
   for (const [roots, source] of [
     [userRoots, 'userImported'],
@@ -795,6 +824,7 @@ export async function discoverLocalOrcaFilamentProfiles(
         source,
         targetNames,
         allProfiles,
+        failures,
       );
     }
   }
@@ -806,6 +836,7 @@ export async function discoverLocalOrcaFilamentProfiles(
     exemplars: allProfiles
       .slice(0, DIAGNOSTIC_EXEMPLAR_LIMIT)
       .map((profile) => profile.name),
+    readFailureCount: failures.value,
   };
 
   if (allProfiles.length === 0) return { entries: [], diagnostic };
