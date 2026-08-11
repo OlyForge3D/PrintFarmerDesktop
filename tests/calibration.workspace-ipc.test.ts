@@ -102,9 +102,13 @@ function validWorkspace(): CalibrationWorkspacePayloadType {
       maximumNozzleTemperatureC: 300,
       maximumBedTemperatureC: 120,
       maximumVolumetricRateMm3S: 30,
-      emergencyStopAvailable: true,
-      thermalProtectionConfirmed: true,
-      ventilationAssessed: true,
+      // False, matching what a real context reports: PrintFarmer publishes no
+      // interlock assertions, so a workspace that recorded `true` would claim
+      // the server confirmed something it was never asked about — and would
+      // then read as drifted against every context it is compared with.
+      emergencyStopAvailable: false,
+      thermalProtectionConfirmed: false,
+      ventilationAssessed: false,
     },
   };
   return CalibrationWorkspacePayload.parse({
@@ -720,6 +724,7 @@ function contextDto(overrides: Record<string, unknown> = {}) {
           nozzleMaterial: 'brass',
           isDirectDrive: true,
           maxVolumetricFlow: 30,
+          maxHotendTemperature: 300,
         },
       ],
       maxBedTemperature: 120,
@@ -983,7 +988,15 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     // still refuse — but for a reason that exists, not one that cannot.
     const context = RemoteCalibrationPrinterContext.parse(contextDto());
     expect(isExplicitCalibrationContextComplete(context)).toBe(true);
-    expect(context.safety).toBeNull();
+    // Machine limits the DTO does publish come through, so baselines can be
+    // range-checked against real hardware.
+    expect(context.safety?.maximumNozzleTemperatureC).toBe(300);
+    // The three interlock assertions it does not publish stay false. Absent
+    // evidence is never promoted to an assurance.
+    expect(context.safety?.emergencyStopAvailable).toBe(false);
+    expect(context.safety?.thermalProtectionConfirmed).toBe(false);
+    expect(context.safety?.ventilationAssessed).toBe(false);
+    // And per-printer permissions genuinely have no counterpart at all.
     expect(context.permissions).toBeNull();
 
     const capability = {

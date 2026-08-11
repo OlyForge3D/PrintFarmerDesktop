@@ -730,6 +730,21 @@ const RemoteToolheadDto = z
       .max(10_000)
       .nullish()
       .transform((v) => v ?? null),
+    /**
+     * Maximum hotend temperature this toolhead accepts.
+     *
+     * The server treats it as required for eligibility — it emits
+     * `hotend_max_temperature_missing` when absent — so an eligible printer
+     * always carries it. Parsed here so the baseline temperature an operator
+     * enters can be range-checked against the hardware rather than against a
+     * fabricated ceiling.
+     */
+    maxHotendTemperature: z
+      .number()
+      .positive()
+      .max(1_000)
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
@@ -949,13 +964,10 @@ export const RemoteCalibrationPrinterContext =
       null,
     );
     const maximumNozzleTemperatureC = snapshot?.toolheads.reduce<number | null>(
-      (highest, toolhead) => {
-        const declared = (toolhead as { maxHotendTemperature?: unknown })
-          .maxHotendTemperature;
-        return typeof declared === 'number' && Number.isFinite(declared)
-          ? Math.max(highest ?? 0, declared)
-          : highest;
-      },
+      (highest, toolhead) =>
+        toolhead.maxHotendTemperature === null
+          ? highest
+          : Math.max(highest ?? 0, toolhead.maxHotendTemperature),
       null,
     );
     return {
@@ -1021,7 +1033,10 @@ export const RemoteCalibrationPrinterContext =
        * `calibrationActionGate.ts`, not here.
        */
       safety:
-        snapshot?.buildVolume == null
+        snapshot?.buildVolume == null ||
+        snapshot.maxBedTemperature === null ||
+        maximumNozzleTemperatureC === null ||
+        maximumVolumetricRateMm3S === null
           ? null
           : {
               buildVolumeMm: {
@@ -1029,9 +1044,9 @@ export const RemoteCalibrationPrinterContext =
                 y: snapshot.buildVolume.y,
                 z: snapshot.buildVolume.z,
               },
-              maximumNozzleTemperatureC: maximumNozzleTemperatureC ?? 0,
-              maximumBedTemperatureC: snapshot.maxBedTemperature ?? 0,
-              maximumVolumetricRateMm3S: maximumVolumetricRateMm3S ?? 0,
+              maximumNozzleTemperatureC,
+              maximumBedTemperatureC: snapshot.maxBedTemperature,
+              maximumVolumetricRateMm3S,
               // Never asserted by PrintFarmer. Machine-moving actions are gated
               // in `calibrationActionGate.ts` on evidence that does exist.
               emergencyStopAvailable: false,
