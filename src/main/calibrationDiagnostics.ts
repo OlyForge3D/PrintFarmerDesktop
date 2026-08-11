@@ -157,15 +157,51 @@ export class CalibrationDiagnosticsStore {
    * is unchanged; the report already names the selected profile separately.
    */
   private capabilityProfileId: string | null = null;
+  /**
+   * Generation counter for capability negotiations.
+   *
+   * Profile binding alone cannot reject a *stale completion for the same
+   * profile*. Two sequences need this: a 403 discards the snapshot while an
+   * earlier capability GET is still in flight, and that GET then records
+   * positive evidence after the refusal it was supposed to be corrected by; and
+   * A → B → A, where the pre-switch response for A lands after A is current
+   * again and silently becomes authoritative despite everything that happened
+   * in between.
+   *
+   * Every discard advances the counter, so a negotiation started before it can
+   * no longer write. Last start wins; earlier ones are dropped.
+   */
+  private capabilityEpoch = 0;
   private lastSync: CalibrationLastSyncSnapshot | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
-  /** Called at every successful capability negotiation. */
+  /**
+   * Discard the current snapshot and take a token for the negotiation about to
+   * start.
+   *
+   * Clearing and starting are one operation on purpose: the window between them
+   * is exactly where a gate would read evidence the caller has already decided
+   * is suspect.
+   */
+  beginCapabilityNegotiation(): number {
+    this.clearCapabilities();
+    return this.capabilityEpoch;
+  }
+
+  /**
+   * Record a completed negotiation, if it is still the current one.
+   *
+   * Returns whether the result was accepted. A stale completion is dropped
+   * rather than applied, so a response that was already overtaken cannot
+   * reinstate evidence for a decision that has since been made differently.
+   */
   recordCapabilities(
+    token: number,
     profileId: string,
     capabilities: RemoteCalibrationCapabilities,
-  ): void {
+  ): boolean {
+    if (token !== this.capabilityEpoch) return false;
     this.capability = {
       negotiatedApiVersion: capabilities.apiVersion,
       negotiatedSchemaVersion: capabilities.schemaVersion,
@@ -176,6 +212,7 @@ export class CalibrationDiagnosticsStore {
       negotiatedAt: this.now().toISOString(),
     };
     this.capabilityProfileId = profileId;
+    return true;
   }
 
   /** Called at the end of every calibration sync, successful or not. */
@@ -220,6 +257,9 @@ export class CalibrationDiagnosticsStore {
   clearCapabilities(): void {
     this.capability = null;
     this.capabilityProfileId = null;
+    // Invalidates any negotiation already in flight. Without this a response
+    // that left before the discard would land after it and undo it.
+    this.capabilityEpoch += 1;
   }
 
   /**

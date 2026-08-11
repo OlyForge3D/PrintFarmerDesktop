@@ -40,6 +40,26 @@ import {
 
 const context = RemoteCalibrationPrinterContext.parse(calibrationContextDto());
 
+/**
+ * Every permission a fully-permitted principal holds.
+ *
+ * Three resource families, because PrintFarmer enforces them on three different
+ * routes: calibration endpoints, slicing submission, and the job queue. Holding
+ * one says nothing about another, so a fixture that listed only `calibration:*`
+ * would make every queue action look refused for the wrong reason.
+ */
+const ALL_PERMISSIONS = [
+  'calibration:read',
+  'calibration:create',
+  'calibration:update',
+  'calibration:generate',
+  'slicing:submit',
+  'queue:write',
+  'queue:read',
+  'queue:acknowledge-bed-clear',
+  'queue:start',
+];
+
 function capability(
   overrides: {
     grantedScopes?: readonly string[] | null;
@@ -47,12 +67,7 @@ function capability(
   } = {},
 ) {
   return {
-    grantedScopes: overrides.grantedScopes ?? [
-      'calibration:read',
-      'calibration:create',
-      'calibration:update',
-      'calibration:generate',
-    ],
+    grantedScopes: overrides.grantedScopes ?? ALL_PERMISSIONS,
     flags: {
       calibrationApiEnabled: true,
       calibrationGenerationEnabled: true,
@@ -222,52 +237,206 @@ describe('binding fencing refuses each identity independently', () => {
   });
 });
 
-describe('each action requires its own exact canonical permission', () => {
-  const required: ReadonlyArray<[CalibrationGatedAction, string]> = [
-    ['createProject', 'calibration:create'],
-    ['generate', 'calibration:generate'],
-    ['startPrint', 'calibration:update'],
-    ['acknowledgeBedClear', 'calibration:update'],
+describe('each action requires the exact permissions its route enforces', () => {
+  // Matched to PrintFarmer's own route attributes. These are three separate
+  // resource families and the server checks each on its own endpoint, so a gate
+  // that substituted one for another would send a request it already had the
+  // evidence to refuse.
+  const required: ReadonlyArray<[CalibrationGatedAction, readonly string[]]> = [
+    ['createProject', ['calibration:create']],
+    ['updateProject', ['calibration:update']],
+    ['sync', ['calibration:update']],
+    ['generate', ['calibration:generate', 'slicing:submit']],
+    ['startPrint', ['queue:write']],
+    [
+      'acknowledgeBedClear',
+      ['queue:read', 'queue:acknowledge-bed-clear', 'queue:start'],
+    ],
   ];
 
-  for (const [action, permission] of required) {
-    it(`${action} refuses when ${permission} is absent and permits when it is present`, () => {
-      const without = [
-        'calibration:read',
-        'calibration:create',
-        'calibration:update',
-        'calibration:generate',
-      ].filter((scope) => scope !== permission);
-      const refused = evaluateCalibrationActionGate({
-        ...allowedInput(action),
-        capability: capability({ grantedScopes: without }),
+  for (const [action, permissions] of required) {
+    for (const permission of permissions) {
+      it(`${action} refuses when ${permission} alone is missing`, () => {
+        // Every member is required, so removing any single one must refuse —
+        // otherwise a two-permission route is really being gated by one.
+        const without = ALL_PERMISSIONS.filter((held) => held !== permission);
+        const refused = evaluateCalibrationActionGate({
+          ...allowedInput(action),
+          capability: capability({ grantedScopes: without }),
+        });
+        expect(refused.allowed).toBe(false);
+        expect(refused.code).toBe('permissionDenied');
+        expect(refused.message).toContain(permission);
+        // Paired positive: restoring exactly this permission permits the action.
+        expect(
+          evaluateCalibrationActionGate({
+            ...allowedInput(action),
+            capability: capability({
+              grantedScopes: [...without, permission],
+            }),
+          }).allowed,
+        ).toBe(true);
       });
-      expect(refused.allowed).toBe(false);
-      expect(refused.code).toBe('permissionDenied');
-      expect(refused.message).toContain(permission);
-      // Paired positive: the refusal above is about this permission and not
-      // about the shortened list generally.
+    }
+
+    it(`${action} needs nothing outside its own route's permissions`, () => {
+      // No cross-resource substitution in the other direction either: holding
+      // exactly what the route requires is enough.
       expect(
         evaluateCalibrationActionGate({
           ...allowedInput(action),
-          capability: capability({ grantedScopes: [...without, permission] }),
+          capability: capability({ grantedScopes: [...permissions] }),
         }).allowed,
       ).toBe(true);
     });
   }
 
-  it('accepts a legacy spelling only when the server actually advertises it', () => {
-    // Recognising a spelling the server sent is not the same as inventing a
-    // grant. An account granted nothing still reads as granted nothing.
+  it('does not let a calibration permission stand in for a queue one', () => {
+    // The specific defect: enqueue and dispatch were mapped to
+    // `calibration:update`, so an account with full calibration rights and no
+    // queue rights would have been allowed to POST to the job queue.
+    const calibrationOnly = ALL_PERMISSIONS.filter((held) =>
+      held.startsWith('calibration:'),
+    );
+    for (const action of ['startPrint', 'acknowledgeBedClear'] as const) {
+      const result = evaluateCalibrationActionGate({
+        ...allowedInput(action),
+        capability: capability({ grantedScopes: calibrationOnly }),
+      });
+      expect(
+        result.allowed,
+        `${action} was allowed on calibration rights`,
+      ).toBe(false);
+      expect(result.code).toBe('permissionDenied');
+    }
+  });
+
+  it('does not let a queue permission stand in for a calibration one', () => {
+    const queueOnly = ALL_PERMISSIONS.filter((held) =>
+      held.startsWith('queue:'),
+    );
+    for (const action of ['createProject', 'updateProject', 'sync'] as const) {
+      const result = evaluateCalibrationActionGate({
+        ...allowedInput(action),
+        capability: capability({ grantedScopes: queueOnly }),
+      });
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe('permissionDenied');
+    }
+  });
+
+  it('applies the generation capability flag to generate and to nothing else', () => {
+    // `calibrationGenerationEnabled` is the deployment's switch for profile
+    // generation. Reading it as a gate on print start would refuse dispatch on
+    // every farm that simply does not generate profiles, and would imply a
+    // protection that flag has never provided.
+    const generationOff = capability({
+      flags: { calibrationGenerationEnabled: false },
+    });
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('generate'),
+        capability: generationOff,
+      }).allowed,
+    ).toBe(false);
+    for (const action of [
+      'startPrint',
+      'acknowledgeBedClear',
+      'createProject',
+      'updateProject',
+      'sync',
+    ] as const) {
+      expect(
+        evaluateCalibrationActionGate({
+          ...allowedInput(action),
+          capability: generationOff,
+        }).allowed,
+        `${action} was conditioned on calibrationGenerationEnabled`,
+      ).toBe(true);
+    }
+  });
+
+  it('does not require a bed-clear acknowledgement to enqueue', () => {
+    // Enqueue places a job in the queue; dispatch moves the machine. Requiring
+    // the acknowledgement here would be unsatisfiable, because the job being
+    // acknowledged does not exist until enqueue has already succeeded.
+    expect(
+      evaluateCalibrationActionGate({
+        action: 'startPrint',
+        capability: capability(),
+        context,
+        binding: calibrationActionBindingFixture(),
+      }).allowed,
+    ).toBe(true);
+  });
+
+  it('accepts a same-resource admin grant and never a cross-resource one', () => {
+    // PrintFarmer authorises `{resource}:admin` as covering that resource's
+    // actions, and the capability payload may expose the raw grant rather than
+    // its expansion. Implication stays inside the resource: an admin of the
+    // queue is not thereby an admin of calibration.
     expect(
       evaluateCalibrationActionGate({
         ...allowedInput('startPrint'),
+        capability: capability({ grantedScopes: ['queue:admin'] }),
+      }).allowed,
+    ).toBe(true);
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('acknowledgeBedClear'),
+        capability: capability({ grantedScopes: ['queue:admin'] }),
+      }).allowed,
+    ).toBe(true);
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('generate'),
+        capability: capability({
+          grantedScopes: ['calibration:admin', 'slicing:admin'],
+        }),
+      }).allowed,
+    ).toBe(true);
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('sync'),
+        capability: capability({ grantedScopes: ['calibration:admin'] }),
+      }).allowed,
+    ).toBe(true);
+
+    // Cross-resource substitution, in both directions, and admin-to-admin.
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('startPrint'),
+        capability: capability({ grantedScopes: ['calibration:admin'] }),
+      }).allowed,
+    ).toBe(false);
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('sync'),
+        capability: capability({ grantedScopes: ['queue:admin'] }),
+      }).allowed,
+    ).toBe(false);
+    // Generation needs both families; one admin is not enough.
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('generate'),
+        capability: capability({ grantedScopes: ['calibration:admin'] }),
+      }).allowed,
+    ).toBe(false);
+  });
+
+  it('accepts a legacy spelling only when the server actually advertises it', () => {
+    // Recognising a spelling the server sent is not the same as inventing a
+    // grant. An account granted nothing still reads as granted nothing. Only
+    // the calibration family ever had a PascalCase form.
+    expect(
+      evaluateCalibrationActionGate({
+        ...allowedInput('sync'),
         capability: capability({ grantedScopes: ['CalibrationWrite'] }),
       }).allowed,
     ).toBe(true);
     expect(
       evaluateCalibrationActionGate({
-        ...allowedInput('startPrint'),
+        ...allowedInput('sync'),
         capability: capability({ grantedScopes: [] }),
       }).allowed,
     ).toBe(false);

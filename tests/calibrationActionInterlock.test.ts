@@ -67,6 +67,14 @@ const CANONICAL_PERMISSIONS = [
   'calibration:create',
   'calibration:update',
   'calibration:generate',
+  // Generation submits a slicing job, enqueue is a queue write, and dispatch is
+  // two queue operations. PrintFarmer enforces each on its own route, so a
+  // fully-permitted principal holds all three families.
+  'slicing:submit',
+  'queue:write',
+  'queue:read',
+  'queue:acknowledge-bed-clear',
+  'queue:start',
 ];
 
 function fakeProfiles() {
@@ -460,9 +468,16 @@ describe('bed-clear dispatch requires a ledger-backed acknowledgement', () => {
     expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
   });
 
-  it('refuses before dispatch without calibration:update', async () => {
+  it('refuses before dispatch without the queue permissions the route enforces', async () => {
+    // Corrected mapping: `acknowledge-bed-clear-and-start` is a queue
+    // operation, not a calibration update. Full calibration rights do not
+    // authorise it.
     const { calls } = server({
-      permissions: ['calibration:read', 'calibration:create'],
+      permissions: [
+        'calibration:read',
+        'calibration:create',
+        'calibration:update',
+      ],
     });
     registered = handlers();
     await negotiate();
@@ -471,8 +486,32 @@ describe('bed-clear dispatch requires a ledger-backed acknowledgement', () => {
       bedClearRequest(),
     )) as { status: string; error: { message: string } };
     expect(response.status).toBe('error');
-    expect(response.error.message).toContain('calibration:update');
+    expect(response.error.message).toMatch(/queue:/);
     expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
+  });
+
+  it('does not even read the job without queue:read', async () => {
+    // The read that establishes whether the job is awaiting acknowledgement is
+    // itself an authorised operation. Performing it to decide whether the caller
+    // is authorised has the order backwards, and a custom role can hold ack and
+    // start without read.
+    const { calls } = server({
+      permissions: [
+        'calibration:read',
+        'queue:acknowledge-bed-clear',
+        'queue:start',
+      ],
+    });
+    registered = handlers();
+    await negotiate();
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest(),
+    )) as { status: string; error: { message: string } };
+    expect(response.status).toBe('error');
+    expect(response.error.message).toContain('queue:read');
+    // Zero GET and zero POST.
+    expect(calls.some((call) => call.includes('job-queue'))).toBe(false);
   });
 
   it('refuses before dispatch when the pinned revision no longer matches', async () => {

@@ -661,6 +661,41 @@ export function registerIpcHandlers(
   const capabilityRefresher = new CalibrationCapabilityRefresher();
 
   /**
+   * Monotonic counter for everything that invalidates in-flight calibration
+   * decisions: a profile switch, a delete, a 403-driven discard, teardown.
+   *
+   * Verification awaits an authoritative context read, so a decision can be
+   * correct when it starts and wrong when it returns. A plain "is the selected
+   * id still A" check is not enough — A → B → A during the await passes it while
+   * everything the decision rested on has been discarded twice over. A counter
+   * that only ever advances cannot be fooled that way.
+   */
+  let calibrationStateEpoch = 0;
+
+  /**
+   * Cancel every sync in flight, because none of them is still authorised.
+   *
+   * A profile switch or a refusal invalidates the outbox push that is already
+   * running for the previous profile, and letting it continue would keep
+   * mutating a farm the operator has moved away from — or one that has just
+   * refused this account.
+   */
+  const abortActiveCalibrationSyncs = (): void => {
+    for (const controller of activeSyncControllers.values()) {
+      controller.abort();
+    }
+    activeSyncControllers.clear();
+  };
+
+  /** Returned when calibration state was discarded mid-verification. */
+  const SELECTION_CHANGED_DURING_VERIFICATION: CalibrationGateResult = {
+    allowed: false,
+    code: 'selectionChanged',
+    message:
+      'The selected PrintFarmer profile changed while this action was being verified, so it was not performed.',
+  };
+
+  /**
    * Discard every piece of calibration state tied to a server profile.
    *
    * All four of these are evidence about one farm and one account: negotiated
@@ -675,8 +710,11 @@ export function registerIpcHandlers(
    * than strictly necessary only costs a re-negotiation.
    */
   const forgetCalibrationProfileState = (profileId?: string): void => {
+    calibrationStateEpoch += 1;
     calibrationDiagnostics.clearCapabilities();
     bedClearLedger.clear();
+    clearProfileCache();
+    abortActiveCalibrationSyncs();
     if (profileId === undefined) {
       selectionCache.clear();
       capabilityRefresher.clear();
@@ -698,20 +736,40 @@ export function registerIpcHandlers(
   const noteCalibrationForbidden = async (
     selectedId: string,
   ): Promise<boolean> => {
+    // Invalidate *everything* a refusal contradicts, unconditionally and before
+    // the bounded refresh is even considered.
+    //
+    // Clearing only the capability snapshot left three holes. The action epoch
+    // did not advance, so a verification already in flight would re-read the
+    // freshly refreshed positive capability and dispatch even though it predated
+    // the refusal. A previously minted bed-clear acknowledgement survived a
+    // refusal that plainly bore on it. And a remembered printer context stayed
+    // usable. None of that is evidence a 403 leaves intact.
+    //
+    // The refresher's cooldown is deliberately *not* reset: it bounds the
+    // transport, and clearing it here would turn rapid refusals into unbounded
+    // capability fetches.
+    calibrationStateEpoch += 1;
+    calibrationDiagnostics.clearCapabilities();
+    bedClearLedger.clear();
+    selectionCache.forgetProfile(selectedId);
+    abortActiveCalibrationSyncs();
     const outcome = await capabilityRefresher.noteForbidden(
       selectedId,
       async () => {
-        // Discarded before the refresh, so a refresh that itself fails or is
-        // refused leaves null evidence rather than the positive snapshot that
-        // has just been contradicted by a 403.
-        calibrationDiagnostics.clearCapabilities();
+        const negotiationToken =
+          calibrationDiagnostics.beginCapabilityNegotiation();
         const ctx = await profiles.getAuthenticatedContext(selectedId);
         const caps = await calibrationHttp.getCapabilities(
           selectedId,
           ctx.profile.baseUrl,
           AbortSignal.timeout(10_000),
         );
-        calibrationDiagnostics.recordCapabilities(selectedId, caps);
+        calibrationDiagnostics.recordCapabilities(
+          negotiationToken,
+          selectedId,
+          caps,
+        );
         emitCalibrationLog({
           level: 'info',
           component: 'calibration.http',
@@ -764,10 +822,31 @@ export function registerIpcHandlers(
   ): void => {
     ipcMain.handle(channel, async (event, rawRequest: unknown) => {
       const fenced = CalibrationProfileFence.safeParse(rawRequest);
-      if (fenced.success) {
-        await requireSelectedCalibrationProfile(fenced.data.profileId);
+      const fencedProfileId = fenced.success ? fenced.data.profileId : null;
+      if (fencedProfileId !== null) {
+        await requireSelectedCalibrationProfile(fencedProfileId);
       }
-      return handler(event, rawRequest);
+      try {
+        return await handler(event, rawRequest);
+      } catch (error) {
+        // Centralised so a refusal on *any* calibration channel invalidates the
+        // cached permissions, including channels that only read. Handling this
+        // per action left a new hole every time a channel was added: a 403 from
+        // a context read or a queue poll would leave a positive snapshot in
+        // place and the workspace still offering actions the server had just
+        // refused.
+        //
+        // Channels that deliberately convert the exception into a response —
+        // sync, profile resolution — keep their own explicit handling, because
+        // nothing reaches here for them to catch.
+        //
+        // The error is rethrown unchanged, and nothing is replayed: correcting
+        // the evidence is a read, and repeating the caller's action is not.
+        if (fencedProfileId !== null && isForbidden(error)) {
+          await noteCalibrationForbidden(fencedProfileId);
+        }
+        throw error;
+      }
     });
   };
 
@@ -794,19 +873,32 @@ export function registerIpcHandlers(
       toolId: string | null;
     },
     operatorAcknowledgement?: boolean,
+    options: { readonly bypassContextCache?: boolean } = {},
   ): Promise<CalibrationGateResult> => {
-    const capability = calibrationDiagnostics.capabilitySnapshot(selectedId);
-    const capabilityEvidence =
-      capability === null
-        ? null
-        : { grantedScopes: capability.grantedScopes, flags: capability.flags };
+    const entryEpoch = calibrationStateEpoch;
     const acknowledgement =
       operatorAcknowledgement === undefined ? {} : { operatorAcknowledgement };
+    const evidenceFor = (): {
+      grantedScopes: readonly string[] | null;
+      flags: {
+        calibrationApiEnabled: boolean;
+        calibrationGenerationEnabled: boolean;
+      };
+    } | null => {
+      // Re-read rather than close over a captured object. The snapshot can be
+      // discarded during the await below, and evaluating against the value that
+      // was current when verification *started* is exactly the stale-positive
+      // decision this interlock exists to prevent.
+      const capability = calibrationDiagnostics.capabilitySnapshot(selectedId);
+      return capability === null
+        ? null
+        : { grantedScopes: capability.grantedScopes, flags: capability.flags };
+    };
     // Cheap refusals first: none of these needs the network, so an unauthorised
     // or disabled action never causes a request at all.
     const preflight = evaluateCalibrationActionGate({
       action,
-      capability: capabilityEvidence,
+      capability: evidenceFor(),
       // Context is supplied below; this pass exists to refuse on permission and
       // capability without paying for a round trip.
       context: null,
@@ -820,11 +912,20 @@ export function registerIpcHandlers(
     ) {
       return preflight;
     }
-    let context = selectionCache.context(
-      selectedId,
-      binding.printerId,
-      binding.configurationRevision ?? undefined,
-    );
+    let context =
+      options.bypassContextCache === true
+        ? // Dispatch re-reads authoritatively, never from the 30-second
+          // observation window. That window is a convenience for rendering a
+          // selection; a machine is about to move, and a configuration or
+          // eligibility change inside those seconds is exactly the case where
+          // acting on a remembered answer is wrong. The server remains the final
+          // revalidator, but this client must not be the one to skip the check.
+          null
+        : selectionCache.context(
+            selectedId,
+            binding.printerId,
+            binding.configurationRevision ?? undefined,
+          );
     if (context === null) {
       try {
         const ctx = await profiles.getAuthenticatedContext(selectedId);
@@ -835,8 +936,18 @@ export function registerIpcHandlers(
           AbortSignal.timeout(10_000),
           binding.configurationRevision ?? undefined,
         );
-        selectionCache.rememberContext(selectedId, context);
-      } catch {
+        // Only cache what is still relevant. A write here after a switch would
+        // repopulate a cache that was deliberately emptied.
+        if (calibrationStateEpoch === entryEpoch) {
+          selectionCache.rememberContext(selectedId, context);
+        }
+      } catch (error) {
+        // A 403 here is the server refusing this account's context read, and it
+        // must invalidate exactly as any other refusal does. This catch converts
+        // the exception into a refusal, so nothing reaches the central wrapper —
+        // without this the one path where a mutation is *about* to happen was
+        // the one path that never corrected its evidence.
+        if (isForbidden(error)) await noteCalibrationForbidden(selectedId);
         return {
           allowed: false,
           code: 'contextUnavailable',
@@ -845,14 +956,38 @@ export function registerIpcHandlers(
         };
       }
     }
+    if (calibrationStateEpoch !== entryEpoch) {
+      return SELECTION_CHANGED_DURING_VERIFICATION;
+    }
     return evaluateCalibrationActionGate({
       action,
-      capability: capabilityEvidence,
+      capability: evidenceFor(),
       context,
       binding,
       ...acknowledgement,
     });
   };
+
+  /**
+   * Confirm nothing invalidating happened between verification and dispatch.
+   *
+   * Called immediately before each mutating request. The gate re-checks at the
+   * end of its own work, but a handler does more afterwards — a prerequisite
+   * query, a correlation begin — and a switch during *that* would otherwise
+   * still reach the wire.
+   */
+  const calibrationStateUnchanged = (
+    entryEpoch: number,
+    selectedId: string,
+    action: CalibrationGatedAction,
+  ): boolean =>
+    calibrationStateEpoch === entryEpoch &&
+    // Re-evaluates the *verdict*, not merely whether some snapshot exists. A
+    // concurrent availability negotiation can replace the evidence with fewer
+    // permissions or a disabled flag without any invalidation event, and a
+    // non-null check would happily pass on the narrower grant the action was
+    // never verified against.
+    gateCalibrationPermission(action, selectedId).allowed;
 
   /**
    * Refuse a mutating action on permission and capability alone.
@@ -909,6 +1044,7 @@ export function registerIpcHandlers(
         ? 'forbidden'
         : gate.code === 'contextStale' ||
             gate.code === 'bindingMismatch' ||
+            gate.code === 'selectionChanged' ||
             gate.code === 'contextIncomplete'
           ? 'printerContextStale'
           : 'syncRequired',
@@ -1786,7 +1922,8 @@ export function registerIpcHandlers(
       // the previously selected profile's snapshot and authorise a mutation
       // against this one. Clearing first means a fetch that fails, times out or
       // is refused leaves no evidence at all, which is the fail-closed answer.
-      calibrationDiagnostics.clearCapabilities();
+      const negotiationToken =
+        calibrationDiagnostics.beginCapabilityNegotiation();
       try {
         const ctx = await profiles.getAuthenticatedContext(selectedId);
         const caps = await calibrationHttp.getCapabilities(
@@ -1796,8 +1933,14 @@ export function registerIpcHandlers(
         );
         // Snapshot the negotiation so diagnostics can report capability health
         // without a network call — which is exactly when it is needed. Bound to
-        // the profile it describes, so it can never be read as another's.
-        calibrationDiagnostics.recordCapabilities(selectedId, caps);
+        // the profile it describes and to the negotiation that asked, so neither
+        // another profile's gate nor a completion that has been overtaken can
+        // read or write it.
+        calibrationDiagnostics.recordCapabilities(
+          negotiationToken,
+          selectedId,
+          caps,
+        );
         emitCalibrationLog({
           level: 'info',
           component: 'calibration.http',
@@ -2041,20 +2184,6 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
-      // Saving is the create/mutate boundary for a calibration project, so it is
-      // gated like one. The printer binding is verified separately below by the
-      // freshness check, which compares the workspace against the authoritative
-      // context; what was missing was any check that this account is allowed to
-      // write calibration data at all.
-      const permission = gateCalibrationPermission('createProject', selectedId);
-      if (!permission.allowed) {
-        throw Object.assign(
-          new Error(
-            permission.message ?? 'Calibration changes are not permitted.',
-          ),
-          { code: 'CALIBRATION_FORBIDDEN' },
-        );
-      }
       const rawExisting = await sidecar.getCalibrationWorkspaceState(
         selectedId,
         request.projectId,
@@ -2063,6 +2192,39 @@ export function registerIpcHandlers(
         ipcSchemas[IpcChannel.CalibrationGetWorkspaceState].response.parse(
           rawExisting,
         );
+      // Only *creating* a workspace is gated here, and only when this is
+      // genuinely a creation — decided from the local sidecar rather than from
+      // the payload, which the party being gated supplies and could otherwise
+      // use to choose which check it faces.
+      //
+      // Saving an existing workspace is deliberately **not** gated on a server
+      // permission. This channel writes the local sidecar and queues the
+      // outbox; it dispatches nothing. Capability evidence is process-local, so
+      // after an offline restart there is none, and requiring it here would
+      // block every draft autosave — breaking the contract that existing
+      // offline drafts survive a restart and stay editable. What that editing
+      // may change is still constrained: `resolveCalibrationWorkspaceFreshness`
+      // below permits a transient offline save only while the binding and base
+      // profile are unchanged, and requires an authoritative online context for
+      // anything that alters them.
+      //
+      // `calibration:update` is enforced where the outbox actually reaches the
+      // server, in `CalibrationSyncNow`, which is the boundary that mutates it.
+      if (existing === null) {
+        const permission = gateCalibrationPermission(
+          'createProject',
+          selectedId,
+        );
+        if (!permission.allowed) {
+          throw Object.assign(
+            new Error(
+              permission.message ??
+                'Creating a calibration project is not permitted.',
+            ),
+            { code: 'CALIBRATION_FORBIDDEN' },
+          );
+        }
+      }
       const printerContextFresh = await resolveCalibrationWorkspaceFreshness(
         request,
         existing,
@@ -2447,7 +2609,7 @@ export function registerIpcHandlers(
       );
       // Sync applies the local outbox to the server. It mutates, so it is gated
       // before any controller is created or any request is sent.
-      const permission = gateCalibrationPermission('startPrint', selectedId);
+      const permission = gateCalibrationPermission('sync', selectedId);
       if (!permission.allowed) {
         return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
           phase: 'failed',
@@ -2479,9 +2641,38 @@ export function registerIpcHandlers(
           request.projectId ?? null,
           controller.signal,
         );
+        // Read that typed code back rather than parsing the operator-facing
+        // message. `syncNow` converts a `CalibrationHttpError` into a failed
+        // status, so nothing throws for the channel wrapper to catch, and a 403
+        // from `/api/calibration-sync/apply` would otherwise leave the positive
+        // update permission active and the workspace still offering sync.
+        //
+        // The outbox operation is not replayed. Correcting the evidence is a
+        // read; pushing the operator's queued changes again is not, and doing it
+        // because a permission check changed its mind would act on their behalf.
+        const syncErrorCode =
+          calibrationDiagnostics.lastSyncSnapshot()?.errorCode ?? null;
+        if (
+          result.phase === 'failed' &&
+          (syncErrorCode === 'authorization' || syncErrorCode === 'forbidden')
+        ) {
+          const staleAccess = await noteCalibrationForbidden(selectedId);
+          return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+            ...result,
+            error: staleAccess
+              ? `${result.error ?? 'Calibration synchronization was refused.'} ${ACCESS_MAY_HAVE_CHANGED}`
+              : result.error,
+          });
+        }
         return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse(result);
       } finally {
-        activeSyncControllers.delete(syncKey);
+        // Only if it is still ours. A later sync for the same key aborts and
+        // replaces this controller, and an unconditional delete here would
+        // remove *that* one — leaving the replacement uncancellable by a
+        // subsequent profile switch.
+        if (activeSyncControllers.get(syncKey) === controller) {
+          activeSyncControllers.delete(syncKey);
+        }
       }
     },
   );
@@ -2549,6 +2740,7 @@ export function registerIpcHandlers(
       // leave a half-started flow behind. Previously nothing here checked
       // permission, capability or binding at all — the only gate was the
       // server's own refusal, which necessarily arrives after the request.
+      const actionEpoch = calibrationStateEpoch;
       const gate = await gateCalibrationAction(
         'generate',
         selectedId,
@@ -2603,6 +2795,21 @@ export function registerIpcHandlers(
         projectId: request.projectId,
         attemptId: request.attemptId,
       });
+      // Re-verified immediately before dispatch. The gate checks at the end of
+      // its own work, but a prerequisite query, an authentication and a
+      // correlation begin all happen afterwards, and a profile switch during
+      // *those* would otherwise still reach the wire.
+      if (!calibrationStateUnchanged(actionEpoch, selectedId, 'generate')) {
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+          {
+            status: 'error',
+            error: {
+              ...gateRefusalToApiError(SELECTION_CHANGED_DURING_VERIFICATION),
+              reference: null,
+            },
+          },
+        );
+      }
       try {
         const result = await calibrationHttp.startGeneration(
           selectedId,
@@ -2994,11 +3201,30 @@ export function registerIpcHandlers(
       // it is the last point at which permission, capability and
       // printer/revision binding can be verified before the machine moves.
       //
+      // Permissions are checked *first*, before the job is even read. This
+      // module promises to fail closed before dispatch, and an account that may
+      // not acknowledge or start a job has no business issuing the queue read
+      // either — that read is itself an authorised operation, and performing it
+      // to decide whether the caller is authorised has the order backwards.
+      const actionEpoch = calibrationStateEpoch;
+      const queuePermission = gateCalibrationPermission(
+        'acknowledgeBedClear',
+        selectedId,
+      );
+      if (!queuePermission.allowed) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: { ...gateRefusalToApiError(queuePermission), reference: null },
+        });
+      }
+
       // The operator's confirmation is established here rather than taken from
       // the renderer. Main asks the server for the job and mints a single-use,
-      // short-lived ledger record only if the server itself reports that job as
-      // assigned to this printer and awaiting acknowledgement. A renderer
-      // cannot manufacture that observation, which is precisely why the earlier
+      // short-lived ledger record only if the server itself reports a job this
+      // dispatch may legitimately release. A renderer cannot manufacture that
+      // observation, which is precisely why the earlier
       // `operatorAcknowledgedBedClear: true` flag was worthless: the party being
       // gated was asserting its own precondition.
       const acknowledgementBinding = {
@@ -3024,15 +3250,31 @@ export function registerIpcHandlers(
       } catch {
         observedJob = null;
       }
-      // `Consumed` and `Invalidated` are explicitly *not* acceptable: the first
-      // is a replay of an acknowledgement already spent, the second an
-      // acknowledgement the server itself withdrew.
+      // Every condition is explicit, and an omitted field is a refusal.
+      //
+      // `bedClearState` used to be accepted as `null`, which is what the current
+      // `GET /api/job-queue/{id}` returns because the read model omits the
+      // member entirely (PrintFarmer#1465). Treating that silence as `None`
+      // meant *any* job assigned to the printer could mint the ledger, so the
+      // fail-closed preflight this module advertises was not real: the server's
+      // own refusal was still the only thing protecting dispatch. An absent
+      // state is now a refusal, which is the honest reading of "the server did
+      // not say".
+      //
+      // `Acknowledged` is likewise no longer accepted. Honouring it needs the
+      // command identity that would prove a replay is the *same* acknowledgement
+      // rather than a second one, and that identity does not exist on the wire
+      // until #1465 lands. Once it does, this should require FilamentCalibration
+      // kind, the exact printer, calibration lineage and pinned configuration
+      // revision, a dispatchable status, and either an explicit `None` or an
+      // `Acknowledged` whose command ID matches.
       const serverSaysAwaitingBedClear =
         observedJob !== null &&
         observedJob.assignedPrinterId === request.printerId &&
-        (observedJob.bedClearState === null ||
-          observedJob.bedClearState === 'None' ||
-          observedJob.bedClearState === 'Acknowledged');
+        // A queue holds more than calibration work; only a calibration job may
+        // be released through a calibration acknowledgement.
+        observedJob.jobKind === 'FilamentCalibration' &&
+        observedJob.bedClearState === 'None';
       if (serverSaysAwaitingBedClear) {
         bedClearLedger.record(acknowledgementBinding);
       }
@@ -3047,6 +3289,9 @@ export function registerIpcHandlers(
         },
         // Single-use: a replayed dispatch finds nothing left to consume.
         bedClearLedger.consume(acknowledgementBinding),
+        // The machine is about to move: read the context fresh rather than from
+        // the selection observation window.
+        { bypassContextCache: true },
       );
       if (!gate.allowed) {
         return ipcSchemas[
@@ -3063,6 +3308,23 @@ export function registerIpcHandlers(
           ['operation', request.operationId],
         ]);
       const startedAt = Date.now();
+      if (
+        !calibrationStateUnchanged(
+          actionEpoch,
+          selectedId,
+          'acknowledgeBedClear',
+        )
+      ) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: {
+            ...gateRefusalToApiError(SELECTION_CHANGED_DURING_VERIFICATION),
+            reference: null,
+          },
+        });
+      }
       try {
         const result = await calibrationHttp.acknowledgeBedClearAndStart(
           selectedId,
@@ -3174,6 +3436,7 @@ export function registerIpcHandlers(
       // other machine-moving action. `assignedPrinterId` and
       // `pinnedPrinterConfigRevision` already named the binding; they are now
       // actually verified against the server rather than merely forwarded.
+      const actionEpoch = calibrationStateEpoch;
       const gate = await gateCalibrationAction('startPrint', selectedId, {
         printerId: request.assignedPrinterId,
         configurationRevision: request.pinnedPrinterConfigRevision,
@@ -3204,6 +3467,12 @@ export function registerIpcHandlers(
       }
       const signal = AbortSignal.timeout(30_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
+      if (!calibrationStateUnchanged(actionEpoch, selectedId, 'startPrint')) {
+        return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+          status: 'error',
+          error: gateRefusalToApiError(SELECTION_CHANGED_DURING_VERIFICATION),
+        });
+      }
       try {
         const result = await calibrationHttp.createQueueJob(
           selectedId,
@@ -3659,6 +3928,14 @@ export function registerIpcHandlers(
 
       if (
         !candidate.isOnline ||
+        // The server's own verdict, not merely that the eligibility object
+        // parsed. `isExplicitCalibrationEligibilityComplete` is true for a
+        // candidate carrying `eligible: false` with valid reasons — it means
+        // "well-formed", not "permitted" — so checking it alone let a renderer
+        // bypass resolve a printer the server had explicitly refused.
+        candidate.eligible !== true ||
+        candidate.rejectionReasons.length > 0 ||
+        candidate.missingInputs.length > 0 ||
         !isExplicitCalibrationEligibilityComplete(candidate)
       ) {
         // The renderer blocks continuation on an ineligible printer, so this is

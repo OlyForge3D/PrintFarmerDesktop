@@ -4,32 +4,51 @@
  *
  * ## Why this exists
  *
- * The merged discovery fix (#715) correctly stopped requiring `safety` and
- * `permissions` from `CalibrationContextDto` — PrintFarmer has never published
- * either member, so requiring them made every real context incomplete and
- * silently disabled profile listing rather than gating anything.
+ * Before this module the only thing standing between a click and a
+ * machine-moving request was the server's own refusal.
+ * `checkOnlineActionPrerequisites` covers outbox depth, context freshness and
+ * unresolved conflicts — none of which is a permission, capability or binding
+ * check — and a since-removed predicate named in comments as the safety
+ * interlock had zero call sites, so the protection it described never ran.
  *
- * What that fix left behind was a gap it described in prose but never closed.
- * It stated that generate and print start "stay gated by
- * `isCalibrationContextSafetyAssured` and the server capability flags", but
- * {@link isCalibrationContextSafetyAssured} had *zero* call sites: nothing in
- * the product ever invoked it. `checkOnlineActionPrerequisites` covers outbox
- * depth, context freshness and unresolved conflicts, none of which is a
- * permission, capability or binding check. So the only thing standing between a
- * click and a machine-moving request was the server's own refusal.
+ * Relying on the server alone is not fail-closed. A desktop build that
+ * dispatches first and discovers it was not allowed afterwards has already sent
+ * the request. Server refusal is the final defence here, never the first.
  *
- * Relying on the server alone is not fail-closed. A desktop build that dispatches
- * first and discovers it was not allowed afterwards has already sent the request.
+ * ## What gates what, exactly
+ *
+ * Permissions are matched to the route each action actually calls, because
+ * PrintFarmer enforces them per resource and a principal may hold one family
+ * and not another:
+ *
+ * | Action               | Route                                   | Requires |
+ * | -------------------- | --------------------------------------- | -------- |
+ * | `createProject`      | calibration project create              | `calibration:create` |
+ * | `updateProject`      | calibration project mutate              | `calibration:update` |
+ * | `sync`               | calibration sync apply                  | `calibration:update` |
+ * | `generate`           | generate-job                            | `calibration:generate` **and** `slicing:submit` |
+ * | `startPrint`         | `POST /api/job-queue`                   | `queue:write` |
+ * | `acknowledgeBedClear`| `{jobId}/acknowledge-bed-clear-and-start` | `queue:acknowledge-bed-clear` **and** `queue:start` |
+ *
+ * Every member of a requirement must be present; there is no substitution
+ * between resources. Capability flags are likewise scoped to the action they
+ * describe: **`calibrationGenerationEnabled` is consulted for `generate` and
+ * for nothing else.** It is a switch for profile generation, and reading it as
+ * a gate on print start would both refuse dispatch on deployments that simply
+ * do not generate profiles and imply a protection that flag never provided.
+ * Print start is gated by `queue:write`, the calibration API flag, and the
+ * authoritative selected-context binding; bed-clear dispatch additionally
+ * consumes a single-use main-process acknowledgement ledger.
  *
  * ## What this gate uses as evidence
  *
  * Only evidence that actually exists in the real contract:
  *
- * - **Canonical effective permissions.** `calibration:read` / `:create` /
- *   `:update` / `:generate`, exactly as the capability payload spells them in
- *   `effectivePermissions`. Never the PascalCase JWT vocabulary earlier builds
- *   asserted, which no PrintFarmer build has ever emitted.
- * - **Server capability flags** from the same negotiated payload.
+ * - **Canonical effective permissions**, exactly as the capability payload
+ *   spells them in `effectivePermissions`. Never the PascalCase JWT vocabulary
+ *   earlier builds asserted, which no PrintFarmer build has ever emitted.
+ * - **Server capability flags** from the same negotiated payload, each applied
+ *   only to the action it describes.
  * - **The selected printer's context binding** — printer, configuration
  *   revision, snapshot and tool — so an action cannot run against a snapshot
  *   other than the one the operator actually selected and saw.
@@ -37,8 +56,9 @@
  *   taken from a single-use ledger rather than asserted by the renderer.
  *
  * It deliberately does **not** require the absent `safety`/`permissions`
- * members for discovery, creation or generation, because that would reintroduce
- * the exact unsatisfiable predicate #715 removed.
+ * members of `CalibrationContextDto` for discovery, creation or generation,
+ * because that would reintroduce the exact unsatisfiable predicate #715
+ * removed.
  */
 
 import {
@@ -56,9 +76,13 @@ import {
 export type CalibrationGatedAction =
   /** Create a calibration project bound to a selected printer context. */
   | 'createProject'
+  /** Mutate an existing calibration project. */
+  | 'updateProject'
+  /** Apply the local outbox to the server. */
+  | 'sync'
   /** Request profile generation. Server-side compute; moves no machine. */
   | 'generate'
-  /** Enqueue a calibration print. Leads to machine movement once dispatched. */
+  /** Enqueue a calibration print via `POST /api/job-queue`. */
   | 'startPrint'
   /** Acknowledge bed-clear and release a queued job for dispatch. */
   | 'acknowledgeBedClear';
@@ -74,14 +98,38 @@ const MACHINE_MOVING_ACTIONS: ReadonlySet<CalibrationGatedAction> = new Set([
   'acknowledgeBedClear',
 ]);
 
-/** The exact canonical permission each action requires. */
-const REQUIRED_PERMISSION: Readonly<
-  Record<CalibrationGatedAction, CalibrationPermission>
+/**
+ * Every permission each action requires, matched to the route it calls.
+ *
+ * All members are required. Server enforcement is per resource and exact, so a
+ * principal holding `calibration:update` but not `queue:write` may record
+ * results and still be refused an enqueue — and a gate that accepted one for
+ * the other would send that request anyway.
+ */
+const REQUIRED_PERMISSIONS: Readonly<
+  Record<CalibrationGatedAction, readonly CalibrationPermission[]>
 > = {
-  createProject: CALIBRATION_PERMISSIONS.create,
-  generate: CALIBRATION_PERMISSIONS.generate,
-  startPrint: CALIBRATION_PERMISSIONS.update,
-  acknowledgeBedClear: CALIBRATION_PERMISSIONS.update,
+  createProject: [CALIBRATION_PERMISSIONS.create],
+  updateProject: [CALIBRATION_PERMISSIONS.update],
+  sync: [CALIBRATION_PERMISSIONS.update],
+  // Generation both records against the calibration project and submits a
+  // slicing job; the server requires both, so both are required here.
+  generate: [
+    CALIBRATION_PERMISSIONS.generate,
+    CALIBRATION_PERMISSIONS.slicingSubmit,
+  ],
+  // `POST /api/job-queue` is a queue write, not a calibration update.
+  startPrint: [CALIBRATION_PERMISSIONS.queueWrite],
+  // `acknowledge-bed-clear-and-start` enforces the latter two on the POST route
+  // itself. `queue:read` is required because *this client* reads the job first,
+  // to establish that it is genuinely awaiting acknowledgement before minting
+  // the ledger record — an interactive or custom role can hold ack and start
+  // without read, and that read must not be attempted unauthorised.
+  acknowledgeBedClear: [
+    CALIBRATION_PERMISSIONS.queueRead,
+    CALIBRATION_PERMISSIONS.queueAcknowledgeBedClear,
+    CALIBRATION_PERMISSIONS.queueStart,
+  ],
 };
 
 export type CalibrationGateBlockCode =
@@ -100,7 +148,18 @@ export type CalibrationGateBlockCode =
   /** The action names a printer, revision, snapshot or tool the context does not. */
   | 'bindingMismatch'
   /** A machine-moving action with neither operator nor server safety evidence. */
-  | 'safetyNotAssured';
+  | 'safetyNotAssured'
+  /**
+   * The selected profile changed, or evidence was discarded, while this action
+   * was being verified.
+   *
+   * Verification is not instantaneous: it awaits an authoritative context read.
+   * A profile switch, a delete, or a 403-driven discard during that await leaves
+   * a decision that was correct when it started and wrong by the time it
+   * returns. Refusing is the only safe answer, because the alternative is
+   * dispatching against a profile the operator has already moved away from.
+   */
+  | 'selectionChanged';
 
 export interface CalibrationGateResult {
   readonly allowed: boolean;
@@ -180,11 +239,17 @@ export function evaluateCalibrationActionGate(
     );
   }
 
-  const permission = REQUIRED_PERMISSION[action];
-  if (!hasCalibrationPermission(capability.grantedScopes, permission)) {
+  // Every member is required, and the first missing one is named. Reporting the
+  // exact permission matters: "you may not do this" sends an operator to an
+  // administrator with nothing to ask for.
+  const missing = REQUIRED_PERMISSIONS[action].find(
+    (permission) =>
+      !hasCalibrationPermission(capability.grantedScopes, permission),
+  );
+  if (missing !== undefined) {
     return block(
       'permissionDenied',
-      `This PrintFarmer account does not grant ${permission}, which this action requires.`,
+      `This PrintFarmer account does not grant ${missing}, which this action requires.`,
     );
   }
 
@@ -195,6 +260,10 @@ export function evaluateCalibrationActionGate(
     );
   }
 
+  // Scoped to `generate` alone. This flag is the deployment's switch for profile
+  // generation; applying it to print start would refuse dispatch on every farm
+  // that simply does not generate profiles, and would imply the flag protects
+  // machine movement, which it has never done.
   if (action === 'generate' && !capability.flags.calibrationGenerationEnabled) {
     return block(
       'capabilityDisabled',
