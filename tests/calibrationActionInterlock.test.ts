@@ -1177,6 +1177,143 @@ describe('capability evidence never crosses server profiles', () => {
   });
 });
 
+describe('every converted refusal still invalidates', () => {
+  // These handlers catch `CalibrationHttpError` and return an error *response*
+  // rather than throwing, so the central channel wrapper never sees them. Each
+  // was therefore its own hole: a 403 left the positive capability snapshot in
+  // place and the workspace kept offering the action.
+  //
+  // Table-driven on purpose. A new channel that converts its errors and forgets
+  // the invalidation should be visible as a missing row here.
+  const converted: ReadonlyArray<{
+    label: string;
+    channel: string;
+    request: Record<string, unknown>;
+    match: string;
+  }> = [
+    {
+      label: 'orchestration status',
+      channel: IpcChannel.CalibrationGetOrchestrationStatus,
+      request: { profileId: PROFILE_ID, orchestrationId: ORCHESTRATION_ID },
+      match: 'calibration-orchestrations',
+    },
+    {
+      label: 'queue state',
+      channel: IpcChannel.CalibrationGetQueueState,
+      request: {
+        profileId: PROFILE_ID,
+        projectId: PROJECT_ID,
+        jobId: JOB_ID,
+      },
+      match: 'job-queue',
+    },
+    {
+      label: 'queue change feed',
+      channel: IpcChannel.CalibrationPollQueueChanges,
+      request: { profileId: PROFILE_ID, afterSequence: 0 },
+      match: 'job-queue/changes',
+    },
+    {
+      label: 'subscription resources',
+      channel: IpcChannel.CalibrationGetSubscriptionResources,
+      request: { profileId: PROFILE_ID },
+      match: 'subscription-resources',
+    },
+  ];
+
+  for (const { label, channel, request } of converted) {
+    it(`discards the capability snapshot when ${label} is refused`, async () => {
+      let capabilityCalls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((url: URL | string) => {
+          const href = typeof url === 'string' ? url : url.href;
+          if (href.includes('/api/calibration/capabilities')) {
+            capabilityCalls += 1;
+            return Promise.resolve(
+              capabilityCalls === 1
+                ? json(
+                    printFarmerCapabilitiesResponse({
+                      effectivePermissions: CANONICAL_PERMISSIONS,
+                    }),
+                  )
+                : // The refresh finds the access genuinely gone.
+                  json({ status: 403 }, 403),
+            );
+          }
+          if (href.includes('calibration-context')) {
+            return Promise.resolve(json(calibrationContextDto()));
+          }
+          return Promise.resolve(json({ status: 403 }, 403));
+        }),
+      );
+      registered = handlers();
+      await negotiate();
+
+      // The refused read returns a response rather than throwing.
+      await invoke(channel, request);
+
+      // And the next mutation is refused locally, because the snapshot the
+      // refusal contradicted is gone.
+      const after = (await invoke(
+        IpcChannel.CalibrationStartGeneration,
+        generationRequest(),
+      )) as { status: string; error: { code: string } };
+      expect(after.status).toBe('error');
+      expect(after.error.code).toBe('forbidden');
+    });
+  }
+});
+
+describe('the queue can be observed while local drafts are unsynced', () => {
+  it('reads authoritative job state despite a pending outbox', async () => {
+    // Reading what the server says about a job damages nothing, and refusing it
+    // because the operator has unsaved work hid a job that was already queued or
+    // printing behind a message about their own drafts. Reconciliation matters
+    // most exactly when local state is behind.
+    const pendingSidecar = {
+      ...sidecar,
+      countCalibrationPendingOps: () => Promise.resolve(3),
+      listCalibrationConflicts: () => Promise.resolve([{ id: 'conflict-1' }]),
+    };
+    const { calls } = server();
+    electronState.handlers.clear();
+    registerIpcHandlers(
+      undefined,
+      fakeProfiles() as never,
+      pendingSidecar as never,
+      pendingSidecar as never,
+      {
+        initialize: () => Promise.resolve(),
+        dispose: () => undefined,
+      } as never,
+      {
+        canonicalizePickerFile: (p: string) => Promise.resolve(p),
+        authorizeFile: () => Promise.reject(new Error('denied')),
+        resolve: () => Promise.reject(new Error('denied')),
+        approveFromPicker: () => Promise.reject(new Error('denied')),
+        reset: () => Promise.resolve(),
+      } as never,
+      {
+        initialize: () => Promise.resolve(),
+        purge: () => Promise.resolve(),
+      } as never,
+    );
+    registered = electronState.handlers;
+    await negotiate();
+
+    const response = (await invoke(IpcChannel.CalibrationGetQueueState, {
+      profileId: PROFILE_ID,
+      projectId: PROJECT_ID,
+      jobId: JOB_ID,
+    })) as { status: string };
+
+    expect(response.status).toBe('ok');
+    // The GET actually happened, rather than being short-circuited.
+    expect(calls.some((call) => call.includes('job-queue'))).toBe(true);
+  });
+});
+
 describe('discovery needs only the read permission', () => {
   it('reports calibration available to an account that can read but not write', async () => {
     // Requiring every calibration permission to *open* the workspace would

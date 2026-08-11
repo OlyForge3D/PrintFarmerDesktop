@@ -199,7 +199,7 @@ describe('CalibrationSyncEngine outbox push', () => {
       );
       const engine = createEngine(fakeHttp({ apply }), sidecar);
 
-      const status = await engine.syncNow(
+      const { status } = await engine.syncNow(
         PROFILE_ID,
         PROJECT_ID,
         AbortSignal.timeout(5_000),
@@ -236,7 +236,7 @@ describe('CalibrationSyncEngine outbox push', () => {
     const http = fakeHttp({ apply: applyMock });
 
     const engine = createEngine(http, sidecar);
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -274,7 +274,7 @@ describe('CalibrationSyncEngine outbox push', () => {
     const http = fakeHttp({ apply: applyMock });
 
     const engine = createEngine(http, sidecar);
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -312,7 +312,7 @@ describe('CalibrationSyncEngine outbox push', () => {
     const http = fakeHttp({ apply: applyMock });
 
     const engine = createEngine(http, sidecar);
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -387,7 +387,7 @@ describe('CalibrationSyncEngine pull phase', () => {
     const http = fakeHttp({ getChanges });
 
     const engine = createEngine(http, sidecar);
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -653,7 +653,7 @@ describe('CalibrationSyncEngine capability validation', () => {
     const sidecar = fakeSidecar();
     const engine = createEngine(http, sidecar);
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       null,
       AbortSignal.timeout(5000),
@@ -671,7 +671,7 @@ describe('CalibrationSyncEngine capability validation', () => {
     const http = fakeHttp({ getCapabilities: vi.fn().mockResolvedValue(caps) });
     const engine = createEngine(http, fakeSidecar());
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       null,
       AbortSignal.timeout(5000),
@@ -695,7 +695,7 @@ describe('CalibrationSyncEngine capability validation', () => {
     const http = fakeHttp({ getCapabilities: vi.fn().mockResolvedValue(caps) });
     const engine = createEngine(http, fakeSidecar());
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       null,
       AbortSignal.timeout(5000),
@@ -712,7 +712,7 @@ describe('CalibrationSyncEngine capability validation', () => {
     const http = fakeHttp({ getCapabilities: vi.fn().mockResolvedValue(caps) });
     const engine = createEngine(http, fakeSidecar());
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       null,
       AbortSignal.timeout(5000),
@@ -731,7 +731,7 @@ describe('CalibrationSyncEngine capability validation', () => {
     };
     const engine = createEngine(fakeHttp(), fakeSidecar(), profileService);
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       null,
       AbortSignal.timeout(5000),
@@ -753,7 +753,7 @@ describe('CalibrationSyncEngine cancellation', () => {
     const http = fakeHttp({ getCapabilities });
     const engine = createEngine(http, fakeSidecar());
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       controller.signal,

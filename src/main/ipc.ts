@@ -1975,6 +1975,32 @@ export function registerIpcHandlers(
           },
         );
       } catch (error) {
+        // A refusal is not a legacy server. Mapping every non-404 onto
+        // `legacyServer` told an operator whose access had been revoked that their
+        // PrintFarmer was too old, and skipped the invalidation a refusal
+        // demands. Auth failures are classified as what they are and run the same
+        // non-replaying state discard as every other 403 — without recursing into
+        // a capability refresh, since the capability endpoint is what just refused.
+        if (isForbidden(error)) {
+          calibrationStateEpoch += 1;
+          calibrationDiagnostics.clearCapabilities();
+          bedClearLedger.clear();
+          clearProfileCache();
+          selectionCache.forgetProfile(selectedId);
+          abortActiveCalibrationSyncs();
+          return ipcSchemas[
+            IpcChannel.CalibrationGetAvailability
+          ].response.parse({
+            available: false,
+            unavailableReason: 'missingScopes',
+            unavailableDetail: `PrintFarmer refused this session's calibration capability request. ${ACCESS_MAY_HAVE_CHANGED}`,
+            negotiatedApiVersion: null,
+            negotiatedSchemaVersion: null,
+            capabilityFlags: null,
+            grantedScopes: null,
+            offlineEditingEnabled: false,
+          });
+        }
         const reason =
           error instanceof CalibrationHttpError && error.code === 'notFound'
             ? 'serverVersionTooLow'
@@ -2580,27 +2606,23 @@ export function registerIpcHandlers(
       const controller = new AbortController();
       activeSyncControllers.set(syncKey, controller);
       try {
-        // The engine emits the sync record and records the diagnostics
-        // outcome: it is the only layer that still holds the typed error code.
-        const result = await calibrationEngine.syncNow(
+        // The engine emits the sync record and returns the typed error code for
+        // *this* invocation. Reading it from the diagnostics singleton instead
+        // was a race: that slot is shared, so two concurrent syncs could make one
+        // miss its own refusal or act on the other's.
+        const outcome = await calibrationEngine.syncNow(
           selectedId,
           request.projectId ?? null,
           controller.signal,
         );
-        // Read that typed code back rather than parsing the operator-facing
-        // message. `syncNow` converts a `CalibrationHttpError` into a failed
-        // status, so nothing throws for the channel wrapper to catch, and a 403
-        // from `/api/calibration-sync/apply` would otherwise leave the positive
-        // update permission active and the workspace still offering sync.
-        //
+        const result = outcome.status;
         // The outbox operation is not replayed. Correcting the evidence is a
         // read; pushing the operator's queued changes again is not, and doing it
         // because a permission check changed its mind would act on their behalf.
-        const syncErrorCode =
-          calibrationDiagnostics.lastSyncSnapshot()?.errorCode ?? null;
         if (
           result.phase === 'failed' &&
-          (syncErrorCode === 'authorization' || syncErrorCode === 'forbidden')
+          (outcome.errorCode === 'authorization' ||
+            outcome.errorCode === 'forbidden')
         ) {
           const staleAccess = await noteCalibrationForbidden(selectedId);
           return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
@@ -2937,6 +2959,13 @@ export function registerIpcHandlers(
           durationMs: Date.now() - startedAt,
           ...describeCalibrationFailure(error),
         });
+        // Converted rather than rethrown, so the channel wrapper never sees
+        // this. A refusal must still invalidate the evidence it contradicts —
+        // handling it per action left a new hole every time a channel was added.
+        // Nothing is replayed.
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(correlationId)
@@ -2954,7 +2983,12 @@ export function registerIpcHandlers(
           IpcChannel.CalibrationGetOrchestrationStatus
         ].response.parse({
           status: 'error',
-          error: apiError,
+          error: staleAccess
+            ? {
+                ...apiError,
+                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : apiError,
         });
       }
     },
@@ -2970,23 +3004,15 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
-      const prerequisiteError =
-        await calibrationEngine.checkOnlineActionPrerequisites(
-          selectedId,
-          request.projectId,
-        );
-      if (prerequisiteError !== null) {
-        return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
-          status: 'error',
-          error: {
-            code: 'syncRequired',
-            message: prerequisiteError,
-            retryable: true,
-            retryAfterSeconds: null,
-            reference: null,
-          },
-        });
-      }
+      // Deliberately no online-action prerequisites. This is an observation:
+      // reading what the server says about a job cannot damage anything, and
+      // refusing it because the local outbox has unsynced drafts hid a job that
+      // was already queued or printing behind a message about the operator's own
+      // unsaved work. Reconciling authoritative state is most valuable exactly
+      // when local state is behind.
+      //
+      // The prerequisites remain on the boundaries that mutate: queue creation
+      // and bed-clear dispatch.
       // If no jobId provided, there is no job to look up.
       if (!request.jobId) {
         return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
@@ -3110,6 +3136,13 @@ export function registerIpcHandlers(
           durationMs: Date.now() - startedAt,
           ...describeCalibrationFailure(error),
         });
+        // Converted rather than rethrown, so the channel wrapper never sees
+        // this. A refusal must still invalidate the evidence it contradicts —
+        // handling it per action left a new hole every time a channel was added.
+        // Nothing is replayed.
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(flowId())
@@ -3125,7 +3158,12 @@ export function registerIpcHandlers(
               };
         return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
           status: 'error',
-          error: apiError,
+          error: staleAccess
+            ? {
+                ...apiError,
+                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : apiError,
         });
       }
     },
@@ -3186,6 +3224,7 @@ export function registerIpcHandlers(
       let observedJob: Awaited<
         ReturnType<typeof calibrationHttp.getQueueJob>
       > | null = null;
+      let jobReadFailure: CalibrationGateResult | null = null;
       try {
         observedJob = await calibrationHttp.getQueueJob(
           selectedId,
@@ -3193,8 +3232,38 @@ export function registerIpcHandlers(
           request.jobId,
           AbortSignal.timeout(10_000),
         );
-      } catch {
+      } catch (error) {
+        // Typed, not collapsed to "no job". A broad catch turned a refusal, a
+        // timeout and a malformed body into the same silent `null`, which lost
+        // the authorization invalidation entirely and gave the operator no way
+        // to tell "you may not do this" from "the network dropped".
+        //
+        // In every case the ledger is not minted and the gate does not proceed:
+        // a read failure is not evidence that the bed is clear.
+        if (isForbidden(error)) {
+          await noteCalibrationForbidden(selectedId);
+          jobReadFailure = {
+            allowed: false,
+            code: 'permissionDenied',
+            message: `PrintFarmer refused to read this queue job. ${ACCESS_MAY_HAVE_CHANGED}`,
+          };
+        } else {
+          jobReadFailure = {
+            allowed: false,
+            code: 'contextUnavailable',
+            message:
+              'The queued job could not be read, so it cannot be confirmed as awaiting a bed-clear acknowledgement. Check the connection and try again.',
+          };
+        }
         observedJob = null;
+      }
+      if (jobReadFailure !== null) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: { ...gateRefusalToApiError(jobReadFailure), reference: null },
+        });
       }
       // Every condition is explicit, and an omitted field is a refusal.
       //
@@ -3340,6 +3409,13 @@ export function registerIpcHandlers(
           durationMs: Date.now() - startedAt,
           ...describeCalibrationFailure(error),
         });
+        // Converted rather than rethrown, so the channel wrapper never sees
+        // this. A refusal must still invalidate the evidence it contradicts —
+        // handling it per action left a new hole every time a channel was added.
+        // Nothing is replayed.
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(correlationId)
@@ -3351,9 +3427,6 @@ export function registerIpcHandlers(
                 retryAfterSeconds: null,
                 reference: correlationId,
               };
-        const staleAccess = isForbidden(error)
-          ? await noteCalibrationForbidden(selectedId)
-          : false;
         return ipcSchemas[
           IpcChannel.CalibrationAcknowledgeBedClear
         ].response.parse({
@@ -3554,6 +3627,13 @@ export function registerIpcHandlers(
           events: page.events,
         });
       } catch (error) {
+        // Converted rather than rethrown, so the channel wrapper never sees
+        // this. A refusal must still invalidate the evidence it contradicts —
+        // handling it per action left a new hole every time a channel was added.
+        // Nothing is replayed.
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? // No reference: see the note on the print-start handler (#177).
@@ -3570,7 +3650,15 @@ export function registerIpcHandlers(
               };
         return ipcSchemas[
           IpcChannel.CalibrationPollQueueChanges
-        ].response.parse({ status: 'error', error: apiError });
+        ].response.parse({
+          status: 'error',
+          error: staleAccess
+            ? {
+                ...apiError,
+                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : apiError,
+        });
       }
     },
   );
@@ -3602,6 +3690,13 @@ export function registerIpcHandlers(
           projectIds: resources.projectIds,
         });
       } catch (error) {
+        // Converted rather than rethrown, so the channel wrapper never sees
+        // this. A refusal must still invalidate the evidence it contradicts —
+        // handling it per action left a new hole every time a channel was added.
+        // Nothing is replayed.
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? // No reference: see the note on the print-start handler (#177).
@@ -3618,7 +3713,15 @@ export function registerIpcHandlers(
               };
         return ipcSchemas[
           IpcChannel.CalibrationGetSubscriptionResources
-        ].response.parse({ status: 'error', error: apiError });
+        ].response.parse({
+          status: 'error',
+          error: staleAccess
+            ? {
+                ...apiError,
+                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : apiError,
+        });
       }
     },
   );
@@ -3908,6 +4011,9 @@ export function registerIpcHandlers(
         );
       } catch (error) {
         const classified = classifyDiscoveryFailure(error);
+        // Converted, so the wrapper never sees it. A refusal on the selected
+        // printer's context is still a refusal and invalidates accordingly.
+        if (isForbidden(error)) await noteCalibrationForbidden(selectedId);
         // A context failure describes one printer. It must never be reported in
         // a way the renderer could render as "there are no printers": the list
         // the operator selected from is still valid and still on screen.
