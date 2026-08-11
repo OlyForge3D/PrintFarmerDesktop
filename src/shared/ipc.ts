@@ -1281,9 +1281,36 @@ export const UNRECOGNIZED_CALIBRATION_INPUT = 'unrecognized_input';
  * contradicting response is *visible* rather than quietly flattened into an
  * ordinary ineligible printer, which would hide a server defect from the only
  * people able to report it.
+ *
+ * Because it means "the client detected this", it must be unforgeable from the
+ * wire — see {@link CalibrationServerReasonCode}.
  */
 export const CALIBRATION_SERVER_CONTRADICTION_CODE = 'server_contradiction';
 
+/**
+ * What a *server* is allowed to say: the catalogue and nothing else.
+ *
+ * Deliberately narrower than {@link CalibrationRejectionReasonCode}. Both
+ * sentinels are client-authored claims *about* the response —
+ * `server_contradiction` means "this client caught the server contradicting
+ * itself", `unrecognized_reason` means "this client did not recognise what the
+ * server said". Validating raw server codes against an enum that contained
+ * them let a server assert those claims itself: an ordinary ineligible printer
+ * whose `code` was literally `server_contradiction` passed through unchanged
+ * and became indistinguishable from the marker the client synthesizes, so the
+ * one signal saying "this server emits incoherent records" could be
+ * manufactured by the server it accuses.
+ *
+ * Excluding them here makes a forged sentinel just another unknown code, so it
+ * degrades to `unrecognized_reason` like any other.
+ */
+const CalibrationServerReasonCode = z.enum(CALIBRATION_REJECTION_REASON_CODES);
+
+/**
+ * What the *renderer* may receive: the catalogue plus the client's own two
+ * sentinels, which are appended after normalisation rather than parsed out of
+ * it.
+ */
 const CalibrationRejectionReasonCode = z.enum([
   ...CALIBRATION_REJECTION_REASON_CODES,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
@@ -1316,8 +1343,12 @@ const CalibrationMissingInputField = z
   );
 
 /**
- * Maps a server-supplied reason code onto the allowlist, substituting
+ * Maps a server-supplied reason code onto the catalogue, substituting
  * {@link UNRECOGNIZED_CALIBRATION_REASON_CODE} for anything unknown.
+ *
+ * Validates against {@link CalibrationServerReasonCode}, which excludes the
+ * client's own sentinels, so a server cannot forge either of them by simply
+ * sending one as a code.
  *
  * Substitutes rather than throws on purpose: an unfamiliar code is not a
  * reason to discard the printer it describes, and throwing here would empty
@@ -1326,7 +1357,7 @@ const CalibrationMissingInputField = z
 export function normalizeCalibrationReasonCode(
   code: string,
 ): z.infer<typeof CalibrationRejectionReasonCode> {
-  const result = CalibrationRejectionReasonCode.safeParse(code);
+  const result = CalibrationServerReasonCode.safeParse(code);
   return result.success ? result.data : UNRECOGNIZED_CALIBRATION_REASON_CODE;
 }
 

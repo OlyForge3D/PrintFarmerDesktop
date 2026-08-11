@@ -381,6 +381,105 @@ describe('reason codes are validated, not merely bounded', () => {
   });
 });
 
+describe('the client-only sentinels cannot be forged from the wire', () => {
+  // `server_contradiction` is not a diagnosis, it is an accusation: it means
+  // *this client* caught the server disagreeing with itself. Validating raw
+  // server codes against an enum that contained it let the accused write the
+  // accusation — a coherent printer could arrive already carrying the marker,
+  // indistinguishable from one the client synthesized. The two enums exist to
+  // separate what a server may say from what the client may conclude.
+
+  it('degrades a forged contradiction marker to the unrecognized sentinel', () => {
+    expect(
+      normalizeCalibrationReasonCode(CALIBRATION_SERVER_CONTRADICTION_CODE),
+    ).toBe(UNRECOGNIZED_CALIBRATION_REASON_CODE);
+  });
+
+  it('degrades a forged unrecognized sentinel too', () => {
+    // Collides with its own substitute, which is harmless precisely because
+    // the resulting claim is true: `unrecognized_reason` is not a catalogue
+    // code, so a server sending it verbatim is unrecognized.
+    expect(
+      normalizeCalibrationReasonCode(UNRECOGNIZED_CALIBRATION_REASON_CODE),
+    ).toBe(UNRECOGNIZED_CALIBRATION_REASON_CODE);
+  });
+
+  it('does not let a coherent printer arrive pre-marked as a contradiction', async () => {
+    // The whole response is self-consistent: not eligible, with a reason. Only
+    // the code is a lie.
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          {
+            code: CALIBRATION_SERVER_CONTRADICTION_CODE,
+            field: 'firmware.family',
+            message: 'Nothing actually contradicts here.',
+          },
+        ],
+      }),
+    ]);
+
+    expect(printer!.rejectionReasonCodes).toEqual([
+      UNRECOGNIZED_CALIBRATION_REASON_CODE,
+    ]);
+    expect(printer!.rejectionReasonCodes).not.toContain(
+      CALIBRATION_SERVER_CONTRADICTION_CODE,
+    );
+  });
+
+  it('still reports a genuine contradiction exactly once when the server also forges one', async () => {
+    // Here the server really does contradict itself *and* claims the marker.
+    // The marker present in the output must be the client's, and the forged
+    // copy must not double it.
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: true,
+        rejectionReasons: [
+          {
+            code: CALIBRATION_SERVER_CONTRADICTION_CODE,
+            field: 'firmware.family',
+            message: 'Forged.',
+          },
+        ],
+      }),
+    ]);
+
+    expect(printer!.eligibility).toBeNull();
+    expect(printer!.rejectionReasonCodes).toEqual([
+      CALIBRATION_SERVER_CONTRADICTION_CODE,
+      UNRECOGNIZED_CALIBRATION_REASON_CODE,
+    ]);
+    expect(
+      printer!.rejectionReasonCodes.filter(
+        (code) => code === CALIBRATION_SERVER_CONTRADICTION_CODE,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('still admits the marker on the renderer-facing schema, where the client adds it', () => {
+    // Narrowing the wire enum must not narrow the boundary the client's own
+    // synthesized code has to cross, or the fix would break the feature.
+    expect(() =>
+      CalibrationPrinterCandidate.parse({
+        printerId: PRINTER_GUID,
+        displayName: 'Rack A cell 3',
+        printerModel: null,
+        firmwareCompatible: false,
+        orcaProfileId: null,
+        isOnline: true,
+        updatedAt: '2026-08-11T12:00:00.000Z',
+        rejectionReasonCodes: [
+          CALIBRATION_SERVER_CONTRADICTION_CODE,
+          UNRECOGNIZED_CALIBRATION_REASON_CODE,
+        ],
+        missingInputs: [],
+        eligibility: null,
+      }),
+    ).not.toThrow();
+  });
+});
+
 describe('missing-input field paths are shape-checked', () => {
   it('accepts real field paths including array indices', () => {
     for (const field of [
