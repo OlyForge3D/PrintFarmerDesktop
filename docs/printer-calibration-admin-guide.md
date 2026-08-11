@@ -130,6 +130,20 @@ checked on its own against its exact permission at the moment it is attempted,
 so an operator with read access can inspect the farm without being refused
 entry, and a refusal names the specific permission that was missing.
 
+Beta 4 note: a normal `farm_user` has no seeded calibration permissions, so the
+production key used for calibration must belong to a `farm_admin`. Granting and
+managing those roles is a PrintFarmer backend and web concern; the desktop app
+only reads what the server reports.
+
+Permissions can change while the app is running, so PFD never treats a refusal
+as permanent. On a calibration 403 it re-reads
+`/api/calibration/capabilities` once for the currently selected profile, tells
+the operator their access may have changed, and stops there. It does **not**
+replay the refused action: re-reading capabilities is a read and safe to repeat
+on the operator's behalf, whereas a create, generate, queue or dispatch is not.
+Repeated refusals are absorbed by a short cooldown so a permission problem
+cannot become a request storm.
+
 Earlier PFD builds asserted a PascalCase JWT-scope vocabulary
 (`CalibrationRead`, `CalibrationWrite`, `CalibrationGenerate`). No PrintFarmer
 build has ever emitted those strings, so every check against them silently

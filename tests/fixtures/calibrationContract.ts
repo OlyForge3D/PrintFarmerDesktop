@@ -72,6 +72,9 @@ export function calibrationContextDto(
   const { snapshot: snapshotOverride, ...rest } = overrides;
   return {
     ...calibrationCandidateDto(),
+    // The selected context is the server's authoritative verdict: it resolved
+    // profiles, so profilesEvaluated is true. The candidate list never is.
+    profilesEvaluated: true,
     schemaVersion: '1.0',
     snapshotSha256: CALIBRATION_FIXTURE_IDS.snapshotSha,
     capturedAtUtc: CALIBRATION_FIXTURE_IDS.now,

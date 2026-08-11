@@ -46,10 +46,17 @@ The sequence is:
    configuration snapshot is read, and profiles are resolved for that printer
    and that configuration revision only. Your local OrcaSlicer install is
    searched for the one profile name the printer reports, not for everything it
-   contains.
+   contains. This is the point at which PrintFarmer actually evaluates the
+   printer's profiles; the list in step 1 is a basic screen that does not.
 4. **The rest of the wizard unlocks.** Naming the project, choosing the tool and
    nozzle, picking a base profile and entering baselines all come after, because
    each depends on the printer.
+
+A project can only be created against a printer PrintFarmer has **fully
+evaluated** — profiles resolved, printer declared eligible, with no missing
+inputs and no rejection reasons. A printer that merely passed the basic screen
+is listed and can be selected, but it is never enough on its own, and a server
+too old to say whether it evaluated profiles is treated as not having done so.
 
 Changing your mind is safe at any point. Selecting a different printer cancels
 whatever was still loading for the previous one and clears its results, so a

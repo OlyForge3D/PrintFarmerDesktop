@@ -1738,6 +1738,19 @@ export const CalibrationPrinterContext = z
     nozzleDiameterMm: z.number().positive().max(10).nullable(),
     /** Snapshot timestamp from PrintFarmer (not wall clock). */
     snapshotAt: z.string().datetime(),
+    /**
+     * How far PrintFarmer got when it judged this printer.
+     *
+     * `'full'` means the server resolved this printer's slicer profiles and
+     * declared it eligible with no missing inputs and no rejection reasons.
+     * `'preliminary'` means it did not, or did not say — an older build that
+     * omits the field reports nothing, and nothing is never promoted to a pass.
+     *
+     * Only `'full'` may be bound. A preliminary context is still worth loading
+     * and displaying, because it explains *why* the printer cannot be
+     * calibrated, but it can never stand in for the resolution it did not do.
+     */
+    evaluationScope: z.enum(['preliminary', 'full']).default('preliminary'),
     /** Whether this snapshot is still current (false = stale, needs rebase). */
     isCurrent: z.boolean(),
     configurationId: z
