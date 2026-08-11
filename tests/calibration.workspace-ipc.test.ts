@@ -1121,6 +1121,11 @@ describe('PrintFarmer Orca profile discovery projection', () => {
         'calibration:create',
         'calibration:update',
         'calibration:generate',
+        'slicing:submit',
+        'queue:read',
+        'queue:write',
+        'queue:acknowledge-bed-clear',
+        'queue:start',
       ],
       flags: {
         calibrationApiEnabled: true,

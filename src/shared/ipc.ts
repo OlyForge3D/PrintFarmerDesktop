@@ -1056,30 +1056,51 @@ export const CalibrationActionBinding = z
 export type CalibrationActionBinding = z.infer<typeof CalibrationActionBinding>;
 
 /**
- * Canonical calibration permissions, spelled exactly as PrintFarmer emits them
- * in the capability payload's `effectivePermissions` member.
+ * Canonical permissions, spelled exactly as PrintFarmer emits them in the
+ * capability payload's `effectivePermissions` member.
  *
- * These are `resource:action` strings. Earlier desktop builds asserted a
- * PascalCase JWT-scope vocabulary (`CalibrationRead`, `CalibrationWrite`) that
- * no PrintFarmer build has ever produced, so every check against it was dead:
- * `grantedScopes` is populated straight from `effectivePermissions`, and a
- * PascalCase needle can never be found in a `resource:action` haystack.
+ * Three resources appear here, and they are not interchangeable. Calibration
+ * endpoints require `calibration:*`; the job queue requires `queue:*`; slicing
+ * submission requires `slicing:*`. A principal may hold one family and not
+ * another, so treating any of them as a stand-in for another would authorise
+ * work the server is about to refuse.
+ *
+ * Earlier desktop builds asserted a PascalCase JWT-scope vocabulary
+ * (`CalibrationRead`, `CalibrationWrite`) that no PrintFarmer build has ever
+ * produced, so every check against it was dead: `grantedScopes` is populated
+ * straight from `effectivePermissions`, and a PascalCase needle can never be
+ * found in a `resource:action` haystack.
  */
 export const CALIBRATION_PERMISSIONS = {
   /** List candidates, read a printer's calibration context, resolve profiles. */
   read: 'calibration:read',
   /** Create a calibration project. */
   create: 'calibration:create',
-  /** Mutate an existing project: steps, attempts, measurements. */
+  /** Mutate an existing project: steps, attempts, measurements, sync. */
   update: 'calibration:update',
   /** Request profile generation from recorded results. */
   generate: 'calibration:generate',
+  /** Submit the slicing job generation depends on. */
+  slicingSubmit: 'slicing:submit',
+  /** Create a job-queue entry (`POST /api/job-queue`). */
+  queueWrite: 'queue:write',
+  /** Read a job-queue entry (`GET /api/job-queue/{id}`). */
+  queueRead: 'queue:read',
+  /** Acknowledge that a printer's bed is clear. */
+  queueAcknowledgeBedClear: 'queue:acknowledge-bed-clear',
+  /** Release an acknowledged job for dispatch. */
+  queueStart: 'queue:start',
 } as const;
 export const CalibrationPermission = z.enum([
   CALIBRATION_PERMISSIONS.read,
   CALIBRATION_PERMISSIONS.create,
   CALIBRATION_PERMISSIONS.update,
   CALIBRATION_PERMISSIONS.generate,
+  CALIBRATION_PERMISSIONS.slicingSubmit,
+  CALIBRATION_PERMISSIONS.queueWrite,
+  CALIBRATION_PERMISSIONS.queueRead,
+  CALIBRATION_PERMISSIONS.queueAcknowledgeBedClear,
+  CALIBRATION_PERMISSIONS.queueStart,
 ]);
 export type CalibrationPermission = z.infer<typeof CalibrationPermission>;
 
@@ -1090,6 +1111,10 @@ export type CalibrationPermission = z.infer<typeof CalibrationPermission>;
  * solely because the server named that alias in its own response. Nothing is
  * inferred, defaulted, or synthesised, so a server that grants no calibration
  * permission still reads as granting none.
+ *
+ * Only the calibration family has legacy spellings. The queue and slicing
+ * permissions have never had a PascalCase form, and inventing one would be
+ * fabricating a grant rather than recognising one.
  */
 const CALIBRATION_PERMISSION_ALIASES: Readonly<
   Record<CalibrationPermission, readonly string[]>
@@ -1098,10 +1123,26 @@ const CALIBRATION_PERMISSION_ALIASES: Readonly<
   [CALIBRATION_PERMISSIONS.create]: ['CalibrationWrite'],
   [CALIBRATION_PERMISSIONS.update]: ['CalibrationWrite'],
   [CALIBRATION_PERMISSIONS.generate]: ['CalibrationGenerate'],
+  [CALIBRATION_PERMISSIONS.slicingSubmit]: [],
+  [CALIBRATION_PERMISSIONS.queueWrite]: [],
+  [CALIBRATION_PERMISSIONS.queueRead]: [],
+  [CALIBRATION_PERMISSIONS.queueAcknowledgeBedClear]: [],
+  [CALIBRATION_PERMISSIONS.queueStart]: [],
 };
 
 /**
- * Whether the server granted one exact calibration permission.
+ * Whether the server granted one exact permission.
+ *
+ * Three ways a permission can be satisfied, in decreasing directness:
+ *
+ * 1. The exact `resource:action` string.
+ * 2. A same-resource `resource:admin` grant. PrintFarmer authorises
+ *    `queue:admin` as covering `queue:read`/`write`/`start`/`acknowledge-bed-clear`,
+ *    and likewise for `calibration:` and `slicing:`, and the capability payload
+ *    may expose the raw grant rather than its expansion. Implication is strictly
+ *    **within** a resource: `queue:admin` says nothing about calibration, and no
+ *    admin grant implies another resource's admin.
+ * 3. A legacy PascalCase spelling, and only when the server literally sent it.
  *
  * `null` scopes mean "never negotiated", which is not the same as "denied" and
  * is reported as not-granted here; callers that must distinguish the two should
@@ -1113,6 +1154,13 @@ export function hasCalibrationPermission(
 ): boolean {
   if (grantedScopes == null) return false;
   if (grantedScopes.includes(permission)) return true;
+  // Same resource only. Splitting on the first colon keeps `queue:admin` from
+  // ever satisfying a `calibration:` or `slicing:` permission, which is the
+  // substitution the per-route mapping exists to prevent.
+  const resource = permission.slice(0, permission.indexOf(':'));
+  if (resource !== '' && grantedScopes.includes(`${resource}:admin`)) {
+    return true;
+  }
   return CALIBRATION_PERMISSION_ALIASES[permission].some((alias) =>
     grantedScopes.includes(alias),
   );
