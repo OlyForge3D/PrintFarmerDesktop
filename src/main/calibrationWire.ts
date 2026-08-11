@@ -411,6 +411,24 @@ const RemoteCalibrationCandidateDto = z
         .catch(UNRECOGNIZED_CALIBRATION_INPUT),
     ),
     rejectionReasons: boundedWireList(RemoteCalibrationRejectionReason),
+    /**
+     * Whether the server actually resolved this printer's slicer profiles when
+     * it produced this record.
+     *
+     * Additive: PrintFarmer builds predating the follow-up that introduces it
+     * omit the field. Absence therefore means *unknown*, and unknown is treated
+     * as "not evaluated" — never as evaluated. Reading an omitted field as a
+     * full evaluation would let a candidate listing, which by design does not
+     * resolve profiles, stand in for the authoritative per-printer context.
+     *
+     * `false` on the candidate list is the expected steady state: listing is a
+     * cheap eligibility screen, and profile resolution happens once a printer is
+     * selected.
+     */
+    profilesEvaluated: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
@@ -575,6 +593,11 @@ export const RemoteCalibrationPrinterCandidate =
      * silently normalised into an ordinary refusal.
      */
     serverIncoherence: detectServerEligibilityIncoherence(dto),
+    /**
+     * Whether the server resolved this printer's profiles. Absent on builds
+     * predating the field, where it stays null and is read as "not evaluated".
+     */
+    profilesEvaluated: dto.profilesEvaluated,
     eligibility: deriveCandidateEligibility(dto),
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<

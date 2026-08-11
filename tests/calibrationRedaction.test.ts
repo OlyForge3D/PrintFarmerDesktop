@@ -741,8 +741,7 @@ describe('redaction on real calibration failure paths', () => {
     const fetchMock = vi.fn((url: URL | string) => {
       // Defensive: this stub is shared with call sites that pass a `Request`,
       // where `.href` is undefined.
-      const href =
-        typeof url === 'string' ? url : (((url as URL).href ?? '') as string);
+      const href = typeof url === 'string' ? url : (url?.href ?? '');
       // Opt-in, because it must not apply to every caller. The action interlock
       // reads capabilities and the authoritative context before dispatching, so
       // the generation test needs both to succeed or the action is refused and

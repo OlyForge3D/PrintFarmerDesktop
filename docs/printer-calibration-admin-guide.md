@@ -111,18 +111,38 @@ difference makes the workspace stale.
 
 ## 3. Permissions and scopes
 
-### 3.1 Token scopes
+### 3.1 Effective permissions
 
-The calibration contract defines three JWT scopes: **CalibrationRead**,
-**CalibrationWrite** and **CalibrationGenerate**. The scopes the current token
-actually grants are reported by the server as `resource:action` strings in
-`grantedScopes`, and PFD surfaces them unchanged in both availability and
-diagnostics. The token itself is never exposed to the renderer or to a log
-record.
+PrintFarmer reports what the current session may do as canonical
+`resource:action` strings in the capability payload's `effectivePermissions`
+member. PFD surfaces them unchanged in both availability and diagnostics. The
+token itself is never exposed to the renderer or to a log record.
 
-Separately, the **printer context** carries a four-way permission assertion —
-`readPrinter`, `writeCalibration`, `generateCalibration`, `startPrint` — and all
-four must be true for that printer to be eligible (section 2).
+| Permission             | Gates                                                                   |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `calibration:read`     | Listing candidates, reading a context, resolving profiles               |
+| `calibration:create`   | Creating a calibration project                                          |
+| `calibration:update`   | Recording results, syncing the outbox, queueing and dispatching a print |
+| `calibration:generate` | Requesting profile generation                                           |
+
+Opening the workspace requires only `calibration:read`. Each further action is
+checked on its own against its exact permission at the moment it is attempted,
+so an operator with read access can inspect the farm without being refused
+entry, and a refusal names the specific permission that was missing.
+
+Earlier PFD builds asserted a PascalCase JWT-scope vocabulary
+(`CalibrationRead`, `CalibrationWrite`, `CalibrationGenerate`). No PrintFarmer
+build has ever emitted those strings, so every check against them silently
+matched nothing. They are still accepted if a server genuinely sends them, but
+nothing infers or synthesises a grant from their absence.
+
+> **Note on the printer context.** PrintFarmer's `CalibrationContextDto` carries
+> no per-printer `permissions` block and no safety-interlock block. Earlier PFD
+> builds required both, which made every real context incomplete and blocked
+> project creation on every deployment. Authorisation now comes from
+> `effectivePermissions` above; machine movement is gated on an explicit,
+> single-use bed-clear acknowledgement recorded in the desktop main process
+> after the server confirms the job is awaiting one.
 
 ### 3.2 Denial reasons
 

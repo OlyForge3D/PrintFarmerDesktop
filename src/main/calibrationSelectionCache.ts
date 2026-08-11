@@ -57,10 +57,7 @@ export class CalibrationSelectionCache {
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
-  private static contextKey(
-    profileId: string,
-    printerId: string,
-  ): string {
+  private static contextKey(profileId: string, printerId: string): string {
     return `${profileId}\u0000${printerId}`;
   }
 

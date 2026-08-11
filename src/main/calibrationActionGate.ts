@@ -248,7 +248,10 @@ export function evaluateCalibrationActionGate(
       'The printer configuration changed after this action was prepared. Reload the printer context.',
     );
   }
-  if (binding.snapshotId !== null && binding.snapshotId !== context.snapshotId) {
+  if (
+    binding.snapshotId !== null &&
+    binding.snapshotId !== context.snapshotId
+  ) {
     return block(
       'bindingMismatch',
       'This action references a printer snapshot that is no longer current.',
