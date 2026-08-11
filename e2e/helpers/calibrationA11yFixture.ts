@@ -677,6 +677,7 @@ export async function applyCalibrationScenario(
           },
         },
       ],
+      printersTruncated: false,
       fetchedAt: ids.now,
     }));
 

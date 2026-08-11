@@ -21,6 +21,12 @@ import {
   type SidecarPingResponse,
   type CalibrationProfileDiscoveryDiagnostic,
   resolveOrcaBaseProfileLookupName,
+  normalizeCalibrationReasonCode,
+  normalizeCalibrationMissingInput,
+  CALIBRATION_SERVER_CONTRADICTION_CODE,
+  CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+  CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+  CALIBRATION_EXPLANATION_TRUNCATED_CODE,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -135,6 +141,7 @@ import {
   projectPrintFarmerOrcaProfile,
   supportsKlipper,
   supportsOrcaSlicer,
+  type RemoteCalibrationPrinterCandidate,
 } from './calibrationWire.js';
 import {
   CalibrationPhotoApprovalStore,
@@ -358,6 +365,51 @@ export function createLoadSceneHandler(
     const approvedPath = await authorizeFile(request.path);
     return sceneCache.loadScene(approvedPath);
   };
+}
+
+/**
+ * Every code the renderer will be given for a printer this client refuses.
+ *
+ * The list is guaranteed non-empty. An ineligible printer with nothing to say
+ * is the failure mode this whole contract exists to remove: the operator sees
+ * a refusal, has no idea which of a dozen preconditions failed, and has
+ * nothing to quote in a bug report. Three sources feed it, in order of what
+ * they explain:
+ *
+ * 1. The server contradicting itself, either way round.
+ * 2. The server's own reasons, each mapped onto the catalogue.
+ * 3. Failing both — a response that is coherent and reason-free, yet does not
+ *    name the Klipper/OrcaSlicer identities eligibility requires — the fact
+ *    that this client could not verify what the server asserted.
+ *
+ * The third exists because the first two can legitimately produce nothing at
+ * all, and an empty list is not an explanation.
+ */
+export function explainIneligibility(
+  printer: Pick<
+    RemoteCalibrationPrinterCandidate,
+    'serverIncoherence' | 'rejectionReasons' | 'explanationTruncated'
+  >,
+): string[] {
+  const incoherence =
+    printer.serverIncoherence === 'contradiction'
+      ? [CALIBRATION_SERVER_CONTRADICTION_CODE]
+      : printer.serverIncoherence === 'unexplainedRefusal'
+        ? [CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE]
+        : [];
+  const codes = [
+    ...incoherence,
+    ...printer.rejectionReasons.map((reason) =>
+      normalizeCalibrationReasonCode(reason.code),
+    ),
+    // Declared last so it reads as a footnote on the list above it, and
+    // included in the bound so a truncated contradictory printer at the cap
+    // still fits.
+    ...(printer.explanationTruncated
+      ? [CALIBRATION_EXPLANATION_TRUNCATED_CODE]
+      : []),
+  ];
+  return codes.length > 0 ? codes : [CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE];
 }
 
 /**
@@ -1475,7 +1527,7 @@ export function registerIpcHandlers(
         signal,
       );
       return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
-        printers: printers.map((printer) => {
+        printers: printers.printers.map((printer) => {
           const eligibility = projectCalibrationEligibility(printer);
           return {
             printerId: printer.printerId,
@@ -1486,16 +1538,20 @@ export function registerIpcHandlers(
             orcaProfileId: printer.orcaProfileId,
             isOnline: printer.isOnline,
             updatedAt: printer.updatedAt,
-            // Carried so an ineligible printer can explain itself. Codes only:
-            // the server's `message` text stays in the main process (#177).
+            // Carried so an ineligible printer can explain itself. Codes only,
+            // and each is checked against the known catalogue before it
+            // crosses the boundary, so an unfamiliar or hostile "code" cannot
+            // arrive at the renderer as arbitrary text.
             rejectionReasonCodes:
+              eligibility === null ? explainIneligibility(printer) : [],
+            missingInputs:
               eligibility === null
-                ? printer.rejectionReasons.map((reason) => reason.code)
+                ? printer.missingInputs.map(normalizeCalibrationMissingInput)
                 : [],
-            missingInputs: eligibility === null ? printer.missingInputs : [],
             eligibility,
           };
         }),
+        printersTruncated: printers.truncated,
         fetchedAt: new Date().toISOString(),
       });
     },
@@ -2886,19 +2942,22 @@ export function registerIpcHandlers(
       // not erase the answer entirely: the operator still needs to know *why*
       // the list is short, and a refusal by the server says nothing about the
       // OrcaSlicer profiles installed on this machine.
-      let candidates: Awaited<ReturnType<typeof calibrationHttp.getPrinters>> =
-        [];
+      let candidates: Awaited<
+        ReturnType<typeof calibrationHttp.getPrinters>
+      >['printers'] = [];
       let discovery: CalibrationProfileDiscoveryDiagnostic = {
         kind: 'ok',
         message: 'Server profile discovery completed.',
         serverCode: null,
       };
       try {
-        candidates = await calibrationHttp.getPrinters(
-          selectedId,
-          profileContext.profile.baseUrl,
-          signal,
-        );
+        candidates = (
+          await calibrationHttp.getPrinters(
+            selectedId,
+            profileContext.profile.baseUrl,
+            signal,
+          )
+        ).printers;
         if (candidates.length === 0) {
           discovery = {
             kind: 'noEligiblePrinters',

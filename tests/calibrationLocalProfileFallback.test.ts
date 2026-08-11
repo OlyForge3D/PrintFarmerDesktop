@@ -147,14 +147,16 @@ describe('ineligible printers carry their reasons across IPC', () => {
       firmwareCompatible: false,
       eligibility: null,
       rejectionReasonCodes: ['firmware_family_not_klipper'],
-      missingInputs: ['slicer_engine'],
+      // `missingInputs` holds field paths, not reason codes: the server's
+      // RejectMissing helper adds the *field* it could not read.
+      missingInputs: ['firmware.family'],
     });
 
     // Without these fields the printer could be listed but never explained.
     expect(parsed.rejectionReasonCodes).toEqual([
       'firmware_family_not_klipper',
     ]);
-    expect(parsed.missingInputs).toEqual(['slicer_engine']);
+    expect(parsed.missingInputs).toEqual(['firmware.family']);
   });
 
   it('refuses a printer that is both eligible and rejected', () => {

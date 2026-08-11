@@ -48,6 +48,7 @@ import { emptyWorkflowDrafts, errorMessage } from './workspaceTypes';
 
 const emptyCreation: CreationDataState = {
   printers: [],
+  printersTruncated: false,
   profiles: [],
   context: null,
   loaded: false,
@@ -739,6 +740,7 @@ export function CalibrationWorkspaceStoreProvider({
       setOrcaProfiles(profileResponse.profiles);
       setCreation({
         printers: printerResponse.printers,
+        printersTruncated: printerResponse.printersTruncated,
         profiles: profileResponse.profiles,
         context: null,
         loaded: true,
@@ -746,8 +748,11 @@ export function CalibrationWorkspaceStoreProvider({
         contextLoading: false,
         error: null,
       });
+      const count = printerResponse.printers.length;
       setLiveMessage(
-        `${printerResponse.printers.length} PrintFarmer printer candidate${printerResponse.printers.length === 1 ? '' : 's'} loaded.`,
+        printerResponse.printersTruncated
+          ? `Showing the first ${count} PrintFarmer printer candidates. The list is partial: the server offered more than this view can show.`
+          : `${count} PrintFarmer printer candidate${count === 1 ? '' : 's'} loaded.`,
       );
     } catch (cause) {
       if (

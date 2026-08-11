@@ -167,7 +167,7 @@ describe('calibration candidate DTO normalisation', () => {
     const { fetch } = recordingFetch([eligibleCandidateDto()]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    const printers = await client.getPrinters(
+    const { printers } = await client.getPrinters(
       PROFILE_ID,
       BASE_URL,
       AbortSignal.timeout(5_000),
@@ -186,7 +186,10 @@ describe('calibration candidate DTO normalisation', () => {
     const { fetch } = recordingFetch([
       eligibleCandidateDto({
         eligible: false,
-        missingInputs: ['slicer_engine'],
+        // `slicer.engine`, as the server actually spells it — an earlier
+        // fixture said `slicer_engine`, which no PrintFarmer build emits, so
+        // it could not have caught a field-path regression.
+        missingInputs: ['slicer.engine'],
         rejectionReasons: [
           {
             code: 'firmware_family_not_klipper',
@@ -205,7 +208,7 @@ describe('calibration candidate DTO normalisation', () => {
     ]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    const printers = await client.getPrinters(
+    const { printers } = await client.getPrinters(
       PROFILE_ID,
       BASE_URL,
       AbortSignal.timeout(5_000),
@@ -228,7 +231,7 @@ describe('calibration candidate DTO normalisation', () => {
     ]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    const printers = await client.getPrinters(
+    const { printers } = await client.getPrinters(
       PROFILE_ID,
       BASE_URL,
       AbortSignal.timeout(5_000),

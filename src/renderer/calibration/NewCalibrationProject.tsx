@@ -475,6 +475,13 @@ export function NewCalibrationProject(): React.JSX.Element {
               store.creation.printers.length === 0 ? (
                 <p>No printer candidates were returned.</p>
               ) : null}
+              {!store.creation.loading && store.creation.printersTruncated ? (
+                <p role="status" className="cal-hint">
+                  This list is partial. PrintFarmer offered more printers than
+                  this view can show, so a printer you expect may not appear
+                  below.
+                </p>
+              ) : null}
               <div
                 className="cal-choice-list"
                 role="radiogroup"

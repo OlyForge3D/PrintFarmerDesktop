@@ -112,6 +112,7 @@ import {
 import {
   MAX_FILE_BYTES,
   discoverLocalOrcaFilamentProfiles,
+  listLocalOrcaFilamentProfiles,
   orcaUserDataRoots,
 } from '../src/main/orcaProfileDiscovery.js';
 import {
@@ -648,6 +649,21 @@ async function discoverNames(): Promise<string[]> {
     corpusPrinterContext(),
   );
   return entries.map((entry) => entry.orcaProfileId);
+}
+
+/**
+ * The same seeded tree read through the *unbound* scanner.
+ *
+ * Deliberately not cross-checked for equality against bound discovery: the two
+ * answer different questions. Bound discovery filters to the one profile the
+ * printer context names, while the unbound scan lists everything it can parse,
+ * so a fixture that legitimately seeds several valid profiles makes them differ
+ * for reasons that have nothing to do with safety. What must hold is that a
+ * file the guards reject appears in neither, which is asserted per vector.
+ */
+async function listUnboundNames(): Promise<string[]> {
+  const result = await listLocalOrcaFilamentProfiles();
+  return result.profiles.map((profile) => profile.name);
 }
 
 /** Discovery must find the control profile, or nothing below proves anything. */
@@ -3075,5 +3091,82 @@ describe('nothing in the corpus is executed', () => {
     expect(fixture).toContain('pfd-corpus-should-not-exist');
     expect(fixture).toMatch(/G28/);
     expect(fixture).toMatch(/#!\/bin\/sh/);
+  });
+});
+
+describe('the unbound local scan refuses the same hostile files', () => {
+  // `listLocalOrcaFilamentProfiles` is a second entry point into the same
+  // traversal and parse guards, reachable without any printer context. These
+  // assert the guards actually bite on that path too, rather than relying on
+  // them being shared by inspection.
+
+  it('excludes an oversized profile', async () => {
+    await withSandbox(async (ctx) => {
+      await seedOrcaRoot(ctx, {
+        'profile.json': JSON.stringify({
+          type: 'filament',
+          name: CORPUS_PROFILE_NAME,
+          filament_type: 'PLA',
+          pad: 'x'.repeat(1_100_000),
+        }),
+      });
+      expect(await listUnboundNames()).toEqual([]);
+    });
+  });
+
+  it('excludes a profile with duplicate object keys', async () => {
+    await withSandbox(async (ctx) => {
+      await seedOrcaRoot(ctx, {
+        'profile.json': `{"type":"filament","name":"${CORPUS_PROFILE_NAME}","filament_type":"PLA","name":"shadow"}`,
+      });
+      expect(await listUnboundNames()).toEqual([]);
+    });
+  });
+
+  it('excludes a profile carrying an unsafe numeric literal', async () => {
+    await withSandbox(async (ctx) => {
+      await seedOrcaRoot(ctx, {
+        'profile.json': `{"type":"filament","name":"${CORPUS_PROFILE_NAME}","filament_type":"PLA","bed":123456789012345678901234567890}`,
+      });
+      expect(await listUnboundNames()).toEqual([]);
+    });
+  });
+
+  it('excludes excessively nested JSON', async () => {
+    await withSandbox(async (ctx) => {
+      let nested = '{"leaf":true}';
+      for (let i = 0; i < 64; i += 1) nested = `{"n":${nested}}`;
+      await seedOrcaRoot(ctx, {
+        'profile.json': `{"type":"filament","name":"${CORPUS_PROFILE_NAME}","filament_type":"PLA","deep":${nested}}`,
+      });
+      expect(await listUnboundNames()).toEqual([]);
+    });
+  });
+
+  it('reads the control profile, so the exclusions above are not vacuous', async () => {
+    await withSandbox(async (ctx) => {
+      await seedOrcaRoot(ctx, {
+        'profile.json': JSON.stringify({
+          type: 'filament',
+          name: CORPUS_PROFILE_NAME,
+          filament_type: 'PLA',
+        }),
+      });
+      expect(await listUnboundNames()).toEqual([CORPUS_PROFILE_NAME]);
+    });
+  });
+
+  it('discloses no filesystem path for what it does read', async () => {
+    await withSandbox(async (ctx) => {
+      await seedOrcaRoot(ctx, {
+        'profile.json': JSON.stringify({
+          type: 'filament',
+          name: CORPUS_PROFILE_NAME,
+          filament_type: 'PLA',
+        }),
+      });
+      const result = await listLocalOrcaFilamentProfiles();
+      expect(JSON.stringify(result.profiles)).not.toContain(ctx.sandbox);
+    });
   });
 });

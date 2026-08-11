@@ -19,7 +19,11 @@ import {
   CalibrationPrinterContext as CalibrationPrinterContextSchema,
   CalibrationPrinterEligibility,
   CalibrationWorkspacePayload,
+  CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+  CALIBRATION_MAX_PRINTER_CANDIDATES,
   OrcaProfileEntry,
+  UNRECOGNIZED_CALIBRATION_INPUT,
+  UNRECOGNIZED_CALIBRATION_REASON_CODE,
   deriveCalibrationWorkspaceProjection,
   type CalibrationPrinterContext,
   type CalibrationSaveWorkspaceStateRequest,
@@ -216,23 +220,75 @@ const ServerInstant = z
   });
 
 /**
+ * The longest single string this client carries off the wire.
+ *
+ * Generous on purpose: it is a classification threshold, not a gate. The
+ * transport already caps the whole body, so this only decides what is worth
+ * carrying forward, and exceeding it degrades one field rather than rejecting
+ * the response.
+ */
+const CALIBRATION_MAX_WIRE_STRING = 512;
+
+/**
+ * A list that degrades by length instead of refusing by length.
+ *
+ * `z.array(...).max(n)` rejects, and rejection here is not local: the whole
+ * `/calibration-candidates` body is one parsed value, so one printer with one
+ * item too many erased every healthy printer in the farm. Exceeding the cap is
+ * not even a sign of a bad server — the evaluator asks about a dozen questions
+ * of every toolhead, so a freshly added five-toolhead machine reports far more
+ * than sixty-four missing inputs perfectly legitimately.
+ *
+ * The elements are pre-sliced as `unknown` before the real element schema
+ * runs, so a runaway list costs a slice rather than tens of thousands of
+ * validations, and the ceiling is high enough above the per-printer cap that
+ * "was this cut?" is still answerable afterwards.
+ */
+const WIRE_LIST_CEILING = 1024;
+
+function boundedWireList<T extends z.ZodTypeAny>(element: T) {
+  return z
+    .array(z.unknown())
+    .nullish()
+    .transform((items) => (items ?? []).slice(0, WIRE_LIST_CEILING))
+    .pipe(z.array(element));
+}
+
+/**
  * One structured rejection reason from `CalibrationRejectionReasonDto`.
  * Retained verbatim so an ineligible printer can explain itself instead of
  * vanishing from the list.
+ *
+ * Every member degrades instead of throwing. A length bound that *rejects* is
+ * a length bound that discards: `schema.parse` runs over the whole
+ * `/calibration-candidates` array as one value, so a single reason whose code
+ * or message ran long took every printer in the farm with it — the empty
+ * discovery this contract exists to prevent, reachable by a server sending one
+ * over-long string. The bounds are kept as classification thresholds (nothing
+ * unbounded is carried forward, and the transport already caps the body), but
+ * exceeding one now yields a value the catalogue does not recognise, which
+ * {@link normalizeCalibrationReasonCode} maps to the unrecognized sentinel
+ * exactly as it maps any other unknown code.
  */
 export const RemoteCalibrationRejectionReason = z
   .object({
-    code: z.string().min(1).max(128),
+    code: z
+      .string()
+      .min(1)
+      .max(CALIBRATION_MAX_WIRE_STRING)
+      .catch(UNRECOGNIZED_CALIBRATION_REASON_CODE),
     field: z
       .string()
-      .max(128)
+      .max(CALIBRATION_MAX_WIRE_STRING)
       .nullish()
-      .transform((v) => v ?? ''),
+      .transform((v) => v ?? '')
+      .catch(''),
     message: z
       .string()
-      .max(512)
+      .max(CALIBRATION_MAX_WIRE_STRING)
       .nullish()
-      .transform((v) => v ?? ''),
+      .transform((v) => v ?? '')
+      .catch(''),
   })
   .passthrough();
 
@@ -348,16 +404,13 @@ const RemoteCalibrationCandidateDto = z
       .boolean()
       .nullish()
       .transform((v) => v ?? false),
-    missingInputs: z
-      .array(z.string().max(128))
-      .max(64)
-      .nullish()
-      .transform((v) => v ?? []),
-    rejectionReasons: z
-      .array(RemoteCalibrationRejectionReason)
-      .max(64)
-      .nullish()
-      .transform((v) => v ?? []),
+    missingInputs: boundedWireList(
+      z
+        .string()
+        .max(CALIBRATION_MAX_WIRE_STRING)
+        .catch(UNRECOGNIZED_CALIBRATION_INPUT),
+    ),
+    rejectionReasons: boundedWireList(RemoteCalibrationRejectionReason),
   })
   .passthrough();
 
@@ -416,6 +469,58 @@ function deriveCandidateEligibility(
   };
 }
 
+/**
+ * How, if at all, the server's own eligibility verdict fails to hold together.
+ *
+ * There are two server invariants here, not one, and conflating them is what
+ * let a real violation escape:
+ *
+ * - `Eligible = reasons.Count == 0`. Defined purely on `rejectionReasons`.
+ * - `RejectMissing` records a reason beside every missing input, so a missing
+ *   input without a reason cannot occur either.
+ *
+ * The predicate used to test a single merged notion of "was anything said
+ * against it", folding `missingInputs` in with `rejectionReasons`. That reads
+ * naturally and is wrong: `{ eligible: false, rejectionReasons: [],
+ * missingInputs: ['firmware.family'] }` violates the first invariant outright,
+ * yet counted as *explained* and so matched neither branch. It fell through to
+ * the unverified-eligibility fallback — a code whose meaning is the opposite,
+ * that the server granted eligibility it had not evidenced — so a genuine
+ * invariant violation was reported as the weaker, wrong diagnosis. Testing the
+ * invariants separately is what makes each verdict mean what it says.
+ *
+ * - `contradiction` — the server said this printer is ready and, in the same
+ *   breath, said why it is not: either a rejection reason beside `eligible`,
+ *   or a missing input with no reason to go with it.
+ * - `unexplainedRefusal` — the server refused without a single rejection
+ *   reason. It may still name missing inputs; that is a second violation of
+ *   the same pair, not evidence that the refusal was explained.
+ *
+ * The client fails all of them closed. Naming which occurred is what lets an
+ * operator report a server defect instead of doubting the printer.
+ */
+export type CalibrationServerIncoherence =
+  'contradiction' | 'unexplainedRefusal';
+
+function detectServerEligibilityIncoherence(
+  dto: z.infer<typeof RemoteCalibrationCandidateDto>,
+): CalibrationServerIncoherence | null {
+  const reasoned = dto.rejectionReasons.length > 0;
+
+  // `Eligible = reasons.Count == 0`, tested on reasons alone as the server
+  // defines it.
+  if (dto.eligible && reasoned) return 'contradiction';
+  if (!dto.eligible && !reasoned) return 'unexplainedRefusal';
+
+  // A missing input the server never raised a reason for. Only reachable
+  // while `eligible` is true, since the refusal case is already caught above:
+  // the server is simultaneously claiming readiness and naming an input it is
+  // still waiting on.
+  if (dto.missingInputs.length > 0 && !reasoned) return 'contradiction';
+
+  return null;
+}
+
 /** Engine/distribution this client negotiates; mirrors the server constants. */
 export const CALIBRATION_SLICER_ENGINE = 'OrcaSlicer';
 export const CALIBRATION_SLICER_DISTRIBUTION = 'upstream';
@@ -448,8 +553,28 @@ export const RemoteCalibrationPrinterCandidate =
     configurationRevision: dto.configurationRevision,
     updatedAt: dto.observedAtUtc ?? dto.lastSeenAtUtc,
     eligible: dto.eligible,
-    missingInputs: dto.missingInputs,
-    rejectionReasons: dto.rejectionReasons,
+    // Cut to what the renderer will carry. The cut is declared below rather
+    // than made silently: a five-toolhead machine can legitimately report more
+    // missing inputs than this, and showing the first sixty-four as though
+    // they were the whole account would be its own quiet falsehood.
+    missingInputs: dto.missingInputs.slice(
+      0,
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    ),
+    rejectionReasons: dto.rejectionReasons.slice(
+      0,
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    ),
+    /** Whether either explanation list was longer than the renderer carries. */
+    explanationTruncated:
+      dto.missingInputs.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS ||
+      dto.rejectionReasons.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    /**
+     * How the server's eligibility verdict failed to hold together, if it did.
+     * Carried so the incoherence can be reported as itself rather than
+     * silently normalised into an ordinary refusal.
+     */
+    serverIncoherence: detectServerEligibilityIncoherence(dto),
     eligibility: deriveCandidateEligibility(dto),
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<
@@ -460,13 +585,41 @@ export type RemoteCalibrationPrinterCandidate = z.infer<
  * `GET /api/printers/calibration-candidates` returns a bare JSON array
  * (`IReadOnlyList<CalibrationCandidateDto>`). The enveloped form is retained
  * only so a proxy that wraps the payload is still understood.
+ *
+ * The list is cut to {@link CALIBRATION_MAX_PRINTER_CANDIDATES} rather than
+ * refused above it, and that constant is shared with the IPC schema. The two
+ * used to disagree — 500 here, 200 there — so a farm of 201 to 500 printers
+ * parsed cleanly off the network and was then rejected on the way to the
+ * renderer, as one value, taking every healthy printer with it. Refusing a
+ * whole farm because it is large is the failure this contract exists to
+ * remove, not a safety property.
+ *
+ * Cutting quietly is its own failure, though. `truncated` is returned beside
+ * the list so the app can say the list is partial instead of presenting 500 of
+ * 540 printers as the whole farm — an operator hunting a printer that is
+ * simply off the end would otherwise conclude it is not enrolled.
+ *
+ * It is derived from the raw wire length *before* the slice and is not read
+ * from the payload, so a server can neither claim completeness it does not
+ * have nor manufacture a truncation warning.
  */
+const boundedCandidateList = z
+  .array(z.unknown())
+  .transform((items) => ({
+    printers: items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES),
+    truncated: items.length > CALIBRATION_MAX_PRINTER_CANDIDATES,
+  }))
+  .pipe(
+    z.object({
+      printers: z.array(RemoteCalibrationPrinterCandidate),
+      truncated: z.boolean(),
+    }),
+  );
+
 export const RemoteCalibrationPrinters = z.union([
-  z.array(RemoteCalibrationPrinterCandidate).max(500),
+  boundedCandidateList,
   z
-    .object({
-      printers: z.array(RemoteCalibrationPrinterCandidate).max(500),
-    })
+    .object({ printers: boundedCandidateList })
     .passthrough()
     .transform((value) => value.printers),
 ]);

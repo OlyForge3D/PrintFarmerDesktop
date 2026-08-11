@@ -92,6 +92,15 @@ export interface OpenCalibrationProject {
 
 export interface CreationDataState {
   readonly printers: readonly CalibrationPrinterCandidate[];
+  /**
+   * Whether the server offered more printers than `printers` carries.
+   *
+   * Client-derived in the main process from the raw response length, so a
+   * server can neither hide a cut nor invent one. Surfaced because announcing
+   * "500 printer candidates loaded" for a farm of 540 would send an operator
+   * looking for a printer that is simply off the end.
+   */
+  readonly printersTruncated: boolean;
   readonly profiles: readonly OrcaProfileEntry[];
   readonly context: CalibrationPrinterContext | null;
   readonly loaded: boolean;

@@ -59,7 +59,7 @@ function neverObservedCandidateDto(overrides: Record<string, unknown> = {}) {
 
 describe('a printer with no observation timestamps', () => {
   it('normalises to a null updatedAt rather than failing to parse', () => {
-    const printers = RemoteCalibrationPrinters.parse([
+    const { printers } = RemoteCalibrationPrinters.parse([
       neverObservedCandidateDto(),
     ]);
     expect(printers).toHaveLength(1);
@@ -71,7 +71,7 @@ describe('a printer with no observation timestamps', () => {
     // unit, so one unparseable candidate threw and discarded every printer —
     // the same empty-discovery symptom this contract fix exists to remove,
     // arriving through a different field.
-    const printers = RemoteCalibrationPrinters.parse([
+    const { printers } = RemoteCalibrationPrinters.parse([
       neverObservedCandidateDto(),
       neverObservedCandidateDto({
         id: 'bbbbbbbb-1111-4111-8111-222222222222',
