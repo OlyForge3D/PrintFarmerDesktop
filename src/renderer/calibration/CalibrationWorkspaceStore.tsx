@@ -18,6 +18,7 @@ import {
   type CalibrationUnhydratedProject,
   type CalibrationWorkspacePayload,
   type CalibrationWorkspaceStateRecord,
+  type LocalOrcaProfileSummary,
   type OrcaProfileEntry,
 } from '@shared/ipc';
 import { browserCalibrationEnvironment, calibrationApi } from './api';
@@ -49,13 +50,35 @@ import { emptyWorkflowDrafts, errorMessage } from './workspaceTypes';
 const emptyCreation: CreationDataState = {
   printers: [],
   printersTruncated: false,
+  candidateDiagnostic: null,
+  selectedPrinterId: null,
   profiles: [],
   context: null,
+  profileDiagnostic: null,
+  localDiagnostic: null,
+  localProfiles: [],
   loaded: false,
   loading: false,
   contextLoading: false,
+  listError: null,
   error: null,
 };
+
+/**
+ * Everything derived from a printer selection, cleared as one unit.
+ *
+ * Kept as a single constant so a new selection cannot leave one field behind
+ * from the previous printer. A partially cleared state is how a value for
+ * printer A ends up displayed beside a value for printer B.
+ */
+const clearedSelection = {
+  profiles: [] as readonly OrcaProfileEntry[],
+  context: null,
+  profileDiagnostic: null,
+  localDiagnostic: null,
+  localProfiles: [] as readonly LocalOrcaProfileSummary[],
+  error: null,
+} satisfies Partial<CreationDataState>;
 const emptyMetadataDraft: MetadataDraft = { displayName: '', description: '' };
 const StoreContext = createContext<CalibrationWorkspaceStoreValue | null>(null);
 
@@ -199,6 +222,11 @@ export function CalibrationWorkspaceStoreProvider({
     useState<MetadataDraft>(emptyMetadataDraft);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [creation, setCreation] = useState<CreationDataState>(emptyCreation);
+  // Read inside async selection work so a candidate can be named in a live
+  // message without making the callback depend on — and be recreated by —
+  // every creation-state change.
+  const creationRef = useRef<CreationDataState>(emptyCreation);
+  creationRef.current = creation;
   const [orcaProfiles, setOrcaProfiles] = useState<readonly OrcaProfileEntry[]>(
     [],
   );
@@ -717,42 +745,61 @@ export function CalibrationWorkspaceStoreProvider({
     }
   }, [flush, manageProfilesOwner, reportError]);
 
+  /**
+   * Load the printer candidate list, and nothing else.
+   *
+   * This is the wizard's first and only pre-selection fetch. It deliberately
+   * does not touch printer context, generated profile history, the server base
+   * profile catalogue or the local OrcaSlicer install: none of those can be
+   * scoped to a printer before the operator has named one, and fetching them
+   * anyway is what made the wizard resolve profiles for the whole farm.
+   */
   const loadCreationData = useCallback(async (): Promise<void> => {
     if (selectedProfileId === null) return;
     const profileId = selectedProfileId;
     const epoch = ++creationRequestEpochRef.current;
+    // A reload invalidates any selection-scoped work already in flight.
+    contextRequestEpochRef.current += 1;
     setCreation((current) => ({
       ...current,
+      ...clearedSelection,
+      selectedPrinterId: null,
       loading: true,
-      context: null,
-      error: null,
+      contextLoading: false,
+      listError: null,
     }));
+    setLiveMessage('Loading PrintFarmer printers.');
     try {
-      const [printerResponse, profileResponse] = await Promise.all([
-        calibrationApi().listCalibrationPrinters({ profileId }),
-        calibrationApi().listOrcaProfiles({ profileId }),
-      ]);
+      const printerResponse = await calibrationApi().listCalibrationPrinters({
+        profileId,
+      });
       if (
         profileIdRef.current !== profileId ||
         creationRequestEpochRef.current !== epoch
       )
         return;
-      setOrcaProfiles(profileResponse.profiles);
-      setCreation({
+      setCreation((current) => ({
+        ...current,
+        ...clearedSelection,
         printers: printerResponse.printers,
         printersTruncated: printerResponse.printersTruncated,
-        profiles: profileResponse.profiles,
-        context: null,
+        candidateDiagnostic: null,
+        selectedPrinterId: null,
         loaded: true,
         loading: false,
         contextLoading: false,
-        error: null,
-      });
+        listError: null,
+      }));
       const count = printerResponse.printers.length;
+      // Truncation is announced ahead of the selection prompt: telling an
+      // operator to "select one to calibrate" while silently omitting printers
+      // would send them looking for a machine that is simply off the end.
       setLiveMessage(
         printerResponse.printersTruncated
-          ? `Showing the first ${count} PrintFarmer printer candidates. The list is partial: the server offered more than this view can show.`
-          : `${count} PrintFarmer printer candidate${count === 1 ? '' : 's'} loaded.`,
+          ? `Showing the first ${count} PrintFarmer printers. The list is partial: the server offered more than this view can show. Select one to calibrate.`
+          : count === 0
+            ? 'No PrintFarmer printers are available to calibrate.'
+            : `${count} PrintFarmer printer${count === 1 ? '' : 's'} available. Select one to calibrate.`,
       );
     } catch (cause) {
       if (
@@ -762,62 +809,134 @@ export function CalibrationWorkspaceStoreProvider({
         return;
       const message = errorMessage(
         cause,
-        'Printer candidates or OrcaSlicer profiles could not be loaded.',
+        'PrintFarmer printers could not be loaded.',
       );
       setCreation((current) => ({
         ...current,
         loaded: true,
         loading: false,
-        error: message,
+        listError: message,
       }));
       reportError(message);
     }
   }, [reportError, selectedProfileId]);
 
-  const loadPrinterContext = useCallback(
-    async (printerId: string): Promise<void> => {
+  /**
+   * Select one printer and resolve only that printer's context and profiles.
+   *
+   * Every response is fenced twice — on the request epoch and on the printer the
+   * response is actually about — so a slow reply for a previously selected
+   * printer can neither overwrite the current one nor resurrect a selection the
+   * operator has already moved off. The context is fetched first because its
+   * configuration revision is what the profile request is then pinned to; that
+   * shared revision is what keeps selection fencing and action fencing in
+   * agreement.
+   */
+  const selectPrinter = useCallback(
+    async (printerId: string | null): Promise<void> => {
       if (selectedProfileId === null) return;
       const profileId = selectedProfileId;
+      // Bumping first cancels whatever the previous selection had in flight:
+      // those responses will fail their epoch check and be discarded.
       const epoch = ++contextRequestEpochRef.current;
       setCreation((current) => ({
         ...current,
-        contextLoading: true,
-        context: null,
-        error: null,
+        ...clearedSelection,
+        selectedPrinterId: printerId,
+        contextLoading: printerId !== null,
       }));
+      if (printerId === null) {
+        setLiveMessage('Printer selection cleared.');
+        return;
+      }
+      const candidate = creationRef.current.printers.find(
+        (entry) => entry.printerId === printerId,
+      );
+      setLiveMessage(
+        `Loading calibration context for ${candidate?.displayName ?? 'the selected printer'}.`,
+      );
+      const stale = (): boolean =>
+        profileIdRef.current !== profileId ||
+        contextRequestEpochRef.current !== epoch;
       try {
         const context = await calibrationApi().getCalibrationPrinterContext({
           profileId,
           printerId,
         });
-        if (
-          profileIdRef.current !== profileId ||
-          contextRequestEpochRef.current !== epoch
-        )
+        if (stale()) return;
+        // A context that names a different printer than the one requested is a
+        // contract violation, not a race. Adopting it would bind the wizard to
+        // a machine the operator never chose.
+        if (context.printerId !== printerId) {
+          setCreation((current) =>
+            current.selectedPrinterId === printerId
+              ? {
+                  ...current,
+                  contextLoading: false,
+                  error:
+                    'PrintFarmer returned a context for a different printer. Select the printer again.',
+                }
+              : current,
+          );
           return;
-        setCreation((current) => ({
-          ...current,
-          context,
-          contextLoading: false,
-        }));
+        }
+        setCreation((current) =>
+          current.selectedPrinterId === printerId
+            ? { ...current, context }
+            : current,
+        );
+        const profileResponse = await calibrationApi().listOrcaProfiles({
+          profileId,
+          printerId,
+          ...(context.configurationRevision === null
+            ? {}
+            : { configurationRevision: context.configurationRevision }),
+        });
+        if (stale()) return;
+        // Fenced on printer *and* revision: a reply resolved against a revision
+        // other than the one just loaded describes a configuration the operator
+        // has not seen.
+        if (
+          profileResponse.printerId !== printerId ||
+          (profileResponse.configurationRevision !== null &&
+            context.configurationRevision !== null &&
+            profileResponse.configurationRevision !==
+              context.configurationRevision)
+        ) {
+          return;
+        }
+        setOrcaProfiles(profileResponse.profiles);
+        setCreation((current) =>
+          current.selectedPrinterId === printerId
+            ? {
+                ...current,
+                profiles: profileResponse.profiles,
+                profileDiagnostic: profileResponse.discovery,
+                localDiagnostic: profileResponse.localDiscovery,
+                localProfiles: profileResponse.localProfiles,
+                contextLoading: false,
+              }
+            : current,
+        );
         setLiveMessage(
-          `Current printer context loaded for ${context.displayName}.`,
+          profileResponse.profiles.length === 0
+            ? `No calibration profile could be resolved for ${context.displayName}.`
+            : `${profileResponse.profiles.length} profile${profileResponse.profiles.length === 1 ? '' : 's'} resolved for ${context.displayName}.`,
         );
       } catch (cause) {
-        if (
-          profileIdRef.current !== profileId ||
-          contextRequestEpochRef.current !== epoch
-        )
-          return;
+        if (stale()) return;
         const message = errorMessage(
           cause,
-          'The current printer context could not be loaded.',
+          'The selected printer could not be loaded.',
         );
-        setCreation((current) => ({
-          ...current,
-          contextLoading: false,
-          error: message,
-        }));
+        // Scoped to the selection only. `printers` and `listError` are left
+        // untouched so a per-printer failure can never read as "there are no
+        // printers" and erase the list the operator is choosing from.
+        setCreation((current) =>
+          current.selectedPrinterId === printerId
+            ? { ...current, contextLoading: false, error: message }
+            : current,
+        );
         reportError(message);
       }
     },
@@ -1136,17 +1255,32 @@ export function CalibrationWorkspaceStoreProvider({
         'Refreshing the authoritative printer configuration snapshot.',
       );
       try {
-        const [context, profileResponse] = await Promise.all([
-          calibrationApi().getCalibrationPrinterContext({
-            profileId,
-            printerId: project.record.printerId,
-          }),
-          calibrationApi().listOrcaProfiles({ profileId }),
-        ]);
+        // Sequential, not parallel: the profile request is pinned to the
+        // revision this context actually reports, so it cannot be issued until
+        // the context is known. Resolving both at once meant the profile call
+        // had no printer to scope to and fell back to the whole farm.
+        const context = await calibrationApi().getCalibrationPrinterContext({
+          profileId,
+          printerId: project.record.printerId,
+        });
         if (
           profileIdRef.current !== profileId ||
           projectContextRequestEpochRef.current !== epoch ||
           activeProjectRef.current?.record.projectId !== projectId
+        )
+          return null;
+        const profileResponse = await calibrationApi().listOrcaProfiles({
+          profileId,
+          printerId: project.record.printerId,
+          ...(context.configurationRevision === null
+            ? {}
+            : { configurationRevision: context.configurationRevision }),
+        });
+        if (
+          profileIdRef.current !== profileId ||
+          projectContextRequestEpochRef.current !== epoch ||
+          activeProjectRef.current?.record.projectId !== projectId ||
+          profileResponse.printerId !== project.record.printerId
         )
           return null;
         setOrcaProfiles(profileResponse.profiles);
@@ -1412,7 +1546,7 @@ export function CalibrationWorkspaceStoreProvider({
       openProject,
       openStage,
       loadCreationData,
-      loadPrinterContext,
+      selectPrinter,
       createProject,
       dispatchEvent,
       updateMetadata,
@@ -1449,7 +1583,7 @@ export function CalibrationWorkspaceStoreProvider({
       installProfile,
       liveMessage,
       loadCreationData,
-      loadPrinterContext,
+      selectPrinter,
       loading,
       manageProfiles,
       metadataDraft,
