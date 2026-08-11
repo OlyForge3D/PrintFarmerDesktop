@@ -932,10 +932,12 @@ export const RemoteCalibrationPrinterContext =
       /**
        * `CalibrationContextDto` exposes no safety-interlock block: there is no
        * server field for emergency-stop availability, thermal-protection
-       * confirmation or ventilation assessment. Reporting `null` keeps the
-       * generation/start gate fail-closed (those actions require an explicitly
-       * complete context) without inventing safety assurances the server never
-       * made. Discovery and local profile inspection do not depend on it.
+       * confirmation or ventilation assessment. Reporting `null` reflects that
+       * absence without inventing safety assurances the server never made.
+       * Enforcement for generation and print start is the server's own
+       * refusal plus the `calibrationGenerationEnabled` capability flag — this
+       * module performs no additional client-side safety-interlock check.
+       * Discovery and local profile inspection do not depend on it.
        */
       safety: null as {
         buildVolumeMm: { x: number; y: number; z: number };
