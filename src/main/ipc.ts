@@ -19,6 +19,7 @@ import {
   type OpenModelFileResponse,
   type OpenFolderResponse,
   type SidecarPingResponse,
+  type CalibrationProfileDiscoveryDiagnostic,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -37,6 +38,91 @@ import {
   CalibrationHttpClient,
   CalibrationHttpError,
 } from './calibrationHttp.js';
+
+/**
+ * Turns a failed calibration-candidate request into an operator-facing
+ * diagnosis.
+ *
+ * Each branch names a *different* remedy, which is the whole point: an empty
+ * printer list previously looked the same whether the operator needed to sign
+ * in, be granted a permission, upgrade the server, configure a server
+ * dependency, or simply had no eligible printer. Only server-supplied codes and
+ * this module's own literals are used — no server-controlled prose, no URLs and
+ * no filesystem paths are echoed.
+ */
+function classifyDiscoveryFailure(
+  error: unknown,
+): CalibrationProfileDiscoveryDiagnostic {
+  if (!(error instanceof CalibrationHttpError)) {
+    return {
+      kind: 'unreachable',
+      message: 'PrintFarmer could not be reached to list calibration printers.',
+      serverCode: null,
+    };
+  }
+  // The server's ProblemDetails extension code is in-process-only by the #177
+  // disposition, so it is deliberately NOT forwarded to the renderer here.
+  // Only this module's own literals cross the boundary.
+  const serverCode = null;
+  switch (error.code) {
+    case 'authentication':
+      return {
+        kind: 'unauthenticated',
+        message:
+          'Sign in to PrintFarmer again: this session is not authenticated for calibration.',
+        serverCode,
+      };
+    case 'authorization':
+    case 'forbidden':
+      return {
+        kind: 'forbidden',
+        message:
+          'This PrintFarmer account lacks the calibration read permission. Ask a farm admin to grant it.',
+        serverCode,
+      };
+    case 'notFound':
+      return {
+        kind: 'routeUnavailable',
+        message:
+          'This PrintFarmer server does not expose the calibration candidate endpoint. Upgrade the server to a build that supports calibration.',
+        serverCode,
+      };
+    case 'profileServiceUnavailable':
+      return {
+        kind: 'serverDependencyUnavailable',
+        message:
+          'PrintFarmer cannot reach its upstream OrcaSlicer profile resolver, so it cannot list calibration printers. This is a server configuration issue.',
+        serverCode,
+      };
+    case 'printerStatusUnavailable':
+      return {
+        kind: 'serverDependencyUnavailable',
+        message:
+          'PrintFarmer could not read live printer status, so calibration candidates are unavailable right now.',
+        serverCode,
+      };
+    case 'workerUnavailable':
+      return {
+        kind: 'serverDependencyUnavailable',
+        message:
+          'A PrintFarmer service required for calibration is unavailable.',
+        serverCode,
+      };
+    case 'invalidResponse':
+      return {
+        kind: 'malformedResponse',
+        message:
+          'PrintFarmer returned a calibration response this version cannot read.',
+        serverCode,
+      };
+    default:
+      return {
+        kind: 'unreachable',
+        message: 'PrintFarmer could not list calibration printers.',
+        serverCode,
+      };
+  }
+}
 import {
   REQUIRED_FIRMWARE_FAMILY,
   REQUIRED_SLICER_ENGINE,
@@ -2787,11 +2873,34 @@ export function registerIpcHandlers(
       );
       const profileContext = await profiles.getAuthenticatedContext(selectedId);
       const signal = AbortSignal.timeout(15_000);
-      const candidates = await calibrationHttp.getPrinters(
-        selectedId,
-        profileContext.profile.baseUrl,
-        signal,
-      );
+      // Server-derived discovery is attempted first, but a failure here must
+      // not erase the answer entirely: the operator still needs to know *why*
+      // the list is short, and a refusal by the server says nothing about the
+      // OrcaSlicer profiles installed on this machine.
+      let candidates: Awaited<ReturnType<typeof calibrationHttp.getPrinters>> =
+        [];
+      let discovery: CalibrationProfileDiscoveryDiagnostic = {
+        kind: 'ok',
+        message: 'Server profile discovery completed.',
+        serverCode: null,
+      };
+      try {
+        candidates = await calibrationHttp.getPrinters(
+          selectedId,
+          profileContext.profile.baseUrl,
+          signal,
+        );
+        if (candidates.length === 0) {
+          discovery = {
+            kind: 'noEligiblePrinters',
+            message:
+              'The server returned no calibration candidate printers for this account.',
+            serverCode: null,
+          };
+        }
+      } catch (error) {
+        discovery = classifyDiscoveryFailure(error);
+      }
       const discovered = await Promise.all(
         candidates.map(async (candidate) => {
           if (
@@ -2870,6 +2979,7 @@ export function registerIpcHandlers(
       }
       return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
         profiles: [...profilesByScope.values()],
+        discovery,
       });
     },
   );

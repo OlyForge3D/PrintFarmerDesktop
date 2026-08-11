@@ -699,6 +699,11 @@ export async function applyCalibrationScenario(
           exportable: true,
         },
       ],
+      discovery: {
+        kind: 'ok',
+        message: 'Server profile discovery completed.',
+        serverCode: null,
+      },
     }));
 
     handle('calibration:startGeneration', () => ({

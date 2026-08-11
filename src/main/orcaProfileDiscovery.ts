@@ -46,8 +46,30 @@ import {
 // Traversal / security limits
 // ---------------------------------------------------------------------------
 
-/** Maximum files inspected per root (both user and system combined). */
-const MAX_FILES_PER_ROOT = 500;
+/**
+ * Maximum profile files *parsed* per root.
+ *
+ * This is a work bound, not a traversal bound. It previously doubled as the
+ * traversal bound with a single counter shared across the whole recursive
+ * walk, which made discovery order-dependent and silently partial: on a stock
+ * Windows install `C:\Program Files\OrcaSlicer\resources\profiles` holds
+ * ~12,000 JSON files, so the walk stopped inside the first few vendor
+ * directories (Afinia, Anker, Anycubic, part of Artillery) and never reached
+ * BBL, Voron, OrcaFilamentLibrary or any other vendor. Every profile after
+ * that point was deterministically invisible.
+ *
+ * Traversal is now target-directed: candidate files are enumerated first and
+ * only files that can plausibly be the requested profile (or a parent in its
+ * inheritance chain) are read and parsed, so the bound applies to real work
+ * rather than to alphabetical position.
+ */
+const MAX_PARSED_FILES_PER_ROOT = 4_000;
+/**
+ * Maximum directory entries enumerated per root. Enumeration is cheap
+ * (`readdir` only, no file reads) but still bounded so a pathological tree
+ * cannot spin forever.
+ */
+const MAX_ENUMERATED_ENTRIES_PER_ROOT = 60_000;
 /** Maximum bytes read per profile JSON file. */
 export const MAX_FILE_BYTES = 1_048_576; // 1 MiB
 /** Maximum directory traversal depth from any canonical root. */
@@ -142,23 +164,31 @@ export function orcaUserDataRoots(): string[] {
   if (process.platform === 'win32') {
     const appData = process.env['APPDATA'];
     if (!appData) return [];
-    return [path.join(appData, 'OrcaSlicer', 'user')];
+    return [
+      path.join(appData, 'OrcaSlicer', 'user'),
+      // OrcaSlicer also materialises the vendor/system profile set into the
+      // roaming profile directory. On a stock install this holds thousands of
+      // profiles that the install-directory root does not, and omitting it
+      // hid every one of them.
+      path.join(appData, 'OrcaSlicer', 'system'),
+    ];
   }
   if (process.platform === 'darwin') {
-    return [
-      path.join(
-        os.homedir(),
-        'Library',
-        'Application Support',
-        'OrcaSlicer',
-        'user',
-      ),
-    ];
+    const base = path.join(
+      os.homedir(),
+      'Library',
+      'Application Support',
+      'OrcaSlicer',
+    );
+    return [path.join(base, 'user'), path.join(base, 'system')];
   }
   // Linux
   const configHome =
     process.env['XDG_CONFIG_HOME'] ?? path.join(os.homedir(), '.config');
-  return [path.join(configHome, 'OrcaSlicer', 'user')];
+  return [
+    path.join(configHome, 'OrcaSlicer', 'user'),
+    path.join(configHome, 'OrcaSlicer', 'system'),
+  ];
 }
 
 /**
@@ -359,19 +389,20 @@ async function parseProfileFile(
 // ---------------------------------------------------------------------------
 
 /**
- * Recursively traverse `dirPath` (bounded by depth and fileCount) and
- * collect parsed profile objects. Symlinks and junctions are skipped.
+ * Recursively enumerate `dirPath` collecting candidate `.json` file paths.
+ *
+ * Enumeration performs no file reads, so it is safe to walk the whole tree.
+ * Symlinks and junctions are still rejected at every step, and the walk stays
+ * bounded by depth and by a total entry budget.
  */
-async function traverseDir(
+async function enumerateJsonFiles(
   dirPath: string,
-  canonicalRoot: string,
-  source: 'systemInstall' | 'userImported',
   depth: number,
-  fileCount: { value: number },
-  profiles: ParsedProfile[],
+  budget: { value: number },
+  found: string[],
 ): Promise<void> {
   if (depth > MAX_TRAVERSAL_DEPTH) return;
-  if (fileCount.value >= MAX_FILES_PER_ROOT) return;
+  if (budget.value >= MAX_ENUMERATED_ENTRIES_PER_ROOT) return;
 
   let entries: import('node:fs').Dirent<string>[];
   try {
@@ -381,7 +412,8 @@ async function traverseDir(
   }
 
   for (const entry of entries) {
-    if (fileCount.value >= MAX_FILES_PER_ROOT) break;
+    if (budget.value >= MAX_ENUMERATED_ENTRIES_PER_ROOT) break;
+    budget.value += 1;
 
     const entryPath = path.join(dirPath, entry.name);
 
@@ -398,33 +430,81 @@ async function traverseDir(
       }
       if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) continue;
 
-      await traverseDir(
-        entryPath,
-        canonicalRoot,
-        source,
-        depth + 1,
-        fileCount,
-        profiles,
-      );
+      await enumerateJsonFiles(entryPath, depth + 1, budget, found);
     } else if (entry.isFile() && entry.name.endsWith('.json')) {
-      fileCount.value += 1;
+      found.push(entryPath);
+    }
+  }
+}
 
-      // Root-escape guard: canonicalize and verify the file stays under root.
-      let canonicalPath: string;
-      try {
-        canonicalPath = await canonicalizeUnderRoot(entryPath, canonicalRoot);
-      } catch {
-        continue;
-      }
+/**
+ * Order candidate paths so the ones most likely to satisfy `targetNames` are
+ * parsed first.
+ *
+ * OrcaSlicer names a profile file after the profile it declares, so a target
+ * whose name is `Generic PLA @0.4 nozzle` is overwhelmingly likely to live in
+ * `Generic PLA @0.4 nozzle.json`. Sorting by that signal means the requested
+ * profile is reached regardless of where it falls alphabetically across ~12k
+ * files, while the parse budget still caps total work.
+ */
+function prioritiseCandidatePaths(
+  paths: string[],
+  targetNames: ReadonlySet<string>,
+): string[] {
+  if (targetNames.size === 0) return paths;
+  const normalisedTargets = new Set(
+    [...targetNames].map((name) => name.trim().toLowerCase()),
+  );
+  const exact: string[] = [];
+  const partial: string[] = [];
+  const rest: string[] = [];
+  for (const candidate of paths) {
+    const stem = path.basename(candidate, '.json').trim().toLowerCase();
+    if (normalisedTargets.has(stem)) {
+      exact.push(candidate);
+    } else if (
+      [...normalisedTargets].some(
+        (target) => stem.includes(target) || target.includes(stem),
+      )
+    ) {
+      partial.push(candidate);
+    } else {
+      rest.push(candidate);
+    }
+  }
+  return [...exact, ...partial, ...rest];
+}
 
-      const profile = await parseProfileFile(
-        canonicalPath,
-        canonicalRoot,
-        source,
-      );
-      if (profile !== null) {
-        profiles.push(profile);
-      }
+/**
+ * Parse candidate files from one canonical root, newest-priority first.
+ * Bounded by `MAX_PARSED_FILES_PER_ROOT` reads.
+ */
+async function collectProfilesFromRoot(
+  canonicalRoot: string,
+  source: 'systemInstall' | 'userImported',
+  targetNames: ReadonlySet<string>,
+  profiles: ParsedProfile[],
+): Promise<void> {
+  const candidatePaths: string[] = [];
+  await enumerateJsonFiles(canonicalRoot, 0, { value: 0 }, candidatePaths);
+
+  const ordered = prioritiseCandidatePaths(candidatePaths, targetNames);
+  let parsed = 0;
+  for (const entryPath of ordered) {
+    if (parsed >= MAX_PARSED_FILES_PER_ROOT) break;
+    parsed += 1;
+
+    // Root-escape guard: canonicalize and verify the file stays under root.
+    let canonicalPath: string;
+    try {
+      canonicalPath = await canonicalizeUnderRoot(entryPath, canonicalRoot);
+    } catch {
+      continue;
+    }
+
+    const profile = await parseProfileFile(canonicalPath, canonicalRoot, source);
+    if (profile !== null) {
+      profiles.push(profile);
     }
   }
 }
@@ -525,9 +605,21 @@ function profileCompatibleWithToolhead(
  */
 export async function discoverLocalOrcaFilamentProfiles(
   context: RemoteCalibrationPrinterContext,
+  options: {
+    /** Test-only root override; production always uses the canonical roots. */
+    readonly roots?: {
+      readonly userRoots: readonly string[];
+      readonly systemRoots: readonly string[];
+    };
+  } = {},
 ): Promise<z.infer<typeof OrcaProfileEntry>[]> {
+  // Local discovery matches on the OrcaSlicer *profile name*, never on the
+  // server's profile GUID: OrcaSlicer files declare a `name`, so comparing a
+  // GUID against them can never match. `orcaProfileId` remains the immutable
+  // server identity and is still what revisions and hashes bind to.
+  const targetName = context.orcaProfileName;
   if (
-    !context.orcaProfileId ||
+    !targetName ||
     context.configurationRevision === null ||
     !context.snapshotId ||
     context.toolheads.length === 0
@@ -536,45 +628,29 @@ export async function discoverLocalOrcaFilamentProfiles(
   }
 
   const allProfiles: ParsedProfile[] = [];
+  const targetNames = new Set<string>([targetName]);
 
-  // --- User data roots (userImported source) ---
-  const userRoots = orcaUserDataRoots();
-  for (const userRoot of userRoots) {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = await realpath(userRoot);
-    } catch {
-      continue; // root does not exist
-    }
-    const fileCount = { value: 0 };
-    await traverseDir(
-      canonicalRoot,
-      canonicalRoot,
-      'userImported',
-      0,
-      fileCount,
-      allProfiles,
-    );
-  }
+  const userRoots = options.roots?.userRoots ?? orcaUserDataRoots();
+  const systemRoots = options.roots?.systemRoots ?? orcaSystemProfileRoots();
 
-  // --- System profile roots (systemInstall source) ---
-  const systemRoots = orcaSystemProfileRoots();
-  for (const systemRoot of systemRoots) {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = await realpath(systemRoot);
-    } catch {
-      continue; // root does not exist
+  for (const [roots, source] of [
+    [userRoots, 'userImported'],
+    [systemRoots, 'systemInstall'],
+  ] as const) {
+    for (const root of roots) {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = await realpath(root);
+      } catch {
+        continue; // root does not exist
+      }
+      await collectProfilesFromRoot(
+        canonicalRoot,
+        source,
+        targetNames,
+        allProfiles,
+      );
     }
-    const fileCount = { value: 0 };
-    await traverseDir(
-      canonicalRoot,
-      canonicalRoot,
-      'systemInstall',
-      0,
-      fileCount,
-      allProfiles,
-    );
   }
 
   if (allProfiles.length === 0) return [];
@@ -594,14 +670,19 @@ export async function discoverLocalOrcaFilamentProfiles(
   // For each toolhead in the printer context, find compatible profiles.
   for (const toolhead of context.toolheads) {
     for (const profile of allProfiles) {
-      // Primary filter: exact name match against the printer's orcaProfileId.
-      if (profile.name !== context.orcaProfileId) continue;
+      // Primary filter: exact name match against the printer's Orca profile
+      // *name*. Comparing against `orcaProfileId` (a server Guid) here was the
+      // reason no local profile ever matched.
+      if (profile.name !== targetName) continue;
 
       // Resolve inheritance chain.
       const resolvedRaw = resolveInheritance(profile, profilesByName);
 
-      // Nozzle diameter exact match.
+      // Nozzle diameter exact match. A toolhead whose diameter the server did
+      // not report cannot be matched exactly, and silently substituting one
+      // would bind a profile to the wrong hardware.
       if (
+        toolhead.nozzle.diameterMm === null ||
         !profileCompatibleWithToolhead(resolvedRaw, toolhead.nozzle.diameterMm)
       ) {
         // If the profile name matches exactly but nozzle diameter from name
@@ -689,13 +770,10 @@ export async function findLocalOrcaProfileRaw(orcaProfileId: string): Promise<{
       } catch {
         continue;
       }
-      const fileCount = { value: 0 };
-      await traverseDir(
-        canonicalRoot,
+      await collectProfilesFromRoot(
         canonicalRoot,
         source,
-        0,
-        fileCount,
+        new Set([orcaProfileId]),
         allProfiles,
       );
     }

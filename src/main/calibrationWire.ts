@@ -184,89 +184,229 @@ export function prepareCalibrationWorkspaceSave(
 const ServerGuid = z.string().uuid();
 const Cursor = z.string().max(4096);
 
-const RemotePrinterEligibility = z
+/**
+ * Normalises a .NET `DateTime`/`DateTimeOffset` JSON string to a strict
+ * ISO-8601 UTC instant.
+ *
+ * `System.Text.Json` renders a `DateTime` whose `Kind` is `Unspecified` or
+ * `Local` without a `Z` suffix (`"2026-08-11T07:32:40.656"`), which
+ * `z.string().datetime()` rejects outright. Those values are contract-legal
+ * server output, so rejecting them would drop otherwise valid printers for a
+ * formatting difference. Anything that is not a real instant is still refused.
+ */
+const ServerInstant = z
+  .string()
+  .min(1)
+  .max(64)
+  .transform((value, ctx) => {
+    // Treat an offset-less timestamp as UTC: PrintFarmer persists calibration
+    // timestamps in UTC (`ObservedAtUtc`, `CapturedAtUtc`, ...), so the missing
+    // suffix is a serializer artefact rather than an unknown zone.
+    const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+    const candidate = hasZone ? value : `${value}Z`;
+    const parsed = Date.parse(candidate);
+    if (!Number.isFinite(parsed)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Not an ISO-8601 instant.',
+      });
+      return z.NEVER;
+    }
+    return new Date(parsed).toISOString();
+  });
+
+/**
+ * One structured rejection reason from `CalibrationRejectionReasonDto`.
+ * Retained verbatim so an ineligible printer can explain itself instead of
+ * vanishing from the list.
+ */
+export const RemoteCalibrationRejectionReason = z
   .object({
-    firmwareFamily: z
-      .string()
-      .min(1)
-      .max(128)
-      .nullish()
-      .transform((value) => value ?? null),
-    gcodeDialect: z
-      .string()
-      .min(1)
-      .max(128)
-      .nullish()
-      .transform((value) => value ?? null),
-    slicerFamily: z
-      .string()
-      .min(1)
-      .max(128)
-      .nullish()
-      .transform((value) => value ?? null),
-    slicerDistribution: z
-      .string()
-      .min(1)
-      .max(256)
-      .nullish()
-      .transform((value) => value ?? null),
-    slicerIdentity: z
-      .string()
-      .min(1)
-      .max(128)
-      .nullish()
-      .transform((value) => value ?? null),
-    hardwareContextComplete: z
-      .boolean()
-      .nullish()
-      .transform((value) => value ?? null),
-    safetyContextComplete: z
-      .boolean()
-      .nullish()
-      .transform((value) => value ?? null),
-    permissionsComplete: z
-      .boolean()
-      .nullish()
-      .transform((value) => value ?? null),
-    reasons: z
-      .array(z.string().min(1).max(512))
-      .max(32)
-      .nullish()
-      .transform((value) => value ?? null),
+    code: z.string().min(1).max(128),
+    field: z.string().max(128).nullish().transform((v) => v ?? ''),
+    message: z.string().max(512).nullish().transform((v) => v ?? ''),
   })
   .passthrough();
 
-export const RemoteCalibrationPrinterCandidate = z
+/** `CalibrationFirmwareIdentityDto` — the authoritative firmware identity. */
+const RemoteFirmwareIdentity = z
   .object({
-    printerId: z.string().min(1).max(256),
-    displayName: z.string().min(1).max(256),
-    printerModel: z
-      .string()
-      .max(256)
-      .nullish()
-      .transform((value) => value ?? null),
-    firmwareCompatible: z.boolean().optional().default(false),
-    orcaProfileId: z
-      .string()
-      .max(512)
-      .nullish()
-      .transform((value) => value ?? null),
-    isOnline: z.boolean().optional().default(false),
-    updatedAt: z.string().datetime(),
-    eligibility: RemotePrinterEligibility.nullish().transform(
-      (value) => value ?? null,
-    ),
+    family: z.string().max(128).nullish().transform((v) => v ?? null),
+    gcodeDialect: z.string().max(128).nullish().transform((v) => v ?? null),
+    detectionSource: z.string().max(128).nullish().transform((v) => v ?? null),
+    version: z.string().max(128).nullish().transform((v) => v ?? null),
+    verified: z.boolean().nullish().transform((v) => v ?? false),
   })
   .passthrough();
+
+/** `CalibrationSlicerIdentityDto` — the authoritative slicer identity. */
+const RemoteSlicerIdentity = z
+  .object({
+    engine: z.string().max(128).nullish().transform((v) => v ?? null),
+    distribution: z.string().max(256).nullish().transform((v) => v ?? null),
+    version: z.string().max(128).nullish().transform((v) => v ?? null),
+    profileFormat: z.string().max(128).nullish().transform((v) => v ?? null),
+  })
+  .passthrough();
+
+/**
+ * Wire shape of `CalibrationCandidateDto` exactly as
+ * `GET /api/printers/calibration-candidates` serialises it.
+ *
+ * This replaces an earlier hand-invented shape (`printerId`, `displayName`,
+ * `updatedAt`, a nested `eligibility` object) that no PrintFarmer build has
+ * ever emitted. Because those fields were *required*, every real candidate
+ * failed validation, so fixing the route alone would still have produced an
+ * empty printer list.
+ *
+ * Only `id` and `name` are strictly required: the server always populates them
+ * and a candidate without an identity cannot be selected. Every remaining
+ * member is defaulted the way the server's own DTO defaults it, so an older or
+ * newer deployment omitting an optional member degrades that member rather
+ * than discarding the printer.
+ */
+const RemoteCalibrationCandidateDto = z
+  .object({
+    id: ServerGuid,
+    name: z.string().min(1).max(256),
+    enabled: z.boolean().nullish().transform((v) => v ?? false),
+    inMaintenance: z.boolean().nullish().transform((v) => v ?? false),
+    configurationRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? null),
+    reachability: z.string().max(64).nullish().transform((v) => v ?? 'unknown'),
+    operationalState: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? 'unknown'),
+    observedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    lastSeenAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    isStale: z.boolean().nullish().transform((v) => v ?? false),
+    firmware: RemoteFirmwareIdentity.nullish().transform((v) => v ?? null),
+    slicer: RemoteSlicerIdentity.nullish().transform((v) => v ?? null),
+    eligible: z.boolean().nullish().transform((v) => v ?? false),
+    missingInputs: z
+      .array(z.string().max(128))
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? []),
+    rejectionReasons: z
+      .array(RemoteCalibrationRejectionReason)
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? []),
+  })
+  .passthrough();
+
+/**
+ * Projects the server's explicit identity fields onto the strict eligibility
+ * shape the renderer consumes.
+ *
+ * Eligibility is PrintFarmer-authoritative and explicit: it is granted only
+ * when the server itself says `eligible`, reports no rejection reasons and no
+ * missing inputs, and *names* Klipper firmware, the Klipper G-code dialect and
+ * an upstream OrcaSlicer engine. Nothing is inferred from printer model,
+ * manufacturer or backend type, and no local printer database participates.
+ */
+function deriveCandidateEligibility(
+  dto: z.infer<typeof RemoteCalibrationCandidateDto>,
+): {
+  firmwareFamily: string | null;
+  gcodeDialect: string | null;
+  slicerFamily: string | null;
+  slicerDistribution: string | null;
+  slicerIdentity: string | null;
+  hardwareContextComplete: boolean;
+  safetyContextComplete: boolean;
+  permissionsComplete: boolean;
+  reasons: string[];
+} | null {
+  const firmwareFamily = dto.firmware?.family ?? null;
+  const gcodeDialect = dto.firmware?.gcodeDialect ?? null;
+  const slicerEngine = dto.slicer?.engine ?? null;
+  const slicerDistribution = dto.slicer?.distribution ?? null;
+
+  const explicitlyCompatible =
+    dto.eligible &&
+    dto.rejectionReasons.length === 0 &&
+    dto.missingInputs.length === 0 &&
+    firmwareFamily === 'Klipper' &&
+    gcodeDialect === 'Klipper' &&
+    slicerEngine === CALIBRATION_SLICER_ENGINE &&
+    slicerDistribution === CALIBRATION_SLICER_DISTRIBUTION;
+
+  if (!explicitlyCompatible) return null;
+
+  return {
+    firmwareFamily,
+    gcodeDialect,
+    slicerFamily: slicerEngine,
+    slicerDistribution,
+    slicerIdentity: slicerEngine,
+    // The server's `eligible` verdict is the aggregate of its hardware,
+    // safety and permission input checks; `missingInputs` is empty precisely
+    // when all of them were satisfied.
+    hardwareContextComplete: true,
+    safetyContextComplete: true,
+    permissionsComplete: true,
+    reasons: [],
+  };
+}
+
+/** Engine/distribution this client negotiates; mirrors the server constants. */
+export const CALIBRATION_SLICER_ENGINE = 'OrcaSlicer';
+export const CALIBRATION_SLICER_DISTRIBUTION = 'upstream';
+
+/**
+ * A candidate normalised into the shape the rest of the desktop app consumes.
+ *
+ * `rejectionReasons` and `missingInputs` are carried through deliberately: the
+ * server returns *every* enabled printer with an `eligible` verdict, so a
+ * printer that cannot be calibrated must be able to say why rather than being
+ * filtered into an unexplained empty list.
+ */
+export const RemoteCalibrationPrinterCandidate =
+  RemoteCalibrationCandidateDto.transform((dto) => ({
+    printerId: dto.id,
+    displayName: dto.name,
+    // The candidate DTO carries no marketing model string. Inventing one from
+    // the backend enum would be exactly the model-based inference the
+    // calibration contract forbids.
+    printerModel: null as string | null,
+    firmwareCompatible: deriveCandidateEligibility(dto) !== null,
+    // Profile identity lives on the context snapshot, never on the candidate.
+    orcaProfileId: null as string | null,
+    isOnline: dto.reachability === 'online' && !dto.isStale,
+    enabled: dto.enabled,
+    inMaintenance: dto.inMaintenance,
+    reachability: dto.reachability,
+    operationalState: dto.operationalState,
+    isStale: dto.isStale,
+    configurationRevision: dto.configurationRevision,
+    updatedAt: dto.observedAtUtc ?? dto.lastSeenAtUtc,
+    eligible: dto.eligible,
+    missingInputs: dto.missingInputs,
+    rejectionReasons: dto.rejectionReasons,
+    eligibility: deriveCandidateEligibility(dto),
+  }));
 export type RemoteCalibrationPrinterCandidate = z.infer<
   typeof RemoteCalibrationPrinterCandidate
 >;
 
+/**
+ * `GET /api/printers/calibration-candidates` returns a bare JSON array
+ * (`IReadOnlyList<CalibrationCandidateDto>`). The enveloped form is retained
+ * only so a proxy that wraps the payload is still understood.
+ */
 export const RemoteCalibrationPrinters = z.union([
-  z.array(RemoteCalibrationPrinterCandidate).max(200),
+  z.array(RemoteCalibrationPrinterCandidate).max(500),
   z
     .object({
-      printers: z.array(RemoteCalibrationPrinterCandidate).max(200),
+      printers: z.array(RemoteCalibrationPrinterCandidate).max(500),
     })
     .passthrough()
     .transform((value) => value.printers),
@@ -275,157 +415,256 @@ export type RemoteCalibrationPrinters = z.infer<
   typeof RemoteCalibrationPrinters
 >;
 
-const RemoteToolhead = z
+/**
+ * `CalibrationToolheadDto` — one physical toolhead on the snapshot.
+ * The server keys toolheads by `id`/`index` and describes the nozzle with flat
+ * members rather than a nested `nozzle` object.
+ */
+const RemoteToolheadDto = z
   .object({
-    toolId: z.string().min(1).max(256),
-    toolheadId: z.string().min(1).max(256),
-    extruderType: z.enum(['directDrive', 'bowden']),
-    nozzle: z
-      .object({
-        id: z.string().min(1).max(256),
-        diameterMm: z.number().positive().max(10),
-        material: z.string().min(1).max(256),
-      })
-      .passthrough(),
-  })
-  .passthrough();
-
-const RemoteSafetyContext = z
-  .object({
-    buildVolumeMm: z
-      .object({
-        x: z.number().positive().max(10_000),
-        y: z.number().positive().max(10_000),
-        z: z.number().positive().max(10_000),
-      })
-      .passthrough(),
-    maximumNozzleTemperatureC: z.number().positive().max(2_000),
-    maximumBedTemperatureC: z.number().nonnegative().max(1_000),
-    maximumVolumetricRateMm3S: z.number().positive().max(10_000),
-    emergencyStopAvailable: z.boolean(),
-    thermalProtectionConfirmed: z.boolean(),
-    ventilationAssessed: z.boolean(),
-  })
-  .passthrough();
-
-const RemoteCalibrationPermissions = z
-  .object({
-    readPrinter: z.boolean(),
-    writeCalibration: z.boolean(),
-    generateCalibration: z.boolean(),
-    startPrint: z.boolean(),
-  })
-  .passthrough();
-
-export const RemoteCalibrationPrinterContext = z
-  .object({
-    printerId: z.string().min(1).max(256),
-    displayName: z.string().min(1).max(256),
-    printerModel: z
-      .string()
-      .max(256)
-      .nullish()
-      .transform((value) => value ?? null),
-    firmware: z
-      .object({
-        firmware: z.literal('Klipper'),
-        gcodeDialect: z.literal('Klipper'),
-        firmwareVersion: z
-          .string()
-          .max(128)
-          .nullish()
-          .transform((value) => value ?? null),
-        klipperConfigHash: z
-          .string()
-          .max(256)
-          .nullish()
-          .transform((value) => value ?? null),
-      })
-      .passthrough(),
-    orcaProfileId: z
-      .string()
-      .max(512)
-      .nullish()
-      .transform((value) => value ?? null),
-    orcaProfileDisplayName: z
-      .string()
-      .max(512)
-      .nullish()
-      .transform((value) => value ?? null),
-    bedWidthMm: z
-      .number()
-      .positive()
-      .max(10_000)
-      .nullish()
-      .transform((value) => value ?? null),
-    bedDepthMm: z
-      .number()
-      .positive()
-      .max(10_000)
-      .nullish()
-      .transform((value) => value ?? null),
-    nozzleDiameterMm: z
+    id: ServerGuid,
+    index: z.number().int().nonnegative().nullish().transform((v) => v ?? 0),
+    name: z.string().max(256).nullish().transform((v) => v ?? null),
+    isPrimary: z.boolean().nullish().transform((v) => v ?? false),
+    nozzleDiameter: z
       .number()
       .positive()
       .max(10)
       .nullish()
-      .transform((value) => value ?? null),
-    snapshotAt: z.string().datetime(),
-    isCurrent: z.boolean().optional().default(false),
-    configurationId: z
-      .string()
-      .min(1)
-      .max(256)
+      .transform((v) => v ?? null),
+    nozzleType: z.string().max(128).nullish().transform((v) => v ?? null),
+    nozzleMaterial: z.string().max(128).nullish().transform((v) => v ?? null),
+    isDirectDrive: z.boolean().nullish().transform((v) => v ?? null),
+    driveType: z.string().max(128).nullish().transform((v) => v ?? null),
+    maxVolumetricFlow: z
+      .number()
+      .positive()
+      .max(10_000)
       .nullish()
-      .transform((value) => value ?? null),
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+
+/** `CalibrationProfileDto` — a slicer profile identity on the snapshot. */
+const RemoteCalibrationProfileDto = z
+  .object({
+    id: ServerGuid,
+    kind: z.string().max(64).nullish().transform((v) => v ?? null),
+    name: z.string().min(1).max(512),
+    slicerType: z.string().max(128).nullish().transform((v) => v ?? null),
+    slicerDistribution: z.string().max(256).nullish().transform((v) => v ?? null),
+    slicerVersion: z.string().max(128).nullish().transform((v) => v ?? null),
+    profileFormat: z.string().max(128).nullish().transform((v) => v ?? null),
+    profileRevision: z.string().max(256).nullish().transform((v) => v ?? null),
+    sha256: z.string().max(256).nullish().transform((v) => v ?? null),
+  })
+  .passthrough();
+
+const RemoteBuildVolumeDto = z
+  .object({
+    x: z.number().nullish().transform((v) => v ?? null),
+    y: z.number().nullish().transform((v) => v ?? null),
+    z: z.number().nullish().transform((v) => v ?? null),
+  })
+  .passthrough();
+
+/** `PrinterConfigurationSnapshotDto` — the nested configuration snapshot. */
+const RemotePrinterConfigurationSnapshot = z
+  .object({
+    schemaVersion: z.string().max(64).nullish().transform((v) => v ?? null),
+    printerId: ServerGuid.nullish().transform((v) => v ?? null),
     configurationRevision: z
       .number()
       .int()
       .nonnegative()
       .nullish()
-      .transform((value) => value ?? null),
-    snapshotId: z
-      .string()
-      .min(1)
-      .max(256)
+      .transform((v) => v ?? null),
+    capturedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    buildVolume: RemoteBuildVolumeDto.nullish().transform((v) => v ?? null),
+    toolheads: z
+      .array(RemoteToolheadDto)
+      .max(64)
       .nullish()
-      .transform((value) => value ?? null),
-    snapshotRevision: z
-      .number()
-      .int()
-      .nonnegative()
+      .transform((v) => v ?? []),
+    maxBedTemperature: z.number().nullish().transform((v) => v ?? null),
+    hasHeatedBed: z.boolean().nullish().transform((v) => v ?? null),
+    firmware: RemoteFirmwareIdentity.nullish().transform((v) => v ?? null),
+    slicer: RemoteSlicerIdentity.nullish().transform((v) => v ?? null),
+    profiles: z
+      .object({
+        machine: RemoteCalibrationProfileDto.nullish().transform(
+          (v) => v ?? null,
+        ),
+        process: RemoteCalibrationProfileDto.nullish().transform(
+          (v) => v ?? null,
+        ),
+        filament: RemoteCalibrationProfileDto.nullish().transform(
+          (v) => v ?? null,
+        ),
+      })
+      .passthrough()
       .nullish()
-      .transform((value) => value ?? null),
-    slicerIdentity: z
-      .string()
-      .min(1)
-      .max(128)
+      .transform((v) => v ?? null),
+    baselineSettings: z
+      .object({
+        activeNozzleDiameter: z
+          .number()
+          .positive()
+          .max(10)
+          .nullish()
+          .transform((v) => v ?? null),
+      })
+      .passthrough()
       .nullish()
-      .transform((value) => value ?? null),
-    slicerDistribution: z
-      .string()
-      .min(1)
-      .max(256)
-      .nullish()
-      .transform((value) => value ?? null),
-    profileRevision: z
-      .string()
-      .min(1)
-      .max(256)
-      .nullish()
-      .transform((value) => value ?? null),
-    contentHash: z
-      .string()
-      .max(256)
-      .nullish()
-      .transform((value) => value ?? null),
-    toolheads: z.array(RemoteToolhead).max(32).optional().default([]),
-    safety: RemoteSafetyContext.nullish().transform((value) => value ?? null),
-    permissions: RemoteCalibrationPermissions.nullish().transform(
-      (value) => value ?? null,
-    ),
+      .transform((v) => v ?? null),
+    snapshotSha256: z.string().max(256).nullish().transform((v) => v ?? null),
   })
   .passthrough();
+
+/**
+ * Wire shape of `CalibrationContextDto` as
+ * `GET /api/printers/{id}/calibration-context?slicerType=OrcaSlicer` returns
+ * it: every `CalibrationCandidateDto` member, plus snapshot metadata and the
+ * nested `snapshot` aggregate.
+ *
+ * The previous schema expected a flat, invented object (`printerId`,
+ * `firmware.firmware`, `snapshotAt`, top-level `orcaProfileId`,
+ * `configurationId`, `safety`, `permissions`). None of those members exist on
+ * the wire, so context parsing could not succeed against any real server.
+ */
+const RemoteCalibrationContextDto = RemoteCalibrationCandidateDto.merge(
+  z.object({
+    schemaVersion: z.string().max(64).nullish().transform((v) => v ?? null),
+    snapshotSha256: z.string().max(256).nullish().transform((v) => v ?? null),
+    capturedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    capturedBySubject: z.string().max(256).nullish().transform((v) => v ?? null),
+    supportsPressureAdvance: z.boolean().nullish().transform((v) => v ?? null),
+    supportsFirmwareRetraction: z.boolean().nullish().transform((v) => v ?? null),
+    snapshot: RemotePrinterConfigurationSnapshot.nullish().transform(
+      (v) => v ?? null,
+    ),
+  }),
+);
+
+/**
+ * A printer context normalised for the rest of the app.
+ *
+ * Two distinct profile identities are propagated deliberately:
+ * `orcaProfileId` is the server's immutable `Guid` for the filament profile,
+ * while `orcaProfileName` is the human/OrcaSlicer-facing name. They are not
+ * interchangeable — the GUID identifies the profile across revisions and is
+ * what hashes and revisions bind to, whereas only the name can be matched
+ * against a local OrcaSlicer profile file. Collapsing them (the previous
+ * behaviour) meant a GUID was compared against local `profile.name` values and
+ * could never match.
+ */
+export const RemoteCalibrationPrinterContext =
+  RemoteCalibrationContextDto.transform((dto) => {
+    const snapshot = dto.snapshot;
+    const filament = snapshot?.profiles?.filament ?? null;
+    const machine = snapshot?.profiles?.machine ?? null;
+    const toolheads = (snapshot?.toolheads ?? []).map((toolhead) => ({
+      toolId: toolhead.id,
+      toolheadId: toolhead.id,
+      toolheadIndex: toolhead.index,
+      extruderType:
+        toolhead.isDirectDrive === true
+          ? ('directDrive' as const)
+          : toolhead.isDirectDrive === false
+            ? ('bowden' as const)
+            : null,
+      nozzle: {
+        // The nozzle has no independent server identity; it is addressed
+        // through its owning toolhead.
+        id: toolhead.id,
+        diameterMm: toolhead.nozzleDiameter,
+        material: toolhead.nozzleMaterial,
+      },
+    }));
+    return {
+      printerId: dto.id,
+      displayName: dto.name,
+      printerModel: null as string | null,
+      firmware: {
+        firmware: dto.firmware?.family ?? null,
+        gcodeDialect: dto.firmware?.gcodeDialect ?? null,
+        firmwareVersion: dto.firmware?.version ?? null,
+        verified: dto.firmware?.verified ?? false,
+        // PrintFarmer's `CalibrationFirmwareIdentityDto` carries no Klipper
+        // config hash. Reporting `null` states that plainly instead of
+        // fabricating a value the server never sent.
+        klipperConfigHash: null as string | null,
+      },
+      /** Immutable server identity (Guid) of the filament profile. */
+      orcaProfileId: filament?.id ?? null,
+      /** OrcaSlicer-facing profile name; the only value safe to match locally. */
+      orcaProfileName: filament?.name ?? null,
+      orcaProfileDisplayName: filament?.name ?? null,
+      /** Machine profile identity, kept distinct from the filament profile. */
+      machineProfileId: machine?.id ?? null,
+      machineProfileName: machine?.name ?? null,
+      profileRevision: filament?.profileRevision ?? null,
+      contentHash: filament?.sha256 ?? null,
+      bedWidthMm: snapshot?.buildVolume?.x ?? null,
+      bedDepthMm: snapshot?.buildVolume?.y ?? null,
+      nozzleDiameterMm:
+        snapshot?.baselineSettings?.activeNozzleDiameter ??
+        (toolheads.length === 1 ? toolheads[0]!.nozzle.diameterMm : null),
+      snapshotAt: dto.capturedAtUtc ?? snapshot?.capturedAtUtc ?? null,
+      /** The snapshot is identified by its content hash; there is no separate ID. */
+      snapshotId: dto.snapshotSha256 ?? snapshot?.snapshotSha256 ?? null,
+      configurationRevision:
+        dto.configurationRevision ?? snapshot?.configurationRevision ?? null,
+      configurationId: snapshot?.printerId ?? null,
+      /**
+       * The snapshot has no revision independent of the configuration it was
+       * captured from, so the configuration revision is the snapshot revision.
+       */
+      snapshotRevision: snapshot?.configurationRevision ?? null,
+      /**
+       * `CalibrationContextDto` exposes no safety-interlock block: there is no
+       * server field for emergency-stop availability, thermal-protection
+       * confirmation or ventilation assessment. Reporting `null` keeps the
+       * generation/start gate fail-closed (those actions require an explicitly
+       * complete context) without inventing safety assurances the server never
+       * made. Discovery and local profile inspection do not depend on it.
+       */
+      safety: null as {
+        buildVolumeMm: { x: number; y: number; z: number };
+        maximumNozzleTemperatureC: number;
+        maximumBedTemperatureC: number;
+        maximumVolumetricRateMm3S: number;
+        emergencyStopAvailable: boolean;
+        thermalProtectionConfirmed: boolean;
+        ventilationAssessed: boolean;
+      } | null,
+      /**
+       * Likewise, per-printer calibration permissions are not part of the
+       * context DTO. Authorisation is enforced by the server on every call and
+       * surfaced through capability `effectivePermissions`, not here.
+       */
+      permissions: null as {
+        readPrinter: boolean;
+        writeCalibration: boolean;
+        generateCalibration: boolean;
+        startPrint: boolean;
+      } | null,
+      slicerIdentity: dto.slicer?.engine ?? null,
+      slicerDistribution: dto.slicer?.distribution ?? null,
+      isCurrent:
+        dto.configurationRevision !== null &&
+        snapshot?.configurationRevision !== null &&
+        dto.configurationRevision === snapshot?.configurationRevision,
+      toolheads,
+      eligible: dto.eligible,
+      missingInputs: dto.missingInputs,
+      rejectionReasons: dto.rejectionReasons,
+      supportsPressureAdvance: dto.supportsPressureAdvance,
+      supportsFirmwareRetraction: dto.supportsFirmwareRetraction,
+      capturedBySubject: dto.capturedBySubject,
+      schemaVersion: dto.schemaVersion,
+    };
+  });
 export type RemoteCalibrationPrinterContext = z.infer<
   typeof RemoteCalibrationPrinterContext
 >;
@@ -1305,8 +1544,23 @@ export const RemoteCalibrationProblemDetails = z
     instance: z.string().max(2048).optional(),
     /** Extension field: operation-level error code. */
     errorCode: z.string().max(64).optional(),
+    /**
+     * Extension field as actually emitted by PrintFarmer. ASP.NET controllers
+     * write the machine-readable code to `code`
+     * (`problem.Extensions["code"] = ...` in `PrinterCalibrationController`),
+     * not `errorCode`. Reading only `errorCode` silently discarded every
+     * server diagnosis — including `profile_service_unavailable`, which is the
+     * one code that explains an empty production printer list.
+     */
+    code: z.string().max(64).optional(),
   })
-  .passthrough();
+  .passthrough()
+  .transform((value) => ({
+    ...value,
+    // Prefer the documented extension, fall back to the legacy name so a
+    // deployment emitting either is understood.
+    errorCode: value.errorCode ?? value.code,
+  }));
 export type RemoteCalibrationProblemDetails = z.infer<
   typeof RemoteCalibrationProblemDetails
 >;

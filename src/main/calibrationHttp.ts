@@ -81,6 +81,44 @@ export const CALIBRATION_QUEUE_ROUTE_TEMPLATES = {
   acknowledgeBedClear: '/api/job-queue/{jobId}/acknowledge-bed-clear-and-start',
 } as const;
 
+/**
+ * Canonical printer-discovery route templates (issue: calibration discovery
+ * 404 drift).
+ *
+ * These are the two routes the calibration wizard needs before it can show a
+ * single printer. They are NOT under `/api/calibration/...`: PrintFarmer serves
+ * them from `PrinterCalibrationController`, which is `[Route("api/printers")]`.
+ *
+ * Verified three ways against production `0.2.3+125d2c9b2`:
+ * 1. `PrinterCalibrationController.cs` on OlyForge3D/PrintFarmer@development —
+ *    `[HttpGet("calibration-candidates")]` and
+ *    `[HttpGet("{id:guid}/calibration-context")]`.
+ * 2. The live `GET /api/calibration/capabilities` payload, whose `routes`
+ *    member advertises exactly these two paths.
+ * 3. Live GET probes: the previous `/api/calibration/printers` returns 404
+ *    while `/api/printers/calibration-candidates` returns 401 unauthenticated.
+ *
+ * `slicerType` is a REQUIRED query parameter on the context route. The server
+ * compares it with `StringComparison.Ordinal` against
+ * `CalibrationContractConstants.SlicerEngine` and returns HTTP 400
+ * `unsupported_slicer_type` when it is absent or differs by case. It is pinned
+ * here rather than derived from a response so a server-supplied value can never
+ * steer the request.
+ */
+export const CALIBRATION_DISCOVERY_ROUTE_TEMPLATES = {
+  /** GET — printers the server considers calibration candidates. */
+  calibrationCandidates: '/api/printers/calibration-candidates',
+  /** GET — per-printer calibration context; `slicerType` is mandatory. */
+  calibrationContext:
+    '/api/printers/{printerId}/calibration-context?slicerType=OrcaSlicer',
+} as const;
+
+/**
+ * The only slicer engine this client negotiates. Must match the server's
+ * `CalibrationContractConstants.SlicerEngine` byte-for-byte.
+ */
+export const CALIBRATION_SLICER_TYPE = 'OrcaSlicer' as const;
+
 /** Replace `{key}` placeholders with URI-encoded values. */
 function buildRoute(template: string, params: Record<string, string>): string {
   return Object.entries(params).reduce(
@@ -96,9 +134,17 @@ function buildRoute(template: string, params: Record<string, string>): string {
 
 const ROUTES = {
   capabilities: '/api/calibration/capabilities',
-  printers: '/api/calibration/printers',
+  /** GET — canonical calibration candidate list (see templates above). */
+  printerCandidates:
+    CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationCandidates,
+  /**
+   * GET — canonical per-printer calibration context. `slicerType` is pinned to
+   * the constant the server requires; it is never taken from a response.
+   */
   printerContext: (printerId: string) =>
-    `/api/calibration/printers/${encodeURIComponent(printerId)}/context`,
+    buildRoute(CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationContext, {
+      printerId,
+    }),
   changes: '/api/calibration-sync/changes',
   apply: '/api/calibration-sync/apply',
   project: (id: string) =>
@@ -177,6 +223,15 @@ export type CalibrationHttpErrorCode =
   | 'idempotencyPayloadChanged'
   | 'invalidData'
   | 'workerUnavailable'
+  // --- Calibration discovery 503 discrimination ---
+  // PrinterCalibrationController returns 503 for three unrelated causes. These
+  // two name the non-worker causes so operators are not sent to the slicing
+  // fleet for a profile-resolver or printer-status fault.
+  | 'profileServiceUnavailable'
+  | 'printerStatusUnavailable'
+  // The context route rejects a missing/mis-cased `slicerType` with 400
+  // `unsupported_slicer_type`. That is a client contract error, not user data.
+  | 'unsupportedSlicerType'
   // --- Bed-clear / queue specific (issue #54) ---
   | 'forbidden'
   | 'jobNotFound'
@@ -596,7 +651,7 @@ export class CalibrationHttpClient {
     return this.get(
       profileId,
       baseUrl,
-      ROUTES.printers,
+      ROUTES.printerCandidates,
       PrintersSchema,
       signal,
     );
@@ -1632,6 +1687,34 @@ export class CalibrationHttpClient {
           428,
         );
       case 503:
+        // A 503 from calibration discovery is NOT interchangeable with a
+        // slicer-worker outage. `PrinterCalibrationController.CreateProblem`
+        // maps `profile_service_unavailable` (the upstream OrcaSlicer profile
+        // resolver being unreachable) and `status_unavailable` (printer status
+        // not readable) onto the same status code as worker faults. Collapsing
+        // all three into `workerUnavailable` told operators to look at the
+        // slicing fleet when the actual missing dependency is the profile
+        // resolver, which is exactly the production state on 0.2.3 and exactly
+        // what `unavailableReasons[].code` reports. Discriminating on the
+        // server-supplied `code` extension keeps the three separable.
+        if (errorCode === 'profile_service_unavailable') {
+          return fail(
+            'profileServiceUnavailable',
+            'PrintFarmer cannot reach its upstream OrcaSlicer profile resolver, so it cannot list calibration printers.',
+            503,
+            null,
+            ambiguous,
+          );
+        }
+        if (errorCode === 'status_unavailable') {
+          return fail(
+            'printerStatusUnavailable',
+            'PrintFarmer could not read live printer status for this calibration request.',
+            503,
+            null,
+            ambiguous,
+          );
+        }
         return fail(
           'workerUnavailable',
           'Calibration generation or telemetry service is unavailable.',

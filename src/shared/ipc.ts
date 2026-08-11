@@ -4346,8 +4346,54 @@ export const CalibrationListOrcaProfilesRequest = z
 export type CalibrationListOrcaProfilesRequest = z.infer<
   typeof CalibrationListOrcaProfilesRequest
 >;
+/**
+ * Why a profile listing came back without server-derived entries.
+ *
+ * An empty `profiles` array is ambiguous on its own: it reads identically
+ * whether the server refused the request, the route drifted, the deployment
+ * has calibration disabled, or the farm genuinely has no eligible printer.
+ * Callers need to tell those apart to say anything useful to the operator.
+ */
+export const CalibrationProfileDiscoveryDiagnostic = z
+  .object({
+    /** Coarse machine-readable cause. */
+    kind: z.enum([
+      /** Server-derived discovery succeeded. */
+      'ok',
+      /** 401 — the session is not authenticated for calibration. */
+      'unauthenticated',
+      /** 403 — authenticated but lacking the calibration permission. */
+      'forbidden',
+      /** 404 — the route is absent on this server build (contract drift). */
+      'routeUnavailable',
+      /** 503 — a server dependency calibration needs is not configured. */
+      'serverDependencyUnavailable',
+      /** The response did not match the calibration contract. */
+      'malformedResponse',
+      /** The server answered normally and returned no eligible printer. */
+      'noEligiblePrinters',
+      /** The request could not reach the server at all. */
+      'unreachable',
+    ]),
+    /** Operator-facing explanation. Never contains credentials or paths. */
+    message: z.string().max(512),
+    /** Server-supplied problem code, when one was provided. */
+    serverCode: z.string().max(64).nullable().default(null),
+  })
+  .strict();
+export type CalibrationProfileDiscoveryDiagnostic = z.infer<
+  typeof CalibrationProfileDiscoveryDiagnostic
+>;
+
 export const CalibrationListOrcaProfilesResponse = z
-  .object({ profiles: z.array(OrcaProfileEntry).max(5000) })
+  .object({
+    profiles: z.array(OrcaProfileEntry).max(5000),
+    /**
+     * Why server-derived discovery produced what it did. Present on every
+     * response so an empty list is never silently ambiguous.
+     */
+    discovery: CalibrationProfileDiscoveryDiagnostic,
+  })
   .strict();
 export type CalibrationListOrcaProfilesResponse = z.infer<
   typeof CalibrationListOrcaProfilesResponse
