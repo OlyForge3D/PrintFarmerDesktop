@@ -661,6 +661,32 @@ export function registerIpcHandlers(
   const capabilityRefresher = new CalibrationCapabilityRefresher();
 
   /**
+   * Discard every piece of calibration state tied to a server profile.
+   *
+   * All four of these are evidence about one farm and one account: negotiated
+   * permissions and flags, recently observed printer contexts and candidates, a
+   * bed-clear acknowledgement, and a refusal cooldown. None of it survives a
+   * change of selected profile, because each could otherwise let one farm's
+   * answer authorise an action against another.
+   *
+   * `profileId` narrows the scoped stores when a specific profile is known;
+   * the capability snapshot and ledger are cleared outright, because a
+   * mis-scoped clear that leaves evidence behind fails open, and clearing more
+   * than strictly necessary only costs a re-negotiation.
+   */
+  const forgetCalibrationProfileState = (profileId?: string): void => {
+    calibrationDiagnostics.clearCapabilities();
+    bedClearLedger.clear();
+    if (profileId === undefined) {
+      selectionCache.clear();
+      capabilityRefresher.clear();
+    } else {
+      selectionCache.forgetProfile(profileId);
+      capabilityRefresher.forgetProfile(profileId);
+    }
+  };
+
+  /**
    * Re-negotiate capabilities once after a refusal, without replaying anything.
    *
    * A 403 says the snapshot the gate consulted is out of date. Re-reading it
@@ -675,13 +701,17 @@ export function registerIpcHandlers(
     const outcome = await capabilityRefresher.noteForbidden(
       selectedId,
       async () => {
+        // Discarded before the refresh, so a refresh that itself fails or is
+        // refused leaves null evidence rather than the positive snapshot that
+        // has just been contradicted by a 403.
+        calibrationDiagnostics.clearCapabilities();
         const ctx = await profiles.getAuthenticatedContext(selectedId);
         const caps = await calibrationHttp.getCapabilities(
           selectedId,
           ctx.profile.baseUrl,
           AbortSignal.timeout(10_000),
         );
-        calibrationDiagnostics.recordCapabilities(caps);
+        calibrationDiagnostics.recordCapabilities(selectedId, caps);
         emitCalibrationLog({
           level: 'info',
           component: 'calibration.http',
@@ -765,7 +795,7 @@ export function registerIpcHandlers(
     },
     operatorAcknowledgement?: boolean,
   ): Promise<CalibrationGateResult> => {
-    const capability = calibrationDiagnostics.capabilitySnapshot();
+    const capability = calibrationDiagnostics.capabilitySnapshot(selectedId);
     const capabilityEvidence =
       capability === null
         ? null
@@ -834,8 +864,9 @@ export function registerIpcHandlers(
    */
   const gateCalibrationPermission = (
     action: CalibrationGatedAction,
+    selectedId: string,
   ): CalibrationGateResult => {
-    const capability = calibrationDiagnostics.capabilitySnapshot();
+    const capability = calibrationDiagnostics.capabilitySnapshot(selectedId);
     const result = evaluateCalibrationActionGate({
       action,
       capability:
@@ -888,6 +919,11 @@ export function registerIpcHandlers(
 
   app.on('will-quit', () => {
     calibrationEngine.dispose();
+    // These outlive individual requests, so they are cleared explicitly rather
+    // than left to process teardown. A bed-clear acknowledgement in particular
+    // is a claim about a machine's physical state and must not be reachable by
+    // anything that runs after the app has decided to stop.
+    forgetCalibrationProfileState();
     for (const controller of activeSyncControllers.values()) {
       controller.abort();
     }
@@ -1617,6 +1653,15 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.SelectServerProfile].request.parse(rawRequest);
+      // Everything observed for calibration describes one farm and one account.
+      // Selecting a different profile makes all of it wrong, and wrong in the
+      // dangerous direction: a permissive snapshot left in place would let the
+      // previous farm's permissions authorise a mutation against the new one
+      // while its own negotiation is still in flight or has failed.
+      //
+      // Cleared before the switch, so there is no instant at which the new
+      // selection is current and the old evidence is still readable.
+      forgetCalibrationProfileState();
       const response = await profiles.select(request.id);
       return ipcSchemas[IpcChannel.SelectServerProfile].response.parse(
         response,
@@ -1629,6 +1674,11 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.DeleteServerProfile].request.parse(rawRequest);
+      // A deleted profile may also have been the selected one, and deletion can
+      // change which profile is selected. Forgetting unconditionally is correct
+      // either way: nothing observed for a profile that no longer exists is
+      // usable, and keeping it could only ever authorise something.
+      forgetCalibrationProfileState(request.id);
       const response = await profiles.delete(request.id);
       return ipcSchemas[IpcChannel.DeleteServerProfile].response.parse(
         response,
@@ -1731,6 +1781,12 @@ export function registerIpcHandlers(
       }
 
       const signal = AbortSignal.timeout(10_000);
+      // Cleared *before* the fetch, not after it. The window between starting a
+      // negotiation and failing it is exactly when a gate would otherwise read
+      // the previously selected profile's snapshot and authorise a mutation
+      // against this one. Clearing first means a fetch that fails, times out or
+      // is refused leaves no evidence at all, which is the fail-closed answer.
+      calibrationDiagnostics.clearCapabilities();
       try {
         const ctx = await profiles.getAuthenticatedContext(selectedId);
         const caps = await calibrationHttp.getCapabilities(
@@ -1739,8 +1795,9 @@ export function registerIpcHandlers(
           signal,
         );
         // Snapshot the negotiation so diagnostics can report capability health
-        // without a network call — which is exactly when it is needed.
-        calibrationDiagnostics.recordCapabilities(caps);
+        // without a network call — which is exactly when it is needed. Bound to
+        // the profile it describes, so it can never be read as another's.
+        calibrationDiagnostics.recordCapabilities(selectedId, caps);
         emitCalibrationLog({
           level: 'info',
           component: 'calibration.http',
@@ -1989,7 +2046,7 @@ export function registerIpcHandlers(
       // freshness check, which compares the workspace against the authoritative
       // context; what was missing was any check that this account is allowed to
       // write calibration data at all.
-      const permission = gateCalibrationPermission('createProject');
+      const permission = gateCalibrationPermission('createProject', selectedId);
       if (!permission.allowed) {
         throw Object.assign(
           new Error(
@@ -2390,7 +2447,7 @@ export function registerIpcHandlers(
       );
       // Sync applies the local outbox to the server. It mutates, so it is gated
       // before any controller is created or any request is sent.
-      const permission = gateCalibrationPermission('startPrint');
+      const permission = gateCalibrationPermission('startPrint', selectedId);
       if (!permission.allowed) {
         return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
           phase: 'failed',

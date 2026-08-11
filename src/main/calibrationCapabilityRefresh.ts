@@ -97,4 +97,9 @@ export class CalibrationCapabilityRefresher {
   forgetProfile(profileId: string): void {
     this.lastRefreshAt.delete(profileId);
   }
+
+  /** Forget every cooldown, e.g. when the selected profile changes or on quit. */
+  clear(): void {
+    this.lastRefreshAt.clear();
+  }
 }
