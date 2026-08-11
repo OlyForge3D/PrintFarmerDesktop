@@ -1292,27 +1292,44 @@ export const UNRECOGNIZED_CALIBRATION_INPUT = 'unrecognized_input';
 /**
  * How many rejection reasons a *server* response may carry for one printer.
  *
- * Mirrors the wire cap in `RemoteCalibrationCandidateDto`, which is where a
- * hostile or runaway list is actually refused.
+ * A truncation threshold, not a gate. Exceeding it is legitimate — the
+ * evaluator asks about a dozen questions of every toolhead, so a freshly added
+ * five-toolhead machine reports well past this without the server being wrong
+ * — so the list is cut here and the cut is declared with
+ * {@link CALIBRATION_EXPLANATION_TRUNCATED_CODE}, never used as a reason to
+ * refuse the response.
  */
 export const CALIBRATION_MAX_SERVER_REJECTION_REASONS = 64;
 
 /**
  * How many codes the renderer may receive for one printer: every server reason
- * plus the one diagnostic the client can add itself.
+ * plus the two diagnostics the client can add itself — one naming an
+ * incoherent verdict, one declaring the list was truncated.
  *
- * Derived rather than written as `64`, because the two bounds were previously
+ * Derived rather than written as a number, because the two bounds were once
  * both spelled `.max(64)` and that arithmetic was wrong. A server may send a
  * full 64 reasons; when that response also contradicts itself the handler
- * prepends {@link CALIBRATION_SERVER_CONTRADICTION_CODE}, producing 65 — which
- * the IPC schema then refused. The refusal is not local: the handler parses
- * `{ printers: [...] }` as one value, so a single over-long candidate threw
- * away *every* printer, reinstating the empty-discovery failure this contract
- * exists to prevent. The bound has to be the server's plus the client's, and
- * saying so in arithmetic is what keeps it that way when either side moves.
+ * prepends {@link CALIBRATION_SERVER_CONTRADICTION_CODE}, and when it ran long
+ * it appends {@link CALIBRATION_EXPLANATION_TRUNCATED_CODE}. The refusal that
+ * followed was not local: the handler parses `{ printers: [...] }` as one
+ * value, so a single over-long candidate threw away *every* printer,
+ * reinstating the empty-discovery failure this contract exists to prevent. The
+ * bound has to be the server's plus the client's, and saying so in arithmetic
+ * is what keeps it that way when either side moves.
  */
 export const CALIBRATION_MAX_REJECTION_REASON_CODES =
-  CALIBRATION_MAX_SERVER_REJECTION_REASONS + 1;
+  CALIBRATION_MAX_SERVER_REJECTION_REASONS + 2;
+
+/**
+ * How many candidates one discovery response may describe.
+ *
+ * Shared by the wire schema and the IPC schema deliberately. They used to
+ * disagree — 500 on the wire, 200 at IPC — so a farm of 201 to 500 printers
+ * parsed cleanly off the network and was then rejected on the way to the
+ * renderer, as one value, taking every healthy printer with it. Two bounds
+ * that must agree should be one bound.
+ */
+export const CALIBRATION_MAX_PRINTER_CANDIDATES = 500;
 
 /**
  * Emitted when the server both declares a printer eligible and supplies
@@ -1362,6 +1379,22 @@ export const CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE =
   'client_eligibility_unverified';
 
 /**
+ * Emitted when the server said more than the renderer will carry.
+ *
+ * A printer can legitimately exceed the per-printer cap: the evaluator asks
+ * roughly a dozen questions of every toolhead, so a five-toolhead machine that
+ * has just been added reports well over sixty missing inputs without anything
+ * being wrong with the server. Silently showing the first sixty-four as though
+ * they were the whole story would be its own quiet lie, so the fact that the
+ * list was cut is stated in the list itself.
+ *
+ * Client-authored, and therefore excluded from
+ * {@link CalibrationServerReasonCode} like every other sentinel here.
+ */
+export const CALIBRATION_EXPLANATION_TRUNCATED_CODE =
+  'client_explanation_truncated';
+
+/**
  * What a *server* is allowed to say: the catalogue and nothing else.
  *
  * Deliberately narrower than {@link CalibrationRejectionReasonCode}. Both
@@ -1391,6 +1424,7 @@ const CalibrationRejectionReasonCode = z.enum([
   CALIBRATION_SERVER_CONTRADICTION_CODE,
   CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+  CALIBRATION_EXPLANATION_TRUNCATED_CODE,
 ]);
 
 /**
@@ -1568,7 +1602,9 @@ export type CalibrationListPrintersRequest = z.infer<
 >;
 export const CalibrationListPrintersResponse = z
   .object({
-    printers: z.array(CalibrationPrinterCandidate).max(200),
+    printers: z
+      .array(CalibrationPrinterCandidate)
+      .max(CALIBRATION_MAX_PRINTER_CANDIDATES),
     fetchedAt: z.string().datetime(),
   })
   .strict();

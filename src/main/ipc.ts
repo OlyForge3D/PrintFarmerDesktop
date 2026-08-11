@@ -26,6 +26,7 @@ import {
   CALIBRATION_SERVER_CONTRADICTION_CODE,
   CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+  CALIBRATION_EXPLANATION_TRUNCATED_CODE,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -387,7 +388,7 @@ export function createLoadSceneHandler(
 export function explainIneligibility(
   printer: Pick<
     RemoteCalibrationPrinterCandidate,
-    'serverIncoherence' | 'rejectionReasons'
+    'serverIncoherence' | 'rejectionReasons' | 'explanationTruncated'
   >,
 ): string[] {
   const incoherence =
@@ -401,6 +402,12 @@ export function explainIneligibility(
     ...printer.rejectionReasons.map((reason) =>
       normalizeCalibrationReasonCode(reason.code),
     ),
+    // Declared last so it reads as a footnote on the list above it, and
+    // included in the bound so a truncated contradictory printer at the cap
+    // still fits.
+    ...(printer.explanationTruncated
+      ? [CALIBRATION_EXPLANATION_TRUNCATED_CODE]
+      : []),
   ];
   return codes.length > 0 ? codes : [CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE];
 }

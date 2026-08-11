@@ -22,7 +22,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationPrinterCandidate,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+  CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_FIELD_PATH_LENGTH,
+  CALIBRATION_MAX_PRINTER_CANDIDATES,
   CALIBRATION_MAX_REJECTION_REASON_CODES,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   CALIBRATION_REJECTION_REASON_CODES,
@@ -679,9 +681,10 @@ describe('the code bound accounts for the code the client adds', () => {
     );
   }
 
-  it('reserves exactly one slot above the server cap', () => {
+  it('reserves a slot for each diagnostic the client can add', () => {
+    // One naming an incoherent verdict, one declaring the list was cut.
     expect(CALIBRATION_MAX_REJECTION_REASON_CODES).toBe(
-      CALIBRATION_MAX_SERVER_REJECTION_REASONS + 1,
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS + 2,
     );
   });
 
@@ -695,8 +698,15 @@ describe('the code bound accounts for the code the client adds', () => {
     ]);
 
     expect(printers).toHaveLength(1);
+    // Exactly at the cap, so nothing is cut: 64 reasons plus the marker.
     expect(printers[0]!.rejectionReasonCodes).toHaveLength(
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS + 1,
+    );
+    expect(printers[0]!.rejectionReasonCodes.length).toBeLessThanOrEqual(
       CALIBRATION_MAX_REJECTION_REASON_CODES,
+    );
+    expect(printers[0]!.rejectionReasonCodes).not.toContain(
+      CALIBRATION_EXPLANATION_TRUNCATED_CODE,
     );
     expect(printers[0]!.rejectionReasonCodes[0]).toBe(
       CALIBRATION_SERVER_CONTRADICTION_CODE,
@@ -734,7 +744,10 @@ describe('the code bound accounts for the code the client adds', () => {
     ]);
 
     const codes = printers[0]!.rejectionReasonCodes;
-    expect(codes).toHaveLength(CALIBRATION_MAX_REJECTION_REASON_CODES);
+    expect(codes).toHaveLength(CALIBRATION_MAX_SERVER_REJECTION_REASONS + 1);
+    expect(codes.length).toBeLessThanOrEqual(
+      CALIBRATION_MAX_REJECTION_REASON_CODES,
+    );
     expect(codes.filter((code) => code === 'printer_offline')).toHaveLength(
       CALIBRATION_MAX_SERVER_REJECTION_REASONS,
     );
@@ -950,6 +963,155 @@ describe('an over-long string degrades one field, not the whole farm', () => {
         eligibility: null,
       }),
     ).toThrow();
+  });
+});
+
+describe('a list longer than the cap is cut, never a reason to refuse the farm', () => {
+  // Exceeding the per-printer cap is not a sign of a bad server. The evaluator
+  // asks about a dozen questions of every toolhead, so a freshly added
+  // five-toolhead machine reports far more than sixty-four missing inputs with
+  // nothing wrong anywhere. Rejecting on count took every healthy printer in
+  // the farm with it.
+  const OVER_CAP = CALIBRATION_MAX_SERVER_REJECTION_REASONS + 30;
+
+  function manyFieldPaths(count: number) {
+    return Array.from(
+      { length: count },
+      (_unused, index) => `toolheads[${index % 8}].nozzleDiameter`,
+    );
+  }
+
+  function manyReasons(count: number) {
+    return Array.from({ length: count }, (_unused, index) => ({
+      code: CALIBRATION_REJECTION_REASON_CODES[
+        index % CALIBRATION_REJECTION_REASON_CODES.length
+      ]!,
+      field: `toolheads[${index % 8}].nozzleDiameter`,
+      message: 'Missing.',
+    }));
+  }
+
+  it('keeps a healthy printer visible beside one with too many missing inputs', async () => {
+    const printers = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: manyFieldPaths(OVER_CAP),
+        rejectionReasons: manyReasons(OVER_CAP),
+      }),
+      candidateDto({ id: '99999999-9999-4999-8999-999999999999' }),
+    ]);
+
+    expect(printers).toHaveLength(2);
+    // The healthy one is untouched...
+    expect(printers[1]!.eligibility).not.toBeNull();
+    // ...and the crowded one is still present, still refused, still explained.
+    expect(printers[0]!.eligibility).toBeNull();
+    expect(printers[0]!.rejectionReasonCodes.length).toBeGreaterThan(0);
+  });
+
+  it('says the explanation was cut rather than cutting it silently', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: manyFieldPaths(OVER_CAP),
+        rejectionReasons: manyReasons(OVER_CAP),
+      }),
+    ]);
+
+    expect(printer!.rejectionReasonCodes).toContain(
+      CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+    );
+    expect(printer!.missingInputs).toHaveLength(
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    );
+  });
+
+  it('flags truncation from an over-long missing-input list alone', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: manyFieldPaths(OVER_CAP),
+        rejectionReasons: manyReasons(1),
+      }),
+    ]);
+
+    expect(printer!.rejectionReasonCodes).toContain(
+      CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+    );
+  });
+
+  it('stays inside the IPC bound when it is crowded AND contradictory', async () => {
+    // The worst case for the arithmetic: a full server list, cut, plus the
+    // incoherence marker, plus the truncation marker.
+    const printers = await listPrinters([
+      candidateDto({
+        eligible: true,
+        missingInputs: manyFieldPaths(OVER_CAP),
+        rejectionReasons: manyReasons(OVER_CAP),
+      }),
+    ]);
+
+    const codes = printers[0]!.rejectionReasonCodes;
+    expect(codes.length).toBeLessThanOrEqual(
+      CALIBRATION_MAX_REJECTION_REASON_CODES,
+    );
+    expect(codes[0]).toBe(CALIBRATION_SERVER_CONTRADICTION_CODE);
+    expect(codes).toContain(CALIBRATION_EXPLANATION_TRUNCATED_CODE);
+    expect(codes).toHaveLength(CALIBRATION_MAX_REJECTION_REASON_CODES);
+  });
+
+  it('does not claim truncation for a printer that fits', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: manyFieldPaths(3),
+        rejectionReasons: manyReasons(3),
+      }),
+    ]);
+
+    expect(printer!.rejectionReasonCodes).not.toContain(
+      CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+    );
+  });
+
+  it('keeps the truncation marker unforgeable from the wire', () => {
+    expect(
+      normalizeCalibrationReasonCode(CALIBRATION_EXPLANATION_TRUNCATED_CODE),
+    ).toBe(UNRECOGNIZED_CALIBRATION_REASON_CODE);
+  });
+});
+
+describe('a large farm is not a reason to show an empty one', () => {
+  // The wire allowed 500 candidates and the IPC schema allowed 200, so a farm
+  // between those numbers parsed off the network and was then rejected on the
+  // way to the renderer — as one value, taking every printer with it.
+  it('delivers a farm larger than the old IPC ceiling', async () => {
+    const farm = Array.from({ length: 260 }, (_unused, index) =>
+      candidateDto({
+        id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+      }),
+    );
+
+    const printers = await listPrinters(farm);
+
+    expect(printers).toHaveLength(260);
+    expect(printers.every((printer) => printer.eligibility !== null)).toBe(
+      true,
+    );
+  });
+
+  it('cuts a farm beyond the shared cap instead of refusing all of it', async () => {
+    const farm = Array.from(
+      { length: CALIBRATION_MAX_PRINTER_CANDIDATES + 40 },
+      (_unused, index) =>
+        candidateDto({
+          id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+        }),
+    );
+
+    const printers = await listPrinters(farm);
+
+    expect(printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   CalibrationPrinterEligibility,
   CalibrationWorkspacePayload,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+  CALIBRATION_MAX_PRINTER_CANDIDATES,
   OrcaProfileEntry,
   UNRECOGNIZED_CALIBRATION_INPUT,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
@@ -229,6 +230,31 @@ const ServerInstant = z
 const CALIBRATION_MAX_WIRE_STRING = 512;
 
 /**
+ * A list that degrades by length instead of refusing by length.
+ *
+ * `z.array(...).max(n)` rejects, and rejection here is not local: the whole
+ * `/calibration-candidates` body is one parsed value, so one printer with one
+ * item too many erased every healthy printer in the farm. Exceeding the cap is
+ * not even a sign of a bad server — the evaluator asks about a dozen questions
+ * of every toolhead, so a freshly added five-toolhead machine reports far more
+ * than sixty-four missing inputs perfectly legitimately.
+ *
+ * The elements are pre-sliced as `unknown` before the real element schema
+ * runs, so a runaway list costs a slice rather than tens of thousands of
+ * validations, and the ceiling is high enough above the per-printer cap that
+ * "was this cut?" is still answerable afterwards.
+ */
+const WIRE_LIST_CEILING = 1024;
+
+function boundedWireList<T extends z.ZodTypeAny>(element: T) {
+  return z
+    .array(z.unknown())
+    .nullish()
+    .transform((items) => (items ?? []).slice(0, WIRE_LIST_CEILING))
+    .pipe(z.array(element));
+}
+
+/**
  * One structured rejection reason from `CalibrationRejectionReasonDto`.
  * Retained verbatim so an ineligible printer can explain itself instead of
  * vanishing from the list.
@@ -378,21 +404,13 @@ const RemoteCalibrationCandidateDto = z
       .boolean()
       .nullish()
       .transform((v) => v ?? false),
-    missingInputs: z
-      .array(
-        z
-          .string()
-          .max(CALIBRATION_MAX_WIRE_STRING)
-          .catch(UNRECOGNIZED_CALIBRATION_INPUT),
-      )
-      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
-      .nullish()
-      .transform((v) => v ?? []),
-    rejectionReasons: z
-      .array(RemoteCalibrationRejectionReason)
-      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
-      .nullish()
-      .transform((v) => v ?? []),
+    missingInputs: boundedWireList(
+      z
+        .string()
+        .max(CALIBRATION_MAX_WIRE_STRING)
+        .catch(UNRECOGNIZED_CALIBRATION_INPUT),
+    ),
+    rejectionReasons: boundedWireList(RemoteCalibrationRejectionReason),
   })
   .passthrough();
 
@@ -513,8 +531,22 @@ export const RemoteCalibrationPrinterCandidate =
     configurationRevision: dto.configurationRevision,
     updatedAt: dto.observedAtUtc ?? dto.lastSeenAtUtc,
     eligible: dto.eligible,
-    missingInputs: dto.missingInputs,
-    rejectionReasons: dto.rejectionReasons,
+    // Cut to what the renderer will carry. The cut is declared below rather
+    // than made silently: a five-toolhead machine can legitimately report more
+    // missing inputs than this, and showing the first sixty-four as though
+    // they were the whole account would be its own quiet falsehood.
+    missingInputs: dto.missingInputs.slice(
+      0,
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    ),
+    rejectionReasons: dto.rejectionReasons.slice(
+      0,
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    ),
+    /** Whether either explanation list was longer than the renderer carries. */
+    explanationTruncated:
+      dto.missingInputs.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS ||
+      dto.rejectionReasons.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS,
     /**
      * How the server's eligibility verdict failed to hold together, if it did.
      * Carried so the incoherence can be reported as itself rather than
@@ -531,13 +563,24 @@ export type RemoteCalibrationPrinterCandidate = z.infer<
  * `GET /api/printers/calibration-candidates` returns a bare JSON array
  * (`IReadOnlyList<CalibrationCandidateDto>`). The enveloped form is retained
  * only so a proxy that wraps the payload is still understood.
+ *
+ * The list is cut to {@link CALIBRATION_MAX_PRINTER_CANDIDATES} rather than
+ * refused above it, and that constant is shared with the IPC schema. The two
+ * used to disagree — 500 here, 200 there — so a farm of 201 to 500 printers
+ * parsed cleanly off the network and was then rejected on the way to the
+ * renderer, as one value, taking every healthy printer with it. Refusing a
+ * whole farm because it is large is the failure this contract exists to
+ * remove, not a safety property.
  */
+const boundedCandidateList = z
+  .array(z.unknown())
+  .transform((items) => items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES))
+  .pipe(z.array(RemoteCalibrationPrinterCandidate));
+
 export const RemoteCalibrationPrinters = z.union([
-  z.array(RemoteCalibrationPrinterCandidate).max(500),
+  boundedCandidateList,
   z
-    .object({
-      printers: z.array(RemoteCalibrationPrinterCandidate).max(500),
-    })
+    .object({ printers: boundedCandidateList })
     .passthrough()
     .transform((value) => value.printers),
 ]);
