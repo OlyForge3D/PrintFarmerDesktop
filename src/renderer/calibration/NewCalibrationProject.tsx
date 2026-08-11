@@ -112,9 +112,8 @@ export function NewCalibrationProject(): React.JSX.Element {
   const highlightedCandidate = store.creation.printers.find(
     (candidate) => candidate.printerId === highlightedPrinterId,
   );
-  const highlightedBlockers = candidateEligibilityBlockers(
-    highlightedCandidate,
-  );
+  const highlightedBlockers =
+    candidateEligibilityBlockers(highlightedCandidate);
   const candidateBlockers = candidateEligibilityBlockers(selectedCandidate);
   // Only ever read when it belongs to the current selection. The store already
   // fences responses, and this makes a stale render impossible as well.
@@ -122,7 +121,10 @@ export function NewCalibrationProject(): React.JSX.Element {
     store.creation.context?.printerId === selectedPrinterId
       ? store.creation.context
       : null;
-  const contextBlockers = contextEligibilityBlockers(context, selectedCandidate);
+  const contextBlockers = contextEligibilityBlockers(
+    context,
+    selectedCandidate,
+  );
   const printerChosen = selectedPrinterId !== null;
   const printerReady =
     printerChosen && candidateBlockers.length === 0 && context !== null;
@@ -725,7 +727,15 @@ export function NewCalibrationProject(): React.JSX.Element {
                           {candidate.printerModel ?? 'Model not supplied'};{' '}
                           {candidate.isOnline ? 'online' : 'offline'};{' '}
                           {blockers.length === 0
-                            ? 'eligible for calibration'
+                            ? // Deliberately hedged. The candidate list is a
+                              // basic screen that does not resolve profiles, so
+                              // saying "eligible" here would promise more than
+                              // the server was asked. The profile check happens
+                              // after Continue, against the authoritative
+                              // context.
+                              candidate.evaluationScope === 'full'
+                              ? 'eligible for calibration'
+                              : 'passes basic checks; profiles verified after you continue'
                             : 'not eligible for calibration'}
                         </small>
                       </span>
@@ -742,12 +752,16 @@ export function NewCalibrationProject(): React.JSX.Element {
                   disabled={
                     highlightedPrinterId === null ||
                     highlightedBlockers.length > 0 ||
-                    store.creation.contextLoading ||
+                    // Deliberately *not* disabled while a load is in flight.
+                    // Selecting a different printer cancels the previous
+                    // request, so blocking the button during loading would trap
+                    // the operator behind a slow printer they no longer want.
                     highlightedPrinterId === selectedPrinterId
                   }
                   onClick={() => choosePrinter(highlightedPrinterId)}
                 >
-                  {store.creation.contextLoading
+                  {store.creation.contextLoading &&
+                  highlightedPrinterId === selectedPrinterId
                     ? 'Loading printer configuration'
                     : 'Continue with this printer'}
                 </button>

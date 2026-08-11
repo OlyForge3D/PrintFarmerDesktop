@@ -179,6 +179,20 @@ export class CalibrationDiagnosticsStore {
     return this.capability;
   }
 
+  /**
+   * Forget every observation, returning the store to its just-started state.
+   *
+   * A capability snapshot describes one server profile's negotiation. Carrying
+   * it across a profile switch would let the permissions and flags of one farm
+   * authorise an action against another, so the correct response to "the
+   * selected profile changed" is to forget rather than to keep stale evidence
+   * that still looks valid.
+   */
+  reset(): void {
+    this.capability = null;
+    this.lastSync = null;
+  }
+
   lastSyncSnapshot(): CalibrationLastSyncSnapshot | null {
     return this.lastSync;
   }

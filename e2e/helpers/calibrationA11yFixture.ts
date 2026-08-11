@@ -666,6 +666,8 @@ export async function applyCalibrationScenario(
           orcaProfileId: ids.orcaProfileId,
           isOnline: scenario.offline !== true,
           updatedAt: ids.now,
+          // Basic screening only; the candidate list does not resolve profiles.
+          evaluationScope: 'preliminary' as const,
           rejectionReasonCodes: [],
           missingInputs: [],
           eligibility: {

@@ -1617,6 +1617,25 @@ export const CalibrationPrinterCandidate = z
      */
     updatedAt: z.string().datetime().nullable(),
     /**
+     * How far PrintFarmer got when it judged this printer.
+     *
+     * `'preliminary'` means basic screening only: reachability, maintenance
+     * state, firmware family and dialect, slicer engine and distribution. It is
+     * *not* a statement about the printer's slicer profiles, because listing
+     * candidates deliberately does not resolve them.
+     *
+     * `'full'` means profiles were resolved too, which only the per-printer
+     * calibration context does.
+     *
+     * A candidate is therefore always `'preliminary'` unless the server
+     * explicitly reports otherwise. This distinction exists because a
+     * preliminary pass is enough to say "this printer cannot be calibrated" but
+     * never enough to say "this printer is safe to bind a project to" — and
+     * conflating the two would let the cheap screen authorise work that only the
+     * authoritative snapshot can.
+     */
+    evaluationScope: z.enum(['preliminary', 'full']).default('preliminary'),
+    /**
      * Machine-readable codes for why PrintFarmer judged this printer
      * ineligible, e.g. `firmware_family_not_klipper`.
      *

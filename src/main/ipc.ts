@@ -725,9 +725,7 @@ export function registerIpcHandlers(
         ? null
         : { grantedScopes: capability.grantedScopes, flags: capability.flags };
     const acknowledgement =
-      operatorAcknowledgement === undefined
-        ? {}
-        : { operatorAcknowledgement };
+      operatorAcknowledgement === undefined ? {} : { operatorAcknowledgement };
     // Cheap refusals first: none of these needs the network, so an unauthorised
     // or disabled action never causes a request at all.
     const preflight = evaluateCalibrationActionGate({
@@ -797,7 +795,10 @@ export function registerIpcHandlers(
       capability:
         capability === null
           ? null
-          : { grantedScopes: capability.grantedScopes, flags: capability.flags },
+          : {
+              grantedScopes: capability.grantedScopes,
+              flags: capability.flags,
+            },
       context: null,
       binding: null,
     });
@@ -1658,76 +1659,83 @@ export function registerIpcHandlers(
   // The renderer never receives credentials, raw JWT tokens, or arbitrary
   // file/network primitives. All HTTP routes are fixed in calibrationHttp.ts.
 
-  registerCalibrationHandler(IpcChannel.CalibrationGetAvailability, async () => {
-    // Real capability negotiation: fetch the calibration capabilities endpoint
-    // from the selected server profile and validate the flags calibration
-    // cannot run without. Optional feature switches (photos, generation) are
-    // reported through `capabilityFlags` so the workspace can narrow what it
-    // offers rather than refusing to open.
-    const profileList = await profiles.list();
-    const selectedId = profileList.selectedProfileId;
-    if (!selectedId) {
-      return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
-        available: false,
-        unavailableReason: 'noProfile',
-        unavailableDetail: 'No server profile is selected.',
-        negotiatedApiVersion: null,
-        negotiatedSchemaVersion: null,
-        capabilityFlags: null,
-        grantedScopes: null,
-        offlineEditingEnabled: false,
-      });
-    }
-
-    const signal = AbortSignal.timeout(10_000);
-    try {
-      const ctx = await profiles.getAuthenticatedContext(selectedId);
-      const caps = await calibrationHttp.getCapabilities(
-        selectedId,
-        ctx.profile.baseUrl,
-        signal,
-      );
-      // Snapshot the negotiation so diagnostics can report capability health
-      // without a network call — which is exactly when it is needed.
-      calibrationDiagnostics.recordCapabilities(caps);
-      emitCalibrationLog({
-        level: 'info',
-        component: 'calibration.http',
-        event: 'capabilities.negotiated',
-        profileId: selectedId,
-        outcome: 'ok',
-      });
-      const missingFlags = missingCalibrationFlags(caps);
-      const firmwareOk = supportsKlipper(caps);
-      const slicerOk = supportsOrcaSlicer(caps);
-      // Discovery needs exactly one permission: `calibration:read`. Requiring
-      // more to *open* the workspace would refuse an operator who is allowed to
-      // look but not change, and this check did not exist at all before — the
-      // `missingScopes` reason was declared and never once emitted, so an
-      // unauthorised account saw an empty printer list and no explanation.
-      // Create, update, generate and queue actions are gated separately, each by
-      // its own exact permission, in the action interlock.
-      const readPermitted = hasCalibrationPermission(
-        caps.grantedScopes,
-        CALIBRATION_PERMISSIONS.read,
-      );
-
-      if (!readPermitted) {
-        return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
-          available: false,
-          unavailableReason: 'missingScopes',
-          unavailableDetail: `This PrintFarmer account does not grant ${CALIBRATION_PERMISSIONS.read}, which is required to list printers for calibration. Ask a farm administrator to grant it.`,
-          negotiatedApiVersion: caps.apiVersion,
-          negotiatedSchemaVersion: caps.schemaVersion,
-          capabilityFlags: caps.flags,
-          grantedScopes: caps.grantedScopes,
-          offlineEditingEnabled: false,
-        });
-      }
-
-      if (missingFlags.length > 0 || !firmwareOk || !slicerOk) {
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetAvailability,
+    async () => {
+      // Real capability negotiation: fetch the calibration capabilities endpoint
+      // from the selected server profile and validate the flags calibration
+      // cannot run without. Optional feature switches (photos, generation) are
+      // reported through `capabilityFlags` so the workspace can narrow what it
+      // offers rather than refusing to open.
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
         return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
           {
+            available: false,
+            unavailableReason: 'noProfile',
+            unavailableDetail: 'No server profile is selected.',
+            negotiatedApiVersion: null,
+            negotiatedSchemaVersion: null,
+            capabilityFlags: null,
+            grantedScopes: null,
+            offlineEditingEnabled: false,
+          },
+        );
+      }
+
+      const signal = AbortSignal.timeout(10_000);
+      try {
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const caps = await calibrationHttp.getCapabilities(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        // Snapshot the negotiation so diagnostics can report capability health
+        // without a network call — which is exactly when it is needed.
+        calibrationDiagnostics.recordCapabilities(caps);
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'capabilities.negotiated',
+          profileId: selectedId,
+          outcome: 'ok',
+        });
+        const missingFlags = missingCalibrationFlags(caps);
+        const firmwareOk = supportsKlipper(caps);
+        const slicerOk = supportsOrcaSlicer(caps);
+        // Discovery needs exactly one permission: `calibration:read`. Requiring
+        // more to *open* the workspace would refuse an operator who is allowed to
+        // look but not change, and this check did not exist at all before — the
+        // `missingScopes` reason was declared and never once emitted, so an
+        // unauthorised account saw an empty printer list and no explanation.
+        // Create, update, generate and queue actions are gated separately, each by
+        // its own exact permission, in the action interlock.
+        const readPermitted = hasCalibrationPermission(
+          caps.grantedScopes,
+          CALIBRATION_PERMISSIONS.read,
+        );
+
+        if (!readPermitted) {
+          return ipcSchemas[
+            IpcChannel.CalibrationGetAvailability
+          ].response.parse({
+            available: false,
+            unavailableReason: 'missingScopes',
+            unavailableDetail: `This PrintFarmer account does not grant ${CALIBRATION_PERMISSIONS.read}, which is required to list printers for calibration. Ask a farm administrator to grant it.`,
+            negotiatedApiVersion: caps.apiVersion,
+            negotiatedSchemaVersion: caps.schemaVersion,
+            capabilityFlags: caps.flags,
+            grantedScopes: caps.grantedScopes,
+            offlineEditingEnabled: false,
+          });
+        }
+
+        if (missingFlags.length > 0 || !firmwareOk || !slicerOk) {
+          return ipcSchemas[
+            IpcChannel.CalibrationGetAvailability
+          ].response.parse({
             available: false,
             unavailableReason: !firmwareOk
               ? 'unsupportedFirmware'
@@ -1744,41 +1752,45 @@ export function registerIpcHandlers(
             capabilityFlags: caps.flags,
             grantedScopes: caps.grantedScopes,
             offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
+          });
+        }
+
+        return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
+          {
+            available: true,
+            unavailableReason: null,
+            unavailableDetail: null,
+            negotiatedApiVersion: caps.apiVersion,
+            negotiatedSchemaVersion: caps.schemaVersion,
+            capabilityFlags: caps.flags,
+            grantedScopes: caps.grantedScopes,
+            offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
+          },
+        );
+      } catch (error) {
+        const reason =
+          error instanceof CalibrationHttpError && error.code === 'notFound'
+            ? 'serverVersionTooLow'
+            : 'legacyServer';
+        const detail =
+          error instanceof Error
+            ? error.message
+            : 'Could not reach calibration capabilities endpoint.';
+        return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
+          {
+            available: false,
+            unavailableReason: reason,
+            unavailableDetail: detail,
+            negotiatedApiVersion: null,
+            negotiatedSchemaVersion: null,
+            capabilityFlags: null,
+            grantedScopes: null,
+            offlineEditingEnabled: false,
           },
         );
       }
-
-      return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
-        available: true,
-        unavailableReason: null,
-        unavailableDetail: null,
-        negotiatedApiVersion: caps.apiVersion,
-        negotiatedSchemaVersion: caps.schemaVersion,
-        capabilityFlags: caps.flags,
-        grantedScopes: caps.grantedScopes,
-        offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
-      });
-    } catch (error) {
-      const reason =
-        error instanceof CalibrationHttpError && error.code === 'notFound'
-          ? 'serverVersionTooLow'
-          : 'legacyServer';
-      const detail =
-        error instanceof Error
-          ? error.message
-          : 'Could not reach calibration capabilities endpoint.';
-      return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
-        available: false,
-        unavailableReason: reason,
-        unavailableDetail: detail,
-        negotiatedApiVersion: null,
-        negotiatedSchemaVersion: null,
-        capabilityFlags: null,
-        grantedScopes: null,
-        offlineEditingEnabled: false,
-      });
-    }
-  });
+    },
+  );
 
   // Calibration channels that require a valid server profile and IPC request.
   // Each validates its request schema before dispatching.
@@ -1830,6 +1842,10 @@ export function registerIpcHandlers(
             eligibility === null
               ? printer.missingInputs.map(normalizeCalibrationMissingInput)
               : [],
+          // Candidate listing is preliminary unless the server explicitly
+          // confirms that profiles were evaluated.
+          evaluationScope:
+            printer.profilesEvaluated === true ? 'full' : 'preliminary',
           eligibility,
         });
         if (candidate.success) {
@@ -2332,7 +2348,12 @@ export function registerIpcHandlers(
       if (!permission.allowed) {
         return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
           phase: 'failed',
+          profileId: selectedId,
+          projectId: request.projectId ?? null,
+          pushedOperations: 0,
+          pulledChanges: 0,
           conflictCount: 0,
+          cursor: null,
           error:
             permission.message ??
             'Calibration synchronization is not permitted.',
@@ -2431,10 +2452,12 @@ export function registerIpcHandlers(
         request.binding,
       );
       if (!gate.allowed) {
-        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse({
-          status: 'error',
-          error: { ...gateRefusalToApiError(gate), reference: null },
-        });
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+          {
+            status: 'error',
+            error: { ...gateRefusalToApiError(gate), reference: null },
+          },
+        );
       }
       // Check prerequisites via engine.
       const prerequisiteError =
@@ -3037,7 +3060,7 @@ export function registerIpcHandlers(
       if (!gate.allowed) {
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',
-          error: gateRefusalToApiError(gate),
+          error: { ...gateRefusalToApiError(gate), reference: null },
         });
       }
       const prerequisiteError =
@@ -3256,20 +3279,25 @@ export function registerIpcHandlers(
 
   // --- External calibration asset manifest (issue #54) ---------------------
 
-  registerCalibrationHandler(IpcChannel.CalibrationGetAssetManifest, async () => {
-    try {
-      const manifest = await calibrationAssetManifest.load();
-      return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse(
-        manifest,
-      );
-    } catch (error) {
-      return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse({
-        status: 'error',
-        message:
-          error instanceof Error ? error.message : 'Manifest load failed.',
-      });
-    }
-  });
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetAssetManifest,
+    async () => {
+      try {
+        const manifest = await calibrationAssetManifest.load();
+        return ipcSchemas[
+          IpcChannel.CalibrationGetAssetManifest
+        ].response.parse(manifest);
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGetAssetManifest
+        ].response.parse({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'Manifest load failed.',
+        });
+      }
+    },
+  );
 
   registerCalibrationHandler(
     IpcChannel.CalibrationPickAssetFile,
@@ -3560,7 +3588,10 @@ export function registerIpcHandlers(
       );
       const localEntries = local.entries;
 
-      const resolved = [...(pfEntry === null ? [] : [pfEntry]), ...localEntries];
+      const resolved = [
+        ...(pfEntry === null ? [] : [pfEntry]),
+        ...localEntries,
+      ];
 
       const localDiscovery =
         localEntries.length > 0
