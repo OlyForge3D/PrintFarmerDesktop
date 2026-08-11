@@ -397,6 +397,7 @@ function deriveCandidateEligibility(
     gcodeDialect === 'Klipper' &&
     slicerEngine === CALIBRATION_SLICER_ENGINE &&
     slicerDistribution === CALIBRATION_SLICER_DISTRIBUTION;
+
   if (!explicitlyCompatible) return null;
 
   return {
@@ -415,18 +416,6 @@ function deriveCandidateEligibility(
   };
 }
 
-/**
- * Whether the server declared a printer eligible while also supplying reasons
- * it is not.
- *
- * PrintFarmer computes `Eligible` as `reasons.Count == 0`, so the two can only
- * disagree if the response was assembled incorrectly or tampered with. The
- * client fails that closed either way, but flattening it into an ordinary
- * ineligible printer would erase the evidence: the operator would see a
- * refusal indistinguishable from a legitimate one and no one would learn the
- * server is emitting incoherent records. Detecting it explicitly lets the
- * contradiction be reported as itself.
- */
 /**
  * Whether the server declared a printer eligible while also supplying reasons
  * it is not.

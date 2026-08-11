@@ -1144,7 +1144,16 @@ export type CalibrationPrinterEligibility = z.infer<
  * can emit.
  *
  * Extracted from the `Reject`/`RejectMissing` call sites in
- * `PrinterCalibrationContextService.cs` on OlyForge3D/PrintFarmer@development.
+ * `PrinterCalibrationContextService.cs` on OlyForge3D/PrintFarmer@development,
+ * pinned at blob `eb67837` (commit `1994f68e`, 2026-08-11) — including the
+ * transitive ones, since `RequireValue`, `RequireString` and `RequirePositive`
+ * all funnel into `RejectMissing`. Verified as complete against that blob: the
+ * only snake_case literals in it that are absent here are OrcaSlicer profile
+ * keys (`nozzle_diameter`, `gcode_flavor`, `max_volumetric_speed`,
+ * `filament_max_volumetric_speed`, `flow_rate`) and a calibration method name
+ * (`pressure_advance`), none of which is a rejection code. The blob is pinned
+ * because `@development` moves; a drifted catalogue degrades to
+ * {@link UNRECOGNIZED_CALIBRATION_REASON_CODE} rather than failing open.
  *
  * This is an allowlist, not documentation. `rejectionReasonCodes` was
  * introduced specifically so the renderer would receive a bounded machine
