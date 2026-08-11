@@ -910,6 +910,9 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     ).toEqual({
       // The immutable server identity, not the display name.
       orcaProfileId: FILAMENT_PROFILE_GUID,
+      // The OrcaSlicer-facing name, carried separately so local file lookup
+      // has something it can actually match.
+      orcaProfileName: 'Upstream PLA',
       displayName: 'Upstream PLA',
       vendor: null,
       material: null,

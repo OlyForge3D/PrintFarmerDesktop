@@ -20,6 +20,7 @@ import {
   type OpenFolderResponse,
   type SidecarPingResponse,
   type CalibrationProfileDiscoveryDiagnostic,
+  resolveOrcaBaseProfileLookupName,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -3373,7 +3374,13 @@ export function registerIpcHandlers(
 
       const wsPayload = stateRecord.data.workspaceState;
       const domainState = wsPayload.domainState;
-      const orcaProfileId = wsPayload.selectedBaseProfile.orcaProfileId;
+      // The on-disk lookup key is the profile *name*, never the identity. For a
+      // PrintFarmer-sourced base profile the identity is a server GUID that
+      // appears in no OrcaSlicer file, so searching by it always reported the
+      // base profile missing.
+      const orcaProfileLookupName = resolveOrcaBaseProfileLookupName(
+        wsPayload.selectedBaseProfile,
+      );
 
       // Build calibration patch entries from completed attempts.
       const patchEntries: OrcaPatchEntry[] = [];
@@ -3433,8 +3440,21 @@ export function registerIpcHandlers(
         });
       }
 
-      // Find the local base profile.
-      const localProfile = await findLocalOrcaProfileRaw(orcaProfileId);
+      // Find the local base profile, by name rather than by identity.
+      if (orcaProfileLookupName === null) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'baseProfileMissing',
+            message:
+              'This calibration project recorded a PrintFarmer base profile without its OrcaSlicer profile name, so it cannot be located on disk. Re-select the base profile to repair the project.',
+            retryable: false,
+          },
+        });
+      }
+      const localProfile = await findLocalOrcaProfileRaw(orcaProfileLookupName);
       if (!localProfile) {
         return ipcSchemas[
           IpcChannel.CalibrationGenerateOrcaProfile
@@ -3442,7 +3462,7 @@ export function registerIpcHandlers(
           status: 'error',
           error: {
             code: 'baseProfileMissing',
-            message: `Local OrcaSlicer base profile "${orcaProfileId}" was not found. Ensure OrcaSlicer is installed and the profile exists.`,
+            message: `Local OrcaSlicer base profile "${orcaProfileLookupName}" was not found. Ensure OrcaSlicer is installed and the profile exists.`,
             retryable: false,
           },
         });

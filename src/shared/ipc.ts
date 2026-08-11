@@ -1152,7 +1152,18 @@ export const CalibrationPrinterCandidate = z
     orcaProfileId: z.string().max(512).nullable(),
     /** Whether PrintFarmer considers this printer currently online. */
     isOnline: z.boolean(),
-    updatedAt: z.string().datetime(),
+    /**
+     * When PrintFarmer last observed this printer, or null when it never has.
+     *
+     * Nullable because `ObservedAtUtc` and `LastSeenAtUtc` are both `DateTime?`
+     * on `CalibrationCandidateDto`: a printer that is enabled but has never
+     * been reached carries neither. Requiring a string here meant one such
+     * printer threw a ZodError that failed the *entire* list — reintroducing
+     * the empty-discovery failure this contract fix exists to remove, through
+     * a different field. Fabricating a timestamp instead would assert an
+     * observation that never happened.
+     */
+    updatedAt: z.string().datetime().nullable(),
     /**
      * Machine-readable codes for why PrintFarmer judged this printer
      * ineligible, e.g. `firmware_family_not_klipper`.
@@ -2319,6 +2330,14 @@ const WorkspacePhotoMetadata = z
 export const CalibrationSelectedBaseProfile = z
   .object({
     orcaProfileId: z.string().min(1).max(512),
+    /**
+     * The OrcaSlicer-facing profile name used to locate this profile on disk.
+     * See {@link OrcaProfileEntry.orcaProfileName}: for a PrintFarmer-sourced
+     * profile the id is a server `Guid` that no local file carries, so
+     * generation must resolve the base profile by this name instead.
+     * Optional so workspaces persisted before the split still load.
+     */
+    orcaProfileName: z.string().min(1).max(512).optional(),
     displayName: z.string().min(1).max(512),
     /**
      * 'printFarmer' — server-supplied, upstream-verified profile.
@@ -2344,6 +2363,26 @@ export const CalibrationSelectedBaseProfile = z
 export type CalibrationSelectedBaseProfile = z.infer<
   typeof CalibrationSelectedBaseProfile
 >;
+
+/**
+ * Resolves the OrcaSlicer profile *name* to look up on disk for a selected
+ * base profile.
+ *
+ * Returns null when the name cannot be determined, which is the only honest
+ * answer for a PrintFarmer-sourced profile persisted before `orcaProfileName`
+ * existed: its `orcaProfileId` is a server `Guid`, and falling back to it would
+ * search local files for a name that cannot exist and report the profile
+ * missing for the wrong reason. Local sources are safe to fall back on, because
+ * their id is the name.
+ */
+export function resolveOrcaBaseProfileLookupName(profile: {
+  orcaProfileId: string;
+  orcaProfileName?: string | undefined;
+  source: string;
+}): string | null {
+  if (profile.orcaProfileName !== undefined) return profile.orcaProfileName;
+  return profile.source === 'printFarmer' ? null : profile.orcaProfileId;
+}
 
 /**
  * A single append-only observation recorded after a print completes.
@@ -4351,6 +4390,20 @@ export type OrcaProfileSource = z.infer<typeof OrcaProfileSource>;
 export const OrcaProfileEntry = z
   .object({
     orcaProfileId: z.string().min(1).max(512),
+    /**
+     * The OrcaSlicer-facing profile name, used to locate the profile on disk.
+     *
+     * Distinct from `orcaProfileId` and not interchangeable with it. For a
+     * PrintFarmer-sourced entry the id is the server's immutable `Guid`, which
+     * appears nowhere in an OrcaSlicer profile file, so matching local files by
+     * id can never succeed — only this name can. For a locally discovered
+     * entry the two happen to coincide.
+     *
+     * Optional for back-compat with entries persisted before the split; the
+     * resolver falls back to `orcaProfileId` only for local sources, where that
+     * fallback is exactly the name.
+     */
+    orcaProfileName: z.string().min(1).max(512).optional(),
     displayName: z.string().min(1).max(512),
     vendor: z.string().max(256).nullable(),
     material: z.string().max(256).nullable(),

@@ -937,6 +937,9 @@ export function projectPrintFarmerOrcaProfile(
   const toolhead = matchingToolheads[0]!;
   return OrcaProfileEntry.parse({
     orcaProfileId: context.orcaProfileId,
+    // The GUID above identifies the profile; only this name can be matched
+    // against a file in the local OrcaSlicer installation.
+    orcaProfileName: context.orcaProfileName,
     displayName: context.orcaProfileDisplayName,
     vendor: null,
     material: null,

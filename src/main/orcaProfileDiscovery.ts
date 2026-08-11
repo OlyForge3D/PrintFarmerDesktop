@@ -811,6 +811,9 @@ export async function discoverLocalOrcaFilamentProfiles(
 
       const entry = OrcaProfileEntry.safeParse({
         orcaProfileId: profile.name,
+        // For a locally discovered profile the id and the name are the same
+        // value; carried explicitly so the resolver never has to infer it.
+        orcaProfileName: profile.name,
         displayName: profile.name,
         vendor: null,
         material: material ?? null,
