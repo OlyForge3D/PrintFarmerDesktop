@@ -150,6 +150,7 @@ import {
 import {
   discoverLocalOrcaFilamentProfiles,
   findLocalOrcaProfileRaw,
+  listLocalOrcaFilamentProfiles,
 } from './orcaProfileDiscovery.js';
 import { generateOrcaProfile } from './orcaProfileGenerator.js';
 import type { OrcaPatchEntry } from './orcaProfileGenerator.js';
@@ -1484,6 +1485,13 @@ export function registerIpcHandlers(
             orcaProfileId: printer.orcaProfileId,
             isOnline: printer.isOnline,
             updatedAt: printer.updatedAt,
+            // Carried so an ineligible printer can explain itself. Codes only:
+            // the server's `message` text stays in the main process (#177).
+            rejectionReasonCodes:
+              eligibility === null
+                ? printer.rejectionReasons.map((reason) => reason.code)
+                : [],
+            missingInputs: eligibility === null ? printer.missingInputs : [],
             eligibility,
           };
         }),
@@ -2901,6 +2909,38 @@ export function registerIpcHandlers(
       } catch (error) {
         discovery = classifyDiscoveryFailure(error);
       }
+      // Scanned unconditionally, outside the candidate loop. Bound discovery
+      // below can only run once the server has named a printer, so gating this
+      // on `candidates` would mean a server refusal also hid the OrcaSlicer
+      // profiles sitting on this machine — the exact symptom being fixed.
+      const localScan = await listLocalOrcaFilamentProfiles()
+        .then((result) => ({
+          profiles: result.profiles,
+          diagnostic: result.installFound
+            ? result.profiles.length > 0
+              ? {
+                  kind: 'ok' as const,
+                  message: 'Local OrcaSlicer profile scan completed.',
+                }
+              : {
+                  kind: 'noProfilesFound' as const,
+                  message:
+                    'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                }
+            : {
+                kind: 'noInstallFound' as const,
+                message:
+                  'No OrcaSlicer installation was found in the standard locations for this operating system.',
+              },
+        }))
+        .catch(() => ({
+          profiles: [],
+          diagnostic: {
+            kind: 'noInstallFound' as const,
+            message:
+              'No OrcaSlicer installation was found in the standard locations for this operating system.',
+          },
+        }));
       const discovered = await Promise.all(
         candidates.map(async (candidate) => {
           if (
@@ -2980,6 +3020,8 @@ export function registerIpcHandlers(
       return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
         profiles: [...profilesByScope.values()],
         discovery,
+        localProfiles: localScan.profiles,
+        localDiscovery: localScan.diagnostic,
       });
     },
   );

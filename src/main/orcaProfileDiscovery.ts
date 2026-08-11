@@ -600,6 +600,104 @@ function profileCompatibleWithToolhead(
 // ---------------------------------------------------------------------------
 
 /**
+ * List the filament profiles installed locally by OrcaSlicer, independently of
+ * any server state.
+ *
+ * This exists because bound discovery cannot answer the question "does this
+ * machine have any OrcaSlicer profiles at all". {@link
+ * discoverLocalOrcaFilamentProfiles} deliberately binds every result to a
+ * specific printer, toolhead, nozzle and snapshot, so it needs a server-supplied
+ * context and returns nothing without one. When PrintFarmer cannot list
+ * printers, that left the operator unable to distinguish "the server is down"
+ * from "my OrcaSlicer install is not being seen" — which is precisely the
+ * confusion reported, on a machine holding ~12,000 profile files.
+ *
+ * Results are inspection-only. They carry no printer, toolhead or snapshot
+ * identity and therefore can never be selected as a calibration base profile;
+ * that still requires bound discovery. No filesystem path is returned, so the
+ * payload cannot disclose the user's directory layout.
+ */
+export async function listLocalOrcaFilamentProfiles(
+  options: {
+    /** Test-only root override; production always uses the canonical roots. */
+    readonly roots?: {
+      readonly userRoots: readonly string[];
+      readonly systemRoots: readonly string[];
+    };
+    /** Upper bound on returned summaries. */
+    readonly limit?: number;
+  } = {},
+): Promise<{
+  /** Whether any canonical OrcaSlicer root actually exists on this machine. */
+  installFound: boolean;
+  profiles: Array<{
+    name: string;
+    source: 'systemInstall' | 'userImported';
+    material: string | null;
+  }>;
+}> {
+  const limit = options.limit ?? 2_000;
+  const userRoots = options.roots?.userRoots ?? orcaUserDataRoots();
+  const systemRoots = options.roots?.systemRoots ?? orcaSystemProfileRoots();
+
+  let installFound = false;
+  const parsed: ParsedProfile[] = [];
+
+  for (const [roots, source] of [
+    [userRoots, 'userImported'],
+    [systemRoots, 'systemInstall'],
+  ] as const) {
+    for (const root of roots) {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = await realpath(root);
+      } catch {
+        continue; // root does not exist
+      }
+      installFound = true;
+      // No target name to prioritise: an unfiltered listing wants breadth, and
+      // the parse budget still bounds the work.
+      await collectProfilesFromRoot(
+        canonicalRoot,
+        source,
+        new Set<string>(),
+        parsed,
+      );
+    }
+  }
+
+  const byName = new Map<
+    string,
+    {
+      name: string;
+      source: 'systemInstall' | 'userImported';
+      material: string | null;
+    }
+  >();
+  for (const profile of parsed) {
+    if (byName.size >= limit) break;
+    if (byName.has(profile.name)) continue;
+    const rawMaterial = profile.raw.filament_type;
+    const material =
+      typeof rawMaterial === 'string'
+        ? rawMaterial
+        : Array.isArray(rawMaterial) && typeof rawMaterial[0] === 'string'
+          ? rawMaterial[0]
+          : null;
+    byName.set(profile.name, {
+      name: profile.name,
+      source: profile.source,
+      material,
+    });
+  }
+
+  return {
+    installFound,
+    profiles: [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+/**
  * Discover locally installed OrcaSlicer filament profiles that are compatible
  * with the given printer context. Each returned entry is bound to the specific
  * toolhead/nozzle/snapshot identity — no substitution is performed.

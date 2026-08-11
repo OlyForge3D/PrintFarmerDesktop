@@ -1153,6 +1153,26 @@ export const CalibrationPrinterCandidate = z
     /** Whether PrintFarmer considers this printer currently online. */
     isOnline: z.boolean(),
     updatedAt: z.string().datetime(),
+    /**
+     * Machine-readable codes for why PrintFarmer judged this printer
+     * ineligible, e.g. `firmware_family_not_klipper`.
+     *
+     * Codes only, never the server's `message` text. The server controls that
+     * string, and the #177 disposition keeps server-controlled free text out of
+     * the renderer; a bounded code the client maps to its own catalogued
+     * wording carries the same explanation without that exposure.
+     */
+    rejectionReasonCodes: z
+      .array(z.string().min(1).max(128))
+      .max(64)
+      .optional()
+      .default([]),
+    /** Inputs PrintFarmer still needs before this printer can be calibrated. */
+    missingInputs: z
+      .array(z.string().min(1).max(128))
+      .max(64)
+      .optional()
+      .default([]),
     eligibility: CalibrationPrinterEligibility.nullable()
       .optional()
       .default(null),
@@ -1165,6 +1185,20 @@ export const CalibrationPrinterCandidate = z
         path: ['firmwareCompatible'],
         message:
           'Firmware compatibility must be backed by complete explicit eligibility.',
+      });
+    }
+    // An eligible printer has nothing to explain. If both were allowed at once
+    // the renderer could show a printer as ready and as refused simultaneously.
+    if (
+      candidate.eligibility !== null &&
+      (candidate.rejectionReasonCodes.length > 0 ||
+        candidate.missingInputs.length > 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rejectionReasonCodes'],
+        message:
+          'An eligible printer cannot also carry rejection reasons or missing inputs.',
       });
     }
   });
@@ -4385,6 +4419,41 @@ export type CalibrationProfileDiscoveryDiagnostic = z.infer<
   typeof CalibrationProfileDiscoveryDiagnostic
 >;
 
+/**
+ * One locally installed OrcaSlicer filament profile, for inspection only.
+ *
+ * Deliberately carries no printer, toolhead, nozzle or snapshot identity, so it
+ * cannot be mistaken for — or used as — a bound calibration base profile. It
+ * also carries no filesystem path: the renderer needs to know a profile exists,
+ * not where the user keeps it.
+ */
+export const LocalOrcaProfileSummary = z
+  .object({
+    name: z.string().min(1).max(512),
+    source: z.enum(['systemInstall', 'userImported']),
+    material: z.string().max(64).nullable(),
+  })
+  .strict();
+export type LocalOrcaProfileSummary = z.infer<typeof LocalOrcaProfileSummary>;
+
+/** Outcome of scanning this machine's OrcaSlicer installation. */
+export const LocalOrcaDiscoveryDiagnostic = z
+  .object({
+    kind: z.enum([
+      /** Profiles were found locally. */
+      'ok',
+      /** No canonical OrcaSlicer root exists — OrcaSlicer is likely not installed. */
+      'noInstallFound',
+      /** OrcaSlicer is installed but no filament profiles were readable. */
+      'noProfilesFound',
+    ]),
+    message: z.string().max(512),
+  })
+  .strict();
+export type LocalOrcaDiscoveryDiagnostic = z.infer<
+  typeof LocalOrcaDiscoveryDiagnostic
+>;
+
 export const CalibrationListOrcaProfilesResponse = z
   .object({
     profiles: z.array(OrcaProfileEntry).max(5000),
@@ -4397,6 +4466,16 @@ export const CalibrationListOrcaProfilesResponse = z
       kind: 'ok',
       message: 'Server profile discovery completed.',
       serverCode: null,
+    }),
+    /**
+     * Locally installed OrcaSlicer profiles, scanned independently of the
+     * server. Populated even when the server refused, so "PrintFarmer is
+     * unreachable" stays distinguishable from "this machine has no profiles".
+     */
+    localProfiles: z.array(LocalOrcaProfileSummary).max(5000).default([]),
+    localDiscovery: LocalOrcaDiscoveryDiagnostic.default({
+      kind: 'ok',
+      message: 'Local OrcaSlicer profile scan completed.',
     }),
   })
   .strict();
