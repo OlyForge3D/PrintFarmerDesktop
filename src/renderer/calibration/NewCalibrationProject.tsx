@@ -79,6 +79,14 @@ export function NewCalibrationProject(): React.JSX.Element {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [errors, setErrors] = useState<FormErrors>({});
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * The candidate the operator is looking at, which is not yet the one they
+   * chose. Kept apart from the store's `selectedPrinterId` so moving through the
+   * list costs nothing.
+   */
+  const [highlightedPrinterId, setHighlightedPrinterId] = useState<
+    string | null
+  >(null);
 
   const canLoad =
     store.profileId !== null &&
@@ -100,6 +108,12 @@ export function NewCalibrationProject(): React.JSX.Element {
   const selectedPrinterId = store.creation.selectedPrinterId;
   const selectedCandidate = store.creation.printers.find(
     (candidate) => candidate.printerId === selectedPrinterId,
+  );
+  const highlightedCandidate = store.creation.printers.find(
+    (candidate) => candidate.printerId === highlightedPrinterId,
+  );
+  const highlightedBlockers = candidateEligibilityBlockers(
+    highlightedCandidate,
   );
   const candidateBlockers = candidateEligibilityBlockers(selectedCandidate);
   // Only ever read when it belongs to the current selection. The store already
@@ -131,7 +145,27 @@ export function NewCalibrationProject(): React.JSX.Element {
   );
 
   /**
-   * Change the selected printer.
+   * Highlight a printer without loading anything.
+   *
+   * Native radio groups move selection with the arrow keys, firing `change` on
+   * every candidate passed through. Fetching a context there meant traversing a
+   * ten-printer list with the keyboard issued ten context requests and ten
+   * profile resolutions for printers the operator never chose — the same
+   * fan-out this work removes, reintroduced through the keyboard. Highlighting
+   * is local state only; nothing leaves the process until Step 2 is activated.
+   */
+  const highlightPrinter = (printerId: string): void => {
+    setHighlightedPrinterId(printerId);
+    setErrors((current) => {
+      if (!('printerId' in current)) return current;
+      const next = { ...current };
+      delete next.printerId;
+      return next;
+    });
+  };
+
+  /**
+   * Commit the highlighted printer. This is the only path that fetches.
    *
    * Every downstream field is reset here rather than left to settle, because a
    * tool, profile or safety acknowledgement carried over from the previous
@@ -146,11 +180,12 @@ export function NewCalibrationProject(): React.JSX.Element {
       machineClear: false,
     }));
     setErrors({});
+    setHighlightedPrinterId(printerId);
     void store.selectPrinter(printerId);
   };
 
   // Focus follows the outcome of a selection rather than staying where the
-  // click landed: when a choice is refused, the reason is what the operator
+  // activation landed: when a choice is refused, the reason is what the operator
   // needs next, and when it is cleared, the list they must choose from again.
   const previousSelectionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -661,11 +696,11 @@ export function NewCalibrationProject(): React.JSX.Element {
                         type="radio"
                         name="printer"
                         value={candidate.printerId}
-                        checked={selectedPrinterId === candidate.printerId}
-                        // Ineligible printers stay selectable so their reasons
-                        // can be read. Continuation is blocked separately, so
-                        // inspecting a refusal never risks acting on it.
-                        onChange={() => choosePrinter(candidate.printerId)}
+                        checked={highlightedPrinterId === candidate.printerId}
+                        // Highlight only. Selection — and every fetch it causes
+                        // — happens on explicit activation below, so arrowing
+                        // through the list performs no requests at all.
+                        onChange={() => highlightPrinter(candidate.printerId)}
                         aria-describedby={`${rowId}-detail`}
                       />
                       <span>
@@ -684,21 +719,23 @@ export function NewCalibrationProject(): React.JSX.Element {
               </div>
               {fieldError('printerId')}
 
-              {printerChosen && candidateBlockers.length > 0 ? (
-                <div className="cal-alert" role="alert">
-                  <p>
-                    {selectedCandidate?.displayName ?? 'This printer'} cannot be
-                    calibrated yet:
-                  </p>
-                  <ul
-                    id="candidate-eligibility"
-                    className="cal-blocker-list"
-                    tabIndex={-1}
-                  >
-                    {candidateBlockers.map((blocker) => (
-                      <li key={blocker}>{blocker}</li>
-                    ))}
-                  </ul>
+              <div className="cal-step-actions">
+                <button
+                  type="button"
+                  className="cal-button cal-button--primary"
+                  disabled={
+                    highlightedPrinterId === null ||
+                    highlightedBlockers.length > 0 ||
+                    store.creation.contextLoading ||
+                    highlightedPrinterId === selectedPrinterId
+                  }
+                  onClick={() => choosePrinter(highlightedPrinterId)}
+                >
+                  {store.creation.contextLoading
+                    ? 'Loading printer configuration'
+                    : 'Continue with this printer'}
+                </button>
+                {selectedPrinterId !== null ? (
                   <button
                     type="button"
                     className="cal-button"
@@ -706,6 +743,28 @@ export function NewCalibrationProject(): React.JSX.Element {
                   >
                     Choose a different printer
                   </button>
+                ) : null}
+              </div>
+
+              {highlightedPrinterId !== null &&
+              highlightedBlockers.length > 0 ? (
+                // Ineligible printers stay highlightable so their reasons can be
+                // read; continuation is blocked separately, so inspecting a
+                // refusal never risks acting on it.
+                <div className="cal-alert" role="alert">
+                  <p>
+                    {highlightedCandidate?.displayName ?? 'This printer'} cannot
+                    be calibrated yet:
+                  </p>
+                  <ul
+                    id="candidate-eligibility"
+                    className="cal-blocker-list"
+                    tabIndex={-1}
+                  >
+                    {highlightedBlockers.map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
                 </div>
               ) : null}
 

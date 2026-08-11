@@ -156,6 +156,8 @@ import {
   type CalibrationGateResult,
   type CalibrationGatedAction,
 } from './calibrationActionGate.js';
+import { CalibrationSelectionCache } from './calibrationSelectionCache.js';
+import { BedClearAcknowledgementLedger } from './calibrationBedClearLedger.js';
 import { CalibrationSyncEngine } from './calibrationEngine.js';
 import {
   ServerProfileCalibrationTokenProvider,
@@ -597,12 +599,25 @@ export function registerIpcHandlers(
   };
 
   /**
+   * Recent observations of what the operator selected. Never authoritative:
+   * a miss just means the value is fetched again.
+   */
+  const selectionCache = new CalibrationSelectionCache();
+  /**
+   * Proof that an operator confirmed a clear bed. Minted only after this process
+   * has seen the server report the job as awaiting acknowledgement.
+   */
+  const bedClearLedger = new BedClearAcknowledgementLedger();
+
+  /**
    * Verify a mutating or machine-moving action against authoritative evidence
    * *before* anything is dispatched.
    *
-   * Fetches the printer context fresh rather than trusting a cached projection:
-   * the whole point is to compare what the action claims against what the server
-   * currently says, and a stale local copy could agree with a stale request.
+   * The context is re-read from the server unless this process observed the very
+   * same printer *and* configuration revision moments ago. Reusing that
+   * observation matters: without it the backend profile resolver was called
+   * twice for a single operator action, once to render the selection and once to
+   * authorise it.
    *
    * A gate failure returns a refusal instead of throwing so each handler can
    * shape it into its own response union.
@@ -616,24 +631,27 @@ export function registerIpcHandlers(
       snapshotId: string | null;
       toolId: string | null;
     },
-    operatorAcknowledgedBedClear?: boolean,
+    operatorAcknowledgement?: boolean,
   ): Promise<CalibrationGateResult> => {
     const capability = calibrationDiagnostics.capabilitySnapshot();
-    // Cheap refusals first: neither needs the network, so an unauthorised or
-    // disabled action never causes a request at all.
+    const capabilityEvidence =
+      capability === null
+        ? null
+        : { grantedScopes: capability.grantedScopes, flags: capability.flags };
+    const acknowledgement =
+      operatorAcknowledgement === undefined
+        ? {}
+        : { operatorAcknowledgement };
+    // Cheap refusals first: none of these needs the network, so an unauthorised
+    // or disabled action never causes a request at all.
     const preflight = evaluateCalibrationActionGate({
       action,
-      capability:
-        capability === null
-          ? null
-          : { grantedScopes: capability.grantedScopes, flags: capability.flags },
+      capability: capabilityEvidence,
       // Context is supplied below; this pass exists to refuse on permission and
       // capability without paying for a round trip.
       context: null,
       binding: null,
-      ...(operatorAcknowledgedBedClear === undefined
-        ? {}
-        : { operatorAcknowledgedBedClear }),
+      ...acknowledgement,
     });
     if (
       !preflight.allowed &&
@@ -642,35 +660,37 @@ export function registerIpcHandlers(
     ) {
       return preflight;
     }
-    let context: Awaited<ReturnType<typeof calibrationHttp.getPrinterContext>>;
-    try {
-      const ctx = await profiles.getAuthenticatedContext(selectedId);
-      context = await calibrationHttp.getPrinterContext(
-        selectedId,
-        ctx.profile.baseUrl,
-        binding.printerId,
-        AbortSignal.timeout(10_000),
-        binding.configurationRevision ?? undefined,
-      );
-    } catch {
-      return {
-        allowed: false,
-        code: 'contextUnavailable',
-        message:
-          'The authoritative printer context could not be read, so this action cannot be verified.',
-      };
+    let context = selectionCache.context(
+      selectedId,
+      binding.printerId,
+      binding.configurationRevision ?? undefined,
+    );
+    if (context === null) {
+      try {
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        context = await calibrationHttp.getPrinterContext(
+          selectedId,
+          ctx.profile.baseUrl,
+          binding.printerId,
+          AbortSignal.timeout(10_000),
+          binding.configurationRevision ?? undefined,
+        );
+        selectionCache.rememberContext(selectedId, context);
+      } catch {
+        return {
+          allowed: false,
+          code: 'contextUnavailable',
+          message:
+            'The authoritative printer context could not be read, so this action cannot be verified.',
+        };
+      }
     }
     return evaluateCalibrationActionGate({
       action,
-      capability:
-        capability === null
-          ? null
-          : { grantedScopes: capability.grantedScopes, flags: capability.flags },
+      capability: capabilityEvidence,
       context,
       binding,
-      ...(operatorAcknowledgedBedClear === undefined
-        ? {}
-        : { operatorAcknowledgedBedClear }),
+      ...acknowledgement,
     });
   };
 
@@ -2655,10 +2675,52 @@ export function registerIpcHandlers(
       );
       // Bed-clear acknowledgement is a transactional operation scoped to a
       // specific queue job — the prerequisite sync check is not applicable here.
-      // The interlock still applies: this call is what releases a job for
-      // dispatch, so it is the last point at which permission, capability and
-      // printer/revision binding can be verified before the machine moves. The
-      // acknowledgement itself is the operator safety evidence.
+      // The interlock still applies: this call releases a job for dispatch, so
+      // it is the last point at which permission, capability and
+      // printer/revision binding can be verified before the machine moves.
+      //
+      // The operator's confirmation is established here rather than taken from
+      // the renderer. Main asks the server for the job and mints a single-use,
+      // short-lived ledger record only if the server itself reports that job as
+      // assigned to this printer and awaiting acknowledgement. A renderer
+      // cannot manufacture that observation, which is precisely why the earlier
+      // `operatorAcknowledgedBedClear: true` flag was worthless: the party being
+      // gated was asserting its own precondition.
+      const acknowledgementBinding = {
+        profileId: selectedId,
+        printerId: request.printerId,
+        configurationRevision: request.expectedPrinterConfigRevision ?? null,
+        jobId: request.jobId,
+        projectId: null,
+        attemptId: null,
+        operationId: request.operationId,
+      };
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      let observedJob: Awaited<
+        ReturnType<typeof calibrationHttp.getQueueJob>
+      > | null = null;
+      try {
+        observedJob = await calibrationHttp.getQueueJob(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.jobId,
+          AbortSignal.timeout(10_000),
+        );
+      } catch {
+        observedJob = null;
+      }
+      // `Consumed` and `Invalidated` are explicitly *not* acceptable: the first
+      // is a replay of an acknowledgement already spent, the second an
+      // acknowledgement the server itself withdrew.
+      const serverSaysAwaitingBedClear =
+        observedJob !== null &&
+        observedJob.assignedPrinterId === request.printerId &&
+        (observedJob.bedClearState === null ||
+          observedJob.bedClearState === 'None' ||
+          observedJob.bedClearState === 'Acknowledged');
+      if (serverSaysAwaitingBedClear) {
+        bedClearLedger.record(acknowledgementBinding);
+      }
       const gate = await gateCalibrationAction(
         'acknowledgeBedClear',
         selectedId,
@@ -2668,7 +2730,8 @@ export function registerIpcHandlers(
           snapshotId: null,
           toolId: null,
         },
-        true,
+        // Single-use: a replayed dispatch finds nothing left to consume.
+        bedClearLedger.consume(acknowledgementBinding),
       );
       if (!gate.allowed) {
         return ipcSchemas[
@@ -2679,7 +2742,6 @@ export function registerIpcHandlers(
         });
       }
       const signal = AbortSignal.timeout(15_000);
-      const ctx = await profiles.getAuthenticatedContext(selectedId);
       const { correlationId, origin: correlationOrigin } =
         calibrationCorrelation.resolveOrBeginWithOrigin([
           ['job', request.jobId],
@@ -2789,17 +2851,12 @@ export function registerIpcHandlers(
       // other machine-moving action. `assignedPrinterId` and
       // `pinnedPrinterConfigRevision` already named the binding; they are now
       // actually verified against the server rather than merely forwarded.
-      const gate = await gateCalibrationAction(
-        'startPrint',
-        selectedId,
-        {
-          printerId: request.assignedPrinterId,
-          configurationRevision: request.pinnedPrinterConfigRevision,
-          snapshotId: null,
-          toolId: null,
-        },
-        request.operatorAcknowledgedBedClear,
-      );
+      const gate = await gateCalibrationAction('startPrint', selectedId, {
+        printerId: request.assignedPrinterId,
+        configurationRevision: request.pinnedPrinterConfigRevision,
+        snapshotId: null,
+        toolId: null,
+      });
       if (!gate.allowed) {
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',

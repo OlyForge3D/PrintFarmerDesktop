@@ -33,12 +33,12 @@
  * - **The selected printer's context binding** — printer, configuration
  *   revision, snapshot and tool — so an action cannot run against a snapshot
  *   other than the one the operator actually selected and saw.
- * - **Explicit operator acknowledgement** for machine-moving actions, or a
- *   server-supplied safety assurance when a deployment does publish one.
+ * - **A main-process bed-clear acknowledgement** for machine-moving actions,
+ *   taken from a single-use ledger rather than asserted by the renderer.
  *
  * It deliberately does **not** require the absent `safety`/`permissions`
- * members for discovery or generation, because that would reintroduce the exact
- * unsatisfiable predicate #715 removed.
+ * members for discovery, creation or generation, because that would reintroduce
+ * the exact unsatisfiable predicate #715 removed.
  */
 
 import {
@@ -47,7 +47,6 @@ import {
   type CalibrationPermission,
 } from '../shared/ipc.js';
 import {
-  isCalibrationContextSafetyAssured,
   isExplicitCalibrationContextComplete,
   type RemoteCalibrationPrinterContext,
 } from './calibrationWire.js';
@@ -63,9 +62,14 @@ export type CalibrationGatedAction =
   /** Acknowledge bed-clear and release a queued job for dispatch. */
   | 'acknowledgeBedClear';
 
-/** Machine-moving actions require operator or server safety evidence. */
+/** Machine-moving actions require ledger-backed operator acknowledgement. */
 const MACHINE_MOVING_ACTIONS: ReadonlySet<CalibrationGatedAction> = new Set([
-  'startPrint',
+  // Enqueuing is deliberately absent. `createQueueJob` places a job in the
+  // queue; it is `acknowledge-bed-clear-and-start` that releases it for
+  // dispatch, and that is the call after which a machine actually moves.
+  // Requiring a bed-clear acknowledgement to *enqueue* would be unsatisfiable,
+  // because the job the operator acknowledges does not exist until enqueue has
+  // already succeeded.
   'acknowledgeBedClear',
 ]);
 
@@ -148,11 +152,13 @@ export interface CalibrationGateInput {
   /** What the action claims to act on. */
   readonly binding: CalibrationActionBinding | null;
   /**
-   * Explicit, in-session operator acknowledgement that the machine is clear and
-   * safe to move. Only consulted for machine-moving actions, and only ever
-   * supplied by a real operator interaction — never defaulted to true.
+   * Whether a live, single-use bed-clear acknowledgement was found in the
+   * main-process ledger for this exact binding.
+   *
+   * Supplied by the caller after consuming it, never by the renderer. Only
+   * consulted for machine-moving actions.
    */
-  readonly operatorAcknowledgedBedClear?: boolean;
+  readonly operatorAcknowledgement?: boolean;
 }
 
 /**
@@ -259,18 +265,17 @@ export function evaluateCalibrationActionGate(
   }
 
   if (MACHINE_MOVING_ACTIONS.has(action)) {
-    // Two independent forms of evidence are accepted, and at least one is
-    // required. `isCalibrationContextSafetyAssured` is the server-supplied form;
-    // it is false on every deployment that publishes no safety block, which is
-    // currently all of them — hence the operator acknowledgement, which is real
-    // evidence a real person supplied. Requiring the server block alone would
-    // make machine-moving actions permanently unreachable; requiring neither
-    // would let them run with no safety evidence at all.
-    const serverAssured = isCalibrationContextSafetyAssured(context);
-    if (!serverAssured && input.operatorAcknowledgedBedClear !== true) {
+    // The only acceptable evidence is a main-process ledger record, minted after
+    // main itself observed the server reporting this job as awaiting a bed-clear
+    // acknowledgement. `context.safety` is deliberately *not* consulted:
+    // `CalibrationContextDto` has no safety member, so a server assurance is
+    // never present, and writing `serverAssured || operatorSaidSo` produced a
+    // condition whose first half was permanently false and whose second half was
+    // a boolean the gated party supplied about itself.
+    if (input.operatorAcknowledgement !== true) {
       return block(
         'safetyNotAssured',
-        'The machine has not been confirmed clear and PrintFarmer published no safety assurance, so this action cannot move the printer.',
+        'No current operator confirmation that the machine is clear was recorded for this job, so it cannot be dispatched.',
       );
     }
   }

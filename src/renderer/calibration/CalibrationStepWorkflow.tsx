@@ -282,6 +282,15 @@ export function CalibrationStepWorkflow({
   const [bedClearOpen, setBedClearOpen] = useState(false);
   const [bedClearSubmitting, setBedClearSubmitting] = useState(false);
   const [bedClearError, setBedClearError] = useState<string | null>(null);
+  const [queuePrintSubmitting, setQueuePrintSubmitting] = useState(false);
+  /**
+   * Why the last queue attempt was refused.
+   *
+   * Rendered rather than swallowed: the interlock refuses on permission,
+   * capability and stale-binding grounds, and every one of those is something
+   * the operator can act on once told.
+   */
+  const [queuePrintError, setQueuePrintError] = useState<string | null>(null);
   /** Expiry received from a bed-clear queue event; wired into the dialog countdown. */
   const [bedClearExpiresAt, setBedClearExpiresAt] = useState<string | null>(
     null,
@@ -379,6 +388,8 @@ export function CalibrationStepWorkflow({
     );
     if (!attempt) return;
     const printerId = state.binding.printer.backendPrinterId;
+    setQueuePrintError(null);
+    setQueuePrintSubmitting(true);
     try {
       const res = await calibrationApi().startCalibrationPrint({
         profileId: store.profileId,
@@ -453,9 +464,22 @@ export function CalibrationStepWorkflow({
             rowVersion: res.rowVersion ?? null,
           });
         }
+      } else {
+        // A refused queue attempt used to fall through here and leave the
+        // button looking inert: the operator clicked, nothing moved, and no
+        // reason was given. Every non-ok outcome now says why, including the
+        // interlock refusals (permission, capability, stale binding) that are
+        // the most likely reason a correctly configured farm still says no.
+        setQueuePrintError(calibrationErrorText(res.error));
       }
-    } catch {
-      // Queue errors surface via the dispatch panel's own polling
+    } catch (cause) {
+      setQueuePrintError(
+        cause instanceof Error
+          ? cause.message
+          : 'The calibration print could not be queued.',
+      );
+    } finally {
+      setQueuePrintSubmitting(false);
     }
   }, [
     store.profileId,
@@ -1323,12 +1347,15 @@ export function CalibrationStepWorkflow({
                 disabled={
                   !queueDecision.allowed ||
                   orchStatus?.gcodeFileId == null ||
-                  queueJobId !== null
+                  queueJobId !== null ||
+                  queuePrintSubmitting
                 }
                 aria-describedby="queue-gate"
                 onClick={() => void handleQueuePrint()}
               >
-                Queue calibration print
+                {queuePrintSubmitting
+                  ? 'Verifying and queueing'
+                  : 'Queue calibration print'}
               </button>
               <button
                 ref={bedClearTriggerRef}
@@ -1352,6 +1379,11 @@ export function CalibrationStepWorkflow({
                 Start calibration print
               </button>
             </div>
+            {queuePrintError ? (
+              <p className="cal-field-error" role="alert">
+                {queuePrintError}
+              </p>
+            ) : null}
             <div className="cal-gate-list">
               <p id="generation-gate">
                 <strong>Generation gate:</strong>{' '}

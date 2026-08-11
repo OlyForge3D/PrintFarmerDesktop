@@ -45,6 +45,7 @@ const mainDir = path.join(repoRoot, 'src', 'main');
  * a glob that resolves to fewer files still passes every scan below.
  */
 const CALIBRATION_SURFACE: readonly string[] = [
+  'calibrationActionGate.ts',
   'calibrationAssetManifest.ts',
   'calibrationCorrelation.ts',
   'calibrationDiagnostics.ts',
@@ -63,7 +64,7 @@ const CALIBRATION_SURFACE: readonly string[] = [
 ];
 
 /** The cardinality the list above is expected to have, pinned so a deletion is loud. */
-const EXPECTED_SURFACE_SIZE = 15;
+const EXPECTED_SURFACE_SIZE = 16;
 
 /**
  * Direct stream writes are the obvious way to evade a console ban, so the two

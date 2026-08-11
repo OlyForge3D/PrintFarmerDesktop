@@ -18,6 +18,7 @@ import {
   RemoteCalibrationPrinterCandidate,
   RemoteCalibrationPrinterContext,
 } from '../src/main/calibrationWire.js';
+import { evaluateCalibrationActionGate } from '../src/main/calibrationActionGate.js';
 import { resolveCalibrationWorkspaceFreshness } from '../src/main/calibrationFreshness.js';
 import { CalibrationHttpError } from '../src/main/calibrationHttp.js';
 
@@ -973,5 +974,68 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     expect(
       projectPrintFarmerOrcaProfile(remoteCandidate(), wrongPrinter),
     ).toBeNull();
+  });
+
+  it('keeps discovery satisfiable while machine movement stays fail-closed', () => {
+    // PrintFarmer's context DTO carries no safety or permission members, so any
+    // predicate requiring them is unsatisfiable. Listing a profile must still
+    // work against the real DTO, and anything that would move the machine must
+    // still refuse — but for a reason that exists, not one that cannot.
+    const context = RemoteCalibrationPrinterContext.parse(contextDto());
+    expect(isExplicitCalibrationContextComplete(context)).toBe(true);
+    expect(context.safety).toBeNull();
+    expect(context.permissions).toBeNull();
+
+    const capability = {
+      grantedScopes: [
+        'calibration:read',
+        'calibration:create',
+        'calibration:update',
+        'calibration:generate',
+      ],
+      flags: {
+        calibrationApiEnabled: true,
+        calibrationGenerationEnabled: true,
+      },
+    };
+    const binding = {
+      printerId: context.printerId,
+      configurationRevision: context.configurationRevision,
+      snapshotId: context.snapshotId,
+      toolId: context.toolheads[0]?.toolId ?? null,
+    };
+
+    // Generation moves nothing, so a complete context plus the exact permission
+    // is enough. This is the case the old predicate blocked outright.
+    expect(
+      evaluateCalibrationActionGate({
+        action: 'generate',
+        capability,
+        context,
+        binding,
+      }).allowed,
+    ).toBe(true);
+
+    // Dispatch refuses without a ledger-backed operator acknowledgement.
+    const withoutAcknowledgement = evaluateCalibrationActionGate({
+      action: 'acknowledgeBedClear',
+      capability,
+      context,
+      binding,
+    });
+    expect(withoutAcknowledgement.allowed).toBe(false);
+    expect(withoutAcknowledgement.code).toBe('safetyNotAssured');
+
+    // And permits it with one, so the refusal above is a real gate rather than
+    // an unsatisfiable condition wearing a gate's name.
+    expect(
+      evaluateCalibrationActionGate({
+        action: 'acknowledgeBedClear',
+        capability,
+        context,
+        binding,
+        operatorAcknowledgement: true,
+      }).allowed,
+    ).toBe(true);
   });
 });

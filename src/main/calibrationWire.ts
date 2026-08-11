@@ -1014,14 +1014,16 @@ export function projectCalibrationEligibility(
  * predicate unsatisfiable against every real server, which silently disabled
  * profile listing rather than gating anything.
  *
- * The safety and permission gates that actually run today are the server's
- * own refusal (PrintFarmer does not permit generation or print start unless
- * it is prepared to serve them) and the `calibrationGenerationEnabled`
- * capability flag, checked at the call sites that trigger those actions.
- * There is no additional client-side safety-interlock predicate in this
- * module beyond the drift detection performed by
- * {@link doesCalibrationWorkspaceMatchContext} when a `safety` block is
- * present.
+ * Authorisation for anything that mutates server state or moves a machine lives
+ * in `calibrationActionGate.ts`, which gates on evidence that exists: the
+ * canonical `effectivePermissions`, the negotiated capability flags, the
+ * printer/revision/snapshot/tool binding, and a main-process bed-clear
+ * acknowledgement ledger. Until that gate existed the only checks that actually
+ * ran were the server's own refusal and the `calibrationGenerationEnabled`
+ * flag — a comment here once named `isCalibrationContextSafetyAssured` as the
+ * interlock, but that predicate had no call sites, so the protection it
+ * described did not exist. This module still performs no interlock of its own
+ * beyond the drift detection in {@link doesCalibrationWorkspaceMatchContext}.
  */
 export function isExplicitCalibrationContextComplete(
   context: RemoteCalibrationPrinterContext,
@@ -1198,9 +1200,10 @@ export function doesCalibrationWorkspaceMatchContext(
   // compared exactly.
   //
   // This is drift detection, not authorisation: actions that move the machine
-  // are gated by the server's own refusal to perform them and by the
-  // `calibrationGenerationEnabled` capability flag — this module performs no
-  // additional client-side safety-interlock check of its own.
+  // are gated in `calibrationActionGate.ts` on canonical effective permissions,
+  // negotiated capability flags, the printer/revision/snapshot/tool binding and
+  // a main-process bed-clear acknowledgement ledger. This module performs no
+  // client-side interlock of its own; what follows is drift detection.
   const remoteSafety = context.safety;
   const safetyMatches =
     remoteSafety === null ||
