@@ -240,6 +240,8 @@ const candidates: CalibrationPrinterCandidate[] = [
     updatedAt: now,
     // Explicitly ineligible: the server named a reason, so the renderer can
     // explain the refusal instead of showing an unexplained absence.
+    // Basic screening only; the candidate list does not resolve profiles.
+    evaluationScope: 'preliminary' as const,
     rejectionReasonCodes: ['firmware_family_not_klipper'],
     missingInputs: [],
     eligibility: null,
@@ -252,6 +254,8 @@ const candidates: CalibrationPrinterCandidate[] = [
     orcaProfileId: null,
     isOnline: true,
     updatedAt: now,
+    // Basic screening only; the candidate list does not resolve profiles.
+    evaluationScope: 'preliminary' as const,
     rejectionReasonCodes: [],
     missingInputs: [],
     eligibility: {

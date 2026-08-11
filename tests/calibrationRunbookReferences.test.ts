@@ -102,6 +102,7 @@ import path from 'node:path';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  CALIBRATION_PERMISSIONS,
   IpcChannel,
   CalibrationAvailability,
   CalibrationCapabilitySnapshot,
@@ -378,6 +379,18 @@ const CODE_SPAN = /`([^`\n]+)`/g;
 /** `someCamelCaseName` — at least one internal capital, no separators. */
 const CAMEL_FIELD = /^[a-z]+(?:[A-Z0-9][A-Za-z0-9]*)+$/;
 const CHANNEL = /^calibration:[A-Za-z]+$/;
+/**
+ * Canonical calibration permissions, which share the `calibration:` prefix with
+ * the IPC channels but are a different vocabulary entirely.
+ *
+ * Taken from the production constant rather than restated, so a permission
+ * renamed in one place cannot stay "documented" here. Without this split the
+ * checker read `calibration:read` as an IPC channel and reported the guides as
+ * referencing a channel that does not exist.
+ */
+const CALIBRATION_PERMISSION_TOKENS = new Set<string>(
+  Object.values(CALIBRATION_PERMISSIONS),
+);
 const NPM_SCRIPT = /^npm run ([A-Za-z0-9:_-]+)$/;
 /** The same two classes, matched unanchored so a fenced block is covered. */
 const CHANNEL_ANYWHERE = /calibration:([A-Za-z]+)/g;
@@ -410,6 +423,10 @@ export function extractReferences(markdown: string): DocReferences {
     const script = NPM_SCRIPT.exec(token);
     if (script !== null) {
       references.scripts.push(script[1]!);
+    } else if (CALIBRATION_PERMISSION_TOKENS.has(token)) {
+      // A canonical permission, already validated by membership above. It is
+      // not an IPC channel and must not be checked as one.
+      continue;
     } else if (CHANNEL.test(token)) {
       references.channels.push(token);
     } else if (DOTTED.test(token)) {

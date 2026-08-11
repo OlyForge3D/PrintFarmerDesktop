@@ -378,6 +378,13 @@ export function CalibrationStepWorkflow({
     orchLoading,
     state.attempts,
     state.projectId,
+    // The binding this generation is verified against. Listed explicitly so a
+    // later change to which printer or revision the project is pinned to
+    // rebuilds the callback rather than leaving it closing over the old one.
+    state.binding.printer.backendPrinterId,
+    state.binding.printer.printerConfigurationRevision,
+    state.binding.snapshot.snapshotId,
+    state.binding.selectedToolId,
     stageId,
   ]);
 
