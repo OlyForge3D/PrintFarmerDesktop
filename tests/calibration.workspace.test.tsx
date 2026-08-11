@@ -431,6 +431,10 @@ function makeApi(savedRecord = record()) {
             exportable: true,
           },
         ],
+        // Echoed so the renderer's printer/revision fence has something to
+        // match against, exactly as the production handler does.
+        printerId: 'printer-safe',
+        configurationRevision: 7,
       }),
     ),
     listCalibrationConflicts: vi
@@ -702,7 +706,7 @@ describe('CalibrationWorkspace', () => {
     });
     fireEvent.click(trap);
     expect(
-      screen.getByRole('button', { name: 'Load current printer context' }),
+      screen.getByRole('button', { name: 'Continue with this printer' }),
     ).toBeDisabled();
     expect(
       screen.getAllByText(/canonical Klipper, OrcaSlicer, upstream eligibility/)
@@ -711,12 +715,12 @@ describe('CalibrationWorkspace', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /Unbranded cell 7/ }));
     const load = screen.getByRole('button', {
-      name: 'Load current printer context',
+      name: 'Continue with this printer',
     });
     expect(load).toBeEnabled();
     fireEvent.click(load);
     expect(
-      await screen.findByText(/Context is complete and current/),
+      await screen.findByText(/Configuration is complete and current/),
     ).toBeInTheDocument();
     expect(api.getCalibrationPrinterContext).toHaveBeenCalledWith({
       profileId,
@@ -745,9 +749,9 @@ describe('CalibrationWorkspace', () => {
       await screen.findByRole('radio', { name: /Unbranded cell 7/ }),
     );
     fireEvent.click(
-      screen.getByRole('button', { name: 'Load current printer context' }),
+      screen.getByRole('button', { name: 'Continue with this printer' }),
     );
-    await screen.findByText(/Context is complete and current/);
+    await screen.findByText(/Configuration is complete and current/);
 
     fireEvent.change(screen.getByLabelText('Project name'), {
       target: { value: 'Exact PETG project' },
@@ -871,11 +875,10 @@ describe('CalibrationWorkspace', () => {
     });
   });
 
-  it('denies creation when current context is incomplete or permissions are missing', async () => {
+  it('denies creation when the current context is incomplete', async () => {
     const incomplete = {
       ...context,
       configurationId: null,
-      permissions: { ...context.permissions!, writeCalibration: false },
     };
     const api = makeApi();
     api.getCalibrationPrinterContext.mockResolvedValue(incomplete);
@@ -887,7 +890,7 @@ describe('CalibrationWorkspace', () => {
       await screen.findByRole('radio', { name: /Unbranded cell 7/ }),
     );
     fireEvent.click(
-      screen.getByRole('button', { name: 'Load current printer context' }),
+      screen.getByRole('button', { name: 'Continue with this printer' }),
     );
     expect(
       await screen.findByText(/Creation remains blocked/),
@@ -895,9 +898,13 @@ describe('CalibrationWorkspace', () => {
     expect(
       screen.getByText(/configuration identity is missing/i),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/calibration write is required/i),
-    ).toBeInTheDocument();
+    // Note what is deliberately *not* asserted here any more: a per-printer
+    // "calibration write is required" blocker. `CalibrationContextDto` has no
+    // permissions member, so that blocker fired for every printer on every real
+    // server and told the operator their machine was misconfigured when the
+    // server had simply never been asked. Write authorisation is now enforced by
+    // the action interlock against the capability payload's effective
+    // permissions, where the evidence actually exists.
     expect(api.saveCalibrationWorkspaceState).not.toHaveBeenCalled();
   });
 
@@ -1256,6 +1263,8 @@ describe('CalibrationWorkspace', () => {
       snapshotAt: '2026-07-26T17:00:00.000Z',
     });
     api.listOrcaProfiles.mockResolvedValue({
+      printerId: 'printer-safe',
+      configurationRevision: 8,
       profiles: [
         {
           orcaProfileId: 'orca-base',
@@ -1738,27 +1747,30 @@ describe('CalibrationWorkspace', () => {
     ).toBe(true);
   });
 
-  it('settles explicit empty printer and profile discovery without retry loops', async () => {
+  it('settles an empty printer list without resolving any profiles', async () => {
     const api = makeApi();
     api.listCalibrationPrinters.mockResolvedValue({
       printers: [],
       fetchedAt: now,
     });
-    api.listOrcaProfiles.mockResolvedValue({ profiles: [] });
     renderWorkspace(api);
 
     fireEvent.click(
       await screen.findByRole('button', { name: 'New calibration project' }),
     );
     expect(
-      await screen.findByText('No printer candidates were returned.'),
+      await screen.findByText(/PrintFarmer returned no enabled printers/),
     ).toBeInTheDocument();
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(api.listCalibrationPrinters).toHaveBeenCalledOnce();
-    expect(api.listOrcaProfiles).toHaveBeenCalledOnce();
+    // The load settles without retrying, and without asking for a single
+    // profile: there is no printer to scope a profile request to, and there
+    // never was one before the operator chose.
+    expect(api.listOrcaProfiles).not.toHaveBeenCalled();
+    expect(api.getCalibrationPrinterContext).not.toHaveBeenCalled();
   });
 
   it('flushes pending debounced metadata to the local queue when leaving the workspace', async () => {

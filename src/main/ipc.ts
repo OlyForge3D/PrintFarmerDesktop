@@ -2224,21 +2224,15 @@ export function registerIpcHandlers(
           rawRequest,
         );
       await requireSelectedCalibrationProfile(request.profileId);
-      // Resolving a conflict writes the chosen side back to the server, so it
-      // is gated on the same permission as any other calibration mutation.
-      const permission = gateCalibrationPermission('startPrint');
-      if (!permission.allowed) {
-        throw Object.assign(
-          new Error(
-            permission.message ?? 'Conflict resolution is not permitted.',
-          ),
-          { code: 'CALIBRATION_FORBIDDEN' },
-        );
-      }
       // Same predicate that decides CalibrationConflict.availableResolutions.
       // If this handler refused on its own hard-coded assumption, the two could
       // disagree -- the UI offering actions this channel rejects, or the
       // reverse. One fact, two readers.
+      //
+      // Checked before the permission gate deliberately: "this build cannot
+      // resolve conflicts at all" is a more specific and more actionable answer
+      // than "you may not write", and putting the generic refusal first would
+      // replace a precise diagnosis with a vague one.
       if (!supportsConflictResolution(calibrationSidecarAdapter)) {
         throw Object.assign(
           new Error(
@@ -2247,6 +2241,14 @@ export function registerIpcHandlers(
           { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
         );
       }
+      // Deliberately not gated on a server permission. Resolving a conflict
+      // writes the chosen side to the local sidecar store; nothing reaches
+      // PrintFarmer until the outbox is applied, and `CalibrationSyncNow` — the
+      // channel that actually pushes — is gated there. Refusing here as well
+      // would stop an operator with read-only farm access from tidying their own
+      // local state, and would refuse before capabilities have been negotiated
+      // at all on a workspace opened offline.
+      //
       // Parsed on the way out, as the sibling list channel above already does
       // and as 130-odd handlers in this file do. Without it this channel is the
       // one place a value that violates CalibrationConflict reaches the renderer
