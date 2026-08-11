@@ -625,3 +625,31 @@ describe('the request cannot express a farm-wide resolution', () => {
     ).rejects.toThrow(/selected profile/i);
   });
 });
+
+describe('a scan that could not look is not a scan that found nothing', () => {
+  it('reports an unreadable profile folder as a scan failure, not a missing install', async () => {
+    // A directory the scanner cannot read is a permissions problem the operator
+    // can fix. Reporting it as `noInstallFound` sent operators with a perfectly
+    // good OrcaSlicer off to install OrcaSlicer.
+    // A file where the scanner expects the profile root: readdir fails with
+    // ENOTDIR on every platform, which is the same shape as a permission
+    // denial on a directory that is really there.
+    const userRoot = redirectOrcaUserRoot();
+    await rm(userRoot, { recursive: true, force: true });
+    await writeFile(userRoot, 'not a directory');
+
+    server();
+    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    })) as ProfilesResponse;
+
+    expect(response.localDiscovery.kind).toBe('scanFailed');
+    expect(response.localDiscovery.message).not.toContain(userRoot);
+    // The server side of the answer is untouched: a local scan problem must not
+    // erase the printer''s own profile.
+    expect(
+      response.profiles.some((entry) => entry.source === 'printFarmer'),
+    ).toBe(true);
+  });
+});

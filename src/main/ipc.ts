@@ -4185,32 +4185,52 @@ export function registerIpcHandlers(
         }>;
         localDiscovery: { kind: string; message: string };
       }> => {
+        // A scan that throws is not evidence about this machine. Reporting it as
+        // `noInstallFound` told operators with a working OrcaSlicer to install
+        // OrcaSlicer, and hid permission and I/O faults behind advice that could
+        // not fix them.
+        let scanFailed = false;
         const scan = await listLocalOrcaFilamentProfiles({
           limit: LOCAL_PROFILE_EXEMPLAR_LIMIT,
-        }).catch(() => ({
-          installFound: false,
-          profiles: [] as Array<{
-            name: string;
-            source: 'systemInstall' | 'userImported';
-            material: string | null;
-          }>,
-        }));
-        const localDiscovery = !scan.installFound
-          ? {
-              kind: 'noInstallFound',
-              message:
-                'No OrcaSlicer installation was found in the standard locations for this operating system.',
-            }
-          : scan.profiles.length === 0
+        }).catch(() => {
+          scanFailed = true;
+          return {
+            installFound: false,
+            readFailureCount: 1,
+            profiles: [] as Array<{
+              name: string;
+              source: 'systemInstall' | 'userImported';
+              material: string | null;
+            }>,
+          };
+        });
+        const localDiscovery =
+          scanFailed ||
+          (scan.profiles.length === 0 && scan.readFailureCount > 0)
             ? {
-                kind: 'noProfilesFound',
+                kind: 'scanFailed',
+                // Deliberately no path or system message: this is rendered in
+                // the workspace, and a filesystem path is not the operator's to
+                // read out of an error string.
                 message:
-                  'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                  'The local OrcaSlicer profile scan could not be completed on this machine. Check that OrcaSlicer’s profile folders are readable, then retry.',
               }
-            : {
-                kind: 'ok',
-                message: 'Local OrcaSlicer profile scan completed.',
-              };
+            : !scan.installFound
+              ? {
+                  kind: 'noInstallFound',
+                  message:
+                    'No OrcaSlicer installation was found in the standard locations for this operating system.',
+                }
+              : scan.profiles.length === 0
+                ? {
+                    kind: 'noProfilesFound',
+                    message:
+                      'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                  }
+                : {
+                    kind: 'ok',
+                    message: 'Local OrcaSlicer profile scan completed.',
+                  };
         return { localProfiles: scan.profiles, localDiscovery };
       };
 
@@ -4340,18 +4360,25 @@ export function registerIpcHandlers(
       // against a file in the local OrcaSlicer installation, and the two are
       // never interchanged. One traversal answers both "did it match" and, on a
       // miss, "why not".
+      // Same distinction as the context-less diagnosis: a scan that threw has
+      // no standing to claim OrcaSlicer is absent from this machine.
+      let localScanFailed = false;
       const local = await discoverLocalOrcaFilamentProfiles(context).catch(
-        () => ({
-          entries: [] as Awaited<
-            ReturnType<typeof discoverLocalOrcaFilamentProfiles>
-          >['entries'],
-          diagnostic: {
-            installFound: false,
-            enumeratedFileCount: 0,
-            parsedFileCount: 0,
-            exemplars: [] as readonly string[],
-          },
-        }),
+        () => {
+          localScanFailed = true;
+          return {
+            entries: [] as Awaited<
+              ReturnType<typeof discoverLocalOrcaFilamentProfiles>
+            >['entries'],
+            diagnostic: {
+              installFound: false,
+              enumeratedFileCount: 0,
+              parsedFileCount: 0,
+              exemplars: [] as readonly string[],
+              readFailureCount: 1,
+            },
+          };
+        },
       );
       const localEntries = local.entries;
 
@@ -4367,23 +4394,29 @@ export function registerIpcHandlers(
               message:
                 'A local OrcaSlicer profile matching the selected printer was found.',
             }
-          : !local.diagnostic.installFound
+          : localScanFailed || local.diagnostic.readFailureCount > 0
             ? {
-                kind: 'noInstallFound',
+                kind: 'scanFailed',
                 message:
-                  'No OrcaSlicer installation was found in the standard locations for this operating system.',
+                  'The local OrcaSlicer profile scan could not be completed on this machine. Check that OrcaSlicer’s profile folders are readable, then retry.',
               }
-            : local.diagnostic.parsedFileCount === 0
+            : !local.diagnostic.installFound
               ? {
-                  kind: 'noProfilesFound',
+                  kind: 'noInstallFound',
                   message:
-                    'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                    'No OrcaSlicer installation was found in the standard locations for this operating system.',
                 }
-              : {
-                  kind: 'noMatchForSelectedPrinter',
-                  message:
-                    'OrcaSlicer is installed and its profiles were read, but none matches the profile name and nozzle the selected printer reports.',
-                };
+              : local.diagnostic.parsedFileCount === 0
+                ? {
+                    kind: 'noProfilesFound',
+                    message:
+                      'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+                  }
+                : {
+                    kind: 'noMatchForSelectedPrinter',
+                    message:
+                      'OrcaSlicer is installed and its profiles were read, but none matches the profile name and nozzle the selected printer reports.',
+                  };
 
       return answer({
         profiles: resolved,
@@ -4530,7 +4563,7 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(
+  registerCalibrationHandler(
     IpcChannel.CalibrationImportLegacyBackupV4,
     async (event, rawRequest: unknown) => {
       const request =
@@ -4542,6 +4575,30 @@ export function registerIpcHandlers(
         request.profileId,
       );
 
+      const refuse = (error: ReturnType<typeof mapImportError>): unknown =>
+        ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].response.parse({
+          status: 'error',
+          error,
+        });
+
+      // `POST /api/calibration-imports/legacy-v4` enforces calibration:create.
+      // Checking it here, before the single-use approval is consumed and before
+      // the backup is read off disk, keeps an unauthorised import from
+      // destroying the operator's approval and touching their filesystem on the
+      // way to a refusal the server was always going to give.
+      const actionEpoch = calibrationStateEpoch;
+      const permission = gateCalibrationPermission('createProject', selectedId);
+      if (!permission.allowed) {
+        const refusal = gateRefusalToApiError(permission);
+        return refuse({
+          code: refusal.code,
+          message: refusal.message,
+          retryable: refusal.retryable,
+          retryAfterSeconds: refusal.retryAfterSeconds ?? null,
+          reference: null,
+        });
+      }
+
       // Consume the approval — this resolves the approvalId to a file path and
       // removes it from the store (single-use). If expired or wrong owner, throws.
       let filePath: string;
@@ -4551,12 +4608,7 @@ export function registerIpcHandlers(
           event.sender.id,
         );
       } catch (error) {
-        return ipcSchemas[
-          IpcChannel.CalibrationImportLegacyBackupV4
-        ].response.parse({
-          status: 'error',
-          error: mapImportError(error),
-        });
+        return refuse(mapImportError(error));
       }
 
       // Re-run preflight to get the parsed backup structure (the approval store
@@ -4565,26 +4617,16 @@ export function registerIpcHandlers(
       try {
         preflight = await runLegacyBackupPreflight(filePath);
       } catch (error) {
-        return ipcSchemas[
-          IpcChannel.CalibrationImportLegacyBackupV4
-        ].response.parse({
-          status: 'error',
-          error: mapImportError(error),
-        });
+        return refuse(mapImportError(error));
       }
 
       if (preflight.parsedBackup === null) {
-        return ipcSchemas[
-          IpcChannel.CalibrationImportLegacyBackupV4
-        ].response.parse({
-          status: 'error',
-          error: {
-            code: 'invalidData',
-            message: 'Backup preflight failed; no valid data to import.',
-            retryable: false,
-            retryAfterSeconds: null,
-            reference: null,
-          },
+        return refuse({
+          code: 'invalidData',
+          message: 'Backup preflight failed; no valid data to import.',
+          retryable: false,
+          retryAfterSeconds: null,
+          reference: null,
         });
       }
 
@@ -4608,17 +4650,12 @@ export function registerIpcHandlers(
           .slice(0, 5)
           .map((o: ProjectOutcome) => o.legacyProjectId)
           .join(', ');
-        return ipcSchemas[
-          IpcChannel.CalibrationImportLegacyBackupV4
-        ].response.parse({
-          status: 'error',
-          error: {
-            code: 'invalidData',
-            message: `Missing explicit printer/toolhead mappings for ${missingMappings.length} project(s): ${missingIds}`,
-            retryable: false,
-            retryAfterSeconds: null,
-            reference: null,
-          },
+        return refuse({
+          code: 'invalidData',
+          message: `Missing explicit printer/toolhead mappings for ${missingMappings.length} project(s): ${missingIds}`,
+          retryable: false,
+          retryAfterSeconds: null,
+          reference: null,
         });
       }
 
@@ -4628,11 +4665,25 @@ export function registerIpcHandlers(
       try {
         authCtx = await profiles.getAuthenticatedContext(selectedId);
       } catch (error) {
-        return ipcSchemas[
-          IpcChannel.CalibrationImportLegacyBackupV4
-        ].response.parse({
-          status: 'error',
-          error: mapImportError(error),
+        return refuse(mapImportError(error));
+      }
+
+      // Reading and parsing a backup is slow, and the operator can switch
+      // profile or lose their grant while it happens. Re-check immediately
+      // before the write so an import cannot land on a farm that was selected
+      // when the file dialog opened and not when the request is sent.
+      if (
+        !calibrationStateUnchanged(actionEpoch, selectedId, 'createProject')
+      ) {
+        const refusal = gateRefusalToApiError(
+          SELECTION_CHANGED_DURING_VERIFICATION,
+        );
+        return refuse({
+          code: refusal.code,
+          message: refusal.message,
+          retryable: refusal.retryable,
+          retryAfterSeconds: refusal.retryAfterSeconds ?? null,
+          reference: null,
         });
       }
 
@@ -4656,12 +4707,20 @@ export function registerIpcHandlers(
           projectResults: result.projectResults,
         });
       } catch (error) {
-        return ipcSchemas[
-          IpcChannel.CalibrationImportLegacyBackupV4
-        ].response.parse({
-          status: 'error',
-          error: mapImportError(error),
-        });
+        // Converted, so the central wrapper never sees it. The import is not
+        // replayed: it consumed a single-use approval, and repeating a bulk
+        // write because authorisation changed its mind is not a retry.
+        const accessFailure = await noteCalibrationAccessFailure(
+          selectedId,
+          error,
+        );
+        const guidance = accessFailureGuidance(accessFailure);
+        const mapped = mapImportError(error);
+        return refuse(
+          guidance === ''
+            ? mapped
+            : { ...mapped, message: `${mapped.message} ${guidance}` },
+        );
       }
     },
   );
@@ -4851,6 +4910,40 @@ export function registerIpcHandlers(
           error: {
             code: 'baseProfileMissing',
             message: `Local OrcaSlicer base profile "${orcaProfileLookupName}" was not found. Ensure OrcaSlicer is installed and the profile exists.`,
+            retryable: false,
+          },
+        });
+      }
+
+      // The base profile must be byte-for-byte the one the project was bound
+      // to. `findLocalOrcaProfileRaw` matches on *name*, and a name is not an
+      // identity: OrcaSlicer rewrites profiles in place, so the file standing
+      // under that name at generation time is not necessarily the file the
+      // operator selected. Patching it anyway produced output whose provenance
+      // record named a base that was never used — silently, and precisely for
+      // the artefact whose whole value is that its base is pinned.
+      const recordedBaseHash = wsPayload.selectedBaseProfile.contentHash;
+      if (recordedBaseHash === null) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'baseProfileUnverifiable',
+            message:
+              'This calibration project recorded no fingerprint for its base profile, so the local file cannot be verified as the one it was bound to. Re-select the base profile to repair the project.',
+            retryable: false,
+          },
+        });
+      }
+      if (localProfile.contentHash !== recordedBaseHash) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'baseProfileChanged',
+            message: `The local OrcaSlicer profile "${orcaProfileLookupName}" has changed since this calibration project was bound to it. Re-select the base profile, or restore the original, before generating.`,
             retryable: false,
           },
         });

@@ -93,6 +93,7 @@ function fakeProfiles() {
         token: 'test-jwt',
         binding: 'binding-abc',
       }),
+    delete: () => Promise.resolve(),
     onBindingChanged: () => () => undefined,
   };
 }
@@ -1344,5 +1345,79 @@ describe('discovery needs only the read permission', () => {
     // emitted before, so an unauthorised account saw an empty list instead.
     expect(availability.unavailableReason).toBe('missingScopes');
     expect(availability.unavailableDetail).toContain('calibration:read');
+  });
+});
+
+describe('a legacy backup import is gated before it touches anything', () => {
+  const importRequest = (): Record<string, unknown> => ({
+    profileId: PROFILE_ID,
+    approvalId: '88888888-8888-4888-8888-888888888888',
+    operationId: OPERATION_ID,
+    printerMappings: [],
+  });
+
+  it('refuses without calibration:create, consuming no approval and sending nothing', async () => {
+    // `POST /api/calibration-imports/legacy-v4` enforces calibration:create.
+    // Discovering that only after the single-use approval has been consumed and
+    // the backup read off disk destroys the operator's approval on the way to a
+    // refusal the server was always going to give.
+    const { calls } = server({
+      permissions: ['calibration:read', 'calibration:update'],
+    });
+    registered = handlers();
+    await negotiate();
+
+    const response = (await invoke(
+      IpcChannel.CalibrationImportLegacyBackupV4,
+      importRequest(),
+    )) as { status: string; error: { code: string; message: string } };
+
+    expect(response.status).toBe('error');
+    expect(response.error.message).toContain('calibration:create');
+    // Not the approval store''s own error: the permission check ran first, so
+    // the approval was never consumed.
+    expect(response.error.message).not.toContain('expired');
+    expect(calls.some((call) => call.includes('legacy-v4'))).toBe(false);
+  });
+
+  it('reaches the approval only once the permission holds', async () => {
+    server();
+    registered = handlers();
+    await negotiate();
+
+    const handler = registered.get(IpcChannel.CalibrationImportLegacyBackupV4);
+    const response = (await handler?.(
+      { sender: { id: 42 } },
+      importRequest(),
+    )) as { status: string; error: { message: string } };
+
+    // The same unknown approval now fails at the approval stage, which is what
+    // proves the ordering above rather than a blanket refusal.
+    expect(response.status).toBe('error');
+    expect(response.error.message).toMatch(/expired|missing/i);
+  });
+
+  it('refuses once the selected profile has been discarded', async () => {
+    server();
+    registered = handlers();
+    await negotiate();
+    // Deleting the profile discards every piece of evidence the permission
+    // check rested on and advances the action epoch. The stub profile service
+    // has nothing to return, which does not matter: the discard happens first.
+    await invoke(IpcChannel.DeleteServerProfile, { id: PROFILE_ID }).catch(
+      () => undefined,
+    );
+
+    const handler = registered.get(IpcChannel.CalibrationImportLegacyBackupV4);
+    const response = (await Promise.resolve(
+      handler?.({ sender: { id: 42 } }, importRequest()),
+    ).catch(() => ({ status: 'error', error: { message: 'rejected' } }))) as {
+      status: string;
+      error: { message: string };
+    };
+
+    expect(response.status).toBe('error');
+    // Never the approval error: the import stopped before consuming it.
+    expect(response.error.message).not.toMatch(/expired|missing or expired/i);
   });
 });

@@ -5175,6 +5175,14 @@ export const LocalOrcaDiscoveryDiagnostic = z
        * profile rather than to repair an OrcaSlicer install that is not broken.
        */
       'noMatchForSelectedPrinter',
+      /**
+       * The scan itself failed — a permission error on a profile directory, an
+       * I/O fault, an unreadable root. Distinct from `noInstallFound`, which
+       * asserts something about this machine that a failed scan has no standing
+       * to assert: telling an operator with a working OrcaSlicer that it is not
+       * installed sends them to reinstall software that is already there.
+       */
+      'scanFailed',
     ]),
     message: z.string().max(512),
   })
@@ -5280,6 +5288,19 @@ export const OrcaProfileOperationError = z
       'rollbackFailed',
       'unsupportedPlatform',
       'baseProfileMissing',
+      /**
+       * The base profile is still on disk under the recorded name, but its
+       * bytes are not the ones the project was bound to. Patching it would
+       * produce output whose provenance record names a different base than the
+       * one actually used.
+       */
+      'baseProfileChanged',
+      /**
+       * The project recorded no fingerprint for its base profile, so there is
+       * nothing to verify the local file against. Generating anyway would make
+       * the immutable-base guarantee unenforceable rather than merely unproven.
+       */
+      'baseProfileUnverifiable',
       'workspaceNotReady',
       'invalidPatch',
       'canceled',
