@@ -167,7 +167,7 @@ describe('calibration candidate DTO normalisation', () => {
     const { fetch } = recordingFetch([eligibleCandidateDto()]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    const printers = await client.getPrinters(
+    const { printers } = await client.getPrinters(
       PROFILE_ID,
       BASE_URL,
       AbortSignal.timeout(5_000),
@@ -208,7 +208,7 @@ describe('calibration candidate DTO normalisation', () => {
     ]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    const printers = await client.getPrinters(
+    const { printers } = await client.getPrinters(
       PROFILE_ID,
       BASE_URL,
       AbortSignal.timeout(5_000),
@@ -231,7 +231,7 @@ describe('calibration candidate DTO normalisation', () => {
     ]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
-    const printers = await client.getPrinters(
+    const { printers } = await client.getPrinters(
       PROFILE_ID,
       BASE_URL,
       AbortSignal.timeout(5_000),

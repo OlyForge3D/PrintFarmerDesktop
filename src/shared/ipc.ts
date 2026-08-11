@@ -1610,6 +1610,15 @@ export const CalibrationListPrintersResponse = z
     printers: z
       .array(CalibrationPrinterCandidate)
       .max(CALIBRATION_MAX_PRINTER_CANDIDATES),
+    /**
+     * Whether the server offered more candidates than this list carries.
+     *
+     * Client-derived from the raw wire length, never read from the payload, so
+     * a server can neither hide a cut nor invent one. Present so the app can
+     * say the list is partial rather than presenting the first 500 of 540
+     * printers as the whole farm.
+     */
+    printersTruncated: z.boolean(),
     fetchedAt: z.string().datetime(),
   })
   .strict();

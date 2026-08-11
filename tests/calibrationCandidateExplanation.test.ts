@@ -169,10 +169,12 @@ interface ProjectedCandidate {
   eligibility: unknown;
 }
 
-/** Serves `candidates` on the candidate route and returns what IPC produced. */
-async function listPrinters(
-  candidates: unknown[],
-): Promise<ProjectedCandidate[]> {
+/** Serves `candidates` on the candidate route and returns the whole response. */
+async function listPrintersResponse(candidates: unknown[]): Promise<{
+  printers: ProjectedCandidate[];
+  printersTruncated: boolean;
+  fetchedAt: string;
+}> {
   vi.stubGlobal(
     'fetch',
     vi.fn(() =>
@@ -184,11 +186,18 @@ async function listPrinters(
       ),
     ),
   );
-  const result = (await listPrintersHandler()(
-    {},
-    { profileId: PROFILE_ID },
-  )) as { printers: ProjectedCandidate[] };
-  return result.printers;
+  return (await listPrintersHandler()({}, { profileId: PROFILE_ID })) as {
+    printers: ProjectedCandidate[];
+    printersTruncated: boolean;
+    fetchedAt: string;
+  };
+}
+
+/** Serves `candidates` on the candidate route and returns what IPC produced. */
+async function listPrinters(
+  candidates: unknown[],
+): Promise<ProjectedCandidate[]> {
+  return (await listPrintersResponse(candidates)).printers;
 }
 
 beforeEach(() => {
@@ -1155,6 +1164,31 @@ describe('a list longer than the cap is cut, never a reason to refuse the farm',
     );
   });
 
+  it('flags truncation from an over-long reason list alone', async () => {
+    // The mirror of the case above, and the one the other overflow tests could
+    // not pin: they overflow both lists at once, so either half of the
+    // truncation check could have been deleted with every assertion still
+    // passing. Here `missingInputs` is comfortably under the cap, so only the
+    // reasons arm can be responsible.
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: manyFieldPaths(2),
+        rejectionReasons: manyReasons(OVER_CAP),
+      }),
+    ]);
+
+    expect(printer!.missingInputs).toHaveLength(2);
+    expect(printer!.rejectionReasonCodes).toContain(
+      CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+    );
+    expect(
+      printer!.rejectionReasonCodes.filter(
+        (code) => code !== CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+      ),
+    ).toHaveLength(CALIBRATION_MAX_SERVER_REJECTION_REASONS);
+  });
+
   it('stays inside the IPC bound when it is crowded AND contradictory', async () => {
     // The worst case for the arithmetic: a full server list, cut, plus the
     // incoherence marker, plus the truncation marker.
@@ -1227,6 +1261,78 @@ describe('a large farm is not a reason to show an empty one', () => {
     const printers = await listPrinters(farm);
 
     expect(printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+  });
+
+  it('says the farm list is partial rather than presenting it as whole', async () => {
+    // Cutting silently is its own untruth: an operator hunting a printer that
+    // is simply off the end would read "500 candidates loaded" and conclude it
+    // was never enrolled.
+    const farm = Array.from({ length: 540 }, (_unused, index) =>
+      candidateDto({
+        id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+      }),
+    );
+
+    const response = await listPrintersResponse(farm);
+
+    expect(response.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+    expect(response.printersTruncated).toBe(true);
+    // The ones that did survive are intact, not damaged by the cut.
+    expect(response.printers.every((p) => p.eligibility !== null)).toBe(true);
+  });
+
+  it('does not claim truncation at exactly the cap', async () => {
+    const farm = Array.from(
+      { length: CALIBRATION_MAX_PRINTER_CANDIDATES },
+      (_unused, index) =>
+        candidateDto({
+          id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+        }),
+    );
+
+    const response = await listPrintersResponse(farm);
+
+    expect(response.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+    expect(response.printersTruncated).toBe(false);
+  });
+
+  it('does not claim truncation for an ordinary farm', async () => {
+    const response = await listPrintersResponse([candidateDto()]);
+
+    expect(response.printersTruncated).toBe(false);
+  });
+
+  it('will not let the server assert or deny the cut itself', async () => {
+    // The flag is derived from the raw wire length in the main process. A
+    // server that wraps its payload and claims completeness cannot be believed
+    // over the count, or the warning would be suppressible by the party whose
+    // response triggered it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              printers: Array.from({ length: 520 }, (_unused, index) =>
+                candidateDto({
+                  id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+                }),
+              ),
+              printersTruncated: false,
+              truncated: false,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      ),
+    );
+
+    const response = (await listPrintersHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as { printers: ProjectedCandidate[]; printersTruncated: boolean };
+
+    expect(response.printersTruncated).toBe(true);
   });
 });
 

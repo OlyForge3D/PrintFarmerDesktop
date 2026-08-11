@@ -1527,7 +1527,7 @@ export function registerIpcHandlers(
         signal,
       );
       return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
-        printers: printers.map((printer) => {
+        printers: printers.printers.map((printer) => {
           const eligibility = projectCalibrationEligibility(printer);
           return {
             printerId: printer.printerId,
@@ -1551,6 +1551,7 @@ export function registerIpcHandlers(
             eligibility,
           };
         }),
+        printersTruncated: printers.truncated,
         fetchedAt: new Date().toISOString(),
       });
     },
@@ -2941,19 +2942,22 @@ export function registerIpcHandlers(
       // not erase the answer entirely: the operator still needs to know *why*
       // the list is short, and a refusal by the server says nothing about the
       // OrcaSlicer profiles installed on this machine.
-      let candidates: Awaited<ReturnType<typeof calibrationHttp.getPrinters>> =
-        [];
+      let candidates: Awaited<
+        ReturnType<typeof calibrationHttp.getPrinters>
+      >['printers'] = [];
       let discovery: CalibrationProfileDiscoveryDiagnostic = {
         kind: 'ok',
         message: 'Server profile discovery completed.',
         serverCode: null,
       };
       try {
-        candidates = await calibrationHttp.getPrinters(
-          selectedId,
-          profileContext.profile.baseUrl,
-          signal,
-        );
+        candidates = (
+          await calibrationHttp.getPrinters(
+            selectedId,
+            profileContext.profile.baseUrl,
+            signal,
+          )
+        ).printers;
         if (candidates.length === 0) {
           discovery = {
             kind: 'noEligiblePrinters',

@@ -382,6 +382,7 @@ function makeApi(savedRecord = record()) {
     listCalibrationPrinters: vi.fn().mockResolvedValue(
       CalibrationListPrintersResponse.parse({
         printers: candidates,
+        printersTruncated: false,
         fetchedAt: now,
       }),
     ),

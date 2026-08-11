@@ -593,11 +593,28 @@ export type RemoteCalibrationPrinterCandidate = z.infer<
  * renderer, as one value, taking every healthy printer with it. Refusing a
  * whole farm because it is large is the failure this contract exists to
  * remove, not a safety property.
+ *
+ * Cutting quietly is its own failure, though. `truncated` is returned beside
+ * the list so the app can say the list is partial instead of presenting 500 of
+ * 540 printers as the whole farm — an operator hunting a printer that is
+ * simply off the end would otherwise conclude it is not enrolled.
+ *
+ * It is derived from the raw wire length *before* the slice and is not read
+ * from the payload, so a server can neither claim completeness it does not
+ * have nor manufacture a truncation warning.
  */
 const boundedCandidateList = z
   .array(z.unknown())
-  .transform((items) => items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES))
-  .pipe(z.array(RemoteCalibrationPrinterCandidate));
+  .transform((items) => ({
+    printers: items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES),
+    truncated: items.length > CALIBRATION_MAX_PRINTER_CANDIDATES,
+  }))
+  .pipe(
+    z.object({
+      printers: z.array(RemoteCalibrationPrinterCandidate),
+      truncated: z.boolean(),
+    }),
+  );
 
 export const RemoteCalibrationPrinters = z.union([
   boundedCandidateList,
