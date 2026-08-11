@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createCalibrationState,
   validateBaselineProfile,
@@ -93,21 +93,31 @@ export function NewCalibrationProject(): React.JSX.Element {
     }
   }, [canLoad, creationLoaded, creationLoading, loadCreationData]);
 
+  // The store owns the selection because it also owns the fetches the selection
+  // triggers and the fencing that discards their late replies. Mirroring it into
+  // form state would create a second source of truth that could disagree with
+  // whichever printer the loaded context actually describes.
+  const selectedPrinterId = store.creation.selectedPrinterId;
   const selectedCandidate = store.creation.printers.find(
-    (candidate) => candidate.printerId === form.printerId,
+    (candidate) => candidate.printerId === selectedPrinterId,
   );
   const candidateBlockers = candidateEligibilityBlockers(selectedCandidate);
-  const contextBlockers = contextEligibilityBlockers(
-    store.creation.context,
-    selectedCandidate,
-  );
-  const selectedTool = store.creation.context?.toolheads.find(
+  // Only ever read when it belongs to the current selection. The store already
+  // fences responses, and this makes a stale render impossible as well.
+  const context =
+    store.creation.context?.printerId === selectedPrinterId
+      ? store.creation.context
+      : null;
+  const contextBlockers = contextEligibilityBlockers(context, selectedCandidate);
+  const printerChosen = selectedPrinterId !== null;
+  const printerReady =
+    printerChosen && candidateBlockers.length === 0 && context !== null;
+  const selectedTool = context?.toolheads.find(
     (tool) => tool.toolId === form.toolId,
   );
   const scopedProfiles = store.creation.profiles.filter(
     (profile) =>
-      orcaProfileScopeBlockers(profile, store.creation.context, form.toolId)
-        .length === 0,
+      orcaProfileScopeBlockers(profile, context, form.toolId).length === 0,
   );
   const selectedProfile = scopedProfiles.find(
     (profile) => profile.orcaProfileId === form.baseProfileId,
@@ -116,9 +126,56 @@ export function NewCalibrationProject(): React.JSX.Element {
     store.creation.profiles.find(
       (profile) => profile.orcaProfileId === form.baseProfileId,
     ),
-    store.creation.context,
+    context,
     form.toolId,
   );
+
+  /**
+   * Change the selected printer.
+   *
+   * Every downstream field is reset here rather than left to settle, because a
+   * tool, profile or safety acknowledgement carried over from the previous
+   * printer would describe hardware the operator is no longer configuring.
+   */
+  const choosePrinter = (printerId: string | null): void => {
+    setForm((current) => ({
+      ...current,
+      toolId: '',
+      baseProfileId: '',
+      physicalMatch: false,
+      machineClear: false,
+    }));
+    setErrors({});
+    void store.selectPrinter(printerId);
+  };
+
+  // Focus follows the outcome of a selection rather than staying where the
+  // click landed: when a choice is refused, the reason is what the operator
+  // needs next, and when it is cleared, the list they must choose from again.
+  const previousSelectionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousSelectionRef.current;
+    previousSelectionRef.current = selectedPrinterId;
+    if (previous === selectedPrinterId) return;
+    if (selectedPrinterId === null) {
+      if (previous !== null) {
+        window.setTimeout(
+          () =>
+            document
+              .querySelector<HTMLElement>('.cal-choice-list input[type=radio]')
+              ?.focus(),
+          0,
+        );
+      }
+      return;
+    }
+    if (candidateBlockers.length > 0) {
+      window.setTimeout(
+        () => document.getElementById('candidate-eligibility')?.focus(),
+        0,
+      );
+    }
+  }, [candidateBlockers.length, selectedPrinterId]);
 
   const update = <Key extends keyof FormState>(
     key: Key,
@@ -133,6 +190,45 @@ export function NewCalibrationProject(): React.JSX.Element {
     });
   };
 
+  /**
+   * Turn the typed server diagnostic into something the operator can act on.
+   *
+   * The diagnostic was previously stored and never rendered, which meant the
+   * wizard knew exactly why discovery had failed and showed none of it.
+   */
+  const profileNotice = useMemo((): {
+    tone: 'error' | 'info';
+    message: string;
+  } | null => {
+    const diagnostic = store.creation.profileDiagnostic;
+    if (diagnostic === null || context === null) return null;
+    switch (diagnostic.kind) {
+      case 'ok':
+        return null;
+      case 'unauthenticated':
+      case 'forbidden':
+        return { tone: 'error', message: diagnostic.message };
+      case 'profileResolverUnavailable':
+        return {
+          tone: 'error',
+          message: `${diagnostic.message} Calibration cannot start until it is restored.`,
+        };
+      case 'selectedPrinterContextUnavailable':
+      case 'selectedPrinterNotACandidate':
+      case 'noProfilesForSelectedPrinter':
+        return { tone: 'error', message: diagnostic.message };
+      default:
+        return { tone: 'error', message: diagnostic.message };
+    }
+  }, [context, store.creation.profileDiagnostic]);
+
+  const localNotice = useMemo((): string | null => {
+    const diagnostic = store.creation.localDiagnostic;
+    if (diagnostic === null || context === null || diagnostic.kind === 'ok')
+      return null;
+    return diagnostic.message;
+  }, [context, store.creation.localDiagnostic]);
+
   const readiness = useMemo(() => {
     const blockers = [...candidateBlockers, ...contextBlockers];
     if (store.profileId === null)
@@ -140,6 +236,14 @@ export function NewCalibrationProject(): React.JSX.Element {
     else if (store.offline) blockers.unshift('Reconnect to create a project.');
     else if (store.availability?.available !== true)
       blockers.unshift('Printer Calibration is unavailable for this profile.');
+    // Stated first because it is the first thing the wizard asks and every
+    // other requirement below is a property of the printer chosen here.
+    if (!printerChosen)
+      blockers.unshift('Select the PrintFarmer printer to calibrate.');
+    else if (context === null)
+      blockers.push(
+        'Load the selected printer configuration before continuing.',
+      );
     if (form.toolId === '')
       blockers.push('Select the physical tool and nozzle explicitly.');
     if (form.baseProfileId === '') {
@@ -164,12 +268,14 @@ export function NewCalibrationProject(): React.JSX.Element {
     return [...new Set(blockers)];
   }, [
     candidateBlockers,
+    context,
     contextBlockers,
     form.baseProfileId,
     form.emergencyStop,
     form.machineClear,
     form.mode,
     form.physicalMatch,
+    printerChosen,
     profileBlockers,
     form.thermalProtection,
     form.toolId,
@@ -246,7 +352,7 @@ export function NewCalibrationProject(): React.JSX.Element {
     for (const diagnostic of validateBaselineProfile(baseline)) {
       if (diagnostic.field) next[diagnostic.field] = diagnostic.message;
     }
-    const safety = store.creation.context?.safety;
+    const safety = context?.safety;
     if (
       safety &&
       baseline.nozzleTemperatureC > safety.maximumNozzleTemperatureC
@@ -274,7 +380,13 @@ export function NewCalibrationProject(): React.JSX.Element {
       Object.keys(validation.errors).length > 0 ||
       validation.baseline === null ||
       store.profileId === null ||
-      store.creation.context === null ||
+      // A project may not be created until the selected printer's context and
+      // profiles have actually resolved. `printerReady` is the same condition
+      // the downstream steps are gated on, so a project can never be created
+      // from a form the operator was not able to complete.
+      !printerReady ||
+      context === null ||
+      store.creation.contextLoading ||
       selectedCandidate === undefined ||
       selectedTool === undefined ||
       selectedProfile === undefined ||
@@ -290,7 +402,7 @@ export function NewCalibrationProject(): React.JSX.Element {
     const now = store.environment.now();
     const binding = bindingFromContext(
       store.profileId,
-      store.creation.context,
+      context,
       selectedTool.toolId,
       {
         filamentProjectId: store.environment.createId(),
@@ -404,15 +516,30 @@ export function NewCalibrationProject(): React.JSX.Element {
           </button>
         </div>
       ) : null}
-      {store.creation.error ? (
+      {store.creation.listError ? (
         <div className="cal-alert" role="alert">
-          <p>{store.creation.error}</p>
+          <p>{store.creation.listError}</p>
           <button
             type="button"
             className="cal-button"
             onClick={() => void store.loadCreationData()}
           >
-            Retry candidates and profiles
+            Retry loading printers
+          </button>
+        </div>
+      ) : null}
+      {store.creation.error ? (
+        // Scoped to the selected printer. The printer list stays on screen
+        // behind this: a context or profile failure describes one machine and
+        // must never read as "there are no printers".
+        <div className="cal-alert" role="alert">
+          <p>{store.creation.error}</p>
+          <button
+            type="button"
+            className="cal-button"
+            onClick={() => void store.selectPrinter(selectedPrinterId)}
+          >
+            Retry selected printer
           </button>
         </div>
       ) : null}
@@ -438,12 +565,205 @@ export function NewCalibrationProject(): React.JSX.Element {
           onSubmit={(event) => void submit(event)}
           noValidate
         >
+          {/*
+            Step one, and it is a step rather than a field: nothing else in this
+            wizard can be described until the machine being calibrated is known.
+            The printer list is the only thing fetched before this choice.
+          */}
+          <fieldset
+            disabled={!canLoad || submitting || store.disabled}
+            className="cal-step-fieldset"
+          >
+            <legend>Step 1. Choose the printer to calibrate</legend>
+            <div className="cal-field-group">
+              <span className="cal-label" id="printer-choice-label">
+                PrintFarmer printer
+              </span>
+              <p id="printer-choice-help" className="cal-hint">
+                Calibration settings are specific to one printer. Choose it
+                first; its configuration and profiles are loaded only then.
+              </p>
+
+              {store.creation.loading ? (
+                <p role="status" className="cal-hint">
+                  Loading PrintFarmer printers.
+                </p>
+              ) : null}
+
+              {!store.creation.loading &&
+              store.creation.loaded &&
+              store.creation.printers.length === 0 ? (
+                <div className="cal-empty-state">
+                  <p>
+                    {store.creation.listError === null
+                      ? 'PrintFarmer returned no enabled printers for this account. Add or enable a printer in PrintFarmer, then reload.'
+                      : store.creation.listError}
+                  </p>
+                  <button
+                    type="button"
+                    className="cal-button"
+                    onClick={() => void store.loadCreationData()}
+                  >
+                    Reload printers
+                  </button>
+                </div>
+              ) : null}
+
+              {!store.creation.loading &&
+              store.creation.printers.length > 0 &&
+              store.creation.printersTruncated ? (
+                // Announced before the eligibility summary below, because a
+                // partial list changes what "none of these is eligible" means:
+                // the printer the operator is looking for may simply be off the
+                // end rather than refused.
+                <p role="status" className="cal-hint">
+                  This list is partial. PrintFarmer offered more printers than
+                  this view can show, so a printer you expect may not appear
+                  below.
+                </p>
+              ) : null}
+
+              {!store.creation.loading &&
+              store.creation.printers.length > 0 &&
+              store.creation.printers.every(
+                (candidate) =>
+                  candidateEligibilityBlockers(candidate).length > 0,
+              ) ? (
+                // Deliberately distinct from "no printers": the farm has
+                // printers and the account can see them. Collapsing the two
+                // would send the operator to add hardware they already own.
+                <p className="cal-notice" role="status">
+                  None of the {store.creation.printers.length} available
+                  printers is currently eligible for calibration. Select one to
+                  see why.
+                </p>
+              ) : null}
+
+              <div
+                className="cal-choice-list"
+                role="radiogroup"
+                aria-labelledby="printer-choice-label"
+                aria-describedby={
+                  describedBy('printerId') ?? 'printer-choice-help'
+                }
+              >
+                {store.creation.printers.map((candidate) => {
+                  const blockers = candidateEligibilityBlockers(candidate);
+                  const rowId = `printer-${candidate.printerId}`;
+                  return (
+                    <label
+                      key={candidate.printerId}
+                      className="cal-choice-row"
+                      htmlFor={rowId}
+                    >
+                      <input
+                        id={rowId}
+                        type="radio"
+                        name="printer"
+                        value={candidate.printerId}
+                        checked={selectedPrinterId === candidate.printerId}
+                        // Ineligible printers stay selectable so their reasons
+                        // can be read. Continuation is blocked separately, so
+                        // inspecting a refusal never risks acting on it.
+                        onChange={() => choosePrinter(candidate.printerId)}
+                        aria-describedby={`${rowId}-detail`}
+                      />
+                      <span>
+                        <strong>{candidate.displayName}</strong>
+                        <small id={`${rowId}-detail`}>
+                          {candidate.printerModel ?? 'Model not supplied'};{' '}
+                          {candidate.isOnline ? 'online' : 'offline'};{' '}
+                          {blockers.length === 0
+                            ? 'eligible for calibration'
+                            : 'not eligible for calibration'}
+                        </small>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {fieldError('printerId')}
+
+              {printerChosen && candidateBlockers.length > 0 ? (
+                <div className="cal-alert" role="alert">
+                  <p>
+                    {selectedCandidate?.displayName ?? 'This printer'} cannot be
+                    calibrated yet:
+                  </p>
+                  <ul
+                    id="candidate-eligibility"
+                    className="cal-blocker-list"
+                    tabIndex={-1}
+                  >
+                    {candidateBlockers.map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    className="cal-button"
+                    onClick={() => choosePrinter(null)}
+                  >
+                    Choose a different printer
+                  </button>
+                </div>
+              ) : null}
+
+              {printerChosen &&
+              candidateBlockers.length === 0 &&
+              store.creation.contextLoading ? (
+                <p role="status" className="cal-hint">
+                  Loading configuration and profiles for{' '}
+                  {selectedCandidate?.displayName ?? 'the selected printer'}.
+                </p>
+              ) : null}
+
+              {printerChosen &&
+              !store.creation.contextLoading &&
+              context === null &&
+              store.creation.error === null ? (
+                <p className="cal-field-error" role="alert">
+                  The configuration for this printer is unavailable. Other
+                  printers are unaffected.
+                </p>
+              ) : null}
+
+              {/*
+                Each server-side outcome names a different remedy, so they are
+                rendered as themselves rather than as one generic failure.
+              */}
+              {profileNotice ? (
+                <p
+                  className={
+                    profileNotice.tone === 'error'
+                      ? 'cal-field-error'
+                      : 'cal-notice'
+                  }
+                  role={profileNotice.tone === 'error' ? 'alert' : 'status'}
+                >
+                  {profileNotice.message}
+                </p>
+              ) : null}
+
+              {localNotice ? (
+                <p className="cal-notice" role="status">
+                  {localNotice}
+                </p>
+              ) : null}
+            </div>
+          </fieldset>
+
           <fieldset
             disabled={
-              !canLoad || store.creation.loading || submitting || store.disabled
+              !printerReady ||
+              !canLoad ||
+              store.creation.contextLoading ||
+              submitting ||
+              store.disabled
             }
+            className="cal-step-fieldset"
           >
-            <legend>Project and PrintFarmer printer</legend>
+            <legend>Step 2. Name the project</legend>
             <label>
               Project name
               <input
@@ -464,162 +784,88 @@ export function NewCalibrationProject(): React.JSX.Element {
                 onChange={(event) => update('description', event.target.value)}
               />
             </label>
-            <div className="cal-field-group">
-              <span className="cal-label" id="printer-choice-label">
-                PrintFarmer printer candidate
-              </span>
-              {store.creation.loading ? (
-                <p role="status">Loading candidates from PrintFarmer.</p>
-              ) : null}
-              {!store.creation.loading &&
-              store.creation.printers.length === 0 ? (
-                <p>No printer candidates were returned.</p>
-              ) : null}
-              {!store.creation.loading && store.creation.printersTruncated ? (
-                <p role="status" className="cal-hint">
-                  This list is partial. PrintFarmer offered more printers than
-                  this view can show, so a printer you expect may not appear
-                  below.
-                </p>
-              ) : null}
-              <div
-                className="cal-choice-list"
-                role="radiogroup"
-                aria-labelledby="printer-choice-label"
-                aria-describedby={describedBy('printerId')}
-              >
-                {store.creation.printers.map((candidate) => {
-                  const blockers = candidateEligibilityBlockers(candidate);
-                  return (
-                    <label key={candidate.printerId} className="cal-choice-row">
-                      <input
-                        type="radio"
-                        name="printer"
-                        value={candidate.printerId}
-                        checked={form.printerId === candidate.printerId}
-                        onChange={() => {
-                          update('printerId', candidate.printerId);
-                          update('toolId', '');
-                          update('physicalMatch', false);
-                        }}
-                      />
-                      <span>
-                        <strong>{candidate.displayName}</strong>
-                        <small>
-                          {candidate.printerModel ?? 'Model not supplied'};{' '}
-                          {blockers.length === 0
-                            ? 'explicitly eligible'
-                            : 'not eligible'}
-                          ; {candidate.isOnline ? 'online' : 'offline'}
-                        </small>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-              {fieldError('printerId')}
-              <button
-                type="button"
-                className="cal-button"
-                disabled={
-                  candidateBlockers.length > 0 || store.creation.contextLoading
-                }
-                onClick={() => void store.loadPrinterContext(form.printerId)}
-                aria-describedby="candidate-eligibility"
-              >
-                {store.creation.contextLoading
-                  ? 'Loading current context'
-                  : 'Load current printer context'}
-              </button>
-              <ul id="candidate-eligibility" className="cal-blocker-list">
-                {candidateBlockers.map((blocker) => (
-                  <li key={blocker}>{blocker}</li>
-                ))}
-              </ul>
-              {store.creation.context?.printerId === form.printerId ? (
+
+            {context !== null ? (
+              <>
                 <p
                   role="status"
                   className={
                     contextBlockers.length ? 'cal-field-error' : 'cal-success'
                   }
                 >
-                  Context loaded at {store.creation.context.snapshotAt}.{' '}
+                  Configuration loaded at {context.snapshotAt}.{' '}
                   {contextBlockers.length
                     ? 'Creation remains blocked.'
-                    : 'Context is complete and current.'}
+                    : 'Configuration is complete and current.'}
                 </p>
-              ) : null}
-              {store.creation.context?.printerId === form.printerId ? (
                 <dl className="cal-definition-list cal-definition-list--compact">
                   <div>
                     <dt>Firmware</dt>
                     <dd>
-                      {store.creation.context.firmware.firmware}; dialect{' '}
-                      {store.creation.context.firmware.gcodeDialect}; version{' '}
-                      {store.creation.context.firmware.firmwareVersion ??
-                        'not supplied'}
+                      {context.firmware.firmware}; dialect{' '}
+                      {context.firmware.gcodeDialect}; version{' '}
+                      {context.firmware.firmwareVersion ?? 'not supplied'}
                     </dd>
                   </div>
                   <div>
                     <dt>Configuration</dt>
                     <dd>
-                      {store.creation.context.configurationId ?? 'missing'},
-                      revision{' '}
-                      {store.creation.context.configurationRevision ??
-                        'missing'}
+                      {context.configurationId ?? 'missing'}, revision{' '}
+                      {context.configurationRevision ?? 'missing'}
                     </dd>
                   </div>
                   <div>
                     <dt>Snapshot</dt>
                     <dd>
-                      {store.creation.context.snapshotId ?? 'missing'}, revision{' '}
-                      {store.creation.context.snapshotRevision ?? 'missing'}
+                      {context.snapshotId ?? 'missing'}, revision{' '}
+                      {context.snapshotRevision ?? 'missing'}
                     </dd>
                   </div>
                   <div>
                     <dt>Machine dimensions</dt>
                     <dd>
-                      {store.creation.context.bedWidthMm ?? 'missing'} by{' '}
-                      {store.creation.context.bedDepthMm ?? 'missing'} mm bed;
-                      reported nozzle{' '}
-                      {store.creation.context.nozzleDiameterMm ?? 'missing'} mm
+                      {context.bedWidthMm ?? 'missing'} by{' '}
+                      {context.bedDepthMm ?? 'missing'} mm bed; reported nozzle{' '}
+                      {context.nozzleDiameterMm ?? 'missing'} mm
                     </dd>
                   </div>
                   <div>
                     <dt>Safety limits</dt>
                     <dd>
-                      {store.creation.context.safety
-                        ? `${store.creation.context.safety.maximumNozzleTemperatureC} C nozzle; ${store.creation.context.safety.maximumBedTemperatureC} C bed; ${store.creation.context.safety.maximumVolumetricRateMm3S} mm3/s`
-                        : 'missing'}
+                      {context.safety
+                        ? `${context.safety.maximumNozzleTemperatureC} C nozzle; ${context.safety.maximumBedTemperatureC} C bed; ${context.safety.maximumVolumetricRateMm3S} mm3/s`
+                        : 'not published by this server'}
                     </dd>
                   </div>
                   <div>
                     <dt>Safety confirmations</dt>
                     <dd>
-                      {store.creation.context.safety
-                        ? `Emergency stop ${store.creation.context.safety.emergencyStopAvailable ? 'available' : 'not confirmed'}; thermal protection ${store.creation.context.safety.thermalProtectionConfirmed ? 'confirmed' : 'not confirmed'}; ventilation ${store.creation.context.safety.ventilationAssessed ? 'assessed' : 'not assessed'}`
-                        : 'missing'}
+                      {context.safety
+                        ? `Emergency stop ${context.safety.emergencyStopAvailable ? 'available' : 'not confirmed'}; thermal protection ${context.safety.thermalProtectionConfirmed ? 'confirmed' : 'not confirmed'}; ventilation ${context.safety.ventilationAssessed ? 'assessed' : 'not assessed'}`
+                        : 'not published by this server'}
                     </dd>
                   </div>
                   <div>
                     <dt>Permissions</dt>
                     <dd>
-                      {store.creation.context.permissions
-                        ? `Read ${store.creation.context.permissions.readPrinter ? 'yes' : 'no'}; write ${store.creation.context.permissions.writeCalibration ? 'yes' : 'no'}; generate ${store.creation.context.permissions.generateCalibration ? 'yes' : 'no'}; start ${store.creation.context.permissions.startPrint ? 'yes' : 'no'}`
-                        : 'missing'}
+                      {context.permissions
+                        ? `Read ${context.permissions.readPrinter ? 'yes' : 'no'}; write ${context.permissions.writeCalibration ? 'yes' : 'no'}; generate ${context.permissions.generateCalibration ? 'yes' : 'no'}; start ${context.permissions.startPrint ? 'yes' : 'no'}`
+                        : 'not published by this server'}
                     </dd>
                   </div>
                 </dl>
-              ) : null}
-              {errors.context ? (
-                <p id="new-context-error" className="cal-field-error">
-                  {errors.context}
-                </p>
-              ) : null}
-            </div>
+              </>
+            ) : null}
+            {errors.context ? (
+              <p id="new-context-error" className="cal-field-error">
+                {errors.context}
+              </p>
+            ) : null}
           </fieldset>
 
-          <fieldset disabled={!canLoad || submitting || store.disabled}>
+          <fieldset
+            disabled={!printerReady || !canLoad || submitting || store.disabled}
+          >
             <legend>Physical tool, toolhead, and nozzle</legend>
             <label>
               Physical tool and nozzle
@@ -634,7 +880,7 @@ export function NewCalibrationProject(): React.JSX.Element {
                 required
               >
                 <option value="">Select the installed tool</option>
-                {store.creation.context?.toolheads.map((tool) => (
+                {context?.toolheads.map((tool) => (
                   <option key={tool.toolId} value={tool.toolId}>
                     {tool.toolId}; {tool.toolheadId}; {tool.nozzle.id};{' '}
                     {tool.nozzle.diameterMm} mm {tool.nozzle.material};{' '}
@@ -689,7 +935,9 @@ export function NewCalibrationProject(): React.JSX.Element {
             {fieldError('physicalMatch')}
           </fieldset>
 
-          <fieldset disabled={!canLoad || submitting || store.disabled}>
+          <fieldset
+            disabled={!printerReady || !canLoad || submitting || store.disabled}
+          >
             <legend>Filament identity</legend>
             <div className="cal-form-grid">
               {(
@@ -723,7 +971,9 @@ export function NewCalibrationProject(): React.JSX.Element {
             </div>
           </fieldset>
 
-          <fieldset disabled={!canLoad || submitting || store.disabled}>
+          <fieldset
+            disabled={!printerReady || !canLoad || submitting || store.disabled}
+          >
             <legend>Base OrcaSlicer profile and mode</legend>
             <label>
               Base OrcaSlicer profile
@@ -775,7 +1025,9 @@ export function NewCalibrationProject(): React.JSX.Element {
             </fieldset>
           </fieldset>
 
-          <fieldset disabled={!canLoad || submitting || store.disabled}>
+          <fieldset
+            disabled={!printerReady || !canLoad || submitting || store.disabled}
+          >
             <legend>Numeric baseline profile values</legend>
             <div className="cal-form-grid">
               {(
@@ -845,7 +1097,9 @@ export function NewCalibrationProject(): React.JSX.Element {
             </div>
           </fieldset>
 
-          <fieldset disabled={!canLoad || submitting || store.disabled}>
+          <fieldset
+            disabled={!printerReady || !canLoad || submitting || store.disabled}
+          >
             <legend>Operator safety acknowledgment</legend>
             <p>
               Use the current PrintFarmer safety context and physically inspect

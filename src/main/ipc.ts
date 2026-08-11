@@ -20,6 +20,8 @@ import {
   type OpenFolderResponse,
   type SidecarPingResponse,
   type CalibrationProfileDiscoveryDiagnostic,
+  CALIBRATION_PERMISSIONS,
+  hasCalibrationPermission,
   resolveOrcaBaseProfileLookupName,
   normalizeCalibrationReasonCode,
   normalizeCalibrationMissingInput,
@@ -96,9 +98,9 @@ function classifyDiscoveryFailure(
       };
     case 'profileServiceUnavailable':
       return {
-        kind: 'serverDependencyUnavailable',
+        kind: 'profileResolverUnavailable',
         message:
-          'PrintFarmer cannot reach its upstream OrcaSlicer profile resolver, so it cannot list calibration printers. This is a server configuration issue.',
+          'PrintFarmer cannot reach its upstream OrcaSlicer profile resolver, so it cannot resolve calibration profiles. This is a server configuration issue.',
         serverCode,
       };
     case 'printerStatusUnavailable':
@@ -149,6 +151,11 @@ import {
   stagePrivateCalibrationPhoto,
 } from './calibrationPhotos.js';
 import { resolveCalibrationWorkspaceFreshness } from './calibrationFreshness.js';
+import {
+  evaluateCalibrationActionGate,
+  type CalibrationGateResult,
+  type CalibrationGatedAction,
+} from './calibrationActionGate.js';
 import { CalibrationSyncEngine } from './calibrationEngine.js';
 import {
   ServerProfileCalibrationTokenProvider,
@@ -588,6 +595,109 @@ export function registerIpcHandlers(
     }
     return listed.selectedProfileId;
   };
+
+  /**
+   * Verify a mutating or machine-moving action against authoritative evidence
+   * *before* anything is dispatched.
+   *
+   * Fetches the printer context fresh rather than trusting a cached projection:
+   * the whole point is to compare what the action claims against what the server
+   * currently says, and a stale local copy could agree with a stale request.
+   *
+   * A gate failure returns a refusal instead of throwing so each handler can
+   * shape it into its own response union.
+   */
+  const gateCalibrationAction = async (
+    action: CalibrationGatedAction,
+    selectedId: string,
+    binding: {
+      printerId: string;
+      configurationRevision: number | null;
+      snapshotId: string | null;
+      toolId: string | null;
+    },
+    operatorAcknowledgedBedClear?: boolean,
+  ): Promise<CalibrationGateResult> => {
+    const capability = calibrationDiagnostics.capabilitySnapshot();
+    // Cheap refusals first: neither needs the network, so an unauthorised or
+    // disabled action never causes a request at all.
+    const preflight = evaluateCalibrationActionGate({
+      action,
+      capability:
+        capability === null
+          ? null
+          : { grantedScopes: capability.grantedScopes, flags: capability.flags },
+      // Context is supplied below; this pass exists to refuse on permission and
+      // capability without paying for a round trip.
+      context: null,
+      binding: null,
+      ...(operatorAcknowledgedBedClear === undefined
+        ? {}
+        : { operatorAcknowledgedBedClear }),
+    });
+    if (
+      !preflight.allowed &&
+      preflight.code !== 'contextUnavailable' &&
+      preflight.code !== 'bindingMismatch'
+    ) {
+      return preflight;
+    }
+    let context: Awaited<ReturnType<typeof calibrationHttp.getPrinterContext>>;
+    try {
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      context = await calibrationHttp.getPrinterContext(
+        selectedId,
+        ctx.profile.baseUrl,
+        binding.printerId,
+        AbortSignal.timeout(10_000),
+        binding.configurationRevision ?? undefined,
+      );
+    } catch {
+      return {
+        allowed: false,
+        code: 'contextUnavailable',
+        message:
+          'The authoritative printer context could not be read, so this action cannot be verified.',
+      };
+    }
+    return evaluateCalibrationActionGate({
+      action,
+      capability:
+        capability === null
+          ? null
+          : { grantedScopes: capability.grantedScopes, flags: capability.flags },
+      context,
+      binding,
+      ...(operatorAcknowledgedBedClear === undefined
+        ? {}
+        : { operatorAcknowledgedBedClear }),
+    });
+  };
+
+  /** Maps a gate refusal onto the calibration API error vocabulary. */
+  const gateRefusalToApiError = (
+    gate: CalibrationGateResult,
+  ): {
+    code: 'forbidden' | 'printerContextStale' | 'syncRequired';
+    message: string;
+    retryable: boolean;
+    retryAfterSeconds: null;
+  } => ({
+    code:
+      gate.code === 'permissionDenied' ||
+      gate.code === 'capabilityDisabled' ||
+      gate.code === 'capabilityUnknown' ||
+      gate.code === 'safetyNotAssured'
+        ? 'forbidden'
+        : gate.code === 'contextStale' ||
+            gate.code === 'bindingMismatch' ||
+            gate.code === 'contextIncomplete'
+          ? 'printerContextStale'
+          : 'syncRequired',
+    message: gate.message ?? 'This calibration action is not permitted.',
+    retryable: gate.code === 'contextUnavailable',
+    retryAfterSeconds: null,
+  });
 
   app.on('will-quit', () => {
     calibrationEngine.dispose();
@@ -1450,6 +1560,30 @@ export function registerIpcHandlers(
       const missingFlags = missingCalibrationFlags(caps);
       const firmwareOk = supportsKlipper(caps);
       const slicerOk = supportsOrcaSlicer(caps);
+      // Discovery needs exactly one permission: `calibration:read`. Requiring
+      // more to *open* the workspace would refuse an operator who is allowed to
+      // look but not change, and this check did not exist at all before — the
+      // `missingScopes` reason was declared and never once emitted, so an
+      // unauthorised account saw an empty printer list and no explanation.
+      // Create, update, generate and queue actions are gated separately, each by
+      // its own exact permission, in the action interlock.
+      const readPermitted = hasCalibrationPermission(
+        caps.grantedScopes,
+        CALIBRATION_PERMISSIONS.read,
+      );
+
+      if (!readPermitted) {
+        return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
+          available: false,
+          unavailableReason: 'missingScopes',
+          unavailableDetail: `This PrintFarmer account does not grant ${CALIBRATION_PERMISSIONS.read}, which is required to list printers for calibration. Ask a farm administrator to grant it.`,
+          negotiatedApiVersion: caps.apiVersion,
+          negotiatedSchemaVersion: caps.schemaVersion,
+          capabilityFlags: caps.flags,
+          grantedScopes: caps.grantedScopes,
+          offlineEditingEnabled: false,
+        });
+      }
 
       if (missingFlags.length > 0 || !firmwareOk || !slicerOk) {
         return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
@@ -2090,6 +2224,21 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      // Interlock first: a refusal must cost no network call and must never
+      // leave a half-started flow behind. Previously nothing here checked
+      // permission, capability or binding at all — the only gate was the
+      // server's own refusal, which necessarily arrives after the request.
+      const gate = await gateCalibrationAction(
+        'generate',
+        selectedId,
+        request.binding,
+      );
+      if (!gate.allowed) {
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse({
+          status: 'error',
+          error: { ...gateRefusalToApiError(gate), reference: null },
+        });
+      }
       // Check prerequisites via engine.
       const prerequisiteError =
         await calibrationEngine.checkOnlineActionPrerequisites(
@@ -2506,6 +2655,29 @@ export function registerIpcHandlers(
       );
       // Bed-clear acknowledgement is a transactional operation scoped to a
       // specific queue job — the prerequisite sync check is not applicable here.
+      // The interlock still applies: this call is what releases a job for
+      // dispatch, so it is the last point at which permission, capability and
+      // printer/revision binding can be verified before the machine moves. The
+      // acknowledgement itself is the operator safety evidence.
+      const gate = await gateCalibrationAction(
+        'acknowledgeBedClear',
+        selectedId,
+        {
+          printerId: request.printerId,
+          configurationRevision: request.expectedPrinterConfigRevision ?? null,
+          snapshotId: null,
+          toolId: null,
+        },
+        true,
+      );
+      if (!gate.allowed) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: { ...gateRefusalToApiError(gate), reference: null },
+        });
+      }
       const signal = AbortSignal.timeout(15_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
       const { correlationId, origin: correlationOrigin } =
@@ -2612,6 +2784,28 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      // Enqueuing a calibration print leads to machine movement once the job is
+      // dispatched, so it is gated on the same authoritative evidence as any
+      // other machine-moving action. `assignedPrinterId` and
+      // `pinnedPrinterConfigRevision` already named the binding; they are now
+      // actually verified against the server rather than merely forwarded.
+      const gate = await gateCalibrationAction(
+        'startPrint',
+        selectedId,
+        {
+          printerId: request.assignedPrinterId,
+          configurationRevision: request.pinnedPrinterConfigRevision,
+          snapshotId: null,
+          toolId: null,
+        },
+        request.operatorAcknowledgedBedClear,
+      );
+      if (!gate.allowed) {
+        return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+          status: 'error',
+          error: gateRefusalToApiError(gate),
+        });
+      }
       const prerequisiteError =
         await calibrationEngine.checkOnlineActionPrerequisites(
           selectedId,
@@ -2938,18 +3132,96 @@ export function registerIpcHandlers(
       );
       const profileContext = await profiles.getAuthenticatedContext(selectedId);
       const signal = AbortSignal.timeout(15_000);
-      // Server-derived discovery is attempted first, but a failure here must
-      // not erase the answer entirely: the operator still needs to know *why*
-      // the list is short, and a refusal by the server says nothing about the
-      // OrcaSlicer profiles installed on this machine.
+      const printerId = request.printerId;
+
+      /**
+       * Answer shape used by every early return below. Echoing the printer and
+       * revision is what lets the renderer discard a late reply for a printer
+       * it is no longer showing.
+       */
+      const answer = (
+        overrides: Partial<{
+          profiles: unknown[];
+          configurationRevision: number | null;
+          discovery: CalibrationProfileDiscoveryDiagnostic;
+          localProfiles: unknown[];
+          localDiscovery: { kind: string; message: string };
+        }>,
+      ): unknown =>
+        ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
+          profiles: [],
+          printerId,
+          configurationRevision: request.configurationRevision ?? null,
+          localProfiles: [],
+          localDiscovery: {
+            kind: 'ok',
+            message: 'Local OrcaSlicer profile scan completed.',
+          },
+          ...overrides,
+        });
+
+      /**
+       * Explain the state of this machine's OrcaSlicer install.
+       *
+       * Only ever called to explain a failure — a server refusal, or a scoped
+       * lookup that matched nothing. It never runs on the happy path and never
+       * before a printer is selected, so the full-tree scan cannot become the
+       * per-selection cost it used to be. It is retained for failures because a
+       * server refusal says nothing about the profiles sitting on this machine,
+       * and collapsing the two hid a healthy install behind a server outage.
+       */
+      const diagnoseLocalInstall = async (
+        matchedNothingForPrinter: boolean,
+      ): Promise<{
+        localProfiles: Array<{
+          name: string;
+          source: 'systemInstall' | 'userImported';
+          material: string | null;
+        }>;
+        localDiscovery: { kind: string; message: string };
+      }> => {
+        const scan = await listLocalOrcaFilamentProfiles().catch(() => ({
+          installFound: false,
+          profiles: [] as Array<{
+            name: string;
+            source: 'systemInstall' | 'userImported';
+            material: string | null;
+          }>,
+        }));
+        const localDiscovery = !scan.installFound
+          ? {
+              kind: 'noInstallFound',
+              message:
+                'No OrcaSlicer installation was found in the standard locations for this operating system.',
+            }
+          : scan.profiles.length === 0
+            ? {
+                kind: 'noProfilesFound',
+                message:
+                  'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
+              }
+            : matchedNothingForPrinter
+              ? {
+                  kind: 'noMatchForSelectedPrinter',
+                  message:
+                    'OrcaSlicer is installed and its profiles were read, but none matches the profile name and nozzle the selected printer reports.',
+                }
+              : {
+                  kind: 'ok',
+                  message: 'Local OrcaSlicer profile scan completed.',
+                };
+        return { localProfiles: scan.profiles, localDiscovery };
+      };
+
+      // Resolution is scoped to the one printer the operator selected. Earlier
+      // builds listed every candidate and then fetched a context *and* ran a
+      // full local OrcaSlicer scan per printer, so the cost grew with farm size
+      // and snapshots were pulled for printers nobody asked about. The candidate
+      // list is still fetched — exactly once — because eligibility is the
+      // server's to decide and must never be inferred from a model name.
       let candidates: Awaited<
         ReturnType<typeof calibrationHttp.getPrinters>
-      >['printers'] = [];
-      let discovery: CalibrationProfileDiscoveryDiagnostic = {
-        kind: 'ok',
-        message: 'Server profile discovery completed.',
-        serverCode: null,
-      };
+      >['printers'];
       try {
         candidates = (
           await calibrationHttp.getPrinters(
@@ -2958,130 +3230,125 @@ export function registerIpcHandlers(
             signal,
           )
         ).printers;
-        if (candidates.length === 0) {
-          discovery = {
-            kind: 'noEligiblePrinters',
-            message:
-              'The server returned no calibration candidate printers for this account.',
-            serverCode: null,
-          };
-        }
       } catch (error) {
-        discovery = classifyDiscoveryFailure(error);
+        return answer({
+          discovery: classifyDiscoveryFailure(error),
+          ...(await diagnoseLocalInstall(false)),
+        });
       }
-      // Scanned unconditionally, outside the candidate loop. Bound discovery
-      // below can only run once the server has named a printer, so gating this
-      // on `candidates` would mean a server refusal also hid the OrcaSlicer
-      // profiles sitting on this machine — the exact symptom being fixed.
-      const localScan = await listLocalOrcaFilamentProfiles()
-        .then((result) => ({
-          profiles: result.profiles,
-          diagnostic: result.installFound
-            ? result.profiles.length > 0
-              ? {
-                  kind: 'ok' as const,
-                  message: 'Local OrcaSlicer profile scan completed.',
-                }
-              : {
-                  kind: 'noProfilesFound' as const,
-                  message:
-                    'OrcaSlicer is installed but no filament profiles could be read from its profile directories.',
-                }
-            : {
-                kind: 'noInstallFound' as const,
-                message:
-                  'No OrcaSlicer installation was found in the standard locations for this operating system.',
-              },
-        }))
-        .catch(() => ({
-          profiles: [],
-          diagnostic: {
-            kind: 'noInstallFound' as const,
-            message:
-              'No OrcaSlicer installation was found in the standard locations for this operating system.',
-          },
-        }));
-      const discovered = await Promise.all(
-        candidates.map(async (candidate) => {
-          if (
-            !candidate.isOnline ||
-            !isExplicitCalibrationEligibilityComplete(candidate)
-          ) {
-            return {
-              pfEntries: [] as ReturnType<
-                typeof projectPrintFarmerOrcaProfile
-              >[],
-              localEntries: [] as Awaited<
-                ReturnType<typeof discoverLocalOrcaFilamentProfiles>
-              >,
-            };
-          }
-          try {
-            const context = await calibrationHttp.getPrinterContext(
-              selectedId,
-              profileContext.profile.baseUrl,
-              candidate.printerId,
-              signal,
-            );
-            const pfEntry = projectPrintFarmerOrcaProfile(candidate, context);
-            // Discover locally installed OrcaSlicer profiles compatible with
-            // this printer context. These are real files on the user's machine
-            // and allow the user to use the local install as a base for export.
-            const localEntries = await discoverLocalOrcaFilamentProfiles(
-              context,
-            ).catch(() => []);
-            return { pfEntries: pfEntry ? [pfEntry] : [], localEntries };
-          } catch (error) {
-            if (
-              error instanceof CalibrationHttpError &&
-              ['notFound', 'invalidResponse'].includes(error.code)
-            ) {
-              return { pfEntries: [], localEntries: [] };
-            }
-            throw error;
-          }
-        }),
+
+      const candidate = candidates.find(
+        (entry) => entry.printerId === printerId,
       );
-      const profilesByScope = new Map<
-        string,
-        NonNullable<(typeof discovered)[number]['pfEntries'][number]>
-      >();
-      for (const { pfEntries, localEntries } of discovered) {
-        for (const profile of pfEntries) {
-          if (profile === null) continue;
-          const scope = [
-            profile.orcaProfileId,
-            profile.printerId,
-            profile.configurationRevision,
-            profile.snapshotId,
-            profile.toolId,
-            profile.toolheadId,
-            profile.nozzleId,
-          ].join('\u0000');
-          profilesByScope.set(scope, profile);
-        }
-        // Include locally discovered profiles; deduplicate by scope key.
-        // Local entries with upstreamVerified=true take precedence over
-        // printFarmer entries for export eligibility.
-        for (const profile of localEntries) {
-          const scope =
-            [
-              profile.orcaProfileId,
-              profile.printerId,
-              profile.configurationRevision,
-              profile.snapshotId,
-              profile.toolId,
-              profile.toolheadId,
-              profile.nozzleId,
-            ].join('\u0000') + '\u0000local';
-          profilesByScope.set(scope, profile);
-        }
+      if (candidate === undefined) {
+        return answer({
+          discovery: {
+            kind:
+              candidates.length === 0
+                ? 'noEligiblePrinters'
+                : 'selectedPrinterNotACandidate',
+            message:
+              candidates.length === 0
+                ? 'The server returned no calibration candidate printers for this account.'
+                : 'PrintFarmer no longer lists the selected printer as a calibration candidate. Choose a printer again.',
+            serverCode: null,
+          },
+          ...(await diagnoseLocalInstall(false)),
+        });
       }
-      return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
-        profiles: [...profilesByScope.values()],
-        discovery,
-        localProfiles: localScan.profiles,
-        localDiscovery: localScan.diagnostic,
+
+      if (
+        !candidate.isOnline ||
+        !isExplicitCalibrationEligibilityComplete(candidate)
+      ) {
+        // The renderer blocks continuation on an ineligible printer, so this is
+        // defence in depth rather than the primary gate. Refusing here keeps a
+        // context request off the wire for a printer the server already refused.
+        return answer({
+          discovery: {
+            kind: 'noProfilesForSelectedPrinter',
+            message:
+              'PrintFarmer does not consider the selected printer eligible for calibration, so no profile was resolved for it.',
+            serverCode: null,
+          },
+        });
+      }
+
+      let context: Awaited<
+        ReturnType<typeof calibrationHttp.getPrinterContext>
+      >;
+      try {
+        context = await calibrationHttp.getPrinterContext(
+          selectedId,
+          profileContext.profile.baseUrl,
+          printerId,
+          signal,
+          request.configurationRevision,
+        );
+      } catch (error) {
+        const classified = classifyDiscoveryFailure(error);
+        // A context failure describes one printer. It must never be reported in
+        // a way the renderer could render as "there are no printers": the list
+        // the operator selected from is still valid and still on screen.
+        return answer({
+          discovery:
+            classified.kind === 'profileResolverUnavailable'
+              ? classified
+              : {
+                  kind: 'selectedPrinterContextUnavailable',
+                  message: classified.message,
+                  serverCode: classified.serverCode,
+                },
+          ...(await diagnoseLocalInstall(false)),
+        });
+      }
+
+      const configurationRevision = context.configurationRevision;
+      const pfEntry = projectPrintFarmerOrcaProfile(candidate, context);
+      // Bound to this printer's exact profile name, nozzle and content hash.
+      // The server's GUID identifies the profile; only the name can be matched
+      // against a file in the local OrcaSlicer installation, and the two are
+      // never interchanged.
+      const localEntries = await discoverLocalOrcaFilamentProfiles(
+        context,
+      ).catch(() => []);
+
+      const resolved = [...(pfEntry === null ? [] : [pfEntry]), ...localEntries];
+
+      if (localEntries.length > 0) {
+        return answer({
+          profiles: resolved,
+          configurationRevision,
+          discovery: {
+            kind: 'ok',
+            message: 'Server profile discovery completed.',
+            serverCode: null,
+          },
+          localDiscovery: {
+            kind: 'ok',
+            message:
+              'A local OrcaSlicer profile matching the selected printer was found.',
+          },
+        });
+      }
+
+      return answer({
+        profiles: resolved,
+        configurationRevision,
+        discovery:
+          pfEntry === null
+            ? {
+                kind: 'noProfilesForSelectedPrinter',
+                message:
+                  'PrintFarmer returned a context for the selected printer but no profile identity that calibration can bind to.',
+                serverCode: null,
+              }
+            : {
+                kind: 'ok',
+                message: 'Server profile discovery completed.',
+                serverCode: null,
+              },
+        ...(await diagnoseLocalInstall(true)),
       });
     },
   );

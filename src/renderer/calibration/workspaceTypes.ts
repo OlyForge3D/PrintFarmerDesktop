@@ -3,10 +3,13 @@ import type {
   CalibrationPrinterCandidate,
   CalibrationPrinterContext,
   CalibrationPrintObservation,
+  CalibrationProfileDiscoveryDiagnostic,
   CalibrationSelectedBaseProfile,
   CalibrationUnhydratedProject,
   CalibrationWorkspacePayload,
   CalibrationWorkspaceStateRecord,
+  LocalOrcaDiscoveryDiagnostic,
+  LocalOrcaProfileSummary,
   OrcaProfileEntry,
 } from '@shared/ipc';
 import type { CalibrationEnvironment } from './api';
@@ -90,6 +93,14 @@ export interface OpenCalibrationProject {
   readonly domainState: CalibrationState;
 }
 
+/**
+ * State of the printer-first project creation flow.
+ *
+ * The shape enforces the sequence. `printers` is the only thing loaded before
+ * the operator chooses; `selectedPrinterId` is null until they do, and every
+ * per-printer field below it stays empty while it is null. Nothing here can be
+ * populated by a response for a printer other than `selectedPrinterId`.
+ */
 export interface CreationDataState {
   readonly printers: readonly CalibrationPrinterCandidate[];
   /**
@@ -101,11 +112,27 @@ export interface CreationDataState {
    * looking for a printer that is simply off the end.
    */
   readonly printersTruncated: boolean;
+  /** Why the candidate list looks the way it does. Null before the first load. */
+  readonly candidateDiagnostic: CalibrationProfileDiscoveryDiagnostic | null;
+  /**
+   * The printer the operator explicitly selected. Never auto-populated: an
+   * automatically selected first printer would make the wizard fetch a context
+   * nobody asked for and silently bias which machine gets calibrated.
+   */
+  readonly selectedPrinterId: string | null;
   readonly profiles: readonly OrcaProfileEntry[];
   readonly context: CalibrationPrinterContext | null;
+  /** Server-side profile resolution outcome for the selected printer. */
+  readonly profileDiagnostic: CalibrationProfileDiscoveryDiagnostic | null;
+  /** Local OrcaSlicer lookup outcome for the selected printer. */
+  readonly localDiagnostic: LocalOrcaDiscoveryDiagnostic | null;
+  readonly localProfiles: readonly LocalOrcaProfileSummary[];
   readonly loaded: boolean;
   readonly loading: boolean;
   readonly contextLoading: boolean;
+  /** Failure loading the candidate list. Never cleared by a per-printer error. */
+  readonly listError: string | null;
+  /** Failure loading the selected printer's context or profiles. */
   readonly error: string | null;
 }
 
@@ -154,7 +181,13 @@ export interface CalibrationWorkspaceStoreValue {
   readonly openProject: (projectId: string) => Promise<void>;
   readonly openStage: (stageId: CalibrationStageId) => Promise<void>;
   readonly loadCreationData: () => Promise<void>;
-  readonly loadPrinterContext: (printerId: string) => Promise<void>;
+  /**
+   * Select one printer and load only that printer's context and profiles.
+   *
+   * Passing null clears the selection and every derived result. Both directions
+   * cancel whatever the previous selection had in flight.
+   */
+  readonly selectPrinter: (printerId: string | null) => Promise<void>;
   readonly createProject: (input: NewProjectInput) => Promise<boolean>;
   readonly dispatchEvent: (event: CalibrationEvent) => Promise<boolean>;
   readonly updateMetadata: (

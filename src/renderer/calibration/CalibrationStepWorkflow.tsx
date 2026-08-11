@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
+  CALIBRATION_PERMISSIONS,
+  hasCalibrationPermission,
   OpenCalibrationPhotoResponse,
   type CalibrationBlockedReason,
   type CalibrationOrchestrationStatus,
@@ -330,6 +332,16 @@ export function CalibrationStepWorkflow({
         method: attempt.method,
         operationId: store.environment.createId(),
         baseRevision: null,
+        // The same binding the project was created against. Main verifies it
+        // against the authoritative context before dispatching, so a printer
+        // whose configuration moved on cannot be generated for silently.
+        binding: {
+          printerId: state.binding.printer.backendPrinterId,
+          configurationRevision:
+            state.binding.printer.printerConfigurationRevision,
+          snapshotId: state.binding.snapshot.snapshotId,
+          toolId: state.binding.selectedToolId,
+        },
       });
       if (res.status === 'submitted') {
         setOrchId(res.orchestrationId);
@@ -677,15 +689,21 @@ export function CalibrationStepWorkflow({
           'Printer context is stale. Re-open the project or force-sync to refresh.',
       };
     }
-    // Priority 5: permission (grantedScopes present but CalibrationWrite absent)
+    // Priority 5: permission. Compared against the canonical `resource:action`
+    // permission PrintFarmer actually publishes in `effectivePermissions`. The
+    // previous needle was the PascalCase JWT scope `CalibrationWrite`, which no
+    // PrintFarmer build has ever emitted, so this branch could never be taken
+    // and a genuinely unauthorised operator was told nothing at all.
     if (
       store.availability.grantedScopes != null &&
-      !store.availability.grantedScopes.includes('CalibrationWrite')
+      !hasCalibrationPermission(
+        store.availability.grantedScopes,
+        CALIBRATION_PERMISSIONS.update,
+      )
     ) {
       return {
         code: 'permissionFailure',
-        detail:
-          'Your token does not include the CalibrationWrite scope. Contact your administrator.',
+        detail: `Your PrintFarmer account does not grant ${CALIBRATION_PERMISSIONS.update}. Contact your administrator.`,
       };
     }
     // Priority 6: pinned revision mismatch (config changed since queuing)
