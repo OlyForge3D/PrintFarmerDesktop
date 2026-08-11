@@ -1147,13 +1147,23 @@ export type CalibrationPrinterEligibility = z.infer<
  * `PrinterCalibrationContextService.cs` on OlyForge3D/PrintFarmer@development,
  * pinned at blob `eb67837` (commit `1994f68e`, 2026-08-11) — including the
  * transitive ones, since `RequireValue`, `RequireString` and `RequirePositive`
- * all funnel into `RejectMissing`. Verified as complete against that blob: the
- * only snake_case literals in it that are absent here are OrcaSlicer profile
- * keys (`nozzle_diameter`, `gcode_flavor`, `max_volumetric_speed`,
- * `filament_max_volumetric_speed`, `flow_rate`) and a calibration method name
- * (`pressure_advance`), none of which is a rejection code. The blob is pinned
- * because `@development` moves; a drifted catalogue degrades to
- * {@link UNRECOGNIZED_CALIBRATION_REASON_CODE} rather than failing open.
+ * all funnel into `RejectMissing`.
+ *
+ * Two sources, because one of them is invisible to the obvious method. 97 of
+ * these appear in that file as string literals. The remaining six do not
+ * appear there at all: `CalibrationProfileSafetyValidator.Validate` returns a
+ * `CalibrationProfileSafetyResult`, and the service forwards it as
+ * `Reject(reasons, missingInputs, safety.Code!, safety.Field!, ...)` — the code
+ * is a *variable* at that call site, so scanning the service for literals
+ * finds nothing and silently reports a complete catalogue. Any future audit
+ * has to follow indirection out of the file, not just grep inside it; the six
+ * `profile_contains_*` / `profile_json_*` codes are the ones that method
+ * misses, and they were missing here until a review caught it.
+ *
+ * Counted at that pin: 103 codes, all of which the candidate route can emit,
+ * and all of which are listed here. `status_stale`, `status_unknown` and
+ * `status_unsupported` are genuine server codes despite looking client-side —
+ * they are `Reject`/`RejectMissing` call sites in the same file.
  *
  * This is an allowlist, not documentation. `rejectionReasonCodes` was
  * introduced specifically so the renderer would receive a bounded machine
@@ -1233,6 +1243,10 @@ export const CALIBRATION_REJECTION_REASON_CODES = [
   'process_profile_missing',
   'process_profile_not_found',
   'profile_compatibility_missing',
+  'profile_contains_credential',
+  'profile_contains_filesystem_path',
+  'profile_contains_private_url',
+  'profile_contains_unsafe_command',
   'profile_distribution_missing',
   'profile_distribution_unsupported',
   'profile_format_missing',
@@ -1240,6 +1254,8 @@ export const CALIBRATION_REJECTION_REASON_CODES = [
   'profile_gcode_dialect_mismatch',
   'profile_gcode_dialect_missing',
   'profile_hash_mismatch',
+  'profile_json_invalid',
+  'profile_json_missing',
   'profile_machine_mismatch',
   'profile_nozzle_data_missing',
   'profile_nozzle_material_mismatch',
@@ -1272,6 +1288,31 @@ export const UNRECOGNIZED_CALIBRATION_REASON_CODE = 'unrecognized_reason';
 
 /** Substituted for any missing-input field name that is not a plain field path. */
 export const UNRECOGNIZED_CALIBRATION_INPUT = 'unrecognized_input';
+
+/**
+ * How many rejection reasons a *server* response may carry for one printer.
+ *
+ * Mirrors the wire cap in `RemoteCalibrationCandidateDto`, which is where a
+ * hostile or runaway list is actually refused.
+ */
+export const CALIBRATION_MAX_SERVER_REJECTION_REASONS = 64;
+
+/**
+ * How many codes the renderer may receive for one printer: every server reason
+ * plus the one diagnostic the client can add itself.
+ *
+ * Derived rather than written as `64`, because the two bounds were previously
+ * both spelled `.max(64)` and that arithmetic was wrong. A server may send a
+ * full 64 reasons; when that response also contradicts itself the handler
+ * prepends {@link CALIBRATION_SERVER_CONTRADICTION_CODE}, producing 65 — which
+ * the IPC schema then refused. The refusal is not local: the handler parses
+ * `{ printers: [...] }` as one value, so a single over-long candidate threw
+ * away *every* printer, reinstating the empty-discovery failure this contract
+ * exists to prevent. The bound has to be the server's plus the client's, and
+ * saying so in arithmetic is what keeps it that way when either side moves.
+ */
+export const CALIBRATION_MAX_REJECTION_REASON_CODES =
+  CALIBRATION_MAX_SERVER_REJECTION_REASONS + 1;
 
 /**
  * Emitted when the server both declares a printer eligible and supplies
@@ -1318,18 +1359,40 @@ const CalibrationRejectionReasonCode = z.enum([
 ]);
 
 /**
- * A missing-input field path such as `firmware.family` or
- * `profiles.filament.material`.
+ * A missing-input field path such as `firmware.family`,
+ * `profiles.filament.material` or `profiles.machine.exactJson.gcode_flavor`.
  *
  * Constrained by shape rather than by an allowlist because the vocabulary is
  * open by design — it names fields of an evolving DTO, so an exhaustive list
  * would silently degrade real diagnoses on every server that adds a field.
- * The pattern still admits only camelCase dotted identifiers with optional
- * array indices, which excludes whitespace, punctuation and markup, so no
- * server-authored prose can arrive through this field either.
+ *
+ * Underscores and uppercase are admitted because the server emits them. Two
+ * real missing-input paths address keys *inside* an OrcaSlicer profile
+ * document rather than members of the DTO, and those keys are snake_case:
+ * `profiles.machine.exactJson.gcode_flavor` and
+ * `profiles.machine.exactJson.nozzle_diameter` are both `RejectMissing` field
+ * arguments at the pinned blob. An identifier-only pattern reduced each of
+ * them to {@link UNRECOGNIZED_CALIBRATION_INPUT}, discarding the most specific
+ * diagnosis PrintFarmer produces in precisely the cases where an operator has
+ * to act on it.
+ *
+ * Only `RejectMissing` populates `missingInputs` — plain `Reject` takes the
+ * set but never adds to it — so a path that appears solely on a `Reject` call
+ * (`profiles.filament.exactJson.required_nozzle_HRC`, for instance) is a
+ * rejection *field* and never arrives here at all. That distinction matters
+ * when sourcing fixtures: asserting such a path as a missing input would test
+ * a message the server does not send.
+ *
+ * Array indices are admitted because toolhead paths interpolate one:
+ * `toolheads[{toolhead.Index}].nozzleDiameter` reaches the wire as
+ * `toolheads[0].nozzleDiameter`.
+ *
+ * Every segment must still begin with a letter, so whitespace, markup, quotes,
+ * URLs, POSIX and Windows path separators, and `..` traversal remain excluded:
+ * no server-authored prose can arrive through this field.
  */
 const CALIBRATION_MISSING_INPUT_PATTERN =
-  /^[A-Za-z][A-Za-z0-9]*(?:\[\d{1,3}\])?(?:\.[A-Za-z][A-Za-z0-9]*(?:\[\d{1,3}\])?)*$/;
+  /^[A-Za-z][A-Za-z0-9_]*(?:\[\d{1,3}\])?(?:\.[A-Za-z][A-Za-z0-9_]*(?:\[\d{1,3}\])?)*$/;
 
 const CalibrationMissingInputField = z
   .string()
@@ -1400,16 +1463,19 @@ export const CalibrationPrinterCandidate = z
      * Codes only, never the server's `message` text, and validated against
      * {@link CALIBRATION_REJECTION_REASON_CODES} rather than merely being
      * short strings — see that catalogue for why the distinction matters.
+     *
+     * Bounded by {@link CALIBRATION_MAX_REJECTION_REASON_CODES}: the server's
+     * own cap plus the client's one diagnostic.
      */
     rejectionReasonCodes: z
       .array(CalibrationRejectionReasonCode)
-      .max(64)
+      .max(CALIBRATION_MAX_REJECTION_REASON_CODES)
       .optional()
       .default([]),
     /** Field paths PrintFarmer still needs populated before calibration. */
     missingInputs: z
       .array(CalibrationMissingInputField)
-      .max(64)
+      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
       .optional()
       .default([]),
     eligibility: CalibrationPrinterEligibility.nullable()

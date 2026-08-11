@@ -186,7 +186,10 @@ describe('calibration candidate DTO normalisation', () => {
     const { fetch } = recordingFetch([
       eligibleCandidateDto({
         eligible: false,
-        missingInputs: ['slicer_engine'],
+        // `slicer.engine`, as the server actually spells it — an earlier
+        // fixture said `slicer_engine`, which no PrintFarmer build emits, so
+        // it could not have caught a field-path regression.
+        missingInputs: ['slicer.engine'],
         rejectionReasons: [
           {
             code: 'firmware_family_not_klipper',

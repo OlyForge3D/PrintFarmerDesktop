@@ -21,6 +21,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationPrinterCandidate,
+  CALIBRATION_MAX_REJECTION_REASON_CODES,
+  CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   CALIBRATION_REJECTION_REASON_CODES,
   CALIBRATION_SERVER_CONTRADICTION_CODE,
   IpcChannel,
@@ -155,6 +157,7 @@ function candidateDto(overrides: Record<string, unknown> = {}) {
 
 interface ProjectedCandidate {
   printerId: string;
+  displayName: string;
   firmwareCompatible: boolean;
   rejectionReasonCodes: string[];
   missingInputs: string[];
@@ -539,5 +542,250 @@ describe('missing-input field paths are shape-checked', () => {
         eligibility: null,
       }),
     ).toThrow();
+  });
+});
+
+/**
+ * Field paths and codes taken from the server rather than invented.
+ *
+ * Every string below was read out of `PrinterCalibrationContextService.cs` at
+ * the pinned blob. A fixture that no PrintFarmer build emits cannot catch a
+ * parity regression — it can only agree with whatever the client already does,
+ * which is how `slicer_engine` (a string the server never sends; it sends
+ * `slicer.engine`) sat in the discovery fixtures while two real paths were
+ * being silently discarded.
+ *
+ * Sourcing is specifically to `RejectMissing`, which is the only helper that
+ * adds to `missingInputs`; plain `Reject` accepts the set and never writes to
+ * it. `profiles.filament.exactJson.required_nozzle_HRC` is a `Reject` field
+ * and therefore *not* a missing input, so it is deliberately absent below —
+ * asserting it here would be a fixture for a message the server never sends.
+ */
+describe('the shapes the server actually sends survive the boundary', () => {
+  // Two of these address keys inside an OrcaSlicer profile document, so they
+  // are snake_case; an identifier-only pattern reduced both to
+  // `unrecognized_input`. The toolhead paths interpolate an array index.
+  const REAL_SERVER_FIELD_PATHS = [
+    'firmware.family',
+    'firmware.gcodeDialect',
+    'firmware.detectionConfidence',
+    'bedOrigin.x',
+    'buildVolume.z',
+    'activeToolheadIndex',
+    'slicer.engine',
+    'slicer.filamentProfileId',
+    'profiles.filament.material',
+    'profiles.machine.updatedAtUtc',
+    'profiles.machine.exactJson.gcode_flavor',
+    'profiles.machine.exactJson.nozzle_diameter',
+    'toolheads[0].nozzleDiameter',
+    'toolheads[0].offset.x',
+  ];
+
+  it('keeps every real field path intact', () => {
+    for (const field of REAL_SERVER_FIELD_PATHS) {
+      expect(normalizeCalibrationMissingInput(field)).toBe(field);
+    }
+  });
+
+  it('carries them through the registered handler unchanged', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: REAL_SERVER_FIELD_PATHS,
+        rejectionReasons: [
+          {
+            code: 'profile_nozzle_data_missing',
+            field: 'profiles.machine.exactJson.nozzle_diameter',
+            message: 'The machine profile does not state a nozzle diameter.',
+          },
+        ],
+      }),
+    ]);
+
+    expect(printer!.missingInputs).toEqual(REAL_SERVER_FIELD_PATHS);
+    expect(printer!.missingInputs).not.toContain(
+      UNRECOGNIZED_CALIBRATION_INPUT,
+    );
+  });
+
+  it('still refuses traversal, separators and prose', () => {
+    for (const hostile of [
+      '../../etc/passwd',
+      'profiles..machine',
+      'profiles/machine/exactJson',
+      'profiles\\machine',
+      '.leadingDot',
+      'profiles.machine.',
+      '_leadingUnderscore',
+      'firmware family',
+      'see https://evil.example for details',
+    ]) {
+      expect(normalizeCalibrationMissingInput(hostile)).toBe(
+        UNRECOGNIZED_CALIBRATION_INPUT,
+      );
+    }
+  });
+
+  it('accepts the safety codes the server forwards indirectly', async () => {
+    // These six never appear as literals in the eligibility evaluator: it
+    // forwards `safety.Code` from `CalibrationProfileSafetyValidator`. A
+    // catalogue built by scanning that one file for literals omits all of
+    // them, and every one then degrades to `unrecognized_reason`.
+    const indirect = [
+      'profile_contains_credential',
+      'profile_contains_filesystem_path',
+      'profile_contains_private_url',
+      'profile_contains_unsafe_command',
+      'profile_json_invalid',
+      'profile_json_missing',
+    ];
+
+    for (const code of indirect) {
+      expect(CALIBRATION_REJECTION_REASON_CODES).toContain(code);
+      expect(normalizeCalibrationReasonCode(code)).toBe(code);
+    }
+
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: indirect.map((code) => ({
+          code,
+          field: 'profiles.machine.exactJson',
+          message: 'Profile safety validation failed.',
+        })),
+      }),
+    ]);
+
+    expect(printer!.rejectionReasonCodes).toEqual(indirect);
+  });
+});
+
+describe('the code bound accounts for the code the client adds', () => {
+  /** A full server response: the wire cap of distinct real reasons. */
+  function maximalReasons() {
+    return Array.from(
+      { length: CALIBRATION_MAX_SERVER_REJECTION_REASONS },
+      (_unused, index) => ({
+        code: CALIBRATION_REJECTION_REASON_CODES[
+          index % CALIBRATION_REJECTION_REASON_CODES.length
+        ]!,
+        field: 'firmware.family',
+        message: 'Reason.',
+      }),
+    );
+  }
+
+  it('reserves exactly one slot above the server cap', () => {
+    expect(CALIBRATION_MAX_REJECTION_REASON_CODES).toBe(
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS + 1,
+    );
+  });
+
+  it('survives a full 64 reasons that also contradict, instead of erasing the list', async () => {
+    // Both bounds used to be spelled `.max(64)`. A contradictory response at
+    // the server's cap produced 65 codes, the IPC schema refused the whole
+    // `{ printers: [...] }` value, and *every* printer vanished — the
+    // empty-discovery failure this contract exists to prevent.
+    const printers = await listPrinters([
+      candidateDto({ eligible: true, rejectionReasons: maximalReasons() }),
+    ]);
+
+    expect(printers).toHaveLength(1);
+    expect(printers[0]!.rejectionReasonCodes).toHaveLength(
+      CALIBRATION_MAX_REJECTION_REASON_CODES,
+    );
+    expect(printers[0]!.rejectionReasonCodes[0]).toBe(
+      CALIBRATION_SERVER_CONTRADICTION_CODE,
+    );
+    expect(printers[0]!.eligibility).toBeNull();
+  });
+
+  it('does not drop a neighbouring printer when one candidate is maximal', async () => {
+    // The parse covers the whole list, so the blast radius of an over-long
+    // candidate is every other printer in the farm.
+    const printers = await listPrinters([
+      candidateDto({ eligible: true, rejectionReasons: maximalReasons() }),
+      candidateDto({ id: '99999999-9999-4999-8999-999999999999' }),
+    ]);
+
+    expect(printers).toHaveLength(2);
+    expect(printers[1]!.eligibility).not.toBeNull();
+  });
+
+  it('keeps duplicate codes rather than collapsing them, and stays bounded', async () => {
+    // Repetition is information: the same code can be reported against
+    // several fields. Preserved, but still inside the bound.
+    const printers = await listPrinters([
+      candidateDto({
+        eligible: true,
+        rejectionReasons: Array.from(
+          { length: CALIBRATION_MAX_SERVER_REJECTION_REASONS },
+          () => ({
+            code: 'printer_offline',
+            field: 'reachability',
+            message: 'Printer is offline.',
+          }),
+        ),
+      }),
+    ]);
+
+    const codes = printers[0]!.rejectionReasonCodes;
+    expect(codes).toHaveLength(CALIBRATION_MAX_REJECTION_REASON_CODES);
+    expect(codes.filter((code) => code === 'printer_offline')).toHaveLength(
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
+    );
+  });
+});
+
+describe('the server message is never treated as a machine code', () => {
+  it('ignores `message` entirely, however plausible it looks', async () => {
+    // The message is the one field the server writes freely. Even when it is
+    // shaped exactly like a catalogue code, it must not become one.
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          {
+            code: 'printer_offline',
+            field: 'reachability',
+            message: 'firmware_family_not_klipper',
+          },
+        ],
+      }),
+    ]);
+
+    expect(printer!.rejectionReasonCodes).toEqual(['printer_offline']);
+    expect(printer!.rejectionReasonCodes).not.toContain(
+      'firmware_family_not_klipper',
+    );
+    expect(JSON.stringify(printer)).not.toContain(
+      'firmware_family_not_klipper',
+    );
+  });
+
+  it('keeps the printer visible and ineligible rather than dropping it', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          {
+            code: 'not a code at all, just prose',
+            field: 'firmware.family',
+            message: 'Prose.',
+          },
+        ],
+        missingInputs: ['not a path either'],
+      }),
+    ]);
+
+    expect(printer!.printerId).toBe(PRINTER_GUID);
+    expect(printer!.displayName).toBe('Rack A cell 3');
+    expect(printer!.eligibility).toBeNull();
+    expect(printer!.firmwareCompatible).toBe(false);
+    expect(printer!.rejectionReasonCodes).toEqual([
+      UNRECOGNIZED_CALIBRATION_REASON_CODE,
+    ]);
+    expect(printer!.missingInputs).toEqual([UNRECOGNIZED_CALIBRATION_INPUT]);
   });
 });

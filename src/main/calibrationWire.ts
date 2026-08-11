@@ -19,6 +19,7 @@ import {
   CalibrationPrinterContext as CalibrationPrinterContextSchema,
   CalibrationPrinterEligibility,
   CalibrationWorkspacePayload,
+  CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   OrcaProfileEntry,
   deriveCalibrationWorkspaceProjection,
   type CalibrationPrinterContext,
@@ -350,12 +351,12 @@ const RemoteCalibrationCandidateDto = z
       .transform((v) => v ?? false),
     missingInputs: z
       .array(z.string().max(128))
-      .max(64)
+      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
       .nullish()
       .transform((v) => v ?? []),
     rejectionReasons: z
       .array(RemoteCalibrationRejectionReason)
-      .max(64)
+      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
       .nullish()
       .transform((v) => v ?? []),
   })
