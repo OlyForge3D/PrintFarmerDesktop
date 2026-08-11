@@ -160,9 +160,11 @@ function makeApi(
       grantedScopes: ['calibration:read', 'calibration:create'],
       offlineEditingEnabled: true,
     }),
-    listCalibrationPrinters: vi
-      .fn()
-      .mockResolvedValue({ printers: candidates, fetchedAt: NOW }),
+    listCalibrationPrinters: vi.fn().mockResolvedValue({
+      printers: candidates,
+      printersTruncated: false,
+      fetchedAt: NOW,
+    }),
     getCalibrationPrinterContext: vi
       .fn()
       .mockImplementation(({ printerId }: { printerId: string }) =>
@@ -231,6 +233,37 @@ async function settle() {
 afterEach(cleanup);
 
 describe('nothing per-printer is fetched before the operator chooses', () => {
+  it('says the list is partial when the server offered more printers than it carries', async () => {
+    // Carried over from the candidate-truncation work and re-anchored here,
+    // because printer-first moved this notice into the selection step. Without
+    // it, "none of these is eligible" reads as a verdict on the whole farm when
+    // the printer the operator wants may simply be off the end.
+    const api = makeApi();
+    api.listCalibrationPrinters.mockResolvedValue({
+      printers: [
+        candidate(PRINTER_A, 'Voron in bay one'),
+        candidate(PRINTER_B, 'Voron in bay two'),
+      ],
+      printersTruncated: true,
+      fetchedAt: NOW,
+    });
+    await openWizard(renderWizard(api));
+    await settle();
+
+    expect(screen.getByText(/This list is partial/i)).toBeInTheDocument();
+    // And announced, not only shown.
+    expect(
+      document.querySelector('.cal-global-live')?.textContent ?? '',
+    ).toMatch(/list is partial/i);
+  });
+
+  it('does not claim the list is partial when it is whole', async () => {
+    // Control: the notice above must be caused by truncation, not always shown.
+    await openWizard(renderWizard());
+    await settle();
+    expect(screen.queryByText(/This list is partial/i)).not.toBeInTheDocument();
+  });
+
   it('lists printers and resolves nothing else', async () => {
     const api = await openWizard(renderWizard());
     await settle();
