@@ -1139,6 +1139,195 @@ export type CalibrationPrinterEligibility = z.infer<
 >;
 
 /** Summary of one PrintFarmer-managed printer that can be selected for calibration. */
+/**
+ * Every rejection reason code PrintFarmer's calibration eligibility evaluator
+ * can emit.
+ *
+ * Extracted from the `Reject`/`RejectMissing` call sites in
+ * `PrinterCalibrationContextService.cs` on OlyForge3D/PrintFarmer@development.
+ *
+ * This is an allowlist, not documentation. `rejectionReasonCodes` was
+ * introduced specifically so the renderer would receive a bounded machine
+ * token instead of the server's free-text `message`, but accepting any short
+ * string as a "code" left that property asserted rather than enforced: a
+ * hostile or buggy server could put arbitrary prose in `code` and it would
+ * reach the renderer anyway. Validating against this catalogue is what makes
+ * the claim true.
+ *
+ * Erring generous is deliberate. An extra member is inert, whereas a missing
+ * one degrades a real diagnosis to
+ * {@link UNRECOGNIZED_CALIBRATION_REASON_CODE} — informative but less useful.
+ */
+export const CALIBRATION_REJECTION_REASON_CODES = [
+  'active_toolhead_invalid',
+  'active_toolhead_missing',
+  'bed_origin_x_missing',
+  'bed_origin_y_missing',
+  'build_volume_x_missing',
+  'build_volume_y_missing',
+  'build_volume_z_missing',
+  'direct_drive_state_missing',
+  'drive_type_missing',
+  'enclosure_state_missing',
+  'excluded_regions_missing',
+  'extruder_gear_ratio_missing',
+  'filament_bed_temperature_exceeds_limit',
+  'filament_bed_temperature_requires_heated_bed',
+  'filament_hotend_temperature_exceeds_limit',
+  'filament_material_missing',
+  'filament_material_unsupported',
+  'filament_profile_missing',
+  'filament_profile_not_found',
+  'firmware_detection_confidence_invalid',
+  'firmware_detection_confidence_missing',
+  'firmware_detection_source_unknown',
+  'firmware_detection_time_missing',
+  'firmware_detection_version_missing',
+  'firmware_family_not_klipper',
+  'firmware_family_unknown',
+  'firmware_identity_unverified',
+  'firmware_metadata_stale',
+  'firmware_retraction_capability_missing',
+  'firmware_version_missing',
+  'gcode_dialect_not_klipper',
+  'gcode_dialect_unknown',
+  'geometry_json_invalid',
+  'hardware_metadata_stale',
+  'hardware_verification_time_missing',
+  'heated_bed_state_missing',
+  'heated_chamber_state_missing',
+  'hotend_max_temperature_missing',
+  'machine_profile_missing',
+  'machine_profile_not_found',
+  'max_acceleration_missing',
+  'max_bed_temperature_missing',
+  'max_chamber_temperature_missing',
+  'max_print_speed_missing',
+  'max_travel_acceleration_missing',
+  'max_travel_speed_missing',
+  'max_volumetric_flow_missing',
+  'motion_type_missing',
+  'multi_extruder_status_unsupported',
+  'nozzle_diameter_missing',
+  'nozzle_hardness_missing',
+  'nozzle_material_missing',
+  'nozzle_max_temperature_missing',
+  'nozzle_type_missing',
+  'physical_toolhead_missing',
+  'pressure_advance_capability_missing',
+  'printable_polygon_invalid',
+  'printable_polygon_missing',
+  'printer_configuration_changed',
+  'printer_in_maintenance',
+  'printer_not_found',
+  'printer_offline',
+  'process_profile_missing',
+  'process_profile_not_found',
+  'profile_compatibility_missing',
+  'profile_distribution_missing',
+  'profile_distribution_unsupported',
+  'profile_format_missing',
+  'profile_format_unsupported',
+  'profile_gcode_dialect_mismatch',
+  'profile_gcode_dialect_missing',
+  'profile_hash_mismatch',
+  'profile_machine_mismatch',
+  'profile_nozzle_data_missing',
+  'profile_nozzle_material_mismatch',
+  'profile_nozzle_mismatch',
+  'profile_printer_mismatch',
+  'profile_printer_model_mismatch',
+  'profile_revision_missing',
+  'profile_service_unavailable',
+  'profile_slicer_mismatch',
+  'profile_version_mismatch',
+  'profile_version_missing',
+  'required_operations_unsupported',
+  'slicer_distribution_missing',
+  'slicer_distribution_unsupported',
+  'slicer_engine_missing',
+  'slicer_engine_unsupported',
+  'slicer_version_missing',
+  'slicer_version_unsupported',
+  'status_stale',
+  'status_unknown',
+  'status_unsupported',
+  'supported_materials_missing',
+  'toolhead_offset_x_missing',
+  'toolhead_offset_y_missing',
+  'toolhead_offset_z_missing',
+] as const;
+
+/** Substituted for any reason code outside {@link CALIBRATION_REJECTION_REASON_CODES}. */
+export const UNRECOGNIZED_CALIBRATION_REASON_CODE = 'unrecognized_reason';
+
+/** Substituted for any missing-input field name that is not a plain field path. */
+export const UNRECOGNIZED_CALIBRATION_INPUT = 'unrecognized_input';
+
+/**
+ * Emitted when the server both declares a printer eligible and supplies
+ * reasons it is not.
+ *
+ * Not a server code: PrintFarmer never sends it. It exists so a self
+ * contradicting response is *visible* rather than quietly flattened into an
+ * ordinary ineligible printer, which would hide a server defect from the only
+ * people able to report it.
+ */
+export const CALIBRATION_SERVER_CONTRADICTION_CODE = 'server_contradiction';
+
+const CalibrationRejectionReasonCode = z.enum([
+  ...CALIBRATION_REJECTION_REASON_CODES,
+  UNRECOGNIZED_CALIBRATION_REASON_CODE,
+  CALIBRATION_SERVER_CONTRADICTION_CODE,
+]);
+
+/**
+ * A missing-input field path such as `firmware.family` or
+ * `profiles.filament.material`.
+ *
+ * Constrained by shape rather than by an allowlist because the vocabulary is
+ * open by design — it names fields of an evolving DTO, so an exhaustive list
+ * would silently degrade real diagnoses on every server that adds a field.
+ * The pattern still admits only camelCase dotted identifiers with optional
+ * array indices, which excludes whitespace, punctuation and markup, so no
+ * server-authored prose can arrive through this field either.
+ */
+const CALIBRATION_MISSING_INPUT_PATTERN =
+  /^[A-Za-z][A-Za-z0-9]*(?:\[\d{1,3}\])?(?:\.[A-Za-z][A-Za-z0-9]*(?:\[\d{1,3}\])?)*$/;
+
+const CalibrationMissingInputField = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine(
+    (value) =>
+      value === UNRECOGNIZED_CALIBRATION_INPUT ||
+      CALIBRATION_MISSING_INPUT_PATTERN.test(value),
+    { message: 'Not a calibration field path.' },
+  );
+
+/**
+ * Maps a server-supplied reason code onto the allowlist, substituting
+ * {@link UNRECOGNIZED_CALIBRATION_REASON_CODE} for anything unknown.
+ *
+ * Substitutes rather than throws on purpose: an unfamiliar code is not a
+ * reason to discard the printer it describes, and throwing here would empty
+ * the list for a diagnosis the client merely does not recognise.
+ */
+export function normalizeCalibrationReasonCode(
+  code: string,
+): z.infer<typeof CalibrationRejectionReasonCode> {
+  const result = CalibrationRejectionReasonCode.safeParse(code);
+  return result.success ? result.data : UNRECOGNIZED_CALIBRATION_REASON_CODE;
+}
+
+/** The {@link normalizeCalibrationReasonCode} counterpart for field paths. */
+export function normalizeCalibrationMissingInput(field: string): string {
+  return CALIBRATION_MISSING_INPUT_PATTERN.test(field)
+    ? field
+    : UNRECOGNIZED_CALIBRATION_INPUT;
+}
+
 export const CalibrationPrinterCandidate = z
   .object({
     /** Server-assigned stable printer ID. */
@@ -1168,19 +1357,18 @@ export const CalibrationPrinterCandidate = z
      * Machine-readable codes for why PrintFarmer judged this printer
      * ineligible, e.g. `firmware_family_not_klipper`.
      *
-     * Codes only, never the server's `message` text. The server controls that
-     * string, and the #177 disposition keeps server-controlled free text out of
-     * the renderer; a bounded code the client maps to its own catalogued
-     * wording carries the same explanation without that exposure.
+     * Codes only, never the server's `message` text, and validated against
+     * {@link CALIBRATION_REJECTION_REASON_CODES} rather than merely being
+     * short strings — see that catalogue for why the distinction matters.
      */
     rejectionReasonCodes: z
-      .array(z.string().min(1).max(128))
+      .array(CalibrationRejectionReasonCode)
       .max(64)
       .optional()
       .default([]),
-    /** Inputs PrintFarmer still needs before this printer can be calibrated. */
+    /** Field paths PrintFarmer still needs populated before calibration. */
     missingInputs: z
-      .array(z.string().min(1).max(128))
+      .array(CalibrationMissingInputField)
       .max(64)
       .optional()
       .default([]),

@@ -21,6 +21,9 @@ import {
   type SidecarPingResponse,
   type CalibrationProfileDiscoveryDiagnostic,
   resolveOrcaBaseProfileLookupName,
+  normalizeCalibrationReasonCode,
+  normalizeCalibrationMissingInput,
+  CALIBRATION_SERVER_CONTRADICTION_CODE,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -1486,13 +1489,25 @@ export function registerIpcHandlers(
             orcaProfileId: printer.orcaProfileId,
             isOnline: printer.isOnline,
             updatedAt: printer.updatedAt,
-            // Carried so an ineligible printer can explain itself. Codes only:
-            // the server's `message` text stays in the main process (#177).
+            // Carried so an ineligible printer can explain itself. Codes only,
+            // and each is checked against the known catalogue before it
+            // crosses the boundary, so an unfamiliar or hostile "code" cannot
+            // arrive at the renderer as arbitrary text.
             rejectionReasonCodes:
               eligibility === null
-                ? printer.rejectionReasons.map((reason) => reason.code)
+                ? [
+                    ...(printer.serverContradiction
+                      ? [CALIBRATION_SERVER_CONTRADICTION_CODE]
+                      : []),
+                    ...printer.rejectionReasons.map((reason) =>
+                      normalizeCalibrationReasonCode(reason.code),
+                    ),
+                  ]
                 : [],
-            missingInputs: eligibility === null ? printer.missingInputs : [],
+            missingInputs:
+              eligibility === null
+                ? printer.missingInputs.map(normalizeCalibrationMissingInput)
+                : [],
             eligibility,
           };
         }),

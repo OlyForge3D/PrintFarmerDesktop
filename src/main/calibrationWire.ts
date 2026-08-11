@@ -397,7 +397,6 @@ function deriveCandidateEligibility(
     gcodeDialect === 'Klipper' &&
     slicerEngine === CALIBRATION_SLICER_ENGINE &&
     slicerDistribution === CALIBRATION_SLICER_DISTRIBUTION;
-
   if (!explicitlyCompatible) return null;
 
   return {
@@ -414,6 +413,39 @@ function deriveCandidateEligibility(
     permissionsComplete: true,
     reasons: [],
   };
+}
+
+/**
+ * Whether the server declared a printer eligible while also supplying reasons
+ * it is not.
+ *
+ * PrintFarmer computes `Eligible` as `reasons.Count == 0`, so the two can only
+ * disagree if the response was assembled incorrectly or tampered with. The
+ * client fails that closed either way, but flattening it into an ordinary
+ * ineligible printer would erase the evidence: the operator would see a
+ * refusal indistinguishable from a legitimate one and no one would learn the
+ * server is emitting incoherent records. Detecting it explicitly lets the
+ * contradiction be reported as itself.
+ */
+/**
+ * Whether the server declared a printer eligible while also supplying reasons
+ * it is not.
+ *
+ * PrintFarmer computes `Eligible` as `reasons.Count == 0`, so the two can only
+ * disagree if the response was assembled incorrectly or tampered with. The
+ * client fails that closed either way, but flattening it into an ordinary
+ * ineligible printer would erase the evidence: the operator would see a
+ * refusal indistinguishable from a legitimate one, and nobody would learn the
+ * server is emitting incoherent records. Detecting it explicitly lets the
+ * contradiction be reported as itself.
+ */
+function hasServerEligibilityContradiction(
+  dto: z.infer<typeof RemoteCalibrationCandidateDto>,
+): boolean {
+  return (
+    dto.eligible &&
+    (dto.rejectionReasons.length > 0 || dto.missingInputs.length > 0)
+  );
 }
 
 /** Engine/distribution this client negotiates; mirrors the server constants. */
@@ -450,6 +482,12 @@ export const RemoteCalibrationPrinterCandidate =
     eligible: dto.eligible,
     missingInputs: dto.missingInputs,
     rejectionReasons: dto.rejectionReasons,
+    /**
+     * True when the server said this printer is eligible and simultaneously
+     * said why it is not. Carried so the contradiction can be reported rather
+     * than silently normalised into an ordinary refusal.
+     */
+    serverContradiction: hasServerEligibilityContradiction(dto),
     eligibility: deriveCandidateEligibility(dto),
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<
