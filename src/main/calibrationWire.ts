@@ -1012,11 +1012,13 @@ export function projectCalibrationEligibility(
  * predicate unsatisfiable against every real server, which silently disabled
  * profile listing rather than gating anything.
  *
- * The safety and permission gates live where they belong and remain
- * fail-closed on absent data: {@link isCalibrationContextSafetyAssured} and the
- * explicit `context.safety === null` refusal in
- * {@link doesCalibrationWorkspaceMatchContext}, which together still block
- * workspace creation, generation and print start.
+ * Authorisation for anything that mutates server state or moves a machine lives
+ * in `calibrationActionGate.ts`, which gates on evidence that exists: the
+ * canonical `effectivePermissions`, the negotiated capability flags, the
+ * printer/revision/snapshot/tool binding, and a main-process bed-clear
+ * acknowledgement ledger. An earlier revision of this comment claimed the gate
+ * was `isCalibrationContextSafetyAssured`; that predicate had no call sites, so
+ * the protection it described did not exist.
  */
 export function isExplicitCalibrationContextComplete(
   context: RemoteCalibrationPrinterContext,
@@ -1032,31 +1034,6 @@ export function isExplicitCalibrationContextComplete(
     context.orcaProfileName !== null &&
     context.profileRevision !== null &&
     context.toolheads.length > 0
-  );
-}
-
-/**
- * Whether the server explicitly asserted the safety interlocks and per-printer
- * permissions that generation and print start require.
- *
- * Fails closed: PrintFarmer does not currently publish either block, so this is
- * `false` on every live deployment. That is the intended outcome — an assurance
- * the server never made must never be assumed — and it is why generate/start
- * stay blocked while discovery and profile inspection continue to work.
- */
-export function isCalibrationContextSafetyAssured(
-  context: RemoteCalibrationPrinterContext,
-): boolean {
-  return (
-    context.safety !== null &&
-    context.safety.emergencyStopAvailable &&
-    context.safety.thermalProtectionConfirmed &&
-    context.safety.ventilationAssessed &&
-    context.permissions !== null &&
-    context.permissions.readPrinter &&
-    context.permissions.writeCalibration &&
-    context.permissions.generateCalibration &&
-    context.permissions.startPrint
   );
 }
 
@@ -1218,8 +1195,9 @@ export function doesCalibrationWorkspaceMatchContext(
   // compared exactly.
   //
   // This is drift detection, not authorisation: actions that move the machine
-  // stay gated by `isCalibrationContextSafetyAssured` and the server capability
-  // flags, both of which remain fail-closed while the block is absent.
+  // are gated in `calibrationActionGate.ts` on canonical effective permissions,
+  // negotiated capability flags, the printer/revision/snapshot/tool binding and
+  // a main-process bed-clear acknowledgement ledger.
   const remoteSafety = context.safety;
   const safetyMatches =
     remoteSafety === null ||
