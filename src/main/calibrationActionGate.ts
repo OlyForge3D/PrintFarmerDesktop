@@ -47,6 +47,7 @@ import {
   type CalibrationPermission,
 } from '../shared/ipc.js';
 import {
+  isAuthoritativeCalibrationContext,
   isExplicitCalibrationContextComplete,
   type RemoteCalibrationPrinterContext,
 } from './calibrationWire.js';
@@ -211,7 +212,13 @@ export function evaluateCalibrationActionGate(
   if (!isExplicitCalibrationContextComplete(context)) {
     return block(
       'contextIncomplete',
-      'The selected printer context is missing identities the calibration contract requires.',
+      isAuthoritativeCalibrationContext(context)
+        ? 'The selected printer context is missing identities the calibration contract requires.'
+        : // Distinguished because the remedy differs. Missing identities are a
+          // data problem; an unevaluated or refused context means PrintFarmer
+          // has not agreed to calibrate this printer at all, and no amount of
+          // retrying the action will change that.
+          'PrintFarmer has not fully evaluated this printer, so this action cannot be bound to it.',
     );
   }
 

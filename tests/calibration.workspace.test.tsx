@@ -307,6 +307,8 @@ const context: CalibrationPrinterContext = {
   bedWidthMm: 220,
   bedDepthMm: 220,
   nozzleDiameterMm: 0.4,
+  // A selected context is the server's authoritative verdict.
+  evaluationScope: 'full' as const,
   snapshotAt: now,
   isCurrent: true,
   configurationId: 'configuration-1',
@@ -1549,6 +1551,8 @@ describe('CalibrationWorkspace', () => {
       configurationRevision: 8,
       snapshotId: 'snapshot-8',
       snapshotRevision: 8,
+      // A selected context is the server's authoritative verdict.
+      evaluationScope: 'full' as const,
       snapshotAt: '2026-07-26T17:00:00.000Z',
     });
     api.listOrcaProfiles.mockResolvedValue({

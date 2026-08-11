@@ -8,6 +8,7 @@ import {
   type CalibrationWorkspacePayload as CalibrationWorkspacePayloadType,
 } from '@shared/ipc';
 import {
+  isAuthoritativeCalibrationContext,
   isExplicitCalibrationContextComplete,
   isExplicitCalibrationEligibilityComplete,
   prepareCalibrationWorkspaceSave,
@@ -19,6 +20,7 @@ import {
   RemoteCalibrationPrinterContext,
 } from '../src/main/calibrationWire.js';
 import { evaluateCalibrationActionGate } from '../src/main/calibrationActionGate.js';
+import { calibrationContextDto } from './fixtures/calibrationContract.js';
 import { resolveCalibrationWorkspaceFreshness } from '../src/main/calibrationFreshness.js';
 import { CalibrationHttpError } from '../src/main/calibrationHttp.js';
 
@@ -700,6 +702,10 @@ function contextDto(overrides: Record<string, unknown> = {}) {
   const { snapshot: snapshotOverride, ...rest } = overrides;
   return {
     ...candidateDto(),
+    // The selected context is the server's authoritative verdict: it resolved
+    // the printer's profiles. A candidate listing never does, which is why the
+    // two must not be treated as interchangeable evidence.
+    profilesEvaluated: true,
     schemaVersion: '1.0',
     snapshotSha256: SNAPSHOT_SHA,
     capturedAtUtc: NOW,
@@ -770,6 +776,116 @@ function contextDto(overrides: Record<string, unknown> = {}) {
 function remoteCandidate(overrides: Record<string, unknown> = {}) {
   return RemoteCalibrationPrinterCandidate.parse(candidateDto(overrides));
 }
+
+describe('only an authoritative context may be bound', () => {
+  // The blocker this covers: the context transform dropped `profilesEvaluated`,
+  // so completeness and binding tested only whether identity fields were
+  // populated. A context the server had explicitly refused could still be
+  // marked current and bound, because the candidate list's preliminary screen
+  // was effectively standing in for a resolution it never performed.
+  const authoritative = RemoteCalibrationPrinterContext.parse(
+    calibrationContextDto(),
+  );
+
+  it('accepts a context that is evaluated, eligible and carries no blockers', () => {
+    // Control. Without it every refusal below is satisfied by a predicate that
+    // refuses everything.
+    expect(authoritative.profilesEvaluated).toBe(true);
+    expect(isAuthoritativeCalibrationContext(authoritative)).toBe(true);
+    expect(isExplicitCalibrationContextComplete(authoritative)).toBe(true);
+    expect(projectCalibrationPrinterContext(authoritative).isCurrent).toBe(
+      true,
+    );
+    expect(
+      projectPrintFarmerOrcaProfile(remoteCandidate(), authoritative),
+    ).not.toBeNull();
+  });
+
+  const refusals: ReadonlyArray<[string, Record<string, unknown>]> = [
+    [
+      'the server says it did not evaluate profiles',
+      { profilesEvaluated: false },
+    ],
+    [
+      'an older server omits the field entirely',
+      // Silence is not a pass. This is the compatibility case: nothing may be
+      // inferred from a field the server never sent.
+      { profilesEvaluated: null },
+    ],
+    [
+      'the server evaluated profiles and refused the printer',
+      {
+        profilesEvaluated: true,
+        eligible: false,
+        rejectionReasons: [
+          { code: 'profile_hash_mismatch', message: 'hash mismatch' },
+        ],
+      },
+    ],
+    [
+      'the server reports missing inputs despite populated profiles',
+      {
+        profilesEvaluated: true,
+        eligible: false,
+        missingInputs: ['profiles.filament.sha256'],
+      },
+    ],
+    [
+      'the server contradicts itself, claiming eligible while giving reasons',
+      {
+        profilesEvaluated: true,
+        eligible: true,
+        rejectionReasons: [
+          { code: 'printer_in_maintenance', message: 'in maintenance' },
+        ],
+      },
+    ],
+  ];
+
+  for (const [label, override] of refusals) {
+    it(`refuses to bind when ${label}`, () => {
+      const context = RemoteCalibrationPrinterContext.parse(
+        calibrationContextDto(override),
+      );
+      // Every identity the contract names is still present, so this is only
+      // refused because the evaluation itself is not authoritative.
+      expect(context.configurationId).not.toBeNull();
+      expect(context.snapshotId).not.toBeNull();
+      expect(context.orcaProfileName).not.toBeNull();
+
+      expect(isAuthoritativeCalibrationContext(context)).toBe(false);
+      expect(isExplicitCalibrationContextComplete(context)).toBe(false);
+      // The projection must not present it as current, or the renderer would
+      // show a bindable-looking snapshot.
+      expect(projectCalibrationPrinterContext(context).isCurrent).toBe(false);
+      expect(projectCalibrationPrinterContext(context).evaluationScope).toBe(
+        'preliminary',
+      );
+      // And no profile may be derived from it.
+      expect(
+        projectPrintFarmerOrcaProfile(remoteCandidate(), context),
+      ).toBeNull();
+    });
+  }
+
+  it('is not rescued by a candidate that passed the preliminary screen', () => {
+    // The precise failure mode. A candidate list says a printer looks fine;
+    // that is a basic screen and never authorises binding. Here the candidate
+    // is eligible and the context is not, and the context wins.
+    const candidate = remoteCandidate();
+    expect(isExplicitCalibrationEligibilityComplete(candidate)).toBe(true);
+    const refused = RemoteCalibrationPrinterContext.parse(
+      calibrationContextDto({
+        profilesEvaluated: true,
+        eligible: false,
+        rejectionReasons: [
+          { code: 'filament_profile_not_found', message: 'not found' },
+        ],
+      }),
+    );
+    expect(projectPrintFarmerOrcaProfile(candidate, refused)).toBeNull();
+  });
+});
 
 describe('explicit printer context', () => {
   it('blocks missing and non-upstream identities', () => {

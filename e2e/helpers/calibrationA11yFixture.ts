@@ -617,6 +617,8 @@ export async function applyCalibrationScenario(
       bedWidthMm: 250,
       bedDepthMm: 250,
       nozzleDiameterMm: ids.nozzleDiameterMm,
+      // A selected context is the server's authoritative verdict.
+      evaluationScope: 'full' as const,
       snapshotAt: ids.now,
       isCurrent: scenario.staleContext !== true,
       configurationId: 'config-a11y-1',

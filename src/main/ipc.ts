@@ -170,6 +170,7 @@ import {
 } from './calibrationActionGate.js';
 import { CalibrationSelectionCache } from './calibrationSelectionCache.js';
 import { BedClearAcknowledgementLedger } from './calibrationBedClearLedger.js';
+import { CalibrationCapabilityRefresher } from './calibrationCapabilityRefresh.js';
 import { CalibrationSyncEngine } from './calibrationEngine.js';
 import {
   ServerProfileCalibrationTokenProvider,
@@ -656,6 +657,51 @@ export function registerIpcHandlers(
    * has seen the server report the job as awaiting acknowledgement.
    */
   const bedClearLedger = new BedClearAcknowledgementLedger();
+  /** Bounded capability re-read after the server refuses an operation. */
+  const capabilityRefresher = new CalibrationCapabilityRefresher();
+
+  /**
+   * Re-negotiate capabilities once after a refusal, without replaying anything.
+   *
+   * A 403 says the snapshot the gate consulted is out of date. Re-reading it
+   * keeps the app from offering actions that will keep failing while insisting
+   * they should work. The refused action is deliberately *not* retried: a read
+   * is safe to repeat on the operator's behalf, and a create, generate, queue or
+   * dispatch is not.
+   */
+  const noteCalibrationForbidden = async (
+    selectedId: string,
+  ): Promise<boolean> => {
+    const outcome = await capabilityRefresher.noteForbidden(
+      selectedId,
+      async () => {
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const caps = await calibrationHttp.getCapabilities(
+          selectedId,
+          ctx.profile.baseUrl,
+          AbortSignal.timeout(10_000),
+        );
+        calibrationDiagnostics.recordCapabilities(caps);
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'capabilities.negotiated',
+          profileId: selectedId,
+          outcome: 'ok',
+        });
+      },
+    );
+    return outcome.accessMayHaveChanged;
+  };
+
+  /** Whether a thrown error is the server refusing on authorisation grounds. */
+  const isForbidden = (error: unknown): boolean =>
+    error instanceof CalibrationHttpError &&
+    (error.code === 'authorization' || error.code === 'forbidden');
+
+  /** Appended when a refusal means the cached permissions may be stale. */
+  const ACCESS_MAY_HAVE_CHANGED =
+    'Your calibration access may have changed. Reconnect or sign in again, then retry.';
 
   /**
    * Minimal shape used to fence a request on the selected server profile.
@@ -2549,6 +2595,13 @@ export function registerIpcHandlers(
           durationMs: Date.now() - startedAt,
           ...describeCalibrationFailure(error),
         });
+        // A refusal means the permissions this action was gated against may be
+        // stale. Re-read them so the workspace stops offering what the server
+        // will keep refusing — and do not replay the generation, which is the
+        // operator's decision to make.
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError(correlationId)
@@ -2563,7 +2616,12 @@ export function registerIpcHandlers(
         return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
           {
             status: 'error',
-            error: apiError,
+            error: staleAccess
+              ? {
+                  ...apiError,
+                  message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+                }
+              : apiError,
           },
         );
       }
@@ -3028,11 +3086,19 @@ export function registerIpcHandlers(
                 retryAfterSeconds: null,
                 reference: correlationId,
               };
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         return ipcSchemas[
           IpcChannel.CalibrationAcknowledgeBedClear
         ].response.parse({
           status: 'error',
-          error: apiError,
+          error: staleAccess
+            ? {
+                ...apiError,
+                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : apiError,
         });
       }
     },
@@ -3117,6 +3183,9 @@ export function registerIpcHandlers(
           replayed: result.replayed,
         });
       } catch (error) {
+        const staleAccess = isForbidden(error)
+          ? await noteCalibrationForbidden(selectedId)
+          : false;
         const apiError =
           error instanceof CalibrationHttpError
             ? // No reference: this handler neither begins a correlated flow nor
@@ -3135,7 +3204,12 @@ export function registerIpcHandlers(
               };
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',
-          error: apiError,
+          error: staleAccess
+            ? {
+                ...apiError,
+                message: `${apiError.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : apiError,
         });
       }
     },
@@ -3488,8 +3562,18 @@ export function registerIpcHandlers(
           signal,
         );
       } catch (error) {
+        // Discovery is usually where a revoked permission is noticed first, so
+        // the cached snapshot is re-read here too — without retrying the
+        // listing, which the operator can repeat themselves.
+        const classified = classifyDiscoveryFailure(error);
+        if (isForbidden(error)) await noteCalibrationForbidden(selectedId);
         return answer({
-          discovery: classifyDiscoveryFailure(error),
+          discovery: isForbidden(error)
+            ? {
+                ...classified,
+                message: `${classified.message} ${ACCESS_MAY_HAVE_CHANGED}`,
+              }
+            : classified,
           ...(await diagnoseLocalInstallWithoutContext()),
         });
       }
