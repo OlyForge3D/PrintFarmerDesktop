@@ -21,10 +21,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationPrinterCandidate,
+  CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+  CALIBRATION_MAX_FIELD_PATH_LENGTH,
   CALIBRATION_MAX_REJECTION_REASON_CODES,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   CALIBRATION_REJECTION_REASON_CODES,
   CALIBRATION_SERVER_CONTRADICTION_CODE,
+  CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
   IpcChannel,
   UNRECOGNIZED_CALIBRATION_INPUT,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
@@ -735,6 +738,218 @@ describe('the code bound accounts for the code the client adds', () => {
     expect(codes.filter((code) => code === 'printer_offline')).toHaveLength(
       CALIBRATION_MAX_SERVER_REJECTION_REASONS,
     );
+  });
+});
+
+describe('an incoherent verdict is named in whichever direction it breaks', () => {
+  // PrintFarmer computes `Eligible = reasons.Count == 0`, and RejectMissing
+  // always records a reason beside the missing input, so a coherent response
+  // satisfies `eligible === (nothing was said against it)`. Detecting only the
+  // eligible-with-reasons half left the mirror arriving as an ordinary
+  // ineligible printer with an empty explanation — a refusal an operator can
+  // neither act on nor report.
+
+  it('names an unexplained refusal instead of shrugging', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [],
+        missingInputs: [],
+      }),
+    ]);
+
+    expect(printer!.eligibility).toBeNull();
+    expect(printer!.firmwareCompatible).toBe(false);
+    expect(printer!.rejectionReasonCodes).toEqual([
+      CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+    ]);
+  });
+
+  it('never hands the renderer an empty explanation for a refused printer', async () => {
+    // The guarantee stated as itself, across every shape that reaches the
+    // ineligible branch — including the residual one where the server is
+    // coherent and reason-free but never names the required identities.
+    const shapes = [
+      candidateDto({ eligible: false, rejectionReasons: [] }),
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          { code: 'printer_offline', field: 'reachability', message: 'Off.' },
+        ],
+      }),
+      candidateDto({
+        eligible: true,
+        rejectionReasons: [
+          { code: 'printer_offline', field: 'reachability', message: 'Off.' },
+        ],
+      }),
+      // Coherent and reason-free, but the firmware it names is not Klipper, so
+      // this client cannot verify the eligibility the server granted.
+      candidateDto({
+        eligible: true,
+        firmware: {
+          family: 'Marlin',
+          gcodeDialect: 'Marlin',
+          detectionSource: 'probe',
+          version: '2.1.2',
+          verified: true,
+        },
+      }),
+    ];
+
+    const printers = await listPrinters(shapes);
+
+    expect(printers).toHaveLength(shapes.length);
+    for (const printer of printers) {
+      expect(printer.eligibility).toBeNull();
+      expect(printer.rejectionReasonCodes.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('says which identity claim it could not verify, rather than nothing', async () => {
+    const [printer] = await listPrinters([
+      candidateDto({
+        eligible: true,
+        slicer: {
+          engine: 'PrusaSlicer',
+          distribution: 'upstream',
+          version: '2.7.0',
+          profileFormat: 'ini',
+        },
+      }),
+    ]);
+
+    expect(printer!.eligibility).toBeNull();
+    expect(printer!.rejectionReasonCodes).toEqual([
+      CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+    ]);
+  });
+
+  it('leaves a coherent refusal and a coherent grant alone', async () => {
+    const [refused, granted] = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          {
+            code: 'printer_offline',
+            field: 'reachability',
+            message: 'Printer is offline.',
+          },
+        ],
+      }),
+      candidateDto(),
+    ]);
+
+    expect(refused!.rejectionReasonCodes).toEqual(['printer_offline']);
+    expect(granted!.eligibility).not.toBeNull();
+    expect(granted!.rejectionReasonCodes).toEqual([]);
+  });
+
+  it('keeps both incoherence markers unforgeable from the wire', () => {
+    for (const sentinel of [
+      CALIBRATION_SERVER_CONTRADICTION_CODE,
+      CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+      CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
+    ]) {
+      expect(normalizeCalibrationReasonCode(sentinel)).toBe(
+        UNRECOGNIZED_CALIBRATION_REASON_CODE,
+      );
+    }
+  });
+});
+
+describe('an over-long string degrades one field, not the whole farm', () => {
+  // `schema.parse` runs over the entire `/calibration-candidates` array as one
+  // value, so a length bound that *rejects* is a length bound that discards:
+  // one over-long code took every printer with it, which is exactly the empty
+  // discovery this contract exists to prevent.
+  const OVERLONG = 'a'.repeat(4096);
+
+  it('maps an over-long code to the sentinel and keeps the printer', async () => {
+    const printers = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          { code: OVERLONG, field: 'firmware.family', message: 'Long.' },
+        ],
+      }),
+    ]);
+
+    expect(printers).toHaveLength(1);
+    expect(printers[0]!.rejectionReasonCodes).toEqual([
+      UNRECOGNIZED_CALIBRATION_REASON_CODE,
+    ]);
+  });
+
+  it('maps an over-long field path to the sentinel and keeps the printer', async () => {
+    const printers = await listPrinters([
+      candidateDto({
+        eligible: false,
+        missingInputs: [OVERLONG],
+        rejectionReasons: [
+          {
+            code: 'firmware_family_unknown',
+            field: 'firmware.family',
+            message: 'Unknown.',
+          },
+        ],
+      }),
+    ]);
+
+    expect(printers).toHaveLength(1);
+    expect(printers[0]!.missingInputs).toEqual([
+      UNRECOGNIZED_CALIBRATION_INPUT,
+    ]);
+  });
+
+  it('substitutes a path that is well-formed but longer than the renderer carries', () => {
+    // Shape alone is not enough: a dotted path of legal segments can still
+    // exceed the bound, and passing it through would move the rejection to the
+    // IPC schema, which throws for the whole response rather than one field.
+    const segments = Array.from({ length: 40 }, () => 'segment');
+    const wellFormedButLong = segments.join('.');
+
+    expect(wellFormedButLong.length).toBeGreaterThan(
+      CALIBRATION_MAX_FIELD_PATH_LENGTH,
+    );
+    expect(normalizeCalibrationMissingInput(wellFormedButLong)).toBe(
+      UNRECOGNIZED_CALIBRATION_INPUT,
+    );
+  });
+
+  it('does not let one over-long candidate erase its neighbours', async () => {
+    const printers = await listPrinters([
+      candidateDto({
+        eligible: false,
+        rejectionReasons: [
+          { code: OVERLONG, field: OVERLONG, message: OVERLONG },
+        ],
+        missingInputs: [OVERLONG],
+      }),
+      candidateDto({ id: '99999999-9999-4999-8999-999999999999' }),
+    ]);
+
+    expect(printers).toHaveLength(2);
+    expect(printers[1]!.eligibility).not.toBeNull();
+    // And none of the over-long text reached the renderer.
+    expect(JSON.stringify(printers)).not.toContain('aaaaaaaaaa');
+  });
+
+  it('still refuses an over-long path at the IPC boundary if one gets that far', () => {
+    expect(() =>
+      CalibrationPrinterCandidate.parse({
+        printerId: PRINTER_GUID,
+        displayName: 'Rack A cell 3',
+        printerModel: null,
+        firmwareCompatible: false,
+        orcaProfileId: null,
+        isOnline: true,
+        updatedAt: '2026-08-11T12:00:00.000Z',
+        rejectionReasonCodes: [],
+        missingInputs: ['a'.repeat(CALIBRATION_MAX_FIELD_PATH_LENGTH + 1)],
+        eligibility: null,
+      }),
+    ).toThrow();
   });
 });
 

@@ -21,6 +21,8 @@ import {
   CalibrationWorkspacePayload,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   OrcaProfileEntry,
+  UNRECOGNIZED_CALIBRATION_INPUT,
+  UNRECOGNIZED_CALIBRATION_REASON_CODE,
   deriveCalibrationWorkspaceProjection,
   type CalibrationPrinterContext,
   type CalibrationSaveWorkspaceStateRequest,
@@ -217,23 +219,50 @@ const ServerInstant = z
   });
 
 /**
+ * The longest single string this client carries off the wire.
+ *
+ * Generous on purpose: it is a classification threshold, not a gate. The
+ * transport already caps the whole body, so this only decides what is worth
+ * carrying forward, and exceeding it degrades one field rather than rejecting
+ * the response.
+ */
+const CALIBRATION_MAX_WIRE_STRING = 512;
+
+/**
  * One structured rejection reason from `CalibrationRejectionReasonDto`.
  * Retained verbatim so an ineligible printer can explain itself instead of
  * vanishing from the list.
+ *
+ * Every member degrades instead of throwing. A length bound that *rejects* is
+ * a length bound that discards: `schema.parse` runs over the whole
+ * `/calibration-candidates` array as one value, so a single reason whose code
+ * or message ran long took every printer in the farm with it — the empty
+ * discovery this contract exists to prevent, reachable by a server sending one
+ * over-long string. The bounds are kept as classification thresholds (nothing
+ * unbounded is carried forward, and the transport already caps the body), but
+ * exceeding one now yields a value the catalogue does not recognise, which
+ * {@link normalizeCalibrationReasonCode} maps to the unrecognized sentinel
+ * exactly as it maps any other unknown code.
  */
 export const RemoteCalibrationRejectionReason = z
   .object({
-    code: z.string().min(1).max(128),
+    code: z
+      .string()
+      .min(1)
+      .max(CALIBRATION_MAX_WIRE_STRING)
+      .catch(UNRECOGNIZED_CALIBRATION_REASON_CODE),
     field: z
       .string()
-      .max(128)
+      .max(CALIBRATION_MAX_WIRE_STRING)
       .nullish()
-      .transform((v) => v ?? ''),
+      .transform((v) => v ?? '')
+      .catch(''),
     message: z
       .string()
-      .max(512)
+      .max(CALIBRATION_MAX_WIRE_STRING)
       .nullish()
-      .transform((v) => v ?? ''),
+      .transform((v) => v ?? '')
+      .catch(''),
   })
   .passthrough();
 
@@ -350,7 +379,12 @@ const RemoteCalibrationCandidateDto = z
       .nullish()
       .transform((v) => v ?? false),
     missingInputs: z
-      .array(z.string().max(128))
+      .array(
+        z
+          .string()
+          .max(CALIBRATION_MAX_WIRE_STRING)
+          .catch(UNRECOGNIZED_CALIBRATION_INPUT),
+      )
       .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
       .nullish()
       .transform((v) => v ?? []),
@@ -418,24 +452,33 @@ function deriveCandidateEligibility(
 }
 
 /**
- * Whether the server declared a printer eligible while also supplying reasons
- * it is not.
+ * How, if at all, the server's own eligibility verdict fails to hold together.
  *
- * PrintFarmer computes `Eligible` as `reasons.Count == 0`, so the two can only
- * disagree if the response was assembled incorrectly or tampered with. The
- * client fails that closed either way, but flattening it into an ordinary
- * ineligible printer would erase the evidence: the operator would see a
- * refusal indistinguishable from a legitimate one, and nobody would learn the
- * server is emitting incoherent records. Detecting it explicitly lets the
- * contradiction be reported as itself.
+ * PrintFarmer computes `Eligible = reasons.Count == 0`, and `RejectMissing`
+ * always records a reason alongside the missing input, so a coherent response
+ * satisfies `eligible === (nothing was said against it)`. Both ways of
+ * breaking that are detectable, and only one of them used to be:
+ *
+ * - `contradiction` — eligible, and here is why it is not. Caught before.
+ * - `unexplainedRefusal` — not eligible, and nothing to say about it. Its
+ *   mirror, and the one that slipped through: it arrived as an ordinary
+ *   ineligible printer carrying an empty explanation, which is precisely the
+ *   silent, unreportable refusal this detection exists to prevent.
+ *
+ * The client fails both closed. Naming which one occurred is what lets an
+ * operator report a server defect instead of doubting the printer.
  */
-function hasServerEligibilityContradiction(
+export type CalibrationServerIncoherence =
+  'contradiction' | 'unexplainedRefusal';
+
+function detectServerEligibilityIncoherence(
   dto: z.infer<typeof RemoteCalibrationCandidateDto>,
-): boolean {
-  return (
-    dto.eligible &&
-    (dto.rejectionReasons.length > 0 || dto.missingInputs.length > 0)
-  );
+): CalibrationServerIncoherence | null {
+  const explained =
+    dto.rejectionReasons.length > 0 || dto.missingInputs.length > 0;
+  if (dto.eligible && explained) return 'contradiction';
+  if (!dto.eligible && !explained) return 'unexplainedRefusal';
+  return null;
 }
 
 /** Engine/distribution this client negotiates; mirrors the server constants. */
@@ -473,11 +516,11 @@ export const RemoteCalibrationPrinterCandidate =
     missingInputs: dto.missingInputs,
     rejectionReasons: dto.rejectionReasons,
     /**
-     * True when the server said this printer is eligible and simultaneously
-     * said why it is not. Carried so the contradiction can be reported rather
-     * than silently normalised into an ordinary refusal.
+     * How the server's eligibility verdict failed to hold together, if it did.
+     * Carried so the incoherence can be reported as itself rather than
+     * silently normalised into an ordinary refusal.
      */
-    serverContradiction: hasServerEligibilityContradiction(dto),
+    serverIncoherence: detectServerEligibilityIncoherence(dto),
     eligibility: deriveCandidateEligibility(dto),
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<

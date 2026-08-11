@@ -1329,6 +1329,39 @@ export const CALIBRATION_MAX_REJECTION_REASON_CODES =
 export const CALIBRATION_SERVER_CONTRADICTION_CODE = 'server_contradiction';
 
 /**
+ * Emitted when the server declares a printer ineligible and then says nothing
+ * about why.
+ *
+ * The mirror of {@link CALIBRATION_SERVER_CONTRADICTION_CODE}, and incoherent
+ * for the same reason: PrintFarmer computes `Eligible = reasons.Count == 0`,
+ * so `eligible: false` with an empty reason list asserts both that the printer
+ * was refused and that there was nothing to refuse it for. Detecting only the
+ * first direction left this one arriving as a printer that is simply not
+ * calibratable, with an empty explanation and nothing to report.
+ *
+ * Client-authored, like every sentinel here, and therefore excluded from
+ * {@link CalibrationServerReasonCode}.
+ */
+export const CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE =
+  'server_unexplained_refusal';
+
+/**
+ * Emitted when the server grants eligibility it has not evidenced.
+ *
+ * Eligibility here is explicit: the server must *name* Klipper firmware, the
+ * Klipper G-code dialect and an upstream OrcaSlicer engine. A response that
+ * says `eligible: true`, lists no reasons — coherent by the server's own rule
+ * — and yet does not name those identities is refused by this client, which is
+ * the correct outcome but was a silent one: the printer arrived ineligible
+ * with no code at all.
+ *
+ * This is the residual case that makes "an ineligible printer can always say
+ * why" true by construction rather than case by case.
+ */
+export const CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE =
+  'client_eligibility_unverified';
+
+/**
  * What a *server* is allowed to say: the catalogue and nothing else.
  *
  * Deliberately narrower than {@link CalibrationRejectionReasonCode}. Both
@@ -1348,7 +1381,7 @@ export const CALIBRATION_SERVER_CONTRADICTION_CODE = 'server_contradiction';
 const CalibrationServerReasonCode = z.enum(CALIBRATION_REJECTION_REASON_CODES);
 
 /**
- * What the *renderer* may receive: the catalogue plus the client's own two
+ * What the *renderer* may receive: the catalogue plus the client's own
  * sentinels, which are appended after normalisation rather than parsed out of
  * it.
  */
@@ -1356,6 +1389,8 @@ const CalibrationRejectionReasonCode = z.enum([
   ...CALIBRATION_REJECTION_REASON_CODES,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
   CALIBRATION_SERVER_CONTRADICTION_CODE,
+  CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
+  CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
 ]);
 
 /**
@@ -1394,10 +1429,19 @@ const CalibrationRejectionReasonCode = z.enum([
 const CALIBRATION_MISSING_INPUT_PATTERN =
   /^[A-Za-z][A-Za-z0-9_]*(?:\[\d{1,3}\])?(?:\.[A-Za-z][A-Za-z0-9_]*(?:\[\d{1,3}\])?)*$/;
 
+/**
+ * The longest field path the renderer will carry.
+ *
+ * Exported because it is a *classification* threshold, not just a schema
+ * bound: anything longer is replaced by {@link UNRECOGNIZED_CALIBRATION_INPUT}
+ * on the way in, so the bound can never be the reason a response is rejected.
+ */
+export const CALIBRATION_MAX_FIELD_PATH_LENGTH = 128;
+
 const CalibrationMissingInputField = z
   .string()
   .min(1)
-  .max(128)
+  .max(CALIBRATION_MAX_FIELD_PATH_LENGTH)
   .refine(
     (value) =>
       value === UNRECOGNIZED_CALIBRATION_INPUT ||
@@ -1426,7 +1470,12 @@ export function normalizeCalibrationReasonCode(
 
 /** The {@link normalizeCalibrationReasonCode} counterpart for field paths. */
 export function normalizeCalibrationMissingInput(field: string): string {
-  return CALIBRATION_MISSING_INPUT_PATTERN.test(field)
+  // Length is checked here rather than left to the schema for the same reason
+  // the code catalogue substitutes instead of throwing: a path longer than the
+  // renderer will carry is a reason to describe *that field* as unusable, not
+  // to reject the response it arrived in.
+  return field.length <= CALIBRATION_MAX_FIELD_PATH_LENGTH &&
+    CALIBRATION_MISSING_INPUT_PATTERN.test(field)
     ? field
     : UNRECOGNIZED_CALIBRATION_INPUT;
 }
