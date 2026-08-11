@@ -16,7 +16,7 @@ import './calibrationWorkspace.css';
 
 function WorkspaceContent(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
-  const { view } = store;
+  const { view, orcaProfiles, activeProject, loadProjectProfiles } = store;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -27,10 +27,19 @@ function WorkspaceContent(): React.JSX.Element {
     return () => window.clearTimeout(timer);
   }, [view]);
 
-  // The profile-patch view once triggered a farm-wide profile load of its own.
-  // It has an open project, so the printer is already known and its profiles
-  // are resolved through that project's own context refresh; there is nothing
-  // left here that could be fetched without naming a printer.
+  // The profile-patch view once got its profiles from a farm-wide load that ran
+  // on mount. That load is gone, so it asks for its own — scoped to the printer
+  // and configuration revision the open project is already bound to, which is
+  // the only printer whose profiles this view can legitimately patch.
+  useEffect(() => {
+    if (
+      view === 'profile' &&
+      activeProject !== null &&
+      orcaProfiles.length === 0
+    ) {
+      void loadProjectProfiles();
+    }
+  }, [activeProject, loadProjectProfiles, orcaProfiles.length, view]);
 
   return (
     <div className="calibration-workspace" aria-busy={store.loading}>

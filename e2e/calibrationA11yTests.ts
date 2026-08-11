@@ -254,13 +254,16 @@ test('@a11y calibration surfaces are traversable to named controls', async ({
       .getByRole('navigation', { name: 'Calibration views' })
       .getByRole('button', { name: 'Dashboard' })
       .focus();
+    // Step 1 is the printer choice, so the first thing a keyboard user reaches
+    // in the wizard is the printer radio group — not a project-name field for a
+    // machine they have not selected yet.
     await expectTabReaches(
       page,
       page
-        .getByRole('group', { name: 'Project and PrintFarmer printer' })
-        .getByRole('textbox')
+        .getByRole('radiogroup', { name: 'PrintFarmer printer' })
+        .getByRole('radio')
         .first(),
-      'the first field of group "Project and PrintFarmer printer"',
+      'the first printer in the "PrintFarmer printer" choice',
       60,
       workspace,
     );

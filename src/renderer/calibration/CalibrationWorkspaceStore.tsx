@@ -988,6 +988,53 @@ export function CalibrationWorkspaceStoreProvider({
     [reportError, selectedProfileId],
   );
 
+  /**
+   * Resolve OrcaSlicer profiles for the open project's own printer.
+   *
+   * The profile-patch view needs them, and before printer-first they arrived
+   * incidentally from a farm-wide load that ran on mount. That load is gone, so
+   * this replaces it with the scoped equivalent: the project already knows which
+   * printer and configuration revision it is bound to, so no context fetch is
+   * needed to ask the right question.
+   */
+  const loadProjectProfiles = useCallback(async (): Promise<void> => {
+    const project = activeProjectRef.current;
+    if (selectedProfileId === null || project === null) return;
+    const profileId = selectedProfileId;
+    const printerId = project.record.printerId;
+    const projectId = project.record.projectId;
+    const configurationRevision =
+      project.domainState.binding.printer.printerConfigurationRevision;
+    const epoch = ++contextRequestEpochRef.current;
+    try {
+      const response = await calibrationApi().listOrcaProfiles({
+        profileId,
+        printerId,
+        configurationRevision,
+      });
+      if (
+        unmountedRef.current ||
+        profileIdRef.current !== profileId ||
+        contextRequestEpochRef.current !== epoch ||
+        activeProjectRef.current?.record.projectId !== projectId ||
+        // Fenced the same way every other selection-scoped reply is: a reply
+        // about another printer describes another machine's profiles.
+        response.printerId !== printerId
+      ) {
+        return;
+      }
+      setOrcaProfiles(response.profiles);
+    } catch (cause) {
+      if (unmountedRef.current || profileIdRef.current !== profileId) return;
+      reportError(
+        errorMessage(
+          cause,
+          'OrcaSlicer profiles for this project could not be loaded.',
+        ),
+      );
+    }
+  }, [reportError, selectedProfileId]);
+
   const createProject = useCallback(
     async (input: NewProjectInput): Promise<boolean> => {
       if (selectedProfileId === null) return false;
@@ -1592,6 +1639,7 @@ export function CalibrationWorkspaceStoreProvider({
       openStage,
       loadCreationData,
       selectPrinter,
+      loadProjectProfiles,
       createProject,
       dispatchEvent,
       updateMetadata,
@@ -1629,6 +1677,7 @@ export function CalibrationWorkspaceStoreProvider({
       liveMessage,
       loadCreationData,
       selectPrinter,
+      loadProjectProfiles,
       loading,
       manageProfiles,
       metadataDraft,
