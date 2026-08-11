@@ -11,6 +11,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import {
   findLocalOrcaProfileRaw,
   orcaUserDataRoots,
@@ -77,16 +79,24 @@ describe('findLocalOrcaProfileRaw — contract tests', () => {
   });
 
   it('returns null when no OrcaSlicer installation is found', async () => {
-    // On a test machine without OrcaSlicer, all canonical paths are missing.
-    // The function should not throw and should return null.
-    const result = await findLocalOrcaProfileRaw('Nonexistent Profile');
+    // Roots are injected rather than inferred so the result does not depend on
+    // whether the machine running the suite happens to have OrcaSlicer
+    // installed. Against a real ~12,000-file install this previously took
+    // longer than the test timeout and asserted nothing reproducible.
+    const result = await findLocalOrcaProfileRaw('Nonexistent Profile', {
+      roots: { userRoots: [], systemRoots: [] },
+    });
     expect(result).toBeNull();
   });
 
   it('does not throw even when all canonical roots are missing', async () => {
-    // Verify robustness — no exceptions for missing roots.
     await expect(
-      findLocalOrcaProfileRaw('Generic PLA @0.4 nozzle'),
+      findLocalOrcaProfileRaw('Generic PLA @0.4 nozzle', {
+        roots: {
+          userRoots: [path.join(os.tmpdir(), 'pfd-absent-orca-user')],
+          systemRoots: [path.join(os.tmpdir(), 'pfd-absent-orca-system')],
+        },
+      }),
     ).resolves.not.toThrow();
   });
 });

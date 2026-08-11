@@ -28,13 +28,14 @@ const PRINTER_ID = 'aaaaaaaa-1111-4111-8111-222222222222';
 
 function tokens() {
   return {
-    getAuthenticatedContext: async () => ({
-      baseUrl: BASE_URL,
-      token: 'test-token',
-      binding: 'binding-1',
-      profile: { baseUrl: BASE_URL },
-    }),
-    refresh: async () => undefined,
+    getAuthenticatedContext: () =>
+      Promise.resolve({
+        baseUrl: BASE_URL,
+        token: 'test-token',
+        binding: 'binding-1',
+        profile: { baseUrl: BASE_URL },
+      }),
+    refresh: () => Promise.resolve(undefined),
   } as never;
 }
 
@@ -44,13 +45,21 @@ function recordingFetch(
   init: { status?: number } = {},
 ): { calls: string[]; fetch: typeof fetch } {
   const calls: string[] = [];
-  const impl = (async (input: RequestInfo | URL) => {
-    calls.push(typeof input === 'string' ? input : String(input));
-    return new Response(JSON.stringify(body), {
-      status: init.status ?? 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }) as unknown as typeof fetch;
+  const impl = (input: RequestInfo | URL) => {
+    calls.push(
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    );
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: init.status ?? 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+  };
   return { calls, fetch: impl };
 }
 

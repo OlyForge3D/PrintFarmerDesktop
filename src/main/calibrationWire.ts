@@ -223,29 +223,72 @@ const ServerInstant = z
 export const RemoteCalibrationRejectionReason = z
   .object({
     code: z.string().min(1).max(128),
-    field: z.string().max(128).nullish().transform((v) => v ?? ''),
-    message: z.string().max(512).nullish().transform((v) => v ?? ''),
+    field: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? ''),
+    message: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? ''),
   })
   .passthrough();
 
 /** `CalibrationFirmwareIdentityDto` — the authoritative firmware identity. */
 const RemoteFirmwareIdentity = z
   .object({
-    family: z.string().max(128).nullish().transform((v) => v ?? null),
-    gcodeDialect: z.string().max(128).nullish().transform((v) => v ?? null),
-    detectionSource: z.string().max(128).nullish().transform((v) => v ?? null),
-    version: z.string().max(128).nullish().transform((v) => v ?? null),
-    verified: z.boolean().nullish().transform((v) => v ?? false),
+    family: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    gcodeDialect: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    detectionSource: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    version: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    verified: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
   })
   .passthrough();
 
 /** `CalibrationSlicerIdentityDto` — the authoritative slicer identity. */
 const RemoteSlicerIdentity = z
   .object({
-    engine: z.string().max(128).nullish().transform((v) => v ?? null),
-    distribution: z.string().max(256).nullish().transform((v) => v ?? null),
-    version: z.string().max(128).nullish().transform((v) => v ?? null),
-    profileFormat: z.string().max(128).nullish().transform((v) => v ?? null),
+    engine: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    distribution: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    version: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    profileFormat: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
@@ -269,15 +312,25 @@ const RemoteCalibrationCandidateDto = z
   .object({
     id: ServerGuid,
     name: z.string().min(1).max(256),
-    enabled: z.boolean().nullish().transform((v) => v ?? false),
-    inMaintenance: z.boolean().nullish().transform((v) => v ?? false),
+    enabled: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    inMaintenance: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
     configurationRevision: z
       .number()
       .int()
       .nonnegative()
       .nullish()
       .transform((v) => v ?? null),
-    reachability: z.string().max(64).nullish().transform((v) => v ?? 'unknown'),
+    reachability: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? 'unknown'),
     operationalState: z
       .string()
       .max(64)
@@ -285,10 +338,16 @@ const RemoteCalibrationCandidateDto = z
       .transform((v) => v ?? 'unknown'),
     observedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
     lastSeenAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
-    isStale: z.boolean().nullish().transform((v) => v ?? false),
+    isStale: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
     firmware: RemoteFirmwareIdentity.nullish().transform((v) => v ?? null),
     slicer: RemoteSlicerIdentity.nullish().transform((v) => v ?? null),
-    eligible: z.boolean().nullish().transform((v) => v ?? false),
+    eligible: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
     missingInputs: z
       .array(z.string().max(128))
       .max(64)
@@ -423,19 +482,46 @@ export type RemoteCalibrationPrinters = z.infer<
 const RemoteToolheadDto = z
   .object({
     id: ServerGuid,
-    index: z.number().int().nonnegative().nullish().transform((v) => v ?? 0),
-    name: z.string().max(256).nullish().transform((v) => v ?? null),
-    isPrimary: z.boolean().nullish().transform((v) => v ?? false),
+    index: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? 0),
+    name: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    isPrimary: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
     nozzleDiameter: z
       .number()
       .positive()
       .max(10)
       .nullish()
       .transform((v) => v ?? null),
-    nozzleType: z.string().max(128).nullish().transform((v) => v ?? null),
-    nozzleMaterial: z.string().max(128).nullish().transform((v) => v ?? null),
-    isDirectDrive: z.boolean().nullish().transform((v) => v ?? null),
-    driveType: z.string().max(128).nullish().transform((v) => v ?? null),
+    nozzleType: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    nozzleMaterial: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    isDirectDrive: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
+    driveType: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
     maxVolumetricFlow: z
       .number()
       .positive()
@@ -449,29 +535,70 @@ const RemoteToolheadDto = z
 const RemoteCalibrationProfileDto = z
   .object({
     id: ServerGuid,
-    kind: z.string().max(64).nullish().transform((v) => v ?? null),
+    kind: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
     name: z.string().min(1).max(512),
-    slicerType: z.string().max(128).nullish().transform((v) => v ?? null),
-    slicerDistribution: z.string().max(256).nullish().transform((v) => v ?? null),
-    slicerVersion: z.string().max(128).nullish().transform((v) => v ?? null),
-    profileFormat: z.string().max(128).nullish().transform((v) => v ?? null),
-    profileRevision: z.string().max(256).nullish().transform((v) => v ?? null),
-    sha256: z.string().max(256).nullish().transform((v) => v ?? null),
+    slicerType: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    slicerDistribution: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    slicerVersion: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    profileFormat: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    profileRevision: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    sha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
 const RemoteBuildVolumeDto = z
   .object({
-    x: z.number().nullish().transform((v) => v ?? null),
-    y: z.number().nullish().transform((v) => v ?? null),
-    z: z.number().nullish().transform((v) => v ?? null),
+    x: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? null),
+    y: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? null),
+    z: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
 /** `PrinterConfigurationSnapshotDto` — the nested configuration snapshot. */
 const RemotePrinterConfigurationSnapshot = z
   .object({
-    schemaVersion: z.string().max(64).nullish().transform((v) => v ?? null),
+    schemaVersion: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
     printerId: ServerGuid.nullish().transform((v) => v ?? null),
     configurationRevision: z
       .number()
@@ -486,8 +613,14 @@ const RemotePrinterConfigurationSnapshot = z
       .max(64)
       .nullish()
       .transform((v) => v ?? []),
-    maxBedTemperature: z.number().nullish().transform((v) => v ?? null),
-    hasHeatedBed: z.boolean().nullish().transform((v) => v ?? null),
+    maxBedTemperature: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? null),
+    hasHeatedBed: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
     firmware: RemoteFirmwareIdentity.nullish().transform((v) => v ?? null),
     slicer: RemoteSlicerIdentity.nullish().transform((v) => v ?? null),
     profiles: z
@@ -517,7 +650,11 @@ const RemotePrinterConfigurationSnapshot = z
       .passthrough()
       .nullish()
       .transform((v) => v ?? null),
-    snapshotSha256: z.string().max(256).nullish().transform((v) => v ?? null),
+    snapshotSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
@@ -534,12 +671,30 @@ const RemotePrinterConfigurationSnapshot = z
  */
 const RemoteCalibrationContextDto = RemoteCalibrationCandidateDto.merge(
   z.object({
-    schemaVersion: z.string().max(64).nullish().transform((v) => v ?? null),
-    snapshotSha256: z.string().max(256).nullish().transform((v) => v ?? null),
+    schemaVersion: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    snapshotSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
     capturedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
-    capturedBySubject: z.string().max(256).nullish().transform((v) => v ?? null),
-    supportsPressureAdvance: z.boolean().nullish().transform((v) => v ?? null),
-    supportsFirmwareRetraction: z.boolean().nullish().transform((v) => v ?? null),
+    capturedBySubject: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    supportsPressureAdvance: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
+    supportsFirmwareRetraction: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
     snapshot: RemotePrinterConfigurationSnapshot.nullish().transform(
       (v) => v ?? null,
     ),
@@ -693,6 +848,23 @@ export function projectCalibrationEligibility(
   return result.success ? result.data : null;
 }
 
+/**
+ * Whether a context carries every identity the calibration contract actually
+ * defines.
+ *
+ * Scope note: this predicate answers "is the server's description of this
+ * printer complete enough to identify and list it", not "is it safe to print".
+ * It deliberately does **not** consult `safety` or `permissions`, because
+ * `CalibrationContextDto` has no such members — requiring them here made the
+ * predicate unsatisfiable against every real server, which silently disabled
+ * profile listing rather than gating anything.
+ *
+ * The safety and permission gates live where they belong and remain
+ * fail-closed on absent data: {@link isCalibrationContextSafetyAssured} and the
+ * explicit `context.safety === null` refusal in
+ * {@link doesCalibrationWorkspaceMatchContext}, which together still block
+ * workspace creation, generation and print start.
+ */
 export function isExplicitCalibrationContextComplete(
   context: RemoteCalibrationPrinterContext,
 ): boolean {
@@ -701,12 +873,28 @@ export function isExplicitCalibrationContextComplete(
     context.configurationRevision !== null &&
     context.snapshotId !== null &&
     context.snapshotRevision !== null &&
-    context.slicerIdentity === 'OrcaSlicer' &&
-    context.slicerDistribution === 'upstream' &&
+    context.slicerIdentity === CALIBRATION_SLICER_ENGINE &&
+    context.slicerDistribution === CALIBRATION_SLICER_DISTRIBUTION &&
     context.orcaProfileId !== null &&
-    context.orcaProfileDisplayName !== null &&
+    context.orcaProfileName !== null &&
     context.profileRevision !== null &&
-    context.toolheads.length > 0 &&
+    context.toolheads.length > 0
+  );
+}
+
+/**
+ * Whether the server explicitly asserted the safety interlocks and per-printer
+ * permissions that generation and print start require.
+ *
+ * Fails closed: PrintFarmer does not currently publish either block, so this is
+ * `false` on every live deployment. That is the intended outcome — an assurance
+ * the server never made must never be assumed — and it is why generate/start
+ * stay blocked while discovery and profile inspection continue to work.
+ */
+export function isCalibrationContextSafetyAssured(
+  context: RemoteCalibrationPrinterContext,
+): boolean {
+  return (
     context.safety !== null &&
     context.safety.emergencyStopAvailable &&
     context.safety.thermalProtectionConfirmed &&
@@ -729,8 +917,10 @@ export function projectPrintFarmerOrcaProfile(
     !context.isCurrent ||
     !isExplicitCalibrationContextComplete(context) ||
     candidate.printerId !== context.printerId ||
-    candidate.orcaProfileId === null ||
-    candidate.orcaProfileId !== context.orcaProfileId ||
+    // Profile identity is carried by the context snapshot only.
+    // `CalibrationCandidateDto` has no profile member, so cross-checking the
+    // candidate for one could never succeed.
+    context.orcaProfileId === null ||
     context.configurationRevision === null ||
     context.snapshotId === null ||
     context.nozzleDiameterMm === null ||
@@ -864,8 +1054,33 @@ export function doesCalibrationWorkspaceMatchContext(
       toolhead.toolheadId === binding.selectedToolheadId &&
       toolhead.nozzle.id === binding.selectedNozzleId,
   );
+  // PrintFarmer's `CalibrationContextDto` publishes no safety block, so there
+  // is nothing to compare against the workspace's recorded safety envelope.
+  // This previously returned false outright, which did not detect drift — it
+  // simply made every workspace unmatchable, blocking creation and refresh for
+  // all printers. When the server does supply the block, every field is still
+  // compared exactly.
+  //
+  // This is drift detection, not authorisation: actions that move the machine
+  // stay gated by `isCalibrationContextSafetyAssured` and the server capability
+  // flags, both of which remain fail-closed while the block is absent.
   const remoteSafety = context.safety;
-  if (remoteSafety === null) return false;
+  const safetyMatches =
+    remoteSafety === null ||
+    (remoteSafety.buildVolumeMm.x === snapshot.safety.buildVolumeMm.x &&
+      remoteSafety.buildVolumeMm.y === snapshot.safety.buildVolumeMm.y &&
+      remoteSafety.buildVolumeMm.z === snapshot.safety.buildVolumeMm.z &&
+      remoteSafety.maximumNozzleTemperatureC ===
+        snapshot.safety.maximumNozzleTemperatureC &&
+      remoteSafety.maximumBedTemperatureC ===
+        snapshot.safety.maximumBedTemperatureC &&
+      remoteSafety.maximumVolumetricRateMm3S ===
+        snapshot.safety.maximumVolumetricRateMm3S &&
+      remoteSafety.emergencyStopAvailable ===
+        snapshot.safety.emergencyStopAvailable &&
+      remoteSafety.thermalProtectionConfirmed ===
+        snapshot.safety.thermalProtectionConfirmed &&
+      remoteSafety.ventilationAssessed === snapshot.safety.ventilationAssessed);
   return (
     context.printerId === printer.backendPrinterId &&
     context.configurationId === printer.printerConfigurationId &&
@@ -874,20 +1089,7 @@ export function doesCalibrationWorkspaceMatchContext(
     context.snapshotRevision === snapshot.snapshotRevision &&
     context.snapshotAt === snapshot.capturedAt &&
     context.configurationRevision === snapshot.configurationRevision &&
-    remoteSafety.buildVolumeMm.x === snapshot.safety.buildVolumeMm.x &&
-    remoteSafety.buildVolumeMm.y === snapshot.safety.buildVolumeMm.y &&
-    remoteSafety.buildVolumeMm.z === snapshot.safety.buildVolumeMm.z &&
-    remoteSafety.maximumNozzleTemperatureC ===
-      snapshot.safety.maximumNozzleTemperatureC &&
-    remoteSafety.maximumBedTemperatureC ===
-      snapshot.safety.maximumBedTemperatureC &&
-    remoteSafety.maximumVolumetricRateMm3S ===
-      snapshot.safety.maximumVolumetricRateMm3S &&
-    remoteSafety.emergencyStopAvailable ===
-      snapshot.safety.emergencyStopAvailable &&
-    remoteSafety.thermalProtectionConfirmed ===
-      snapshot.safety.thermalProtectionConfirmed &&
-    remoteSafety.ventilationAssessed === snapshot.safety.ventilationAssessed &&
+    safetyMatches &&
     selectedToolhead !== undefined &&
     remoteToolhead !== undefined &&
     selectedToolhead.extruderType === remoteToolhead.extruderType &&

@@ -502,7 +502,11 @@ async function collectProfilesFromRoot(
       continue;
     }
 
-    const profile = await parseProfileFile(canonicalPath, canonicalRoot, source);
+    const profile = await parseProfileFile(
+      canonicalPath,
+      canonicalRoot,
+      source,
+    );
     if (profile !== null) {
       profiles.push(profile);
     }
@@ -744,7 +748,16 @@ export async function discoverLocalOrcaFilamentProfiles(
  * with its inheritance chain fully resolved. Returns null if not found or if
  * any security check fails. The resolved JSON is suitable for patching.
  */
-export async function findLocalOrcaProfileRaw(orcaProfileId: string): Promise<{
+export async function findLocalOrcaProfileRaw(
+  orcaProfileId: string,
+  options: {
+    /** Test-only root override; production always uses the canonical roots. */
+    readonly roots?: {
+      readonly userRoots: readonly string[];
+      readonly systemRoots: readonly string[];
+    };
+  } = {},
+): Promise<{
   resolvedRaw: Record<string, unknown>;
   contentHash: string;
   filePath: string;
@@ -755,11 +768,17 @@ export async function findLocalOrcaProfileRaw(orcaProfileId: string): Promise<{
 
   // Scan all roots.
   const roots: Array<{
-    roots: string[];
+    roots: readonly string[];
     source: 'systemInstall' | 'userImported';
   }> = [
-    { roots: orcaUserDataRoots(), source: 'userImported' },
-    { roots: orcaSystemProfileRoots(), source: 'systemInstall' },
+    {
+      roots: options.roots?.userRoots ?? orcaUserDataRoots(),
+      source: 'userImported',
+    },
+    {
+      roots: options.roots?.systemRoots ?? orcaSystemProfileRoots(),
+      source: 'systemInstall',
+    },
   ];
 
   for (const { roots: rootList, source } of roots) {
