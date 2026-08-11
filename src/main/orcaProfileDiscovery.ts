@@ -484,7 +484,7 @@ async function collectProfilesFromRoot(
   source: 'systemInstall' | 'userImported',
   targetNames: ReadonlySet<string>,
   profiles: ParsedProfile[],
-): Promise<void> {
+): Promise<number> {
   const candidatePaths: string[] = [];
   await enumerateJsonFiles(canonicalRoot, 0, { value: 0 }, candidatePaths);
 
@@ -511,6 +511,7 @@ async function collectProfilesFromRoot(
       profiles.push(profile);
     }
   }
+  return candidatePaths.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -705,6 +706,32 @@ export async function listLocalOrcaFilamentProfiles(
  * Returns an empty array if no OrcaSlicer installation is found or if no
  * profiles match. Never throws.
  */
+/**
+ * What one bound lookup saw while walking this machine's OrcaSlicer roots.
+ *
+ * Reported from the *same* traversal that looked for the target profile so a
+ * miss can be explained without a second full scan. Previously the caller ran an
+ * unbounded re-enumeration to answer "why did that find nothing", which walked
+ * the whole install a second time on exactly the path that was already slow.
+ *
+ * `exemplars` is a handful of names, not an inventory: the operator needs to see
+ * that profiles were read and roughly what they look like, and shipping up to
+ * two thousand names across the IPC boundary to prove it was never necessary.
+ */
+export interface LocalOrcaLookupDiagnostic {
+  /** Whether any canonical OrcaSlicer root exists on this machine. */
+  readonly installFound: boolean;
+  /** How many candidate profile files the traversal saw. */
+  readonly enumeratedFileCount: number;
+  /** How many were actually read within the parse budget. */
+  readonly parsedFileCount: number;
+  /** A few profile names that were read, for orientation only. */
+  readonly exemplars: readonly string[];
+}
+
+/** How many profile names a diagnostic carries. */
+const DIAGNOSTIC_EXEMPLAR_LIMIT = 5;
+
 export async function discoverLocalOrcaFilamentProfiles(
   context: RemoteCalibrationPrinterContext,
   options: {
@@ -714,26 +741,42 @@ export async function discoverLocalOrcaFilamentProfiles(
       readonly systemRoots: readonly string[];
     };
   } = {},
-): Promise<z.infer<typeof OrcaProfileEntry>[]> {
+): Promise<{
+  entries: z.infer<typeof OrcaProfileEntry>[];
+  diagnostic: LocalOrcaLookupDiagnostic;
+}> {
   // Local discovery matches on the OrcaSlicer *profile name*, never on the
   // server's profile GUID: OrcaSlicer files declare a `name`, so comparing a
   // GUID against them can never match. `orcaProfileId` remains the immutable
   // server identity and is still what revisions and hashes bind to.
   const targetName = context.orcaProfileName;
+  const emptyDiagnostic: LocalOrcaLookupDiagnostic = {
+    installFound: false,
+    enumeratedFileCount: 0,
+    parsedFileCount: 0,
+    exemplars: [],
+  };
   if (
     !targetName ||
     context.configurationRevision === null ||
     !context.snapshotId ||
     context.toolheads.length === 0
   ) {
-    return [];
+    return { entries: [], diagnostic: emptyDiagnostic };
   }
 
   const allProfiles: ParsedProfile[] = [];
+  // The target name is pushed into the traversal so the file that matters is
+  // reached and read regardless of where it sorts, and the parse budget is
+  // spent on it rather than on whichever vendor directory happens to come first
+  // alphabetically. Inheritance parents are reached through the same pass.
   const targetNames = new Set<string>([targetName]);
 
   const userRoots = options.roots?.userRoots ?? orcaUserDataRoots();
   const systemRoots = options.roots?.systemRoots ?? orcaSystemProfileRoots();
+
+  let installFound = false;
+  let enumeratedFileCount = 0;
 
   for (const [roots, source] of [
     [userRoots, 'userImported'],
@@ -746,7 +789,8 @@ export async function discoverLocalOrcaFilamentProfiles(
       } catch {
         continue; // root does not exist
       }
-      await collectProfilesFromRoot(
+      installFound = true;
+      enumeratedFileCount += await collectProfilesFromRoot(
         canonicalRoot,
         source,
         targetNames,
@@ -755,7 +799,16 @@ export async function discoverLocalOrcaFilamentProfiles(
     }
   }
 
-  if (allProfiles.length === 0) return [];
+  const diagnostic: LocalOrcaLookupDiagnostic = {
+    installFound,
+    enumeratedFileCount,
+    parsedFileCount: allProfiles.length,
+    exemplars: allProfiles
+      .slice(0, DIAGNOSTIC_EXEMPLAR_LIMIT)
+      .map((profile) => profile.name),
+  };
+
+  if (allProfiles.length === 0) return { entries: [], diagnostic };
 
   // Build lookup by profile name for inheritance resolution.
   const profilesByName = new Map<string, ParsedProfile>();
@@ -837,7 +890,26 @@ export async function discoverLocalOrcaFilamentProfiles(
     }
   }
 
-  return results;
+  return { entries: results, diagnostic };
+}
+
+/**
+ * The bound lookup's entries only.
+ *
+ * A convenience for callers that want the profiles and not the traversal
+ * diagnostic. Exported for tests, which assert on matching behaviour rather
+ * than on why a miss happened.
+ */
+export async function discoverLocalOrcaFilamentProfilesEntries(
+  context: RemoteCalibrationPrinterContext,
+  options: {
+    readonly roots?: {
+      readonly userRoots: readonly string[];
+      readonly systemRoots: readonly string[];
+    };
+  } = {},
+): Promise<z.infer<typeof OrcaProfileEntry>[]> {
+  return (await discoverLocalOrcaFilamentProfiles(context, options)).entries;
 }
 
 // ---------------------------------------------------------------------------

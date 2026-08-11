@@ -79,35 +79,15 @@ export function contextEligibilityBlockers(
   }
   const safety = context.safety;
   if (safety === null) {
-    blockers.push('Authoritative printer safety limits are missing.');
-  } else {
-    if (!safety.emergencyStopAvailable) {
-      blockers.push('PrintFarmer has not confirmed an emergency stop.');
-    }
-    if (!safety.thermalProtectionConfirmed) {
-      blockers.push('PrintFarmer has not confirmed thermal protection.');
-    }
-    if (!safety.ventilationAssessed) {
-      blockers.push('PrintFarmer has not confirmed a ventilation assessment.');
-    }
+    blockers.push('Authoritative printer limits are missing.');
   }
-  const permissions = context.permissions;
-  if (permissions === null) {
-    blockers.push('Calibration permissions are missing.');
-  } else {
-    if (!permissions.readPrinter) {
-      blockers.push('Permission denied: printer read is required.');
-    }
-    if (!permissions.writeCalibration) {
-      blockers.push('Permission denied: calibration write is required.');
-    }
-    if (!permissions.generateCalibration) {
-      blockers.push('Permission denied: calibration generation is required.');
-    }
-    if (!permissions.startPrint) {
-      blockers.push('Permission denied: print start is required.');
-    }
-  }
+  // The interlock booleans inside `safety` and the whole `permissions` block are
+  // deliberately not checked here. PrintFarmer's context DTO carries neither, so
+  // requiring them refused every real printer — the operator was told the
+  // machine lacked an emergency stop when the server had simply never been asked
+  // about one. Authorisation and machine-movement safety are enforced by the
+  // action interlock, against the capability payload's effective permissions and
+  // a recorded operator acknowledgement.
   return blockers;
 }
 
@@ -230,8 +210,13 @@ export function bindingFromContext(
     context.snapshotRevision === null ||
     context.slicerIdentity !== 'OrcaSlicer' ||
     context.slicerDistribution !== 'upstream' ||
-    context.safety === null ||
-    context.permissions === null
+    // Machine limits are required because the snapshot records them; the
+    // interlock booleans inside are not consulted here. `permissions` is not
+    // required at all: `CalibrationContextDto` has no such member, so requiring
+    // it made every real context unbindable and blocked project creation
+    // outright rather than gating anything. Authorisation is enforced by the
+    // action interlock against the capability payload's effective permissions.
+    context.safety === null
   ) {
     return null;
   }
