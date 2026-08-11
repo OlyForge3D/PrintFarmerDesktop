@@ -1052,11 +1052,53 @@ export const RemoteCalibrationPrinterContext =
       supportsFirmwareRetraction: dto.supportsFirmwareRetraction,
       capturedBySubject: dto.capturedBySubject,
       schemaVersion: dto.schemaVersion,
+      /**
+       * Whether the server resolved this printer's slicer profiles when it
+       * produced this record.
+       *
+       * Carried, not dropped. The candidate DTO and the context DTO share this
+       * member, and a context is only authoritative when it is exactly `true`.
+       * Losing it here left the downstream completeness and binding checks with
+       * nothing to test, so an explicitly ineligible context could still bind
+       * purely because its identity fields happened to be populated.
+       */
+      profilesEvaluated: dto.profilesEvaluated,
     };
   });
 export type RemoteCalibrationPrinterContext = z.infer<
   typeof RemoteCalibrationPrinterContext
 >;
+
+/**
+ * Whether a context is the server's *authoritative* verdict on a printer,
+ * rather than the preliminary screen the candidate list performs.
+ *
+ * Requires all four, and fails closed on each:
+ *
+ * - `profilesEvaluated === true`. Exactly true: `false` says the server did not
+ *   resolve profiles, and `null` — an older build that omits the field — says
+ *   nothing at all. Neither is a statement that profiles were evaluated, and
+ *   reading silence as one would let the cheap candidate screen stand in for
+ *   the resolution it deliberately does not perform.
+ * - `eligible === true`. The server's own verdict, not re-derived here.
+ * - No `missingInputs` and no `rejectionReasons`. PrintFarmer derives
+ *   `Eligible` from `reasons.Count == 0`, so a record carrying both is
+ *   self-contradicting and must not be treated as a clean pass.
+ *
+ * Candidate eligibility is deliberately *not* consulted. A candidate passing
+ * basic screening is enough to list and select a printer; it is never enough to
+ * bind a calibration project to one.
+ */
+export function isAuthoritativeCalibrationContext(
+  context: RemoteCalibrationPrinterContext,
+): boolean {
+  return (
+    context.profilesEvaluated === true &&
+    context.eligible === true &&
+    context.missingInputs.length === 0 &&
+    context.rejectionReasons.length === 0
+  );
+}
 
 export function isExplicitCalibrationEligibilityComplete(
   candidate: RemoteCalibrationPrinterCandidate,
@@ -1083,15 +1125,22 @@ export function projectCalibrationEligibility(
 }
 
 /**
- * Whether a context carries every identity the calibration contract actually
- * defines.
+ * Whether a context carries every identity the calibration contract defines
+ * *and* is the server's authoritative verdict.
  *
- * Scope note: this predicate answers "is the server's description of this
- * printer complete enough to identify and list it", not "is it safe to print".
- * It deliberately does **not** consult `safety` or `permissions`, because
- * `CalibrationContextDto` has no such members — requiring them here made the
- * predicate unsatisfiable against every real server, which silently disabled
- * profile listing rather than gating anything.
+ * Scope note: this predicate answers "is this snapshot fit to bind a project
+ * to", not "is it safe to print". It deliberately does **not** consult `safety`
+ * or `permissions`, because `CalibrationContextDto` has no such members —
+ * requiring them made the predicate unsatisfiable against every real server,
+ * which silently disabled profile listing rather than gating anything.
+ *
+ * It does require {@link isAuthoritativeCalibrationContext}. Identity fields
+ * being populated says only that the server described the printer; it says
+ * nothing about whether the server was willing to calibrate it. Without this,
+ * a context explicitly reporting `eligible: false` with rejection reasons could
+ * still be marked current and bound, because every id it needed happened to be
+ * present — the candidate list's preliminary pass standing in for a resolution
+ * it never performed.
  *
  * Authorisation for anything that mutates server state or moves a machine lives
  * in `calibrationActionGate.ts`, which gates on evidence that exists: the
@@ -1108,6 +1157,7 @@ export function isExplicitCalibrationContextComplete(
   context: RemoteCalibrationPrinterContext,
 ): boolean {
   return (
+    isAuthoritativeCalibrationContext(context) &&
     context.configurationId !== null &&
     context.configurationRevision !== null &&
     context.snapshotId !== null &&
@@ -1196,6 +1246,18 @@ export function projectCalibrationPrinterContext(
     nozzleDiameterMm: context.nozzleDiameterMm,
     snapshotAt: context.snapshotAt,
     isCurrent: context.isCurrent && complete,
+    /**
+     * Whether this is the server's authoritative verdict.
+     *
+     * Surfaced separately from `isCurrent` so the renderer can say *why* a
+     * loaded context cannot be bound: "the snapshot moved on" and "the server
+     * has not evaluated this printer's profiles" are different problems with
+     * different remedies, and collapsing them into one boolean left the
+     * operator with no way to tell which they were looking at.
+     */
+    evaluationScope: isAuthoritativeCalibrationContext(context)
+      ? 'full'
+      : 'preliminary',
     configurationId: context.configurationId,
     configurationRevision: context.configurationRevision,
     snapshotId: context.snapshotId,

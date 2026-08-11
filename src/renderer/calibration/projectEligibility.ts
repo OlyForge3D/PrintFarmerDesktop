@@ -41,6 +41,14 @@ export function contextEligibilityBlockers(
   if (!candidate.isOnline) {
     blockers.push('The selected printer is offline.');
   }
+  if (context.evaluationScope !== 'full') {
+    // Stated separately from staleness because the remedy differs: a stale
+    // snapshot is refreshed, whereas this one means PrintFarmer has not
+    // resolved the printer's profiles or has refused it outright.
+    blockers.push(
+      'PrintFarmer has not fully evaluated this printer, so a project cannot be bound to it.',
+    );
+  }
   if (!context.isCurrent) {
     blockers.push('The printer context is stale. Refresh it before creation.');
   }
@@ -204,6 +212,11 @@ export function bindingFromContext(
 ): CalibrationBinding | null {
   if (
     !context.isCurrent ||
+    // Only the server's authoritative verdict may be bound. A preliminary
+    // context — profiles not evaluated, or an older build that says nothing —
+    // describes the printer without agreeing to calibrate it, and binding a
+    // project to that would rest on the candidate list's basic screen.
+    context.evaluationScope !== 'full' ||
     !context.configurationId ||
     context.configurationRevision === null ||
     !context.snapshotId ||

@@ -571,6 +571,107 @@ describe('outbox application is gated too', () => {
   });
 });
 
+describe('a refusal invalidates the cached permissions without replaying anything', () => {
+  it('re-reads capabilities once after a 403 and never retries the mutation', async () => {
+    // Permissions are not immutable: an administrator can revoke a calibration
+    // role while the app is running. Caching a positive snapshot and never
+    // revisiting it leaves the workspace offering actions the server will keep
+    // refusing, insisting they should work.
+    let generationCalls = 0;
+    let capabilityCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: URL | string) => {
+        const href = typeof url === 'string' ? url : url.href;
+        if (href.includes('/api/calibration/capabilities')) {
+          capabilityCalls += 1;
+          return Promise.resolve(
+            json(
+              printFarmerCapabilitiesResponse({
+                effectivePermissions: CANONICAL_PERMISSIONS,
+              }),
+            ),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+        if (href.includes('generate-job')) {
+          generationCalls += 1;
+          // The gate passed against the cached snapshot; the server disagrees.
+          return Promise.resolve(
+            json({ status: 403, title: 'Forbidden' }, 403),
+          );
+        }
+        return Promise.resolve(json({}, 404));
+      }),
+    );
+    registered = handlers();
+
+    // A prior *positive* negotiation is the precondition. Without it the gate
+    // would refuse locally and the server would never be reached, so the
+    // stale-permission path this test is about would not be exercised.
+    await negotiate();
+    expect(capabilityCalls).toBe(1);
+
+    const response = (await invoke(
+      IpcChannel.CalibrationStartGeneration,
+      generationRequest(),
+    )) as { status: string; error: { message: string } };
+
+    expect(response.status).toBe('error');
+    // Exactly one re-read: the refusal invalidated the snapshot.
+    expect(capabilityCalls).toBe(2);
+    // And exactly one generation attempt. Re-reading capabilities is a read and
+    // safe to do on the operator's behalf; replaying a generation is not, and an
+    // app that retried because a permission check changed its mind would be
+    // acting without being asked.
+    expect(generationCalls).toBe(1);
+    // The operator is told why retrying might behave differently.
+    expect(response.error.message).toMatch(/access may have changed/i);
+  });
+
+  it('absorbs a burst of refusals into a single capability re-read', async () => {
+    // Without a cooldown a server refusing everything would be met with one
+    // capability fetch per refusal, turning a permission problem into a request
+    // storm.
+    let capabilityCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: URL | string) => {
+        const href = typeof url === 'string' ? url : url.href;
+        if (href.includes('/api/calibration/capabilities')) {
+          capabilityCalls += 1;
+          return Promise.resolve(
+            json(
+              printFarmerCapabilitiesResponse({
+                effectivePermissions: CANONICAL_PERMISSIONS,
+              }),
+            ),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+        if (href.includes('generate-job')) {
+          return Promise.resolve(
+            json({ status: 403, title: 'Forbidden' }, 403),
+          );
+        }
+        return Promise.resolve(json({}, 404));
+      }),
+    );
+    registered = handlers();
+    await negotiate();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await invoke(IpcChannel.CalibrationStartGeneration, generationRequest());
+    }
+    // One initial negotiation plus one refresh, not one per refusal.
+    expect(capabilityCalls).toBe(2);
+  });
+});
+
 describe('discovery needs only the read permission', () => {
   it('reports calibration available to an account that can read but not write', async () => {
     // Requiring every calibration permission to *open* the workspace would
