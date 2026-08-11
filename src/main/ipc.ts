@@ -27,6 +27,7 @@ import {
   CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+  CALIBRATION_MAX_PRINTER_CANDIDATES,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -2946,6 +2947,16 @@ export function registerIpcHandlers(
       let candidates: Awaited<
         ReturnType<typeof calibrationHttp.getPrinters>
       >['printers'] = [];
+      // The count of candidate records this client could not read. Held as a
+      // number in its own right and reported as one: `discovery.message` is
+      // derived from it, so the machine-readable evidence and the sentence an
+      // operator reads cannot drift apart.
+      let printersUnreadable = 0;
+      // Whether the server offered more candidates than were considered.
+      // Carried for the same reason as the count: reporting `ok` after
+      // stopping at the cap would describe a farm this handler never saw the
+      // whole of.
+      let printersTruncated = false;
       let discovery: CalibrationProfileDiscoveryDiagnostic = {
         kind: 'ok',
         message: 'Server profile discovery completed.',
@@ -2958,28 +2969,36 @@ export function registerIpcHandlers(
           signal,
         );
         candidates = candidateList.printers;
-        // `unreadable` is the difference between what the server sent and what
-        // this client could read. Discarding it turned two different failures
-        // into the same reassuring sentence: a farm whose every record was
-        // malformed reported "the server returned no candidate printers for
-        // this account", which is a statement about the account and is false —
-        // the printers are there, this client could not parse them. The
-        // operator would go looking for an enrolment problem that does not
-        // exist.
-        if (candidates.length === 0 && candidateList.unreadable > 0) {
+        // Derived by counting candidates that failed validation in the wire
+        // layer, never read from the payload, so no server field can raise or
+        // lower it.
+        printersUnreadable = candidateList.unreadable;
+        printersTruncated = candidateList.truncated;
+        // Discarding this turned two different failures into the same
+        // reassuring sentence: a farm whose every record was malformed
+        // reported "the server returned no candidate printers for this
+        // account", which is a statement about the account and is false — the
+        // printers are there, this client could not parse them. The operator
+        // would go looking for an enrolment problem that does not exist.
+        if (candidates.length === 0 && printersUnreadable > 0) {
           discovery = {
             kind: 'malformedResponse',
-            message:
-              'The server returned calibration candidates, but none of them matched the calibration contract, so none could be read.',
+            message: `The server returned ${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'}, but none matched the calibration contract, so none could be read.`,
             serverCode: null,
           };
-        } else if (candidateList.unreadable > 0) {
+        } else if (printersUnreadable > 0) {
           discovery = {
             kind: 'partiallyUnreadable',
             // A count, never the offending values: the whole point of parsing
             // candidates separately is that unreadable server content stops
             // here rather than travelling on.
-            message: `${candidateList.unreadable} calibration candidate${candidateList.unreadable === 1 ? '' : 's'} did not match the calibration contract and could not be read. The printers listed are the ones that could.`,
+            message: `${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'} did not match the calibration contract and could not be read. The printers listed are the ones that could.`,
+            serverCode: null,
+          };
+        } else if (printersTruncated) {
+          discovery = {
+            kind: 'farmTruncated',
+            message: `The server offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} calibration candidates. Only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered, so this list is partial.`,
             serverCode: null,
           };
         } else if (candidates.length === 0) {
@@ -3104,6 +3123,8 @@ export function registerIpcHandlers(
       return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
         profiles: [...profilesByScope.values()],
         discovery,
+        printersUnreadable,
+        printersTruncated,
         localProfiles: localScan.profiles,
         localDiscovery: localScan.diagnostic,
       });

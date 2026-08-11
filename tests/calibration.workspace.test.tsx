@@ -432,6 +432,8 @@ function makeApi(savedRecord = record()) {
             exportable: true,
           },
         ],
+        printersUnreadable: 0,
+        printersTruncated: false,
       }),
     ),
     listCalibrationConflicts: vi

@@ -21,6 +21,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationPrinterCandidate,
+  CalibrationListPrintersResponse,
+  CalibrationListOrcaProfilesResponse,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_FIELD_PATH_LENGTH,
@@ -1483,6 +1485,149 @@ describe('no single candidate can empty the farm', () => {
 
     expect(response.printers).toHaveLength(2);
     expect(response.printersUnreadable).toBe(0);
+  });
+});
+
+describe('the unreadable count is bounded and required at the schema itself', () => {
+  // Asserted against the schemas directly, not only through handler happy
+  // paths. A handler test proves what the handler does today; these prove what
+  // the contract will accept from anything, including a future caller that
+  // forgets to propagate the field.
+  const validCandidate = {
+    printerId: PRINTER_GUID,
+    displayName: 'Rack A cell 3',
+    printerModel: null,
+    firmwareCompatible: false,
+    orcaProfileId: null,
+    isOnline: true,
+    updatedAt: '2026-08-11T12:00:00.000Z',
+    rejectionReasonCodes: ['printer_offline'],
+    missingInputs: [],
+    eligibility: null,
+  };
+
+  function printersResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      printers: [validCandidate],
+      printersTruncated: false,
+      printersUnreadable: 0,
+      fetchedAt: '2026-08-11T12:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('accepts a count at exactly the candidate cap when nothing was readable', () => {
+    // Zero readable printers, because the two numbers are parts of one whole:
+    // a full cap of unreadable records leaves no room for a readable one.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printers: [],
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects readable and unreadable counts that together exceed the cap', () => {
+    // The physically impossible case a per-field bound cannot see: one printer
+    // was read, and five hundred more were not, from a list that only ever
+    // holds five hundred.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printers: [validCandidate],
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it('accepts a readable printer alongside the largest count that still fits', () => {
+    // The boundary from the other side, so the rule above bounds rather than
+    // blankets.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printers: [validCandidate],
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES - 1,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects a count one past the cap', () => {
+    // The production count is derived by counting failures among the
+    // candidates considered, so it cannot exceed them. Saying so in the schema
+    // makes that reasoning executable rather than a comment.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES + 1,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects a negative count', () => {
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({ printersUnreadable: -1 }),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects omission rather than assuming nothing was lost', () => {
+    const withoutCount = { ...printersResponse() };
+    delete (withoutCount as Record<string, unknown>).printersUnreadable;
+    expect(() => CalibrationListPrintersResponse.parse(withoutCount)).toThrow();
+  });
+
+  it('applies the same bound and requirement to the profiles response', () => {
+    const base = {
+      profiles: [],
+      discovery: {
+        kind: 'ok' as const,
+        message: 'Server profile discovery completed.',
+        serverCode: null,
+      },
+      printersUnreadable: 0,
+      printersTruncated: false,
+      localProfiles: [],
+      localDiscovery: {
+        kind: 'ok' as const,
+        message: 'Local OrcaSlicer profile scan completed.',
+      },
+    };
+
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse({
+        ...base,
+        printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse({
+        ...base,
+        printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES + 1,
+      }),
+    ).toThrow();
+
+    // Omission must reject rather than default to zero. Main, preload and
+    // renderer ship together, so there is no old caller to accommodate — and a
+    // default would turn a future propagation slip into a confident claim that
+    // every record was readable.
+    const withoutCount = { ...base } as Record<string, unknown>;
+    delete withoutCount.printersUnreadable;
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse(withoutCount),
+    ).toThrow();
+
+    const withoutTruncation = { ...base } as Record<string, unknown>;
+    delete withoutTruncation.printersTruncated;
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse(withoutTruncation),
+    ).toThrow();
   });
 });
 

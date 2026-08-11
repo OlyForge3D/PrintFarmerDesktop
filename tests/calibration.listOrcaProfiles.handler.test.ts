@@ -160,6 +160,7 @@ function respondWith(body: unknown, status = 200): void {
 interface OrcaProfilesResponse {
   profiles: unknown[];
   discovery: { kind: string; message: string };
+  printersUnreadable: number;
   localProfiles: Array<{ name: string; source: string }>;
   localDiscovery: { kind: string; message: string };
 }
@@ -316,6 +317,10 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
 
     expect(response.discovery.kind).toBe('malformedResponse');
     expect(response.discovery.kind).not.toBe('noEligiblePrinters');
+    // The count is the evidence, asserted as a number rather than read back
+    // out of a sentence.
+    expect(response.printersUnreadable).toBe(3);
+    expect(response.discovery.message).toContain('3 calibration candidates');
     // The local scan is unaffected, as with every other server-side failure.
     expect(response.localProfiles.map((p) => p.name)).toContain(TARGET_PROFILE);
   });
@@ -329,10 +334,25 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     )) as OrcaProfilesResponse;
 
     expect(response.discovery.kind).toBe('partiallyUnreadable');
+    expect(response.printersUnreadable).toBe(1);
     expect(response.discovery.message).toContain('1 calibration candidate');
   });
 
-  it('reports plain ok when every candidate was readable', async () => {
+  it('reports zero unreadable for a genuinely empty farm', async () => {
+    // The distinction the count exists to make: nothing came back, and
+    // nothing was lost reading it.
+    respondWith([]);
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.discovery.kind).toBe('noEligiblePrinters');
+    expect(response.printersUnreadable).toBe(0);
+  });
+
+  it('reports plain ok and zero unreadable when every candidate was readable', async () => {
     respondWith([candidateDto()]);
 
     const response = (await listOrcaProfilesHandler()(
@@ -341,6 +361,26 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     )) as OrcaProfilesResponse;
 
     expect(response.discovery.kind).toBe('ok');
+    expect(response.printersUnreadable).toBe(0);
+  });
+
+  it('will not let the server set the unreadable count itself', async () => {
+    // Client-derived by counting failures. A payload asserting its own count
+    // must not be believed, or the number would be forgeable by the party it
+    // is evidence against.
+    respondWith({
+      printers: [{ id: 'not-a-guid', name: '' }, candidateDto()],
+      printersUnreadable: 0,
+      unreadable: 0,
+    });
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    expect(response.printersUnreadable).toBe(1);
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
   });
 
   it('leaks no server-supplied value through the unreadable diagnostic', async () => {

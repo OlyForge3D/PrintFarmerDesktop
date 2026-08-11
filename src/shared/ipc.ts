@@ -1627,11 +1627,40 @@ export const CalibrationListPrintersResponse = z
      * used to fail the array, and the array is the whole farm. Reported so a
      * shorter list than the operator owns is visible as a fault rather than
      * mistaken for the truth.
+     *
+     * Bounded by the number of candidates that can be considered at all: the
+     * production count is derived by counting failures among them, so a value
+     * above that ceiling describes a list that cannot exist and is rejected
+     * rather than believed. Records beyond the cap are reported by
+     * `printersTruncated`, not here — they were never examined.
      */
-    printersUnreadable: z.number().int().nonnegative(),
+    printersUnreadable: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(CALIBRATION_MAX_PRINTER_CANDIDATES),
     fetchedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .superRefine((response, context) => {
+    // Every candidate considered was either read or not read, and only
+    // CALIBRATION_MAX_PRINTER_CANDIDATES are ever considered — so the two
+    // numbers are parts of one whole, not independent quantities. Bounding
+    // them separately let `1 readable + 500 unreadable` through, describing
+    // 501 candidates from a list that can hold 500. Records past the cap are
+    // never counted here; `printersTruncated` is the evidence for those.
+    if (
+      response.printers.length + response.printersUnreadable >
+      CALIBRATION_MAX_PRINTER_CANDIDATES
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['printersUnreadable'],
+        message:
+          'Readable and unreadable candidates together exceed the number that can be considered.',
+      });
+    }
+  });
 export type CalibrationListPrintersResponse = z.infer<
   typeof CalibrationListPrintersResponse
 >;
@@ -4871,6 +4900,14 @@ export const CalibrationProfileDiscoveryDiagnostic = z
        * that this client could not read it.
        */
       'partiallyUnreadable',
+      /**
+       * The server offered more candidates than were considered.
+       *
+       * Distinct from `partiallyUnreadable`: those records were examined and
+       * refused, these were never looked at. Reporting `ok` after stopping at
+       * the cap would describe a farm this client had not seen the whole of.
+       */
+      'farmTruncated',
       /** The server answered normally and returned no eligible printer. */
       'noEligiblePrinters',
       /** The request could not reach the server at all. */
@@ -4934,6 +4971,44 @@ export const CalibrationListOrcaProfilesResponse = z
       message: 'Server profile discovery completed.',
       serverCode: null,
     }),
+    /**
+     * How many candidate records the server sent that this client could not
+     * read, and therefore how many printers are missing from `profiles`.
+     *
+     * Structured rather than left inside {@link discovery}'s prose. The number
+     * is the evidence: a caller deciding whether to warn, a test asserting the
+     * exact count, and a reader distinguishing "the farm is empty" from "the
+     * farm was unreadable" all need it as a value, not as a sentence they
+     * would have to parse back out. `discovery.message` is derived from it,
+     * never the other way round.
+     *
+     * Client-derived in the main process by counting candidates that failed
+     * validation, so no field of the server payload can raise or lower it.
+     *
+     * Required, not defaulted. Main, preload and renderer ship together, so
+     * there is no older caller on this boundary to accommodate — and a default
+     * of `0` would convert a future propagation slip into a confident "every
+     * record was readable", which is precisely the false reassurance this
+     * field exists to prevent. Bounded by the number of candidates that can be
+     * considered at all, so a count larger than the list it describes is
+     * rejected rather than believed.
+     */
+    printersUnreadable: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(CALIBRATION_MAX_PRINTER_CANDIDATES),
+    /**
+     * Whether the server offered more candidates than were considered.
+     *
+     * Carried for the same reason as on {@link CalibrationListPrintersResponse}:
+     * the wire layer stops at {@link CALIBRATION_MAX_PRINTER_CANDIDATES}, and a
+     * response that quietly reported `ok` after ignoring the remainder would
+     * describe a farm it had not looked at. Distinct from
+     * `printersUnreadable`: those records were seen and rejected, these were
+     * never considered.
+     */
+    printersTruncated: z.boolean(),
     /**
      * Locally installed OrcaSlicer profiles, scanned independently of the
      * server. Populated even when the server refused, so "PrintFarmer is
