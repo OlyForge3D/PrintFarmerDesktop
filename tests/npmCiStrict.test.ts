@@ -386,13 +386,14 @@ describe('npm-ci-strict main orchestration', () => {
     expect(
       lines.some(
         (line) =>
-          line.includes(`\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems:`) &&
-          line.includes('exited 1'),
+          line.includes(
+            `\`${NPM_PRODUCTION_TREE_COMMAND}\` also reports problems:`,
+          ) && line.includes('exited 1'),
       ),
     ).toBe(true);
-    expect(
-      lines.some((line) => line.includes('reports no problems')),
-    ).toBe(false);
+    expect(lines.some((line) => line.includes('reports no problems'))).toBe(
+      false,
+    );
   });
 
   it('reports a production-tree read failure rather than swallowing it, and still fails closed', async () => {
