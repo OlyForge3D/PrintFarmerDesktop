@@ -287,18 +287,20 @@ describe('the sweeper behind the debris path', () => {
    * DELETE on the file or FILE_DELETE_CHILD on its parent, POSIX wants write
    * on the containing directory. Both are denied here.
    *
-   * Throws rather than reporting failure. A fixture that cannot establish its
-   * premise must not let the test quietly pass: an earlier revision returned a
-   * boolean and the caller returned early on false, which made this case inert
-   * on every non-Windows platform while still counting as green -- a test that
-   * cannot fail, which is the exact thing this file exists to stamp out.
+   * Applying the denial is not the same as it taking effect: a privileged
+   * account bypasses the DACL on Windows and `CAP_DAC_OVERRIDE` on POSIX. The
+   * caller therefore probes whether the refusal actually holds and skips
+   * visibly when it does not, rather than trusting this to have worked.
+   *
+   * Failures to even attempt the denial still throw, because that is a broken
+   * fixture rather than a privileged host.
    */
   const denyDelete = (holder: string, lock: string): void => {
     if (process.platform === 'win32') {
       const user = process.env.USERNAME;
       if (user === undefined || user === '') {
         throw new Error(
-          'Cannot establish the unlink-refusal premise: USERNAME is unset, so ' +
+          'Cannot attempt the unlink-refusal premise: USERNAME is unset, so ' +
             'icacls has no principal to restrict.',
         );
       }
@@ -385,31 +387,118 @@ describe('the sweeper behind the debris path', () => {
     }
   });
 
-  it('stays quiet when the read succeeds but the unlink is refused', () => {
-    // The case the swallow actually exists for, and the one the directory
-    // above cannot reach. Several workers meet the same debris and all try to
-    // remove it; the losers see EPERM/EACCES, which `force` does not suppress.
-    // Throwing here fails an unrelated test from inside `afterEach` with a
-    // message naming neither the guard nor the cause.
+  it('stays quiet when the read succeeds but the unlink throws', () => {
+    // The case the swallow exists for, made deterministic. Several workers meet
+    // the same debris and all try to remove it; the losers see EPERM/EACCES,
+    // which `force` does not suppress. Throwing here fails an unrelated test
+    // from inside `afterEach` with a message naming neither the guard nor the
+    // cause.
     //
-    // Runs on both platforms: Windows denies DELETE on the file and
-    // FILE_DELETE_CHILD on its parent, POSIX drops write on the containing
-    // directory. Both were verified to give read=ok with a bare unlink
-    // throwing (Windows EPERM, Linux EACCES). There is no early return: if the
-    // premise cannot be established the fixture throws and this test fails,
-    // rather than passing while asserting nothing.
-    const holder = join(
-      mkdtempSync(join(tmpdir(), `guard-unlink-${process.pid}-`)),
-      'holder',
-    );
+    // The removal is substituted rather than genuinely refused, because a real
+    // refusal needs the filesystem to deny a permission and a privileged
+    // account bypasses that -- measured on a GitHub windows-latest runner,
+    // where the ACL denial does not take. This runs on every host. The real
+    // binding is not left unpinned: the neighbouring cases call this with the
+    // default removal against real files, and the guard-wiring cases drive the
+    // whole path with nothing injected.
+    const lock = scratch('unlink-throws');
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, 'classified-bytes');
+    try {
+      let attempted = 0;
+      const refusing = (path: string): void => {
+        attempted += 1;
+        const error = new Error(
+          `EPERM: operation not permitted, unlink '${path}'`,
+        );
+        (error as NodeJS.ErrnoException).code = 'EPERM';
+        throw error;
+      };
+
+      // The read half of the premise, so this cannot decay into the
+      // read-failure case above.
+      expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
+
+      expect(() =>
+        removeLockIfUnchanged('classified-bytes', lock, refusing),
+      ).not.toThrow();
+
+      // The unlink half: it was actually reached, so the swallow is what
+      // absorbed the throw rather than the comparison returning early.
+      expect(attempted).toBe(1);
+      expect(existsSync(lock)).toBe(true);
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  it('does not swallow by never attempting the unlink', () => {
+    // The control for the case above: a sweeper that simply never calls the
+    // removal would also "not throw". Bytes that match must reach the unlink.
+    const lock = scratch('unlink-attempted');
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, 'classified-bytes');
+    try {
+      const seen: string[] = [];
+      removeLockIfUnchanged('classified-bytes', lock, (path) => {
+        seen.push(path);
+      });
+      expect(seen).toEqual([lock]);
+
+      // And bytes that do not match must not reach it.
+      const skipped: string[] = [];
+      removeLockIfUnchanged('different-bytes', lock, (path) => {
+        skipped.push(path);
+      });
+      expect(skipped).toEqual([]);
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  it('refuses a genuinely undeletable lock where the platform can deny it', (ctx) => {
+    // Corroboration for the substituted case above, against the real
+    // filesystem. Windows denies DELETE on the file and FILE_DELETE_CHILD on
+    // its parent; POSIX drops write on the containing directory. Verified as
+    // read=ok with a bare unlink throwing -- EPERM on Windows, EACCES on Linux
+    // as an unprivileged user.
+    //
+    // A privileged account bypasses both (Administrator on a GitHub runner,
+    // root via CAP_DAC_OVERRIDE), and there the premise cannot be established
+    // at all. That is reported as a visible skip naming the reason, never as a
+    // pass: a green result here would assert nothing, which is the defect this
+    // whole file exists to prevent. The substituted case above still runs, so
+    // the swallow itself is never left unpinned.
+    const base = mkdtempSync(join(tmpdir(), `guard-unlink-${process.pid}-`));
+    const holder = join(base, 'holder');
     const lock = join(holder, 'the.lock');
     mkdirSync(holder, { recursive: true });
     writeFileSync(lock, 'classified-bytes');
     try {
       denyDelete(holder, lock);
 
-      // Both halves of the premise, asserted before the behaviour. Without
-      // these the case silently decays into the read-failure test above.
+      let denialHeld = false;
+      try {
+        rmSync(lock, { force: true });
+      } catch {
+        denialHeld = true;
+      }
+      if (!denialHeld) {
+        // vitest 2.x `ctx.skip()` carries no reason, so the reason is written
+        // where a reader will actually see it: the run's own output. A skip is
+        // visible in every reporter as a distinct outcome, which a pass is not.
+        console.warn(
+          `[mutation-window-guard] SKIPPED "refuses a genuinely undeletable lock": ` +
+            `this host (${process.platform}) deleted a file whose permissions deny it, ` +
+            'which means an elevated or root account is bypassing the check, so the ' +
+            'unlink-refusal premise cannot be established here. The substituted-removal ' +
+            'case still pins the swallow on this host; only the real-permission ' +
+            'corroboration is unavailable.',
+        );
+        ctx.skip();
+        return;
+      }
+
       expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
       expect(() => rmSync(lock, { force: true })).toThrow();
 
@@ -418,7 +507,7 @@ describe('the sweeper behind the debris path', () => {
       ).not.toThrow();
     } finally {
       restoreDelete(holder, lock);
-      rmSync(dirname(holder), { force: true, recursive: true });
+      rmSync(base, { force: true, recursive: true });
     }
   });
 

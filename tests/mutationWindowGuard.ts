@@ -73,14 +73,25 @@ export interface MutationWindowProbes {
  * exercised by writing to the single real lock the whole checkout shares, which
  * makes concurrent suite runs clobber one another -- so it would have been
  * either untested or actively harmful. The caller names the path.
+ *
+ * `unlink` exists so the swallow can be proven on any host. Establishing a real
+ * unlink refusal needs the filesystem to deny a permission, and a privileged
+ * account bypasses that: on a GitHub `windows-latest` runner the ACL denial
+ * simply does not take, so the premise evaporates and a fixture built on it
+ * cannot assert anything. Substituting the removal makes the refusal
+ * deterministic everywhere, while the real binding stays pinned by the tests
+ * that call this with the default and by the guard-wiring tests -- a no-op or
+ * wrong-path default still dies there. The real-permission case is kept
+ * alongside as corroboration.
  */
 export function removeLockIfUnchanged(
   expected: string,
   lockPath: string,
+  unlink: (path: string) => void = (path) => rmSync(path, { force: true }),
 ): void {
   try {
     if (readFileSync(lockPath, 'utf8') !== expected) return;
-    rmSync(lockPath, { force: true });
+    unlink(lockPath);
   } catch {
     // Another sweeper won, or the lock is already gone. Either way there is
     // nothing left to do and nothing worth failing a test over.
