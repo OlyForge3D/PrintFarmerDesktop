@@ -804,6 +804,61 @@ describe('CalibrationWorkspace', () => {
     ).toBeNull();
   });
 
+  it('does not call an all-unreadable farm an empty one', async () => {
+    // The renderer counterpart of the defect the main process fixed: records
+    // *were* returned and this app could not read them, so "No printer
+    // candidates were returned" sends the operator after an enrolment problem
+    // that does not exist — and "the rest of the list is unaffected" is empty
+    // comfort when there is no rest.
+    const allUnreadable = makeApi();
+    allUnreadable.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: false,
+        printersUnreadable: 12,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(allUnreadable);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/12 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('No printer candidates were returned.'),
+    ).toBeNull();
+    expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
+    expect(
+      screen.getByText(/No other printers were returned/),
+    ).toBeInTheDocument();
+  });
+
+  it('still says the farm is empty when it genuinely is', async () => {
+    // The control: nothing returned and nothing lost reading it, which is a
+    // different situation and must keep reading differently.
+    const empty = makeApi();
+    empty.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: false,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(empty);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText('No printer candidates were returned.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+  });
+
   it('uses explicit candidate eligibility independent of printer names', async () => {
     const { api } = renderWorkspace();
     fireEvent.click(
@@ -1852,10 +1907,14 @@ describe('CalibrationWorkspace', () => {
 
   it('settles explicit empty printer and profile discovery without retry loops', async () => {
     const api = makeApi();
-    api.listCalibrationPrinters.mockResolvedValue({
-      printers: [],
-      fetchedAt: now,
-    });
+    api.listCalibrationPrinters.mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: false,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    );
     api.listOrcaProfiles.mockResolvedValue({ profiles: [] });
     renderWorkspace(api);
 

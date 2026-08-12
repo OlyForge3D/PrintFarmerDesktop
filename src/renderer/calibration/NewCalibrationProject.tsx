@@ -472,7 +472,8 @@ export function NewCalibrationProject(): React.JSX.Element {
                 <p role="status">Loading candidates from PrintFarmer.</p>
               ) : null}
               {!store.creation.loading &&
-              store.creation.printers.length === 0 ? (
+              store.creation.printers.length === 0 &&
+              store.creation.printersUnreadable === 0 ? (
                 <p>No printer candidates were returned.</p>
               ) : null}
               {!store.creation.loading && store.creation.printersTruncated ? (
@@ -489,7 +490,13 @@ export function NewCalibrationProject(): React.JSX.Element {
                   {store.creation.printersUnreadable === 1 ? '' : 's'} could not
                   be read and{' '}
                   {store.creation.printersUnreadable === 1 ? 'is' : 'are'} not
-                  listed below. The rest of the list is unaffected.
+                  listed below.{' '}
+                  {store.creation.printers.length === 0
+                    ? // Not "no printers were returned": they were returned and
+                      // this app could not read them, which points at a
+                      // different problem entirely.
+                      'No other printers were returned, so nothing can be selected here yet.'
+                    : 'The rest of the list is unaffected.'}
                 </p>
               ) : null}
               <div

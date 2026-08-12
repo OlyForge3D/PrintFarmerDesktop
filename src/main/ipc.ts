@@ -3205,7 +3205,15 @@ export function registerIpcHandlers(
         if (lostEverything) {
           discovery = {
             kind: 'malformedResponse',
-            message: `The server returned ${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'}, but none matched the calibration contract, so none could be read.`,
+            // Truncation is appended rather than dropped: with more candidates
+            // offered than considered, "the server returned N" would understate
+            // what it sent, and this is the one branch that previously threw
+            // away a clause another layer had composed.
+            message: `The server returned ${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'}, but none matched the calibration contract, so none could be read.${
+              printersTruncated
+                ? ` It also offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES}, so only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered.`
+                : ''
+            }`,
             serverCode: null,
           };
         } else if (lostSomething) {
