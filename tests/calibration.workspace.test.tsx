@@ -268,6 +268,23 @@ const candidates: CalibrationPrinterCandidate[] = [
   },
 ];
 
+/**
+ * A candidate list long enough to satisfy the truncation invariant.
+ *
+ * Truncation forces `printers.length + printersUnreadable === 500`: the wire
+ * slices to exactly that many, and every considered record is either parsed or
+ * counted. A fixture that pairs `printersTruncated: true` with a three-element
+ * list therefore describes a response the handler cannot emit, so it proves
+ * nothing about the state it claims to cover.
+ */
+function truncatedSurvivors(unreadable: number): CalibrationPrinterCandidate[] {
+  const base = candidates[0]!;
+  return Array.from({ length: 500 - unreadable }, (_unused, index) => ({
+    ...base,
+    printerId: `printer-${index.toString(16).padStart(6, '0')}`,
+  }));
+}
+
 const context: CalibrationPrinterContext = {
   printerId: 'printer-safe',
   displayName: 'Unbranded cell 7',
@@ -702,7 +719,7 @@ describe('CalibrationWorkspace', () => {
     const partial = makeApi();
     partial.listCalibrationPrinters = vi.fn().mockResolvedValue(
       CalibrationListPrintersResponse.parse({
-        printers: candidates,
+        printers: truncatedSurvivors(3),
         printersTruncated: true,
         printersUnreadable: 3,
         fetchedAt: now,
@@ -757,7 +774,7 @@ describe('CalibrationWorkspace', () => {
     const truncatedOnly = makeApi();
     truncatedOnly.listCalibrationPrinters = vi.fn().mockResolvedValue(
       CalibrationListPrintersResponse.parse({
-        printers: candidates,
+        printers: truncatedSurvivors(0),
         printersTruncated: true,
         printersUnreadable: 0,
         fetchedAt: now,
@@ -868,8 +885,44 @@ describe('CalibrationWorkspace', () => {
     expect(screen.queryByText(/No other printers were returned/)).toBeNull();
   });
 
+  it('keeps the survivor tail when the farm is truncated and some records were unreadable', async () => {
+    // The reachable state the other cases leave uncovered: survivors,
+    // truncation and unreadable records at once. Without it, hoisting the
+    // truncation test above the survivor test passes the whole suite while
+    // telling an operator "none of the printers this view could consider were
+    // readable" with 497 of them listed directly below — the same class of
+    // false sentence this round exists to remove.
+    const survivorsAndTruncated = makeApi();
+    survivorsAndTruncated.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: truncatedSurvivors(3),
+        printersTruncated: true,
+        printersUnreadable: 3,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(survivorsAndTruncated);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/3 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/PrintFarmer offered more printers than/),
+    ).toBeInTheDocument();
+    // Survivors exist, so that tail wins over the truncation tail.
+    expect(
+      screen.getByText(/The rest of the list is unaffected\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/None of the printers this view could consider/),
+    ).toBeNull();
+    expect(screen.queryByText(/No other printers were returned/)).toBeNull();
+  });
+
   it('does not deny the truncation notice it just rendered', async () => {
-    // Truncated AND nothing readable survived — the only truncated-and-empty
     // state the handler can produce, since truncation forces
     // printers.length + printersUnreadable === 500. "No other printers were
     // returned" would contradict the truncation notice three lines above:
