@@ -456,6 +456,48 @@ describe('the sweeper behind the debris path', () => {
     }
   });
 
+  /**
+   * Did this host actually delete the file, i.e. is deletion permitted here?
+   *
+   * Deliberately **without** `force`. `force` suppresses ENOENT, which would
+   * make a file that is simply *gone* answer "yes, deletion is permitted" --
+   * so a fixture that vanished for any reason would be classified as a
+   * privileged host and quietly skipped. Those are two different states and
+   * this file's whole argument is that two different states must not be
+   * reported identically. Without `force`, a missing file throws, this answers
+   * "no", and the caller proceeds to assert on the fixture and fails loudly on
+   * the absent file rather than skipping.
+   */
+  const deletionPermitted = (path: string): boolean => {
+    try {
+      rmSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('classifies a vanished fixture as not-permitted, never as a skip', () => {
+    // The regression pin for that reasoning. With `force` restored, an absent
+    // path reports "deletion permitted", which is exactly how a broken fixture
+    // would disguise itself as an elevated host and take the skip branch.
+    const base = mkdtempSync(join(tmpdir(), `guard-probe-${process.pid}-`));
+    try {
+      const vanished = join(base, 'never-existed.lock');
+      expect(existsSync(vanished)).toBe(false);
+      expect(deletionPermitted(vanished)).toBe(false);
+
+      // Control: a file that really is deletable must still answer yes, or the
+      // probe would never skip and the assertion above would be vacuous.
+      const deletable = join(base, 'ordinary.lock');
+      writeFileSync(deletable, 'classified-bytes');
+      expect(deletionPermitted(deletable)).toBe(true);
+      expect(existsSync(deletable)).toBe(false);
+    } finally {
+      rmSync(base, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a genuinely undeletable lock where the platform can deny it', (ctx) => {
     // Corroboration for the substituted case above, against the real
     // filesystem. Windows denies DELETE on the file and FILE_DELETE_CHILD on
@@ -477,13 +519,7 @@ describe('the sweeper behind the debris path', () => {
     try {
       denyDelete(holder, lock);
 
-      let denialHeld = false;
-      try {
-        rmSync(lock, { force: true });
-      } catch {
-        denialHeld = true;
-      }
-      if (!denialHeld) {
+      if (deletionPermitted(lock)) {
         // vitest 2.x `ctx.skip()` carries no reason, so the reason is written
         // where a reader will actually see it: the run's own output. A skip is
         // visible in every reporter as a distinct outcome, which a pass is not.
@@ -499,6 +535,9 @@ describe('the sweeper behind the debris path', () => {
         return;
       }
 
+      // Reached only when deletion was refused, so the fixture is still here.
+      // A vanished fixture arrives here too -- and fails on this line rather
+      // than skipping, which is the point of probing without `force`.
       expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
       expect(() => rmSync(lock, { force: true })).toThrow();
 
