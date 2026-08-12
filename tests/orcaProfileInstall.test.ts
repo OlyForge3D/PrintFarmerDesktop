@@ -192,6 +192,11 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
       displayName: 'Test Profile',
       safeFilename: 'test.json',
       cachedAt: Date.now(),
+      profileId: '11111111-1111-4111-8111-111111111111',
+      projectId: '22222222-2222-4222-8222-222222222222',
+      snapshotId: 'a'.repeat(64),
+      baseContentHash: 'b'.repeat(64),
+      epoch: 0,
     };
     cacheGeneratedProfile(operationId, entry);
     const retrieved = getCachedProfile(operationId);
@@ -209,6 +214,11 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
       displayName: 'B',
       safeFilename: 'b.json',
       cachedAt: Date.now(),
+      profileId: '11111111-1111-4111-8111-111111111111',
+      projectId: '22222222-2222-4222-8222-222222222222',
+      snapshotId: 'a'.repeat(64),
+      baseContentHash: 'b'.repeat(64),
+      epoch: 0,
     });
     clearProfileCache();
     expect(getCachedProfile('op-002')).toBeUndefined();
@@ -223,6 +233,11 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
         displayName: `Profile ${i}`,
         safeFilename: `profile_${i}.json`,
         cachedAt: Date.now() + i,
+        profileId: '11111111-1111-4111-8111-111111111111',
+        projectId: '22222222-2222-4222-8222-222222222222',
+        snapshotId: 'a'.repeat(64),
+        baseContentHash: 'b'.repeat(64),
+        epoch: 0,
       });
     }
     // All 50 should be present
@@ -235,6 +250,11 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
       displayName: 'Profile 50',
       safeFilename: 'profile_50.json',
       cachedAt: Date.now() + 50,
+      profileId: '11111111-1111-4111-8111-111111111111',
+      projectId: '22222222-2222-4222-8222-222222222222',
+      snapshotId: 'a'.repeat(64),
+      baseContentHash: 'b'.repeat(64),
+      epoch: 0,
     });
     // op-000 should be gone
     expect(getCachedProfile('op-000')).toBeUndefined();
@@ -516,6 +536,11 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         displayName: 'Restart Profile',
         safeFilename,
         cachedAt: Date.now(),
+        profileId: '11111111-1111-4111-8111-111111111111',
+        projectId: '22222222-2222-4222-8222-222222222222',
+        snapshotId: 'a'.repeat(64),
+        baseContentHash: 'b'.repeat(64),
+        epoch: 0,
       });
       const installResult = await installOrcaProfileWindows(
         updated,
@@ -564,6 +589,11 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         displayName: 'Evicted Profile',
         safeFilename,
         cachedAt: Date.now(),
+        profileId: '11111111-1111-4111-8111-111111111111',
+        projectId: '22222222-2222-4222-8222-222222222222',
+        snapshotId: 'a'.repeat(64),
+        baseContentHash: 'b'.repeat(64),
+        epoch: 0,
       });
       const installResult = await installOrcaProfileWindows(
         updated,
@@ -583,6 +613,11 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
           displayName: `Filler ${i}`,
           safeFilename: `filler_${i}.json`,
           cachedAt: Date.now() + i + 1,
+          profileId: '11111111-1111-4111-8111-111111111111',
+          projectId: '22222222-2222-4222-8222-222222222222',
+          snapshotId: 'a'.repeat(64),
+          baseContentHash: 'b'.repeat(64),
+          epoch: 0,
         });
       }
       expect(getCachedProfile(operationId)).toBeUndefined();
