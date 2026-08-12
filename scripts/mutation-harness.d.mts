@@ -38,6 +38,11 @@ export const ARM_KILLED: 'killed';
 export const ARM_SURVIVED: 'survived';
 export const ARM_CONFOUNDED: 'confounded';
 
+// Re-exported from ./mutationWindowProtocol.mjs so callers that already depend
+// on the harness need not know the protocol lives in its own module.
+export const MUTATION_TOKEN_VARIABLE: 'PRINTFARMER_MUTATION_TOKEN';
+export function lockPathFor(cwd?: string): string;
+
 export function stripAnsi(text: string): string;
 export function parseTestSummary(output: string): TestSummary | null;
 export function countOccurrences(haystack: string, needle: string): number;

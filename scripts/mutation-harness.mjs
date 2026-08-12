@@ -41,8 +41,17 @@
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// The lock protocol is shared with tests/mutationWindowGuard.ts rather than
+// restated here; see scripts/mutationWindowProtocol.mjs for why.
+import {
+  MUTATION_TOKEN_VARIABLE,
+  lockPathFor,
+} from './mutationWindowProtocol.mjs';
+
+export { MUTATION_TOKEN_VARIABLE, lockPathFor };
 
 import {
   INCONCLUSIVE,
@@ -387,26 +396,62 @@ function runCommand(command, cwd, env) {
  * already ignored, so it cannot disturb the restore comparison in
  * `classifyRestore` the way a tracked file would.
  */
-const LOCK_RELATIVE_PATH = 'node_modules/.cache/printfarmer-mutation.lock';
-export const MUTATION_TOKEN_VARIABLE = 'PRINTFARMER_MUTATION_TOKEN';
-
-export function lockPathFor(cwd) {
-  return resolvePath(cwd ?? process.cwd(), LOCK_RELATIVE_PATH);
-}
-
 function openMutationWindow({ filePath, label, cwd }) {
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const lockPath = lockPathFor(cwd);
   mkdirSync(dirname(lockPath), { recursive: true });
   writeFileSync(
     lockPath,
-    JSON.stringify({ token, pid: process.pid, file: filePath, label }),
+    JSON.stringify({
+      token,
+      pid: process.pid,
+      file: filePath,
+      label,
+      openedAt: new Date().toISOString(),
+    }),
   );
   return { token, lockPath };
 }
 
 function closeMutationWindow(lockPath) {
   rmSync(lockPath, { force: true });
+}
+
+/**
+ * `finally` does not run on a signal.
+ *
+ * Ctrl-C during an arm would otherwise leave the mutant on disk and the lock
+ * beside it, which is the one state the guard cannot safely wave through: the
+ * tree durably holds a mutation that nothing is going to restore. These
+ * handlers put the file back before the process goes away, so an interrupted
+ * run leaves the tree as it found it.
+ */
+let activeArmCleanup = null;
+
+function restoreOnSignal(signal) {
+  if (activeArmCleanup !== null) {
+    const cleanup = activeArmCleanup;
+    activeArmCleanup = null;
+    try {
+      cleanup();
+      console.error(
+        `[mutation-harness] ${signal}: restored the mutated file and released the window`,
+      );
+    } catch (error) {
+      console.error(
+        `[mutation-harness] ${signal}: COULD NOT RESTORE -- ${error?.message ?? error}`,
+      );
+    }
+  }
+  process.exit(130);
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  try {
+    process.on(signal, () => restoreOnSignal(signal));
+  } catch {
+    // Not every signal exists on every platform; the ones that do are enough.
+  }
 }
 
 export function runArm({
@@ -427,6 +472,11 @@ export function runArm({
   // Opened before the file is touched and closed after it is restored, so the
   // window covers every instant in which the tree holds the mutant.
   const { token, lockPath } = openMutationWindow({ filePath, label, cwd });
+  // The same restore the `finally` performs, reachable from a signal handler.
+  activeArmCleanup = () => {
+    writeFileSync(filePath, original);
+    closeMutationWindow(lockPath);
+  };
   let application;
   let summary = null;
   try {
@@ -450,6 +500,7 @@ export function runArm({
     // measured.
     writeFileSync(filePath, original);
     closeMutationWindow(lockPath);
+    activeArmCleanup = null;
   }
 
   const restore = classifyRestore({
