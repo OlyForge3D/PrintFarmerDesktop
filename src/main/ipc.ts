@@ -27,6 +27,9 @@ import {
   CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
+  CALIBRATION_MAX_PRINTER_CANDIDATES,
+  CalibrationPrinterCandidate,
+  type OrcaProfileEntry,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -138,7 +141,7 @@ import {
   prepareCalibrationWorkspaceSave,
   projectCalibrationEligibility,
   projectCalibrationPrinterContext,
-  projectPrintFarmerOrcaProfile,
+  projectPrintFarmerOrcaProfileResult,
   supportsKlipper,
   supportsOrcaSlicer,
   type RemoteCalibrationPrinterCandidate,
@@ -410,6 +413,42 @@ export function explainIneligibility(
       : []),
   ];
   return codes.length > 0 ? codes : [CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE];
+}
+
+/**
+ * Why a printer contributed no calibration profile, when the reason was a
+ * fault rather than an ordinary absence.
+ *
+ * The two are told apart because they point an operator in opposite
+ * directions. `contextUnreadable` is the server or the network: the context
+ * could not be fetched or did not match the contract. `profileRefused` is this
+ * client: the context arrived intact and was read, and the profile inside it
+ * was one this build will not render.
+ *
+ * Merging them under a single "printer contexts could not be read" sentence
+ * would repeat, one branch over, the exact falsehood this handler removed when
+ * it stopped calling an unreadable farm an empty one — an operator sent to
+ * investigate a context-read problem that does not exist. It matters in
+ * practice: a build that serialises an unversioned filament profile as `""`
+ * rather than `null` would report every healthy printer in the farm as a
+ * server fault.
+ */
+type CalibrationProfileFault = 'contextUnreadable' | 'profileRefused' | null;
+
+/**
+ * Joins fault clauses into one sentence fragment with ordinary English
+ * grammar: `a`, `a and b`, `a, b, and c`.
+ *
+ * Spelled out because the counts and the causes are variable and the previous
+ * fixed phrasing produced "1 printer context could not be read, so those
+ * printers' profiles are missing" — plural possessive against a singular
+ * count. A sentence an operator has to squint at is a sentence they stop
+ * trusting.
+ */
+function joinClauses(clauses: string[]): string {
+  if (clauses.length <= 1) return clauses[0] ?? '';
+  if (clauses.length === 2) return `${clauses[0]} and ${clauses[1]}`;
+  return `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}`;
 }
 
 /**
@@ -1526,32 +1565,50 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         signal,
       );
+      // Projected and validated one candidate at a time, for the same reason
+      // the wire layer parses them one at a time: the response schema covers
+      // the whole list, so a single candidate this projection cannot render
+      // would otherwise fail `.parse` and discard every healthy printer with
+      // it. Isolating only the wire layer left that seam open — a timestamp
+      // the wire accepted but the renderer contract refused emptied the farm
+      // while reporting nothing lost. A candidate that fails here joins the
+      // ones that failed upstream: dropped alone, and counted.
+      const projected: unknown[] = [];
+      let unprojectable = 0;
+      for (const printer of printers.printers) {
+        const eligibility = projectCalibrationEligibility(printer);
+        const candidate = CalibrationPrinterCandidate.safeParse({
+          printerId: printer.printerId,
+          displayName: printer.displayName,
+          printerModel: printer.printerModel,
+          firmwareCompatible: isExplicitCalibrationEligibilityComplete(printer),
+          orcaProfileId: printer.orcaProfileId,
+          isOnline: printer.isOnline,
+          updatedAt: printer.updatedAt,
+          // Carried so an ineligible printer can explain itself. Codes only,
+          // and each is checked against the known catalogue before it
+          // crosses the boundary, so an unfamiliar or hostile "code" cannot
+          // arrive at the renderer as arbitrary text.
+          rejectionReasonCodes:
+            eligibility === null ? explainIneligibility(printer) : [],
+          missingInputs:
+            eligibility === null
+              ? printer.missingInputs.map(normalizeCalibrationMissingInput)
+              : [],
+          eligibility,
+        });
+        if (candidate.success) {
+          projected.push(candidate.data);
+        } else {
+          unprojectable += 1;
+        }
+      }
       return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
-        printers: printers.printers.map((printer) => {
-          const eligibility = projectCalibrationEligibility(printer);
-          return {
-            printerId: printer.printerId,
-            displayName: printer.displayName,
-            printerModel: printer.printerModel,
-            firmwareCompatible:
-              isExplicitCalibrationEligibilityComplete(printer),
-            orcaProfileId: printer.orcaProfileId,
-            isOnline: printer.isOnline,
-            updatedAt: printer.updatedAt,
-            // Carried so an ineligible printer can explain itself. Codes only,
-            // and each is checked against the known catalogue before it
-            // crosses the boundary, so an unfamiliar or hostile "code" cannot
-            // arrive at the renderer as arbitrary text.
-            rejectionReasonCodes:
-              eligibility === null ? explainIneligibility(printer) : [],
-            missingInputs:
-              eligibility === null
-                ? printer.missingInputs.map(normalizeCalibrationMissingInput)
-                : [],
-            eligibility,
-          };
-        }),
+        printers: projected,
         printersTruncated: printers.truncated,
+        // Both losses are the same loss to the operator: a printer the server
+        // named that this client cannot show.
+        printersUnreadable: printers.unreadable + unprojectable,
         fetchedAt: new Date().toISOString(),
       });
     },
@@ -2945,29 +3002,43 @@ export function registerIpcHandlers(
       let candidates: Awaited<
         ReturnType<typeof calibrationHttp.getPrinters>
       >['printers'] = [];
+      // The count of candidate records this client could not read. Held as a
+      // number in its own right and reported as one: `discovery.message` is
+      // derived from it, so the machine-readable evidence and the sentence an
+      // operator reads cannot drift apart.
+      let printersUnreadable = 0;
+      // Whether the server offered more candidates than were considered.
+      // Carried for the same reason as the count: reporting `ok` after
+      // stopping at the cap would describe a farm this handler never saw the
+      // whole of.
+      let printersTruncated = false;
+      // Set only by a transport-level failure, which is terminal: there is no
+      // candidate list to describe, so it replaces the composed diagnosis
+      // rather than contributing a clause to it.
+      let transportDiagnostic: CalibrationProfileDiscoveryDiagnostic | null =
+        null;
       let discovery: CalibrationProfileDiscoveryDiagnostic = {
         kind: 'ok',
         message: 'Server profile discovery completed.',
         serverCode: null,
       };
       try {
-        candidates = (
-          await calibrationHttp.getPrinters(
-            selectedId,
-            profileContext.profile.baseUrl,
-            signal,
-          )
-        ).printers;
-        if (candidates.length === 0) {
-          discovery = {
-            kind: 'noEligiblePrinters',
-            message:
-              'The server returned no calibration candidate printers for this account.',
-            serverCode: null,
-          };
-        }
+        const candidateList = await calibrationHttp.getPrinters(
+          selectedId,
+          profileContext.profile.baseUrl,
+          signal,
+        );
+        candidates = candidateList.printers;
+        // Derived by counting candidates that failed validation in the wire
+        // layer, never read from the payload, so no server field can raise or
+        // lower it.
+        printersUnreadable = candidateList.unreadable;
+        printersTruncated = candidateList.truncated;
       } catch (error) {
-        discovery = classifyDiscoveryFailure(error);
+        // A transport-level failure is terminal for the server half: there are
+        // no candidates to describe, so it replaces the composition below
+        // rather than joining it.
+        transportDiagnostic = classifyDiscoveryFailure(error);
       }
       // Scanned unconditionally, outside the candidate loop. Bound discovery
       // below can only run once the server has named a printer, so gating this
@@ -3008,12 +3079,11 @@ export function registerIpcHandlers(
             !isExplicitCalibrationEligibilityComplete(candidate)
           ) {
             return {
-              pfEntries: [] as ReturnType<
-                typeof projectPrintFarmerOrcaProfile
-              >[],
+              pfEntries: [] as OrcaProfileEntry[],
               localEntries: [] as Awaited<
                 ReturnType<typeof discoverLocalOrcaFilamentProfiles>
               >,
+              fault: null as CalibrationProfileFault,
             };
           }
           try {
@@ -3023,32 +3093,152 @@ export function registerIpcHandlers(
               candidate.printerId,
               signal,
             );
-            const pfEntry = projectPrintFarmerOrcaProfile(candidate, context);
+            const projection = projectPrintFarmerOrcaProfileResult(
+              candidate,
+              context,
+            );
             // Discover locally installed OrcaSlicer profiles compatible with
             // this printer context. These are real files on the user's machine
             // and allow the user to use the local install as a base for export.
             const localEntries = await discoverLocalOrcaFilamentProfiles(
               context,
             ).catch(() => []);
-            return { pfEntries: pfEntry ? [pfEntry] : [], localEntries };
+            return {
+              pfEntries: projection.kind === 'entry' ? [projection.entry] : [],
+              localEntries,
+              // A profile this client refused is a real profile missing from
+              // the list, not a printer that has none — counted so the answer
+              // is reported as partial rather than as complete.
+              fault: (projection.kind === 'refused'
+                ? 'profileRefused'
+                : null) as CalibrationProfileFault,
+            };
           } catch (error) {
+            // 404 means this printer simply has no calibration context — a
+            // legitimate answer, not a fault, so it must not be counted as an
+            // unreadable one or every printer without a context would read as
+            // a server defect.
             if (
               error instanceof CalibrationHttpError &&
-              ['notFound', 'invalidResponse'].includes(error.code)
+              error.code === 'notFound'
             ) {
-              return { pfEntries: [], localEntries: [] };
+              return {
+                pfEntries: [],
+                localEntries: [],
+                fault: null as CalibrationProfileFault,
+              };
             }
-            throw error;
+            // One printer's context failing must not take the others — or the
+            // local OrcaSlicer scan — with it. This runs inside `Promise.all`,
+            // so a rethrow rejects the whole handler and discards a scan the
+            // handler performs outside the server path precisely so a server
+            // fault cannot hide the profiles installed on this machine.
+            //
+            // That includes `cancelled`. An earlier revision rethrew it, on the
+            // reasoning that cancellation means the caller stopped waiting —
+            // which is inverted here: the only signal on this path is the
+            // handler's own `AbortSignal.timeout(15_000)`, so `cancelled` means
+            // *this* budget expired, never that anyone abandoned the request.
+            // A farm large enough to exhaust it would therefore have emptied
+            // itself, which is the failure this contract exists to remove
+            // rather than an acceptable outcome. Budget exhaustion is a fault
+            // like any other: counted, reported, and survivable.
+            return {
+              pfEntries: [],
+              localEntries: [],
+              fault: 'contextUnreadable' as CalibrationProfileFault,
+            };
           }
         }),
       );
-      const profilesByScope = new Map<
-        string,
-        NonNullable<(typeof discovered)[number]['pfEntries'][number]>
-      >();
+      const profilesByScope = new Map<string, OrcaProfileEntry>();
+      const unreadableContexts = discovered.filter(
+        (entry) => entry.fault === 'contextUnreadable',
+      ).length;
+      const refusedProfiles = discovered.filter(
+        (entry) => entry.fault === 'profileRefused',
+      ).length;
+
+      /**
+       * One diagnosis composed from every layer that lost something, rather
+       * than the last layer to speak overwriting the others.
+       *
+       * The previous shape gated the context/profile clauses on
+       * `kind === 'ok' || 'farmTruncated'`, so a single malformed candidate —
+       * which already set `partiallyUnreadable` — silently discarded the
+       * context and profile counts entirely. The surviving sentence then ended
+       * "The printers listed are the ones that could", which the profiles
+       * handler is in no position to claim and which was false precisely when
+       * it mattered. Losses at different layers are independent facts about
+       * the same answer, and an operator needs all of them.
+       */
+      if (transportDiagnostic !== null) {
+        discovery = transportDiagnostic;
+      } else {
+        const clauses: string[] = [];
+        if (printersUnreadable > 0) {
+          clauses.push(
+            `${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'} did not match the calibration contract`,
+          );
+        }
+        if (unreadableContexts > 0) {
+          clauses.push(
+            `${unreadableContexts} printer context${unreadableContexts === 1 ? '' : 's'} could not be read`,
+          );
+        }
+        if (refusedProfiles > 0) {
+          clauses.push(
+            `${refusedProfiles} calibration profile${refusedProfiles === 1 ? '' : 's'} could not be read by this app`,
+          );
+        }
+        if (printersTruncated) {
+          clauses.push(
+            `the server offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} candidates and only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered`,
+          );
+        }
+
+        const lostEverything =
+          candidates.length === 0 && printersUnreadable > 0;
+        const lostSomething =
+          printersUnreadable + unreadableContexts + refusedProfiles > 0;
+
+        if (lostEverything) {
+          discovery = {
+            kind: 'malformedResponse',
+            // Truncation is appended rather than dropped: with more candidates
+            // offered than considered, "the server returned N" would understate
+            // what it sent, and this is the one branch that previously threw
+            // away a clause another layer had composed.
+            message: `The server returned ${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'}, but none matched the calibration contract, so none could be read.${
+              printersTruncated
+                ? ` It also offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES}, so only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered.`
+                : ''
+            }`,
+            serverCode: null,
+          };
+        } else if (lostSomething) {
+          discovery = {
+            kind: 'partiallyUnreadable',
+            message: `${joinClauses(clauses)}, so this list is missing printers.`,
+            serverCode: null,
+          };
+        } else if (printersTruncated) {
+          discovery = {
+            kind: 'farmTruncated',
+            message: `The server offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} calibration candidates. Only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered, so this list is partial.`,
+            serverCode: null,
+          };
+        } else if (candidates.length === 0) {
+          discovery = {
+            kind: 'noEligiblePrinters',
+            message:
+              'The server returned no calibration candidate printers for this account.',
+            serverCode: null,
+          };
+        }
+      }
       for (const { pfEntries, localEntries } of discovered) {
         for (const profile of pfEntries) {
-          if (profile === null) continue;
           const scope = [
             profile.orcaProfileId,
             profile.printerId,
@@ -3080,6 +3270,8 @@ export function registerIpcHandlers(
       return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
         profiles: [...profilesByScope.values()],
         discovery,
+        printersUnreadable,
+        printersTruncated,
         localProfiles: localScan.profiles,
         localDiscovery: localScan.diagnostic,
       });

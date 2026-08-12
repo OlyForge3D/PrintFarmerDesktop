@@ -472,7 +472,8 @@ export function NewCalibrationProject(): React.JSX.Element {
                 <p role="status">Loading candidates from PrintFarmer.</p>
               ) : null}
               {!store.creation.loading &&
-              store.creation.printers.length === 0 ? (
+              store.creation.printers.length === 0 &&
+              store.creation.printersUnreadable === 0 ? (
                 <p>No printer candidates were returned.</p>
               ) : null}
               {!store.creation.loading && store.creation.printersTruncated ? (
@@ -480,6 +481,28 @@ export function NewCalibrationProject(): React.JSX.Element {
                   This list is partial. PrintFarmer offered more printers than
                   this view can show, so a printer you expect may not appear
                   below.
+                </p>
+              ) : null}
+              {!store.creation.loading &&
+              store.creation.printersUnreadable > 0 ? (
+                <p role="status" className="cal-hint">
+                  {store.creation.printersUnreadable} printer record
+                  {store.creation.printersUnreadable === 1 ? '' : 's'} could not
+                  be read and{' '}
+                  {store.creation.printersUnreadable === 1 ? 'is' : 'are'} not
+                  listed below.{' '}
+                  {store.creation.printers.length > 0
+                    ? 'The rest of the list is unaffected.'
+                    : store.creation.printersTruncated
+                      ? // Truncated *and* nothing readable survived. Saying
+                        // "no other printers were returned" here would deny
+                        // the notice directly above this one: more were
+                        // offered, they were simply never examined.
+                        'None of the printers this view could consider were readable, and more were offered than it can show.'
+                      : // Not "no printers were returned": they were returned
+                        // and this app could not read them, which points at a
+                        // different problem entirely.
+                        'No other printers were returned, so nothing can be selected here yet.'}
                 </p>
               ) : null}
               <div

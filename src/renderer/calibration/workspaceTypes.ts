@@ -101,6 +101,14 @@ export interface CreationDataState {
    * looking for a printer that is simply off the end.
    */
   readonly printersTruncated: boolean;
+  /**
+   * How many candidates the server sent that could not be read.
+   *
+   * A malformed record is dropped on its own rather than failing the whole
+   * farm, so this is the difference between the list shown and the list the
+   * server actually offered.
+   */
+  readonly printersUnreadable: number;
   readonly profiles: readonly OrcaProfileEntry[];
   readonly context: CalibrationPrinterContext | null;
   readonly loaded: boolean;

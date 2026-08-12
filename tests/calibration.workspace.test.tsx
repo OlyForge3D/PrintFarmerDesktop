@@ -268,6 +268,23 @@ const candidates: CalibrationPrinterCandidate[] = [
   },
 ];
 
+/**
+ * A candidate list long enough to satisfy the truncation invariant.
+ *
+ * Truncation forces `printers.length + printersUnreadable === 500`: the wire
+ * slices to exactly that many, and every considered record is either parsed or
+ * counted. A fixture that pairs `printersTruncated: true` with a three-element
+ * list therefore describes a response the handler cannot emit, so it proves
+ * nothing about the state it claims to cover.
+ */
+function truncatedSurvivors(unreadable: number): CalibrationPrinterCandidate[] {
+  const base = candidates[0]!;
+  return Array.from({ length: 500 - unreadable }, (_unused, index) => ({
+    ...base,
+    printerId: `printer-${index.toString(16).padStart(6, '0')}`,
+  }));
+}
+
 const context: CalibrationPrinterContext = {
   printerId: 'printer-safe',
   displayName: 'Unbranded cell 7',
@@ -383,6 +400,7 @@ function makeApi(savedRecord = record()) {
       CalibrationListPrintersResponse.parse({
         printers: candidates,
         printersTruncated: false,
+        printersUnreadable: 0,
         fetchedAt: now,
       }),
     ),
@@ -431,6 +449,8 @@ function makeApi(savedRecord = record()) {
             exportable: true,
           },
         ],
+        printersUnreadable: 0,
+        printersTruncated: false,
       }),
     ),
     listCalibrationConflicts: vi
@@ -690,6 +710,271 @@ describe('CalibrationWorkspace', () => {
       profileId,
       includeResolved: false,
     });
+  });
+
+  it('tells the operator when the printer list is partial, and stays quiet when it is not', async () => {
+    // Drives the real store and the real picker, not a copy of their logic:
+    // the response the production IPC contract would return goes in, and what
+    // an operator would see and hear comes out.
+    const partial = makeApi();
+    partial.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: truncatedSurvivors(3),
+        printersTruncated: true,
+        printersUnreadable: 3,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(partial);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    // Announced, with both causes named and the exact count.
+    const live = await screen.findByText(
+      /The list is partial: the server offered more than this view can show, and 3 records could not be read\./,
+    );
+    expect(live).toBeInTheDocument();
+
+    // And visible in the picker, not only announced.
+    expect(
+      await screen.findByText(/PrintFarmer offered more printers than/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/3 printer records could not be read/),
+    ).toBeInTheDocument();
+  });
+
+  it('says nothing about truncation or unreadable records when there are none', async () => {
+    // The control. Without it the notices above could be permanently mounted
+    // and every assertion would still pass.
+    renderWorkspace();
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+    await screen.findByRole('radio', { name: /Unbranded cell 7/ });
+
+    expect(screen.queryByText(/The list is partial/)).toBeNull();
+    expect(
+      screen.queryByText(/PrintFarmer offered more printers than/),
+    ).toBeNull();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+    expect(
+      screen.getByText(
+        new RegExp(
+          `${candidates.length} PrintFarmer printer candidates loaded`,
+        ),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('names only the cause that actually occurred', async () => {
+    // Truncated but nothing unreadable: the unreadable clause and notice must
+    // be absent, or the combined phrasing above would be untestable.
+    const truncatedOnly = makeApi();
+    truncatedOnly.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: truncatedSurvivors(0),
+        printersTruncated: true,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(truncatedOnly);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /The list is partial: the server offered more than this view can show\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/records could not be read/)).toBeNull();
+  });
+
+  it('reports unreadable records alone, in the singular, when only one was lost', async () => {
+    const unreadableOnly = makeApi();
+    unreadableOnly.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: candidates,
+        printersTruncated: false,
+        printersUnreadable: 1,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(unreadableOnly);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /The list is partial: 1 record could not be read\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/1 printer record could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/PrintFarmer offered more printers than/),
+    ).toBeNull();
+  });
+
+  it('does not call an all-unreadable farm an empty one', async () => {
+    // The renderer counterpart of the defect the main process fixed: records
+    // *were* returned and this app could not read them, so "No printer
+    // candidates were returned" sends the operator after an enrolment problem
+    // that does not exist — and "the rest of the list is unaffected" is empty
+    // comfort when there is no rest.
+    const allUnreadable = makeApi();
+    allUnreadable.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: false,
+        printersUnreadable: 12,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(allUnreadable);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/12 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('No printer candidates were returned.'),
+    ).toBeNull();
+    // Exact tail for the zero-survivor case, with cross-controls: the other
+    // two tails must be absent, so an inverted branch fails rather than
+    // swapping one true-looking sentence for another.
+    expect(
+      screen.getByText(/No other printers were returned/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
+    expect(
+      screen.queryByText(/None of the printers this view could consider/),
+    ).toBeNull();
+  });
+
+  it('says the rest of the list is unaffected when printers did survive', async () => {
+    // The other side of the same branch. With the case above, an inversion
+    // fails in both directions.
+    const someUnreadable = makeApi();
+    someUnreadable.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: candidates,
+        printersTruncated: false,
+        printersUnreadable: 2,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(someUnreadable);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/2 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/The rest of the list is unaffected\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No other printers were returned/)).toBeNull();
+  });
+
+  it('keeps the survivor tail when the farm is truncated and some records were unreadable', async () => {
+    // The reachable state the other cases leave uncovered: survivors,
+    // truncation and unreadable records at once. Without it, hoisting the
+    // truncation test above the survivor test passes the whole suite while
+    // telling an operator "none of the printers this view could consider were
+    // readable" with 497 of them listed directly below — the same class of
+    // false sentence this round exists to remove.
+    const survivorsAndTruncated = makeApi();
+    survivorsAndTruncated.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: truncatedSurvivors(3),
+        printersTruncated: true,
+        printersUnreadable: 3,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(survivorsAndTruncated);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/3 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/PrintFarmer offered more printers than/),
+    ).toBeInTheDocument();
+    // Survivors exist, so that tail wins over the truncation tail.
+    expect(
+      screen.getByText(/The rest of the list is unaffected\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/None of the printers this view could consider/),
+    ).toBeNull();
+    expect(screen.queryByText(/No other printers were returned/)).toBeNull();
+  });
+
+  it('does not deny the truncation notice it just rendered', async () => {
+    // state the handler can produce, since truncation forces
+    // printers.length + printersUnreadable === 500. "No other printers were
+    // returned" would contradict the truncation notice three lines above:
+    // more were offered, they were simply never examined.
+    const truncatedAndUnreadable = makeApi();
+    truncatedAndUnreadable.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: true,
+        printersUnreadable: 500,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(truncatedAndUnreadable);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/500 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/PrintFarmer offered more printers than/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No other printers were returned/)).toBeNull();
+    expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
+    expect(
+      screen.getByText(/None of the printers this view could consider/),
+    ).toBeInTheDocument();
+  });
+
+  it('still says the farm is empty when it genuinely is', async () => {
+    // The control: nothing returned and nothing lost reading it, which is a
+    // different situation and must keep reading differently.
+    const empty = makeApi();
+    empty.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: false,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(empty);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText('No printer candidates were returned.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
   });
 
   it('uses explicit candidate eligibility independent of printer names', async () => {
@@ -1740,10 +2025,14 @@ describe('CalibrationWorkspace', () => {
 
   it('settles explicit empty printer and profile discovery without retry loops', async () => {
     const api = makeApi();
-    api.listCalibrationPrinters.mockResolvedValue({
-      printers: [],
-      fetchedAt: now,
-    });
+    api.listCalibrationPrinters.mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: false,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    );
     api.listOrcaProfiles.mockResolvedValue({ profiles: [] });
     renderWorkspace(api);
 

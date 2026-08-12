@@ -678,6 +678,7 @@ export async function applyCalibrationScenario(
         },
       ],
       printersTruncated: false,
+      printersUnreadable: 0,
       fetchedAt: ids.now,
     }));
 
@@ -707,6 +708,8 @@ export async function applyCalibrationScenario(
         message: 'Server profile discovery completed.',
         serverCode: null,
       },
+      printersUnreadable: 0,
+      printersTruncated: false,
       localProfiles: [],
       localDiscovery: {
         kind: 'ok',

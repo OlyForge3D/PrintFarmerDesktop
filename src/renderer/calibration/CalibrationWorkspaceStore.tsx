@@ -49,6 +49,7 @@ import { emptyWorkflowDrafts, errorMessage } from './workspaceTypes';
 const emptyCreation: CreationDataState = {
   printers: [],
   printersTruncated: false,
+  printersUnreadable: 0,
   profiles: [],
   context: null,
   loaded: false,
@@ -741,6 +742,7 @@ export function CalibrationWorkspaceStoreProvider({
       setCreation({
         printers: printerResponse.printers,
         printersTruncated: printerResponse.printersTruncated,
+        printersUnreadable: printerResponse.printersUnreadable,
         profiles: profileResponse.profiles,
         context: null,
         loaded: true,
@@ -749,9 +751,19 @@ export function CalibrationWorkspaceStoreProvider({
         error: null,
       });
       const count = printerResponse.printers.length;
+      const unreadable = printerResponse.printersUnreadable;
+      const partial: string[] = [];
+      if (printerResponse.printersTruncated) {
+        partial.push('the server offered more than this view can show');
+      }
+      if (unreadable > 0) {
+        partial.push(
+          `${unreadable} record${unreadable === 1 ? '' : 's'} could not be read`,
+        );
+      }
       setLiveMessage(
-        printerResponse.printersTruncated
-          ? `Showing the first ${count} PrintFarmer printer candidates. The list is partial: the server offered more than this view can show.`
+        partial.length > 0
+          ? `Showing ${count} PrintFarmer printer candidate${count === 1 ? '' : 's'}. The list is partial: ${partial.join(', and ')}.`
           : `${count} PrintFarmer printer candidate${count === 1 ? '' : 's'} loaded.`,
       );
     } catch (cause) {

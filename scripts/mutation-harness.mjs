@@ -40,8 +40,18 @@
 // assurance. It exits 2, which is neither.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// The lock protocol is shared with tests/mutationWindowGuard.ts rather than
+// restated here; see scripts/mutationWindowProtocol.mjs for why.
+import {
+  MUTATION_TOKEN_VARIABLE,
+  lockPathFor,
+} from './mutationWindowProtocol.mjs';
+
+export { MUTATION_TOKEN_VARIABLE, lockPathFor };
 
 import {
   INCONCLUSIVE,
@@ -344,13 +354,14 @@ export function resolveCommand(command, platform = process.platform) {
   };
 }
 
-function runCommand(command, cwd) {
+function runCommand(command, cwd, env) {
   const { file, args } = resolveCommand(command);
   try {
     return execFileSync(file, args, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
   } catch (error) {
     // A non-zero exit is the expected outcome of a killed mutant, so the output
@@ -359,6 +370,72 @@ function runCommand(command, cwd) {
     return `${error.stdout ?? ''}${error.stderr ?? ''}`;
   }
 }
+
+/**
+ * A FIFTH CONTROL: THE MUTATION WINDOW IS NOT PRIVATE.
+ *
+ * The four controls above all police *this* process. None of them can see the
+ * other direction: while an arm is applied, the mutation is in the real working
+ * tree, so any *other* process running the suite compiles the mutant. It reads
+ * a source file this harness is halfway through editing.
+ *
+ * That was measured, not supposed. Looping this file's own suite alongside a
+ * harness run failed 2 of 4 concurrent runs, and the failures landed precisely
+ * on the tests guarding the mutated lines -- the exact signature of a real
+ * defect. The tree is clean again by the time anyone looks, so the failure is
+ * unreproducible and reads as flake. One such observation cost a review round.
+ *
+ * The header of this file already commits to the principle: whatever the
+ * protocol asks a human to remember is asserted here instead. So the mutation
+ * window is published while it is open, and `tests/setup.ts` refuses to run
+ * inside a window it does not own. A confounded neighbour now says so, loudly,
+ * instead of inventing a defect in whatever test happened to guard the anchor.
+ *
+ * The harness's own child runs carry the token and are admitted; everyone
+ * else's are stopped. The lock lives under `node_modules/.cache`, which is
+ * already ignored, so it cannot disturb the restore comparison in
+ * `classifyRestore` the way a tracked file would.
+ */
+function openMutationWindow({ filePath, label, cwd }) {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const lockPath = lockPathFor(cwd);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  writeFileSync(
+    lockPath,
+    JSON.stringify({
+      token,
+      pid: process.pid,
+      file: filePath,
+      label,
+      openedAt: new Date().toISOString(),
+    }),
+  );
+  return { token, lockPath };
+}
+
+function closeMutationWindow(lockPath) {
+  rmSync(lockPath, { force: true });
+}
+
+/**
+ * There are deliberately no signal handlers here.
+ *
+ * An earlier revision registered SIGINT/SIGTERM handlers that restored the file
+ * before exiting, on the theory that `finally` does not run on a signal. That
+ * was measured and it was worse than nothing: `runCommand` uses `execFileSync`,
+ * which blocks the event loop for the entire child run, and Node dispatches
+ * signals on the loop. So the handler could not fire during the window it
+ * claimed to protect -- it ran only after the arm had already finished and the
+ * `finally` had already restored. Worse, registering a listener suppresses
+ * Node's default terminate action, so Ctrl-C during an arm no longer stopped
+ * the harness at all: one probe measured a signal sitting queued for 34
+ * seconds while the mutant stayed on disk. The handlers extended the window and
+ * pushed the operator toward the hard kill that produces the debris state.
+ *
+ * The hard-kill case is covered where it can actually be observed instead: the
+ * lock records which file was mutated, and `tests/mutationWindowGuard.ts`
+ * refuses to run when that file is still modified and the holder is gone.
+ */
 
 export function runArm({
   filePath,
@@ -375,24 +452,34 @@ export function runArm({
   // Read before the mutation is written, so the comparison isolates this arm
   // rather than indicting whatever the checkout was already carrying.
   const porcelainBefore = porcelainStatus(cwd);
-  writeFileSync(filePath, original.split(anchor).join(replacement));
-
-  const after = readFileSync(filePath, 'utf8');
-  const application = classifyApplication({
-    anchorsBefore,
-    replacementsAfter: countOccurrences(after, replacement),
-    expectedAnchors,
-  });
-
+  // Opened before the file is touched and closed after it is restored, so the
+  // window covers every instant in which the tree holds the mutant.
+  const { token, lockPath } = openMutationWindow({ filePath, label, cwd });
+  let application;
   let summary = null;
-  if (application.applied) {
-    summary = parseTestSummary(runCommand(testCommand, cwd));
+  try {
+    writeFileSync(filePath, original.split(anchor).join(replacement));
+
+    const after = readFileSync(filePath, 'utf8');
+    application = classifyApplication({
+      anchorsBefore,
+      replacementsAfter: countOccurrences(after, replacement),
+      expectedAnchors,
+    });
+
+    if (application.applied) {
+      summary = parseTestSummary(
+        runCommand(testCommand, cwd, { [MUTATION_TOKEN_VARIABLE]: token }),
+      );
+    }
+  } finally {
+    // Restored unconditionally, including when the mutation never applied. A
+    // restore that only runs on the success path is the skipped restore #371
+    // measured.
+    writeFileSync(filePath, original);
+    closeMutationWindow(lockPath);
   }
 
-  // Restored unconditionally, including when the mutation never applied. A
-  // restore that only runs on the success path is the skipped restore #371
-  // measured.
-  writeFileSync(filePath, original);
   const restore = classifyRestore({
     pinnedHash,
     actualHash: hashWorkingFile(filePath, cwd),

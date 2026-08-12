@@ -216,7 +216,23 @@ const ServerInstant = z
       });
       return z.NEVER;
     }
-    return new Date(parsed).toISOString();
+    const iso = new Date(parsed).toISOString();
+    // An instant outside the four-digit-year range renders as an ECMAScript
+    // expanded year (`+010000-01-01T00:00:00.000Z`), which is a real instant
+    // but not one `z.string().datetime()` accepts. Letting it through here
+    // classified the record as *readable* and then failed the IPC boundary,
+    // where the response is parsed as one value — so a single unrepresentable
+    // timestamp discarded the whole farm while the unreadable count sat at
+    // zero, reporting nothing lost. Refusing it here makes the record
+    // unreadable in the ordinary way: dropped alone, and counted.
+    if (!/^\d{4}-/.test(iso)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Instant is outside the representable year range.',
+      });
+      return z.NEVER;
+    }
+    return iso;
   });
 
 /**
@@ -603,18 +619,51 @@ export type RemoteCalibrationPrinterCandidate = z.infer<
  * from the payload, so a server can neither claim completeness it does not
  * have nor manufacture a truncation warning.
  */
-const boundedCandidateList = z
-  .array(z.unknown())
-  .transform((items) => ({
-    printers: items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES),
+/**
+ * The farm, assembled candidate by candidate so no single record can empty it.
+ *
+ * This is the general form of a defect this contract has now met five times in
+ * different clothes: an over-long code, a code list one past its cap, a missing
+ * -input list a legitimate five-toolhead printer exceeds, a farm larger than
+ * the IPC bound. Each was fixed where it was found, and each time the next
+ * field over had the same shape. `z.array(candidate)` fails the *array* when
+ * any element fails, and the whole `/calibration-candidates` body is parsed as
+ * one value, so any hard-rejecting member anywhere in any candidate — a
+ * malformed `id`, an unparseable `observedAtUtc`, a `reachability` that came
+ * back as a number, a nested firmware string that ran long — discards every
+ * healthy printer in the farm.
+ *
+ * Parsing each candidate on its own removes the class rather than the
+ * instance. A record this client cannot read is dropped and counted; the
+ * printers either side of it are unaffected. The count is reported so the
+ * operator learns the list is incomplete instead of quietly seeing fewer
+ * printers than they own, and so a server returning garbage is diagnosable
+ * rather than merely invisible.
+ *
+ * `truncated` is derived from the raw wire length *before* the slice and is not
+ * read from the payload, so a server can neither claim completeness it does not
+ * have nor manufacture a truncation warning.
+ */
+const boundedCandidateList = z.array(z.unknown()).transform((items) => {
+  const considered = items.slice(0, CALIBRATION_MAX_PRINTER_CANDIDATES);
+  const printers: RemoteCalibrationPrinterCandidate[] = [];
+  let unreadable = 0;
+
+  for (const item of considered) {
+    const parsed = RemoteCalibrationPrinterCandidate.safeParse(item);
+    if (parsed.success) {
+      printers.push(parsed.data);
+    } else {
+      unreadable += 1;
+    }
+  }
+
+  return {
+    printers,
     truncated: items.length > CALIBRATION_MAX_PRINTER_CANDIDATES,
-  }))
-  .pipe(
-    z.object({
-      printers: z.array(RemoteCalibrationPrinterCandidate),
-      truncated: z.boolean(),
-    }),
-  );
+    unreadable,
+  };
+});
 
 export const RemoteCalibrationPrinters = z.union([
   boundedCandidateList,
@@ -1040,10 +1089,27 @@ export function isExplicitCalibrationContextComplete(
   );
 }
 
-export function projectPrintFarmerOrcaProfile(
+/**
+ * Why a printer contributed no bound profile, distinguished from *that* it
+ * contributed none.
+ *
+ * `none` is an ordinary answer: the printer is offline, ineligible, its
+ * context is stale or incomplete, or no single toolhead matches. `refused` is
+ * a fault: a profile existed and this client would not render it, so a real
+ * profile is missing from the list. Collapsing the two into `null` made the
+ * fault invisible — the handler reported a complete list while a printer's
+ * profile had been dropped, which is the silent loss this contract exists to
+ * remove, reached through the profile rather than the candidate.
+ */
+export type CalibrationOrcaProfileProjection =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'refused' }
+  | { readonly kind: 'entry'; readonly entry: OrcaProfileEntry };
+
+export function projectPrintFarmerOrcaProfileResult(
   candidate: RemoteCalibrationPrinterCandidate,
   context: RemoteCalibrationPrinterContext,
-): OrcaProfileEntry | null {
+): CalibrationOrcaProfileProjection {
   if (
     !candidate.isOnline ||
     !isExplicitCalibrationEligibilityComplete(candidate) ||
@@ -1059,16 +1125,28 @@ export function projectPrintFarmerOrcaProfile(
     context.nozzleDiameterMm === null ||
     context.profileRevision === null
   ) {
-    return null;
+    return { kind: 'none' };
   }
   const matchingToolheads = context.toolheads.filter(
     (toolhead) => toolhead.nozzle.diameterMm === context.nozzleDiameterMm,
   );
   if (matchingToolheads.length !== 1) {
-    return null;
+    return { kind: 'none' };
   }
   const toolhead = matchingToolheads[0]!;
-  return OrcaProfileEntry.parse({
+  // `safeParse` rather than a throwing `.parse`: a bare throw here escaped the
+  // per-printer catch in the profiles handler, rejected the `Promise.all` it
+  // ran inside, and took the whole response with it — including the local
+  // OrcaSlicer scan that the handler deliberately performs outside the server
+  // path so a server fault cannot hide the profiles on this machine. The wire
+  // bounds are looser than this contract in places (`profileRevision` and
+  // `snapshotSha256` admit `""` upstream but are `.min(1)` here), so an empty
+  // string from an ordinary serializer was enough to trigger it.
+  //
+  // Failure is reported as `refused`, deliberately *unlike* the conditions
+  // above: those are absences, this is a profile that existed and was not
+  // rendered.
+  const entry = OrcaProfileEntry.safeParse({
     orcaProfileId: context.orcaProfileId,
     // The GUID above identifies the profile; only this name can be matched
     // against a file in the local OrcaSlicer installation.
@@ -1092,6 +1170,28 @@ export function projectPrintFarmerOrcaProfile(
         : null,
     exportable: false,
   });
+  return entry.success
+    ? { kind: 'entry', entry: entry.data }
+    : // A profile existed and this client refused it. Reported as a fault
+      // rather than as "this printer has no profile", so the handler can say
+      // the list is partial instead of presenting it as complete.
+      { kind: 'refused' };
+}
+
+/**
+ * The entry-or-nothing view of {@link projectPrintFarmerOrcaProfileResult}.
+ *
+ * Retained for the tests that assert projection in isolation, where a refusal
+ * and an absence really are the same outcome. Production code uses the
+ * discriminated form: it has to tell an operator *why* a profile is missing,
+ * and this shape cannot.
+ */
+export function projectPrintFarmerOrcaProfile(
+  candidate: RemoteCalibrationPrinterCandidate,
+  context: RemoteCalibrationPrinterContext,
+): OrcaProfileEntry | null {
+  const result = projectPrintFarmerOrcaProfileResult(candidate, context);
+  return result.kind === 'entry' ? result.entry : null;
 }
 
 export function projectCalibrationPrinterContext(

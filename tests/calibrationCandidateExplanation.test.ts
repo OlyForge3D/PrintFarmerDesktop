@@ -21,6 +21,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationPrinterCandidate,
+  CalibrationListPrintersResponse,
+  CalibrationListOrcaProfilesResponse,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_FIELD_PATH_LENGTH,
@@ -36,6 +38,7 @@ import {
   normalizeCalibrationMissingInput,
   normalizeCalibrationReasonCode,
 } from '@shared/ipc';
+import { RemoteCalibrationPrinters } from '../src/main/calibrationWire.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -173,6 +176,7 @@ interface ProjectedCandidate {
 async function listPrintersResponse(candidates: unknown[]): Promise<{
   printers: ProjectedCandidate[];
   printersTruncated: boolean;
+  printersUnreadable: number;
   fetchedAt: string;
 }> {
   vi.stubGlobal(
@@ -189,6 +193,7 @@ async function listPrintersResponse(candidates: unknown[]): Promise<{
   return (await listPrintersHandler()({}, { profileId: PROFILE_ID })) as {
     printers: ProjectedCandidate[];
     printersTruncated: boolean;
+    printersUnreadable: number;
     fetchedAt: string;
   };
 }
@@ -1296,6 +1301,81 @@ describe('a large farm is not a reason to show an empty one', () => {
     expect(response.printersTruncated).toBe(false);
   });
 
+  it('pins the exact slicing boundary at cap and cap+1', async () => {
+    // MAX+5 leaves the off-by-one unpinned: a `>=` where `>` belongs, or a
+    // slice of `MAX - 1`, still produces a truncated-looking answer at +5.
+    // These two are the only cases that can tell those apart.
+    function farmOf(size: number) {
+      return Array.from({ length: size }, (_unused, index) =>
+        candidateDto({
+          id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+        }),
+      );
+    }
+
+    const atCap = await listPrintersResponse(
+      farmOf(CALIBRATION_MAX_PRINTER_CANDIDATES),
+    );
+    expect(atCap.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+    expect(atCap.printersTruncated).toBe(false);
+    expect(atCap.printersUnreadable).toBe(0);
+
+    const onePast = await listPrintersResponse(
+      farmOf(CALIBRATION_MAX_PRINTER_CANDIDATES + 1),
+    );
+    // Exactly one more offered: exactly MAX survive, and the cut is declared.
+    expect(onePast.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+    expect(onePast.printersTruncated).toBe(true);
+    // The record beyond the cap was never examined, so it is not "unreadable".
+    expect(onePast.printersUnreadable).toBe(0);
+  });
+
+  it('derives truncation from the raw length even when the server denies it', async () => {
+    // The adversarial shape: more than MAX raw candidates AND a payload
+    // asserting it was not truncated. If the flag were ever read from the
+    // envelope, the party whose response triggered the warning could switch it
+    // off. Asserted through the registered handler, not the wire schema alone.
+    const farm = Array.from(
+      { length: CALIBRATION_MAX_PRINTER_CANDIDATES + 25 },
+      (_unused, index) =>
+        candidateDto({
+          id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+        }),
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              printers: farm,
+              // Every spelling the client uses internally, offered back by the
+              // server as a lie.
+              printersTruncated: false,
+              truncated: false,
+              printersUnreadable: 0,
+              unreadable: 0,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      ),
+    );
+
+    const response = (await listPrintersHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as {
+      printers: ProjectedCandidate[];
+      printersTruncated: boolean;
+      printersUnreadable: number;
+    };
+
+    expect(response.printersTruncated).toBe(true);
+    expect(response.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+  });
+
   it('does not claim truncation for an ordinary farm', async () => {
     const response = await listPrintersResponse([candidateDto()]);
 
@@ -1333,6 +1413,360 @@ describe('a large farm is not a reason to show an empty one', () => {
     )) as { printers: ProjectedCandidate[]; printersTruncated: boolean };
 
     expect(response.printersTruncated).toBe(true);
+  });
+});
+
+describe('no single candidate can empty the farm', () => {
+  /**
+   * The invariant, asserted as itself rather than one more instance of it.
+   *
+   * Five review rounds each found a different member that hard-rejected and
+   * therefore discarded the whole response: an over-long code, a code list one
+   * past its cap, a missing-input list a real five-toolhead printer exceeds, a
+   * farm larger than the IPC bound. Each was fixed where it was found, and
+   * each time the next field over had the same shape. What follows does not
+   * name a field: it corrupts every member of a real candidate, one at a time,
+   * with values chosen to break length, count, type and shape, and requires
+   * that a healthy printer standing beside the broken one always survives.
+   *
+   * A sixth round finding field N+1 would fail here first.
+   */
+  const CORRUPTIONS: { label: string; value: unknown }[] = [
+    { label: 'null', value: null },
+    { label: 'a number', value: 42 },
+    { label: 'a negative number', value: -1 },
+    { label: 'a fraction', value: 1.5 },
+    { label: 'true', value: true },
+    { label: 'an empty string', value: '' },
+    { label: 'a very long string', value: 'x'.repeat(2_000) },
+    { label: 'an empty array', value: [] },
+    { label: 'an array of numbers', value: [1, 2, 3] },
+    { label: 'an empty object', value: {} },
+    { label: 'a deeply nested object', value: { a: { b: { c: { d: 1 } } } } },
+    { label: 'a huge array', value: Array.from({ length: 300 }, () => 'x') },
+    { label: 'text where an instant belongs', value: 'yesterday' },
+    { label: 'a malformed guid', value: 'not-a-guid' },
+  ];
+
+  const HEALTHY_ID = '99999999-9999-4999-8999-999999999999';
+
+  function candidateKeys(): string[] {
+    return Object.keys(candidateDto());
+  }
+
+  it('survives every corruption of every top-level member', () => {
+    // Asserted at the wire schema, which is the seam that decides whether one
+    // candidate can fail the array. Driven directly rather than through the
+    // handler so the corpus can be exhaustive: this is ~300 cases, and each
+    // round trip through the HTTP client's retry and timeout machinery costs
+    // far more than the parse being measured. Handler-level cases below cover
+    // the same property end to end.
+    const failures: string[] = [];
+
+    for (const key of candidateKeys()) {
+      for (const corruption of CORRUPTIONS) {
+        const broken = candidateDto({ [key]: corruption.value });
+        const healthy = candidateDto({ id: HEALTHY_ID });
+
+        let parsed;
+        try {
+          parsed = RemoteCalibrationPrinters.parse([broken, healthy]);
+        } catch (error) {
+          failures.push(
+            `${key} = ${corruption.label}: threw ${String(error).slice(0, 120)}`,
+          );
+          continue;
+        }
+
+        if (
+          !parsed.printers.some((printer) => printer.printerId === HEALTHY_ID)
+        ) {
+          failures.push(
+            `${key} = ${corruption.label}: the healthy printer was discarded`,
+          );
+        }
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  it('survives every corruption of the nested firmware and slicer identities', () => {
+    const failures: string[] = [];
+    const nested: [string, string[]][] = [
+      ['firmware', ['family', 'gcodeDialect', 'detectionSource', 'version']],
+      ['slicer', ['engine', 'distribution', 'version', 'profileFormat']],
+    ];
+
+    for (const [parent, keys] of nested) {
+      for (const key of keys) {
+        for (const corruption of CORRUPTIONS) {
+          const base = candidateDto();
+          const broken = candidateDto({
+            [parent]: {
+              ...(base[parent as keyof typeof base] as object),
+              [key]: corruption.value,
+            },
+          });
+          const healthy = candidateDto({ id: HEALTHY_ID });
+
+          try {
+            const parsed = RemoteCalibrationPrinters.parse([broken, healthy]);
+            if (
+              !parsed.printers.some(
+                (printer) => printer.printerId === HEALTHY_ID,
+              )
+            ) {
+              failures.push(
+                `${parent}.${key} = ${corruption.label}: healthy printer discarded`,
+              );
+            }
+          } catch (error) {
+            failures.push(
+              `${parent}.${key} = ${corruption.label}: threw ${String(error).slice(0, 120)}`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  it('survives a candidate that is not an object at all', async () => {
+    for (const junk of [null, 7, 'printer', [], true]) {
+      const printers = await listPrinters([junk, candidateDto()]);
+      expect(printers).toHaveLength(1);
+      expect(printers[0]!.printerId).toBe(PRINTER_GUID);
+    }
+  });
+
+  it('counts what it could not read instead of hiding the gap', async () => {
+    const response = await listPrintersResponse([
+      candidateDto({ id: 'not-a-guid' }),
+      null,
+      candidateDto(),
+    ]);
+
+    expect(response.printers).toHaveLength(1);
+    expect(response.printersUnreadable).toBe(2);
+  });
+
+  it('reports nothing unreadable when the whole farm parses', async () => {
+    const response = await listPrintersResponse([
+      candidateDto(),
+      candidateDto({ id: HEALTHY_ID }),
+    ]);
+
+    expect(response.printers).toHaveLength(2);
+    expect(response.printersUnreadable).toBe(0);
+  });
+
+  it('isolates a record the wire accepts but the renderer contract refuses', async () => {
+    // The seam the corruption sweep above could not see. It asserts against
+    // the wire schema, so a value that *passes* the wire and fails only at the
+    // IPC boundary slipped through: `ServerInstant` accepted an out-of-range
+    // instant and rendered it as an ECMAScript expanded year
+    // (`+010000-01-01T00:00:00.000Z`), which `z.string().datetime()` rejects.
+    // The candidate was therefore classified readable, the response schema
+    // covers the whole list, and one such timestamp discarded every healthy
+    // printer while reporting nothing lost.
+    for (const instant of [
+      '+010000-01-01T00:00:00.000Z',
+      '10000-01-01',
+      'January 1, 12345',
+    ]) {
+      const response = await listPrintersResponse([
+        candidateDto({ observedAtUtc: instant, lastSeenAtUtc: null }),
+        candidateDto({ id: HEALTHY_ID }),
+      ]);
+
+      expect(
+        response.printers.some((printer) => printer.printerId === HEALTHY_ID),
+        instant,
+      ).toBe(true);
+      expect(response.printers, instant).toHaveLength(1);
+      // Counted, not silently dropped: the whole point of the count is that a
+      // shorter list than the operator owns is visible as a fault.
+      expect(response.printersUnreadable, instant).toBe(1);
+    }
+  });
+
+  it('drives the corruption sweep through the registered handler too', async () => {
+    // The sweep above runs at the wire schema for speed. This runs a smaller
+    // corpus through the production handler, so a value that is only refused
+    // further downstream — as the expanded-year instant was — cannot hide in
+    // the gap between the two layers again.
+    const throughHandler = [
+      { label: 'expanded-year instant', dto: { observedAtUtc: '10000-01-01' } },
+      { label: 'null id', dto: { id: null } },
+      { label: 'numeric reachability', dto: { reachability: 7 } },
+      { label: 'array firmware', dto: { firmware: [1, 2, 3] } },
+      {
+        label: 'long operational state',
+        dto: { operationalState: 'x'.repeat(5_000) },
+      },
+      { label: 'fractional revision', dto: { configurationRevision: 1.5 } },
+    ];
+
+    for (const entry of throughHandler) {
+      const response = await listPrintersResponse([
+        candidateDto(entry.dto),
+        candidateDto({ id: HEALTHY_ID }),
+      ]);
+
+      expect(
+        response.printers.some((printer) => printer.printerId === HEALTHY_ID),
+        entry.label,
+      ).toBe(true);
+      expect(
+        response.printers.length + response.printersUnreadable,
+        entry.label,
+      ).toBe(2);
+    }
+  });
+});
+
+describe('the unreadable count is bounded and required at the schema itself', () => {
+  // Asserted against the schemas directly, not only through handler happy
+  // paths. A handler test proves what the handler does today; these prove what
+  // the contract will accept from anything, including a future caller that
+  // forgets to propagate the field.
+  const validCandidate = {
+    printerId: PRINTER_GUID,
+    displayName: 'Rack A cell 3',
+    printerModel: null,
+    firmwareCompatible: false,
+    orcaProfileId: null,
+    isOnline: true,
+    updatedAt: '2026-08-11T12:00:00.000Z',
+    rejectionReasonCodes: ['printer_offline'],
+    missingInputs: [],
+    eligibility: null,
+  };
+
+  function printersResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      printers: [validCandidate],
+      printersTruncated: false,
+      printersUnreadable: 0,
+      fetchedAt: '2026-08-11T12:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('accepts a count at exactly the candidate cap when nothing was readable', () => {
+    // Zero readable printers, because the two numbers are parts of one whole:
+    // a full cap of unreadable records leaves no room for a readable one.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printers: [],
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects readable and unreadable counts that together exceed the cap', () => {
+    // The physically impossible case a per-field bound cannot see: one printer
+    // was read, and five hundred more were not, from a list that only ever
+    // holds five hundred.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printers: [validCandidate],
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it('accepts a readable printer alongside the largest count that still fits', () => {
+    // The boundary from the other side, so the rule above bounds rather than
+    // blankets.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printers: [validCandidate],
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES - 1,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects a count one past the cap', () => {
+    // The production count is derived by counting failures among the
+    // candidates considered, so it cannot exceed them. Saying so in the schema
+    // makes that reasoning executable rather than a comment.
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({
+          printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES + 1,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects a negative count', () => {
+    expect(() =>
+      CalibrationListPrintersResponse.parse(
+        printersResponse({ printersUnreadable: -1 }),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects omission rather than assuming nothing was lost', () => {
+    const withoutCount = { ...printersResponse() };
+    delete (withoutCount as Record<string, unknown>).printersUnreadable;
+    expect(() => CalibrationListPrintersResponse.parse(withoutCount)).toThrow();
+  });
+
+  it('applies the same bound and requirement to the profiles response', () => {
+    const base = {
+      profiles: [],
+      discovery: {
+        kind: 'ok' as const,
+        message: 'Server profile discovery completed.',
+        serverCode: null,
+      },
+      printersUnreadable: 0,
+      printersTruncated: false,
+      localProfiles: [],
+      localDiscovery: {
+        kind: 'ok' as const,
+        message: 'Local OrcaSlicer profile scan completed.',
+      },
+    };
+
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse({
+        ...base,
+        printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse({
+        ...base,
+        printersUnreadable: CALIBRATION_MAX_PRINTER_CANDIDATES + 1,
+      }),
+    ).toThrow();
+
+    // Omission must reject rather than default to zero. Main, preload and
+    // renderer ship together, so there is no old caller to accommodate — and a
+    // default would turn a future propagation slip into a confident claim that
+    // every record was readable.
+    const withoutCount = { ...base } as Record<string, unknown>;
+    delete withoutCount.printersUnreadable;
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse(withoutCount),
+    ).toThrow();
+
+    const withoutTruncation = { ...base } as Record<string, unknown>;
+    delete withoutTruncation.printersTruncated;
+    expect(() =>
+      CalibrationListOrcaProfilesResponse.parse(withoutTruncation),
+    ).toThrow();
   });
 });
 
