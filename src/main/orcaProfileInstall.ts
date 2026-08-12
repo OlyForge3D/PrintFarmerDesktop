@@ -1597,12 +1597,37 @@ export async function canonicalizeSaveTarget(
  */
 const MAX_CACHE_ENTRIES = 50;
 
+/**
+ * Generated profile bytes, together with everything they were derived from.
+ *
+ * The binding is not decoration. These bytes are produced by one generation,
+ * against one server profile, one calibration project, one printer-configuration
+ * snapshot and one exact base file; an `operationId` alone proves none of that.
+ * Without the binding, a cache entry survived a profile switch and could be
+ * written to disk under a farm and a project it was never generated for — the
+ * renderer only had to present the same operation id.
+ */
 interface CachedProfile {
   readonly generatedJson: string;
   readonly profileJsonHash: string;
   readonly displayName: string;
   readonly safeFilename: string;
   readonly cachedAt: number;
+  /** The server profile selected when these bytes were generated. */
+  readonly profileId: string;
+  /** The calibration project whose observations produced them. */
+  readonly projectId: string;
+  /** The bound printer-configuration snapshot. */
+  readonly snapshotId: string;
+  /** The exact content hash of the base profile that was patched. */
+  readonly baseContentHash: string;
+  /**
+   * The calibration action epoch at generation time. Any invalidation — a
+   * profile switch, a refusal, an expired session — advances it and strands
+   * these bytes, which is the intended outcome: they describe a farm the app
+   * has since stopped trusting its knowledge of.
+   */
+  readonly epoch: number;
 }
 
 const profileCache = new Map<string, CachedProfile>();
@@ -1626,6 +1651,8 @@ export function getCachedProfile(
 ): CachedProfile | undefined {
   return profileCache.get(operationId);
 }
+
+export type { CachedProfile };
 
 export function clearProfileCache(): void {
   profileCache.clear();
