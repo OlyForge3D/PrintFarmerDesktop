@@ -288,11 +288,11 @@ function server(
   return { calls };
 }
 
-function handlers(): Map<string, Handler> {
+function handlers(profiles = fakeProfiles()): Map<string, Handler> {
   electronState.handlers.clear();
   registerIpcHandlers(
     undefined,
-    fakeProfiles() as never,
+    profiles as never,
     sidecar as never,
     sidecar as never,
     { initialize: () => Promise.resolve(), dispose: () => undefined } as never,
@@ -860,6 +860,65 @@ describe('enqueue is gated, but not on a bed-clear acknowledgement', () => {
       printRequest(),
     )) as { status: string };
     expect(response.status).toBe('error');
+    expect(calls.some((call) => call.startsWith('POST'))).toBe(false);
+  });
+
+  it('returns a typed refusal when the action epoch changes immediately before enqueue', async () => {
+    let authenticatedContextReads = 0;
+    let deferPreDispatchContext = false;
+    const immediate = fakeProfiles().getAuthenticatedContext;
+    let releaseContext:
+      ((value: Awaited<ReturnType<typeof immediate>>) => void) | undefined;
+    let markContextStarted: (() => void) | undefined;
+    const contextStarted = new Promise<void>((resolve) => {
+      markContextStarted = resolve;
+    });
+    const deferredContext = new Promise<Awaited<ReturnType<typeof immediate>>>(
+      (resolve) => {
+        releaseContext = resolve;
+      },
+    );
+    const profiles = fakeProfiles();
+    profiles.getAuthenticatedContext = vi.fn(() => {
+      authenticatedContextReads += 1;
+      // The gate performs one direct profile read plus the HTTP client's
+      // before/after identity fences. The fourth read is the handler's final
+      // profile fence immediately before enqueue.
+      if (!deferPreDispatchContext || authenticatedContextReads < 4) {
+        return immediate();
+      }
+      markContextStarted?.();
+      return deferredContext;
+    });
+    const { calls } = server();
+    registered = handlers(profiles);
+    await negotiate();
+    authenticatedContextReads = 0;
+    deferPreDispatchContext = true;
+
+    const pendingPrint = invoke(
+      IpcChannel.CalibrationStartPrint,
+      printRequest(),
+    );
+    await expect(
+      Promise.race([
+        contextStarted.then(() => 'context-started'),
+        pendingPrint.then(() => 'print-completed'),
+      ]),
+    ).resolves.toBe('context-started');
+    await invoke(IpcChannel.DeleteServerProfile, { id: PROFILE_ID }).catch(
+      () => undefined,
+    );
+    releaseContext?.(await immediate());
+
+    await expect(pendingPrint).resolves.toMatchObject({
+      status: 'error',
+      error: {
+        code: 'printerContextStale',
+        reference: null,
+      },
+    });
+    expect(authenticatedContextReads).toBe(4);
     expect(calls.some((call) => call.startsWith('POST'))).toBe(false);
   });
 });

@@ -3883,7 +3883,10 @@ export function registerIpcHandlers(
       if (!calibrationStateUnchanged(actionEpoch, selectedId, 'startPrint')) {
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',
-          error: gateRefusalToApiError(SELECTION_CHANGED_DURING_VERIFICATION),
+          error: {
+            ...gateRefusalToApiError(SELECTION_CHANGED_DURING_VERIFICATION),
+            reference: null,
+          },
         });
       }
       try {
