@@ -418,41 +418,24 @@ function closeMutationWindow(lockPath) {
 }
 
 /**
- * `finally` does not run on a signal.
+ * There are deliberately no signal handlers here.
  *
- * Ctrl-C during an arm would otherwise leave the mutant on disk and the lock
- * beside it, which is the one state the guard cannot safely wave through: the
- * tree durably holds a mutation that nothing is going to restore. These
- * handlers put the file back before the process goes away, so an interrupted
- * run leaves the tree as it found it.
+ * An earlier revision registered SIGINT/SIGTERM handlers that restored the file
+ * before exiting, on the theory that `finally` does not run on a signal. That
+ * was measured and it was worse than nothing: `runCommand` uses `execFileSync`,
+ * which blocks the event loop for the entire child run, and Node dispatches
+ * signals on the loop. So the handler could not fire during the window it
+ * claimed to protect -- it ran only after the arm had already finished and the
+ * `finally` had already restored. Worse, registering a listener suppresses
+ * Node's default terminate action, so Ctrl-C during an arm no longer stopped
+ * the harness at all: one probe measured a signal sitting queued for 34
+ * seconds while the mutant stayed on disk. The handlers extended the window and
+ * pushed the operator toward the hard kill that produces the debris state.
+ *
+ * The hard-kill case is covered where it can actually be observed instead: the
+ * lock records which file was mutated, and `tests/mutationWindowGuard.ts`
+ * refuses to run when that file is still modified and the holder is gone.
  */
-let activeArmCleanup = null;
-
-function restoreOnSignal(signal) {
-  if (activeArmCleanup !== null) {
-    const cleanup = activeArmCleanup;
-    activeArmCleanup = null;
-    try {
-      cleanup();
-      console.error(
-        `[mutation-harness] ${signal}: restored the mutated file and released the window`,
-      );
-    } catch (error) {
-      console.error(
-        `[mutation-harness] ${signal}: COULD NOT RESTORE -- ${error?.message ?? error}`,
-      );
-    }
-  }
-  process.exit(130);
-}
-
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
-  try {
-    process.on(signal, () => restoreOnSignal(signal));
-  } catch {
-    // Not every signal exists on every platform; the ones that do are enough.
-  }
-}
 
 export function runArm({
   filePath,
@@ -472,11 +455,6 @@ export function runArm({
   // Opened before the file is touched and closed after it is restored, so the
   // window covers every instant in which the tree holds the mutant.
   const { token, lockPath } = openMutationWindow({ filePath, label, cwd });
-  // The same restore the `finally` performs, reachable from a signal handler.
-  activeArmCleanup = () => {
-    writeFileSync(filePath, original);
-    closeMutationWindow(lockPath);
-  };
   let application;
   let summary = null;
   try {
@@ -500,7 +478,6 @@ export function runArm({
     // measured.
     writeFileSync(filePath, original);
     closeMutationWindow(lockPath);
-    activeArmCleanup = null;
   }
 
   const restore = classifyRestore({

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   LOCK_RELATIVE_PATH,
@@ -46,10 +46,15 @@ export interface MutationWindowProbes {
   readonly token?: string | undefined;
   readonly isHolderAlive?: (pid: unknown) => boolean;
   readonly isDirty?: (file: string) => boolean;
+  readonly removeLock?: () => void;
 }
 
 function defaultReadLock(): string {
   return readFileSync(LOCK_PATH, 'utf8');
+}
+
+function defaultRemoveLock(): void {
+  rmSync(LOCK_PATH, { force: true });
 }
 
 function defaultIsHolderAlive(pid: unknown): boolean {
@@ -101,6 +106,7 @@ export function describeForeignMutationWindow(
     token = process.env[MUTATION_TOKEN_VARIABLE],
     isHolderAlive = defaultIsHolderAlive,
     isDirty = isFileDirty,
+    removeLock = defaultRemoveLock,
   } = probes;
 
   let raw: string;
@@ -141,7 +147,15 @@ export function describeForeignMutationWindow(
   // tree durably holds a mutation -- every later run would silently compile
   // it. So the file the holder named decides: still modified, still refuse.
   if (!isHolderAlive(lock.pid)) {
-    if (file === null || !isDirty(file)) return null;
+    if (file === null || !isDirty(file)) {
+      // Debris, and swept rather than left. `assertNoForeignMutationWindow`
+      // runs in every `afterEach`, so a lock nobody will ever remove costs a
+      // `git status` per test: measured at ~10.2s -> ~29.7s on a single file.
+      // The tree is clean and the holder is gone, so there is nothing left to
+      // protect and nothing to lose by removing it.
+      removeLock();
+      return null;
+    }
     return [
       'Refusing to run: a mutation-harness run was killed before it restored',
       'the file it mutated, and that file is still modified in this tree.',

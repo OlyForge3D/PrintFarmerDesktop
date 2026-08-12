@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { join, sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { rmSync, writeFileSync } from 'node:fs';
 import {
   LOCK_PATH,
   LOCK_RELATIVE_PATH,
@@ -69,8 +70,69 @@ describe('foreign mutation window guard', () => {
         token: 'a-different-token',
         isHolderAlive: () => false,
         isDirty: () => false,
+        removeLock: () => undefined,
       }),
     ).toBeNull();
+  });
+
+  it('asks the real liveness prober, which must call this pid dead', () => {
+    // No `isHolderAlive` override. Injecting it everywhere left the real
+    // prober's "not alive" answer unpinned, and a regression there wedges the
+    // tree with a refusal nobody can falsify.
+    expect(
+      describeForeignMutationWindow({
+        readLock: lock({ pid: dead }),
+        token: 'a-different-token',
+        isDirty: () => false,
+        removeLock: () => undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it('treats a lock with a nonsense pid as having no live holder', () => {
+    // Same prober, its other rejection: a pid that is not an integer at all.
+    expect(
+      describeForeignMutationWindow({
+        readLock: lock({ pid: 'not-a-pid' }),
+        token: 'a-different-token',
+        isDirty: () => false,
+        removeLock: () => undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it('sweeps a debris lock instead of leaving it to slow every later run', () => {
+    // The guard runs in every afterEach. A lock nobody removes costs a
+    // `git status` per test for the life of the checkout.
+    let swept = 0;
+    describeForeignMutationWindow({
+      readLock: lock({ pid: dead }),
+      token: 'a-different-token',
+      isHolderAlive: () => false,
+      isDirty: () => false,
+      removeLock: () => {
+        swept += 1;
+      },
+    });
+
+    expect(swept).toBe(1);
+  });
+
+  it('keeps the lock when it is still refusing', () => {
+    // The converse control: a lock that is doing its job must survive.
+    let swept = 0;
+    const problem = describeForeignMutationWindow({
+      readLock: lock({ pid: dead }),
+      token: 'a-different-token',
+      isHolderAlive: () => false,
+      isDirty: () => true,
+      removeLock: () => {
+        swept += 1;
+      },
+    });
+
+    expect(problem).not.toBeNull();
+    expect(swept).toBe(0);
   });
 
   it('still refuses when a dead holder left its file mutated', () => {
@@ -146,15 +208,33 @@ describe('the lock protocol is shared, not duplicated', () => {
   });
 
   it('reads the lock exactly where the harness writes it', () => {
-    // The load-bearing assertion. An earlier revision resolved LOCK_PATH from
-    // `import.meta.url` and produced `tests/undefined` under vitest's
-    // transform: a path no lock can occupy, so the guard admitted every run
-    // while all of its behavioural tests stayed green, because those inject
-    // `readLock`. Only this comparison against the producer could see it.
+    // An earlier revision resolved LOCK_PATH from `import.meta.url` and
+    // produced `tests/undefined` under vitest's transform: a path no lock can
+    // occupy, so the guard admitted every run while all of its behavioural
+    // tests stayed green, because those inject `readLock`. Only comparison
+    // against the producer could see it.
     expect(LOCK_PATH).toBe(lockPathFor(process.cwd()));
     expect(LOCK_PATH.endsWith(LOCK_RELATIVE_PATH.replace(/\//gu, sep))).toBe(
       true,
     );
+  });
+
+  it('resolves the same lock from a subdirectory as from the root', () => {
+    // The residual hazard behind the comparison above: both sides agreeing on
+    // `process.cwd()` says nothing if cwd is not the project root. A run
+    // started from a subdirectory would look for a lock that is not there and
+    // admit every run, silently. This is the assertion that is not tautological
+    // -- it compares two different inputs, not one function against itself.
+    expect(lockPathFor(join(process.cwd(), 'tests'))).toBe(LOCK_PATH);
+    expect(lockPathFor(join(process.cwd(), 'src', 'renderer'))).toBe(LOCK_PATH);
+  });
+
+  it('leaves a lock outside any project where it was asked for', () => {
+    // The harness's own tests run arms in scratch directories outside the
+    // checkout and depend on the lock staying there rather than reaching into
+    // the real tree.
+    const detached = resolve(sep, 'nonexistent-2f4a1c', 'scratch');
+    expect(lockPathFor(detached).startsWith(detached)).toBe(true);
   });
 
   it('keeps the lock outside the tree git reports', () => {
@@ -179,6 +259,24 @@ describe('the dirtiness probe behind the crash check', () => {
     // `git status --porcelain -- <unmatched>` exits 0 with no output, so this
     // reaches the success branch without depending on the tree's live state.
     expect(isFileDirty('no/such/file-2f4a1c.ts')).toBe(false);
+  });
+
+  it('reports a file git can see, and answers about that file', () => {
+    // The direction the feature exists for, and the one that was unpinned:
+    // `return porcelain.trim() !== ''` could be replaced by `return false`, or
+    // the probe could ask git about some fixed clean path instead of the one it
+    // was given, and every other case here stayed green. Both mutants have to
+    // fail this.
+    const scratch = 'tests/.dirty-probe-9c1f7a2e.tmp';
+    const absolute = join(process.cwd(), scratch);
+    writeFileSync(absolute, 'transient\n');
+    try {
+      expect(isFileDirty(scratch)).toBe(true);
+      // Discriminates: a probe ignoring its argument cannot give both answers.
+      expect(isFileDirty('no/such/file-2f4a1c.ts')).toBe(false);
+    } finally {
+      rmSync(absolute, { force: true });
+    }
   });
 
   it('answers "possibly dirty" when it cannot ask git at all', () => {

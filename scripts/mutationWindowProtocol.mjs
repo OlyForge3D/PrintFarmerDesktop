@@ -11,7 +11,8 @@
 // impossible rather than asserted. This module holds no state and performs no
 // side effects, so either side can import it freely -- including `tests/setup.ts`,
 // which runs in every test process.
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 export const MUTATION_TOKEN_VARIABLE = 'PRINTFARMER_MUTATION_TOKEN';
 
@@ -21,6 +22,30 @@ export const MUTATION_TOKEN_VARIABLE = 'PRINTFARMER_MUTATION_TOKEN';
 export const LOCK_RELATIVE_PATH =
   'node_modules/.cache/printfarmer-mutation.lock';
 
+/**
+ * The project root at or above `start`, identified by its `package.json`.
+ *
+ * Anchoring the lock on a bare `process.cwd()` left one way for the guard to
+ * stop guarding in silence: a run started from a subdirectory resolves a
+ * different lock path, finds nothing there, and admits every run exactly as if
+ * no window were open. Walking up to the project root makes producer and
+ * consumer agree regardless of where either was launched.
+ *
+ * Falls back to `start` when no `package.json` is found, which is what the
+ * harness's own tests rely on -- they run arms inside scratch directories that
+ * are deliberately outside any project, and their locks must stay there rather
+ * than reaching into the real checkout.
+ */
+export function projectRootFrom(start) {
+  let current = resolve(start);
+  for (;;) {
+    if (existsSync(resolve(current, 'package.json'))) return current;
+    const parent = dirname(current);
+    if (parent === current) return resolve(start);
+    current = parent;
+  }
+}
+
 export function lockPathFor(cwd) {
-  return resolve(cwd ?? process.cwd(), LOCK_RELATIVE_PATH);
+  return resolve(projectRootFrom(cwd ?? process.cwd()), LOCK_RELATIVE_PATH);
 }
