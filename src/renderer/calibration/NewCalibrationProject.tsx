@@ -491,12 +491,18 @@ export function NewCalibrationProject(): React.JSX.Element {
                   be read and{' '}
                   {store.creation.printersUnreadable === 1 ? 'is' : 'are'} not
                   listed below.{' '}
-                  {store.creation.printers.length === 0
-                    ? // Not "no printers were returned": they were returned and
-                      // this app could not read them, which points at a
-                      // different problem entirely.
-                      'No other printers were returned, so nothing can be selected here yet.'
-                    : 'The rest of the list is unaffected.'}
+                  {store.creation.printers.length > 0
+                    ? 'The rest of the list is unaffected.'
+                    : store.creation.printersTruncated
+                      ? // Truncated *and* nothing readable survived. Saying
+                        // "no other printers were returned" here would deny
+                        // the notice directly above this one: more were
+                        // offered, they were simply never examined.
+                        'None of the printers this view could consider were readable, and more were offered than it can show.'
+                      : // Not "no printers were returned": they were returned
+                        // and this app could not read them, which points at a
+                        // different problem entirely.
+                        'No other printers were returned, so nothing can be selected here yet.'}
                 </p>
               ) : null}
               <div

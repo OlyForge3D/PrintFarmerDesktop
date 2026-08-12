@@ -830,9 +830,74 @@ describe('CalibrationWorkspace', () => {
     expect(
       screen.queryByText('No printer candidates were returned.'),
     ).toBeNull();
-    expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
+    // Exact tail for the zero-survivor case, with cross-controls: the other
+    // two tails must be absent, so an inverted branch fails rather than
+    // swapping one true-looking sentence for another.
     expect(
       screen.getByText(/No other printers were returned/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
+    expect(
+      screen.queryByText(/None of the printers this view could consider/),
+    ).toBeNull();
+  });
+
+  it('says the rest of the list is unaffected when printers did survive', async () => {
+    // The other side of the same branch. With the case above, an inversion
+    // fails in both directions.
+    const someUnreadable = makeApi();
+    someUnreadable.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: candidates,
+        printersTruncated: false,
+        printersUnreadable: 2,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(someUnreadable);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/2 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/The rest of the list is unaffected\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No other printers were returned/)).toBeNull();
+  });
+
+  it('does not deny the truncation notice it just rendered', async () => {
+    // Truncated AND nothing readable survived — the only truncated-and-empty
+    // state the handler can produce, since truncation forces
+    // printers.length + printersUnreadable === 500. "No other printers were
+    // returned" would contradict the truncation notice three lines above:
+    // more were offered, they were simply never examined.
+    const truncatedAndUnreadable = makeApi();
+    truncatedAndUnreadable.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [],
+        printersTruncated: true,
+        printersUnreadable: 500,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(truncatedAndUnreadable);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(/500 printer records could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/PrintFarmer offered more printers than/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No other printers were returned/)).toBeNull();
+    expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
+    expect(
+      screen.getByText(/None of the printers this view could consider/),
     ).toBeInTheDocument();
   });
 
