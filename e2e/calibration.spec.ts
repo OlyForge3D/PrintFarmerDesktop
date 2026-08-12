@@ -81,7 +81,6 @@ const requiredArtifacts = [
 
 // ─── Fixture constants ────────────────────────────────────────────────────────
 const F_NOW = '2026-07-29T10:00:00.000Z';
-const F_EXPIRY = new Date(Date.now() + 300_000).toISOString();
 const F_PROFILE_ID = 'f1111111-f111-4111-8111-111111111111';
 const F_PROJECT_ID = 'f2222222-f222-4222-8222-222222222222';
 const F_PRINTER_ID = 'f3333333-f333-4333-8333-333333333333';
