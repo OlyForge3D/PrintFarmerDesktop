@@ -71,6 +71,7 @@ import {
   projectPrintFarmerOrcaProfileResult,
   supportsKlipper,
   supportsOrcaSlicer,
+  type RemoteCalibrationCapabilities,
   type RemoteCalibrationPrinterCandidate,
 } from './calibrationWire.js';
 import {
@@ -546,7 +547,8 @@ export function registerIpcHandlers(
   /** Bounded capability re-read after the server refuses an operation. */
   const capabilityRefresher = new CalibrationCapabilityRefresher();
   /** Bounded re-exchange after the server rejects this profile's token. */
-  const authRecovery = new CalibrationAuthRecovery();
+  const authRecovery =
+    new CalibrationAuthRecovery<RemoteCalibrationCapabilities>();
 
   /**
    * Monotonic counter for everything that invalidates in-flight calibration
@@ -692,7 +694,7 @@ export function registerIpcHandlers(
   const noteCalibrationUnauthenticated = async (
     selectedId: string,
     options: { reauthenticate?: boolean } = {},
-  ): Promise<CalibrationAuthRecoveryOutcome> => {
+  ): Promise<CalibrationAuthRecoveryOutcome<RemoteCalibrationCapabilities>> => {
     calibrationStateEpoch += 1;
     calibrationDiagnostics.clearCapabilities();
     bedClearLedger.clear();
@@ -704,6 +706,7 @@ export function registerIpcHandlers(
         status: 'exchangeFailed',
         attempted: false,
         authenticated: false,
+        evidence: null,
       };
     }
     return authRecovery.noteUnauthenticated(selectedId, async () => {
@@ -718,15 +721,16 @@ export function registerIpcHandlers(
         );
         baseUrl = refreshed.baseUrl;
       } catch {
-        return 'exchangeFailed';
+        return { status: 'exchangeFailed', evidence: null };
       }
       // Capabilities are read against the new token *before* the workspace is
       // told it is authenticated again, because the key may now resolve to a
       // different principal with different rights.
       const negotiationToken =
         calibrationDiagnostics.beginCapabilityNegotiation();
+      let caps: RemoteCalibrationCapabilities;
       try {
-        const caps = await calibrationHttp.getCapabilities(
+        caps = await calibrationHttp.getCapabilities(
           selectedId,
           baseUrl,
           AbortSignal.timeout(10_000),
@@ -740,8 +744,10 @@ export function registerIpcHandlers(
         // A second 401, from the read taken immediately after a successful
         // exchange, terminates recovery. Recursing here is how a revoked key
         // turns into an exchange storm.
-        if (isUnauthenticated(error)) return 'stillUnauthenticated';
-        return 'exchangeFailed';
+        if (isUnauthenticated(error)) {
+          return { status: 'stillUnauthenticated', evidence: null };
+        }
+        return { status: 'exchangeFailed', evidence: null };
       }
       emitCalibrationLog({
         level: 'info',
@@ -750,7 +756,7 @@ export function registerIpcHandlers(
         profileId: selectedId,
         outcome: 'ok',
       });
-      return 'reauthenticated';
+      return { status: 'reauthenticated', evidence: caps };
     });
   };
 
@@ -1968,48 +1974,14 @@ export function registerIpcHandlers(
         );
       }
 
-      const signal = AbortSignal.timeout(10_000);
-      // Cleared *before* the fetch, not after it. The window between starting a
-      // negotiation and failing it is exactly when a gate would otherwise read
-      // the previously selected profile's snapshot and authorise a mutation
-      // against this one. Clearing first means a fetch that fails, times out or
-      // is refused leaves no evidence at all, which is the fail-closed answer.
-      const negotiationToken =
-        calibrationDiagnostics.beginCapabilityNegotiation();
-      try {
-        const ctx = await profiles.getAuthenticatedContext(selectedId);
-        const caps = await calibrationHttp.getCapabilities(
-          selectedId,
-          ctx.profile.baseUrl,
-          signal,
-        );
-        // Snapshot the negotiation so diagnostics can report capability health
-        // without a network call — which is exactly when it is needed. Bound to
-        // the profile it describes and to the negotiation that asked, so neither
-        // another profile's gate nor a completion that has been overtaken can
-        // read or write it.
-        calibrationDiagnostics.recordCapabilities(
-          negotiationToken,
-          selectedId,
-          caps,
-        );
-        emitCalibrationLog({
-          level: 'info',
-          component: 'calibration.http',
-          event: 'capabilities.negotiated',
-          profileId: selectedId,
-          outcome: 'ok',
-        });
+      const projectAvailability = (caps: RemoteCalibrationCapabilities) => {
         const missingFlags = missingCalibrationFlags(caps);
         const firmwareOk = supportsKlipper(caps);
         const slicerOk = supportsOrcaSlicer(caps);
         // Discovery needs exactly one permission: `calibration:read`. Requiring
         // more to *open* the workspace would refuse an operator who is allowed to
-        // look but not change, and this check did not exist at all before — the
-        // `missingScopes` reason was declared and never once emitted, so an
-        // unauthorised account saw an empty printer list and no explanation.
-        // Create, update, generate and queue actions are gated separately, each by
-        // its own exact permission, in the action interlock.
+        // look but not change. Create, update, generate and queue actions remain
+        // gated separately, each by its own exact permission.
         const readPermitted = hasCalibrationPermission(
           caps.grantedScopes,
           CALIBRATION_PERMISSIONS.read,
@@ -2065,6 +2037,41 @@ export function registerIpcHandlers(
             offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
           },
         );
+      };
+
+      const signal = AbortSignal.timeout(10_000);
+      // Cleared *before* the fetch, not after it. The window between starting a
+      // negotiation and failing it is exactly when a gate would otherwise read
+      // the previously selected profile's snapshot and authorise a mutation
+      // against this one. Clearing first means a fetch that fails, times out or
+      // is refused leaves no evidence at all, which is the fail-closed answer.
+      const negotiationToken =
+        calibrationDiagnostics.beginCapabilityNegotiation();
+      try {
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const caps = await calibrationHttp.getCapabilities(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        // Snapshot the negotiation so diagnostics can report capability health
+        // without a network call — which is exactly when it is needed. Bound to
+        // the profile it describes and to the negotiation that asked, so neither
+        // another profile's gate nor a completion that has been overtaken can
+        // read or write it.
+        calibrationDiagnostics.recordCapabilities(
+          negotiationToken,
+          selectedId,
+          caps,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'capabilities.negotiated',
+          profileId: selectedId,
+          outcome: 'ok',
+        });
+        return projectAvailability(caps);
       } catch (error) {
         // A refusal is not a legacy server. Mapping every non-404 onto
         // `legacyServer` told an operator whose access had been revoked that their
@@ -2078,24 +2085,8 @@ export function registerIpcHandlers(
           // read is what settles the answer; it cannot recurse, because a second
           // 401 terminates it.
           const outcome = await noteCalibrationUnauthenticated(selectedId);
-          if (outcome.authenticated) {
-            const recovered =
-              calibrationDiagnostics.capabilitySnapshot(selectedId);
-            if (recovered !== null) {
-              return ipcSchemas[
-                IpcChannel.CalibrationGetAvailability
-              ].response.parse({
-                available: true,
-                unavailableReason: null,
-                unavailableDetail: null,
-                negotiatedApiVersion: recovered.negotiatedApiVersion,
-                negotiatedSchemaVersion: recovered.negotiatedSchemaVersion,
-                capabilityFlags: recovered.flags,
-                grantedScopes: recovered.grantedScopes,
-                offlineEditingEnabled:
-                  recovered.flags.calibrationOfflineDraftEnabled,
-              });
-            }
+          if (outcome.authenticated && outcome.evidence !== null) {
+            return projectAvailability(outcome.evidence);
           }
           return ipcSchemas[
             IpcChannel.CalibrationGetAvailability
@@ -3875,6 +3866,7 @@ export function registerIpcHandlers(
             message: prerequisiteError,
             retryable: true,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }

@@ -187,6 +187,7 @@ function json(body: unknown, status = 200): Response {
 interface ServerOptions {
   /** Tokens the server accepts. Anything else is answered 401. */
   accepts?: (token: string) => boolean;
+  capabilityOverrides?: Record<string, unknown>;
   /** Force an authorization response for requests matching this fragment. */
   rejectFragment?: string;
   /** Status used by the forced refusal. */
@@ -232,6 +233,7 @@ function server(options: ServerOptions = {}): { calls: string[] } {
             printFarmerCapabilitiesResponse({
               effectivePermissions: CANONICAL_PERMISSIONS,
               calibrationGenerationEnabled: true,
+              ...options.capabilityOverrides,
             }),
           ),
         );
@@ -413,6 +415,41 @@ describe('a rejected token is recovered, not treated as a refusal', () => {
     // Exactly one exchange: the capability read taken immediately after it is
     // refused too, and that terminates recovery instead of restarting it.
     expect(tokens.state.exchanges).toBe(1);
+  });
+
+  it('re-applies firmware support gates to capabilities read after re-authentication', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const tokens = tokenService();
+    server({ accepts: (token) => token === tokens.state.token });
+    registered = handlers(tokens.service);
+    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
+
+    vi.setSystemTime(new Date(Date.now() + TOKEN_LIFETIME_MS + 1000));
+    const stale = tokens.state.token;
+    const { calls } = server({
+      accepts: (token) => token !== stale,
+      capabilityOverrides: {
+        supportedFirmwareFamilies: ['Marlin'],
+        supportedGcodeDialects: ['Marlin'],
+      },
+    });
+    registered = handlers(tokens.service);
+
+    const response = (await invoke(
+      IpcChannel.CalibrationGetAvailability,
+      undefined,
+    )) as {
+      available: boolean;
+      unavailableReason: string | null;
+      unavailableDetail: string | null;
+    };
+
+    expect(tokens.state.exchanges).toBe(1);
+    expect(response.available).toBe(false);
+    expect(response.unavailableReason).toBe('unsupportedFirmware');
+    expect(response.unavailableDetail).toContain('Klipper');
+    expect(countingExchangeReads(calls)).toBeGreaterThanOrEqual(1);
   });
 
   it('stops when the key exchange itself fails', async () => {

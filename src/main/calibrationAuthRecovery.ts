@@ -59,12 +59,14 @@ export type CalibrationAuthRecoveryStatus =
   /** A recovery ran moments ago; this failure was absorbed by the cooldown. */
   | 'cooldown';
 
-export interface CalibrationAuthRecoveryOutcome {
+export interface CalibrationAuthRecoveryOutcome<T> {
   readonly status: CalibrationAuthRecoveryStatus;
   /** Whether this call actually performed an exchange. */
   readonly attempted: boolean;
   /** Whether the app currently holds a usable calibration session. */
   readonly authenticated: boolean;
+  /** Capability evidence read under the recovered identity, when successful. */
+  readonly evidence: T | null;
 }
 
 /**
@@ -72,15 +74,21 @@ export interface CalibrationAuthRecoveryOutcome {
  * classifies the result. Keeping the transport outside this module is what lets
  * it be reasoned about — and tested — purely as a bound on attempts.
  */
-export type CalibrationAuthRecoveryAttempt = () => Promise<
-  'reauthenticated' | 'exchangeFailed' | 'stillUnauthenticated'
+export type CalibrationAuthRecoveryAttemptResult<T> =
+  | { readonly status: 'reauthenticated'; readonly evidence: T }
+  | {
+      readonly status: 'exchangeFailed' | 'stillUnauthenticated';
+      readonly evidence: null;
+    };
+export type CalibrationAuthRecoveryAttempt<T> = () => Promise<
+  CalibrationAuthRecoveryAttemptResult<T>
 >;
 
-export class CalibrationAuthRecovery {
+export class CalibrationAuthRecovery<T> {
   private readonly lastAttemptAt = new Map<string, number>();
   private readonly inFlight = new Map<
     string,
-    Promise<CalibrationAuthRecoveryStatus>
+    Promise<CalibrationAuthRecoveryAttemptResult<T>>
   >();
 
   constructor(private readonly now: () => number = () => Date.now()) {}
@@ -91,44 +99,54 @@ export class CalibrationAuthRecovery {
    */
   async noteUnauthenticated(
     profileId: string,
-    attempt: CalibrationAuthRecoveryAttempt,
-  ): Promise<CalibrationAuthRecoveryOutcome> {
+    attempt: CalibrationAuthRecoveryAttempt<T>,
+  ): Promise<CalibrationAuthRecoveryOutcome<T>> {
     const existing = this.inFlight.get(profileId);
     if (existing !== undefined) {
       // Joining the running recovery is what keeps a burst of concurrent 401s
       // — every open panel refreshing at once, say — to a single exchange.
-      const status = await existing.catch(
-        (): CalibrationAuthRecoveryStatus => 'exchangeFailed',
+      const result = await existing.catch(
+        (): CalibrationAuthRecoveryAttemptResult<T> => ({
+          status: 'exchangeFailed',
+          evidence: null,
+        }),
       );
       return {
         status: 'joined',
         attempted: false,
-        authenticated: status === 'reauthenticated',
+        authenticated: result.status === 'reauthenticated',
+        evidence: result.evidence,
       };
     }
     const last = this.lastAttemptAt.get(profileId);
     if (last !== undefined && this.now() - last < AUTH_RECOVERY_COOLDOWN_MS) {
-      return { status: 'cooldown', attempted: false, authenticated: false };
+      return {
+        status: 'cooldown',
+        attempted: false,
+        authenticated: false,
+        evidence: null,
+      };
     }
-    const run = (async (): Promise<CalibrationAuthRecoveryStatus> => {
+    const run = (async (): Promise<CalibrationAuthRecoveryAttemptResult<T>> => {
       try {
         return await attempt();
       } catch {
         // A recovery that throws is a recovery that failed. Surfacing the
         // diagnostic error instead of the original 401 would replace something
         // the operator can act on with something they cannot.
-        return 'exchangeFailed';
+        return { status: 'exchangeFailed', evidence: null };
       } finally {
         this.lastAttemptAt.set(profileId, this.now());
         this.inFlight.delete(profileId);
       }
     })();
     this.inFlight.set(profileId, run);
-    const status = await run;
+    const result = await run;
     return {
-      status,
+      status: result.status,
       attempted: true,
-      authenticated: status === 'reauthenticated',
+      authenticated: result.status === 'reauthenticated',
+      evidence: result.evidence,
     };
   }
 

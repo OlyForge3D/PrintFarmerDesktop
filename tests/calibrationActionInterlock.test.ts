@@ -288,13 +288,16 @@ function server(
   return { calls };
 }
 
-function handlers(profiles = fakeProfiles()): Map<string, Handler> {
+function handlers(
+  profiles = fakeProfiles(),
+  calibrationSidecar = sidecar,
+): Map<string, Handler> {
   electronState.handlers.clear();
   registerIpcHandlers(
     undefined,
     profiles as never,
-    sidecar as never,
-    sidecar as never,
+    calibrationSidecar as never,
+    calibrationSidecar as never,
     { initialize: () => Promise.resolve(), dispose: () => undefined } as never,
     {
       canonicalizePickerFile: (p: string) => Promise.resolve(p),
@@ -860,6 +863,28 @@ describe('enqueue is gated, but not on a bed-clear acknowledgement', () => {
       printRequest(),
     )) as { status: string };
     expect(response.status).toBe('error');
+    expect(calls.some((call) => call.startsWith('POST'))).toBe(false);
+  });
+
+  it('returns a typed sync-required refusal before enqueue', async () => {
+    const pendingSidecar = {
+      ...sidecar,
+      countCalibrationPendingOps: () => Promise.resolve(1),
+    };
+    const { calls } = server();
+    registered = handlers(fakeProfiles(), pendingSidecar);
+    await negotiate();
+
+    await expect(
+      invoke(IpcChannel.CalibrationStartPrint, printRequest()),
+    ).resolves.toMatchObject({
+      status: 'error',
+      error: {
+        code: 'syncRequired',
+        retryable: true,
+        reference: null,
+      },
+    });
     expect(calls.some((call) => call.startsWith('POST'))).toBe(false);
   });
 

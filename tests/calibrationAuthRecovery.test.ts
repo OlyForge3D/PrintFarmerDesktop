@@ -21,7 +21,7 @@ const PROFILE = '11111111-1111-4111-8111-111111111111';
 
 describe('recovery attempts are bounded per profile', () => {
   it('performs one exchange for concurrent rejections and reports the shared result', async () => {
-    const recovery = new CalibrationAuthRecovery();
+    const recovery = new CalibrationAuthRecovery<string>();
     let attempts = 0;
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
@@ -30,7 +30,7 @@ describe('recovery attempts are bounded per profile', () => {
     const attempt = async () => {
       attempts += 1;
       await gate;
-      return 'reauthenticated' as const;
+      return { status: 'reauthenticated' as const, evidence: 'caps-v2' };
     };
 
     const all = Promise.all([
@@ -46,15 +46,21 @@ describe('recovery attempts are bounded per profile', () => {
     // The callers that joined still learn whether they have a session, because
     // that is what decides the guidance they show.
     expect(outcomes.every((outcome) => outcome.authenticated)).toBe(true);
+    expect(outcomes.every((outcome) => outcome.evidence === 'caps-v2')).toBe(
+      true,
+    );
   });
 
   it('absorbs a rejection that arrives inside the cooldown', async () => {
     let clock = 1_000;
-    const recovery = new CalibrationAuthRecovery(() => clock);
+    const recovery = new CalibrationAuthRecovery<string>(() => clock);
     let attempts = 0;
     const attempt = () => {
       attempts += 1;
-      return Promise.resolve('stillUnauthenticated' as const);
+      return Promise.resolve({
+        status: 'stillUnauthenticated' as const,
+        evidence: null,
+      });
     };
 
     const first = await recovery.noteUnauthenticated(PROFILE, attempt);
@@ -71,11 +77,14 @@ describe('recovery attempts are bounded per profile', () => {
 
   it('attempts again once the cooldown has passed', async () => {
     let clock = 1_000;
-    const recovery = new CalibrationAuthRecovery(() => clock);
+    const recovery = new CalibrationAuthRecovery<string>(() => clock);
     let attempts = 0;
     const attempt = () => {
       attempts += 1;
-      return Promise.resolve('reauthenticated' as const);
+      return Promise.resolve({
+        status: 'reauthenticated' as const,
+        evidence: 'caps-v2',
+      });
     };
 
     await recovery.noteUnauthenticated(PROFILE, attempt);
@@ -86,7 +95,7 @@ describe('recovery attempts are bounded per profile', () => {
   });
 
   it('reports a throwing attempt as a failed exchange rather than raising', async () => {
-    const recovery = new CalibrationAuthRecovery();
+    const recovery = new CalibrationAuthRecovery<string>();
     const outcome = await recovery.noteUnauthenticated(PROFILE, () => {
       throw new Error('identity endpoint unreachable');
     });
@@ -96,15 +105,19 @@ describe('recovery attempts are bounded per profile', () => {
     // something they cannot.
     expect(outcome.status).toBe('exchangeFailed');
     expect(outcome.authenticated).toBe(false);
+    expect(outcome.evidence).toBeNull();
   });
 
   it('forgets the cooldown when a profile is discarded', async () => {
     const clock = 1_000;
-    const recovery = new CalibrationAuthRecovery(() => clock);
+    const recovery = new CalibrationAuthRecovery<string>(() => clock);
     let attempts = 0;
     const attempt = () => {
       attempts += 1;
-      return Promise.resolve('reauthenticated' as const);
+      return Promise.resolve({
+        status: 'reauthenticated' as const,
+        evidence: 'caps-v2',
+      });
     };
 
     await recovery.noteUnauthenticated(PROFILE, attempt);
