@@ -412,6 +412,156 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     expect(response.printersUnreadable).toBe(0);
   });
 
+  it('survives one candidate cancelled by the deadline, keeping siblings and the local scan', async () => {
+    // The headline fix of the last commit, previously untested. `cancelled` is
+    // what the transport produces when this handler's own
+    // `AbortSignal.timeout(15_000)` fires — there is no caller signal on this
+    // path — so rethrowing it rejected the `Promise.all` and discarded the
+    // whole response, local OrcaSlicer scan included. Driven through the real
+    // transport so the error is a genuine typed CalibrationHttpError with code
+    // `cancelled`, not a hand-built stand-in.
+    const healthyA = 'aaaaaaaa-1111-4111-8111-222222222222';
+    const cancelledOne = 'bbbbbbbb-1111-4111-8111-222222222222';
+    const healthyB = 'cccccccc-1111-4111-8111-222222222222';
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+
+        if (url.includes('calibration-candidates')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify([
+                candidateDto({ id: healthyA }),
+                candidateDto({ id: cancelledOne }),
+                candidateDto({ id: healthyB }),
+              ]),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+          );
+        }
+
+        // Exactly one printer's context aborts. `mapError` turns an AbortError
+        // into the typed `cancelled` code, which is the branch under test.
+        if (url.includes(cancelledOne)) {
+          return Promise.reject(
+            new DOMException('The operation was aborted.', 'AbortError'),
+          );
+        }
+
+        // The other two answer, but with a context this client cannot bind, so
+        // the assertion below is about survival rather than about profiles.
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    // It resolved at all: rethrowing `cancelled` made this reject outright.
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
+    // Exactly one printer failed, so exactly one is reported — the two whose
+    // contexts merely 404'd are a legitimate answer, not a fault.
+    expect(response.discovery.message).toContain('1 printer context');
+    // The local scan survives, which is the whole reason it runs outside the
+    // server path.
+    expect(response.localProfiles.map((p) => p.name)).toContain(TARGET_PROFILE);
+    // And the candidate-level counts are untouched by a context failure.
+    expect(response.printersUnreadable).toBe(0);
+    expect(response.printersTruncated).toBe(false);
+  });
+
+  it('reports a profile it refused, rather than presenting the list as complete', async () => {
+    // A profile existed and this client would not render it. Returning a bare
+    // null made that indistinguishable from "this printer has no profile", so
+    // the response claimed `ok` while a real profile was missing — the same
+    // silent loss, reached through the profile instead of the candidate.
+    //
+    // The fixture is the real *wire* DTO, not the normalised internal shape:
+    // an earlier version of this test used the latter, so the context failed
+    // `PrinterContextSchema.parse` outright and the assertion passed through
+    // the generic `invalidResponse` catch without ever reaching the `refused`
+    // branch it was written for. Every field below is required to get there —
+    // `id`, `snapshot.printerId`, the slicer identity, a single toolhead, and
+    // a filament profile that is legal on the wire.
+    const TOOLHEAD_GUID = 'dddddddd-1111-4111-8111-222222222222';
+    const FILAMENT_GUID = 'eeeeeeee-1111-4111-8111-222222222222';
+    const refusedContext = {
+      ...candidateDto(),
+      schemaVersion: '1.0',
+      snapshotSha256: 'a'.repeat(64),
+      capturedAtUtc: '2026-08-11T12:00:00Z',
+      capturedBySubject: 'subject-1',
+      configurationRevision: 7,
+      snapshot: {
+        printerId: 'aaaaaaaa-1111-4111-8111-222222222222',
+        configurationRevision: 7,
+        snapshotSha256: 'a'.repeat(64),
+        toolheads: [{ id: TOOLHEAD_GUID, index: 0, nozzleDiameter: 0.4 }],
+        profiles: {
+          filament: {
+            id: FILAMENT_GUID,
+            name: 'Generic PLA @0.4 nozzle',
+            // Legal on the wire (`.max(256)`, no `.min`), refused by
+            // `OrcaProfileEntry.profileRevision`, which is `.min(1)`.
+            profileRevision: '',
+          },
+        },
+      },
+    };
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        const body = url.includes('calibration-candidates')
+          ? [candidateDto()]
+          : refusedContext;
+        return Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const response = (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+
+    // It must not claim the list is complete...
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
+    expect(response.discovery.kind).not.toBe('ok');
+    // ...and exactly one printer must be named, not zero and not the whole
+    // farm, so a reverted fold fails loudly rather than quietly.
+    expect(response.discovery.message).toContain('1 printer context');
+    // The refused profile is genuinely absent, which is what makes the
+    // qualification necessary rather than decorative.
+    expect(response.profiles).toEqual([]);
+    // Candidate parsing was clean; the loss happened at the profile.
+    expect(response.printersUnreadable).toBe(0);
+  });
+
   it('will not let the server set the unreadable count itself', async () => {
     // Client-derived by counting failures. A payload asserting its own count
     // must not be believed, or the number would be forgeable by the party it

@@ -29,6 +29,7 @@ import {
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_PRINTER_CANDIDATES,
   CalibrationPrinterCandidate,
+  type OrcaProfileEntry,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -140,7 +141,7 @@ import {
   prepareCalibrationWorkspaceSave,
   projectCalibrationEligibility,
   projectCalibrationPrinterContext,
-  projectPrintFarmerOrcaProfile,
+  projectPrintFarmerOrcaProfileResult,
   supportsKlipper,
   supportsOrcaSlicer,
   type RemoteCalibrationPrinterCandidate,
@@ -3069,9 +3070,7 @@ export function registerIpcHandlers(
             !isExplicitCalibrationEligibilityComplete(candidate)
           ) {
             return {
-              pfEntries: [] as ReturnType<
-                typeof projectPrintFarmerOrcaProfile
-              >[],
+              pfEntries: [] as OrcaProfileEntry[],
               localEntries: [] as Awaited<
                 ReturnType<typeof discoverLocalOrcaFilamentProfiles>
               >,
@@ -3085,7 +3084,10 @@ export function registerIpcHandlers(
               candidate.printerId,
               signal,
             );
-            const pfEntry = projectPrintFarmerOrcaProfile(candidate, context);
+            const projection = projectPrintFarmerOrcaProfileResult(
+              candidate,
+              context,
+            );
             // Discover locally installed OrcaSlicer profiles compatible with
             // this printer context. These are real files on the user's machine
             // and allow the user to use the local install as a base for export.
@@ -3093,9 +3095,12 @@ export function registerIpcHandlers(
               context,
             ).catch(() => []);
             return {
-              pfEntries: pfEntry ? [pfEntry] : [],
+              pfEntries: projection.kind === 'entry' ? [projection.entry] : [],
               localEntries,
-              failed: false,
+              // A profile this client refused is a real profile missing from
+              // the list, not a printer that has none — counted so the answer
+              // is reported as partial rather than as complete.
+              failed: projection.kind === 'refused',
             };
           } catch (error) {
             // 404 means this printer simply has no calibration context — a
@@ -3127,12 +3132,10 @@ export function registerIpcHandlers(
           }
         }),
       );
-      const profilesByScope = new Map<
-        string,
-        NonNullable<(typeof discovered)[number]['pfEntries'][number]>
-      >();
-      // Printers whose context could not be read. Their profiles are missing
-      // from the list below, so reporting an unqualified `ok` would describe a
+      const profilesByScope = new Map<string, OrcaProfileEntry>();
+      // Printers whose profile is missing because something failed rather than
+      // because they have none: a context that could not be read, or a profile
+      // this client refused. Reporting an unqualified `ok` would describe a
       // complete answer that is not one.
       const unreadableContexts = discovered.filter(
         (entry) => entry.failed,
@@ -3149,7 +3152,6 @@ export function registerIpcHandlers(
       }
       for (const { pfEntries, localEntries } of discovered) {
         for (const profile of pfEntries) {
-          if (profile === null) continue;
           const scope = [
             profile.orcaProfileId,
             profile.printerId,

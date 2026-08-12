@@ -1089,10 +1089,27 @@ export function isExplicitCalibrationContextComplete(
   );
 }
 
-export function projectPrintFarmerOrcaProfile(
+/**
+ * Why a printer contributed no bound profile, distinguished from *that* it
+ * contributed none.
+ *
+ * `none` is an ordinary answer: the printer is offline, ineligible, its
+ * context is stale or incomplete, or no single toolhead matches. `refused` is
+ * a fault: a profile existed and this client would not render it, so a real
+ * profile is missing from the list. Collapsing the two into `null` made the
+ * fault invisible — the handler reported a complete list while a printer's
+ * profile had been dropped, which is the silent loss this contract exists to
+ * remove, reached through the profile rather than the candidate.
+ */
+export type CalibrationOrcaProfileProjection =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'refused' }
+  | { readonly kind: 'entry'; readonly entry: OrcaProfileEntry };
+
+export function projectPrintFarmerOrcaProfileResult(
   candidate: RemoteCalibrationPrinterCandidate,
   context: RemoteCalibrationPrinterContext,
-): OrcaProfileEntry | null {
+): CalibrationOrcaProfileProjection {
   if (
     !candidate.isOnline ||
     !isExplicitCalibrationEligibilityComplete(candidate) ||
@@ -1108,17 +1125,16 @@ export function projectPrintFarmerOrcaProfile(
     context.nozzleDiameterMm === null ||
     context.profileRevision === null
   ) {
-    return null;
+    return { kind: 'none' };
   }
   const matchingToolheads = context.toolheads.filter(
     (toolhead) => toolhead.nozzle.diameterMm === context.nozzleDiameterMm,
   );
   if (matchingToolheads.length !== 1) {
-    return null;
+    return { kind: 'none' };
   }
   const toolhead = matchingToolheads[0]!;
-  // `safeParse`, returning null on failure like the eight other unusable
-  // -context conditions above. A bare throwing `.parse` here escaped the
+  // `safeParse` rather than a throwing `.parse`: a bare throw here escaped the
   // per-printer catch in the profiles handler, rejected the `Promise.all` it
   // ran inside, and took the whole response with it — including the local
   // OrcaSlicer scan that the handler deliberately performs outside the server
@@ -1126,6 +1142,10 @@ export function projectPrintFarmerOrcaProfile(
   // bounds are looser than this contract in places (`profileRevision` and
   // `snapshotSha256` admit `""` upstream but are `.min(1)` here), so an empty
   // string from an ordinary serializer was enough to trigger it.
+  //
+  // Failure is reported as `refused`, deliberately *unlike* the conditions
+  // above: those are absences, this is a profile that existed and was not
+  // rendered.
   const entry = OrcaProfileEntry.safeParse({
     orcaProfileId: context.orcaProfileId,
     // The GUID above identifies the profile; only this name can be matched
@@ -1150,7 +1170,25 @@ export function projectPrintFarmerOrcaProfile(
         : null,
     exportable: false,
   });
-  return entry.success ? entry.data : null;
+  return entry.success
+    ? { kind: 'entry', entry: entry.data }
+    : // A profile existed and this client refused it. Reported as a fault
+      // rather than as "this printer has no profile", so the handler can say
+      // the list is partial instead of presenting it as complete.
+      { kind: 'refused' };
+}
+
+/**
+ * The {@link projectPrintFarmerOrcaProfileResult} shape callers want when they
+ * only need the entry, and a refusal is indistinguishable from an absence to
+ * them.
+ */
+export function projectPrintFarmerOrcaProfile(
+  candidate: RemoteCalibrationPrinterCandidate,
+  context: RemoteCalibrationPrinterContext,
+): OrcaProfileEntry | null {
+  const result = projectPrintFarmerOrcaProfileResult(candidate, context);
+  return result.kind === 'entry' ? result.entry : null;
 }
 
 export function projectCalibrationPrinterContext(

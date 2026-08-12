@@ -18,6 +18,7 @@ import {
   projectCalibrationEligibility,
   isExplicitCalibrationEligibilityComplete,
   projectPrintFarmerOrcaProfile,
+  projectPrintFarmerOrcaProfileResult,
 } from '../src/main/calibrationWire.js';
 
 const PRINTER_GUID = 'aaaaaaaa-1111-4111-8111-222222222222';
@@ -311,6 +312,40 @@ describe('one printer context cannot reject the whole profiles request', () => {
         eligibleContext({ profileRevision: '' }),
       ),
     ).toBeNull();
+  });
+
+  it('distinguishes a profile it refused from a printer that has none', () => {
+    // Both produce no entry, but only one is a fault. Collapsing them into
+    // `null` let the handler report a complete list while a real profile was
+    // missing — the same silent loss, reached through the profile rather than
+    // the candidate.
+    expect(
+      projectPrintFarmerOrcaProfileResult(
+        eligibleCandidate,
+        eligibleContext({ profileRevision: '' }),
+      ).kind,
+    ).toBe('refused');
+    expect(
+      projectPrintFarmerOrcaProfileResult(
+        eligibleCandidate,
+        eligibleContext({ snapshotId: '' }),
+      ).kind,
+    ).toBe('refused');
+
+    // An offline printer legitimately has no bound profile: an absence, not a
+    // fault, and it must not be reported as one.
+    expect(
+      projectPrintFarmerOrcaProfileResult(
+        { ...eligibleCandidate, isOnline: false },
+        eligibleContext(),
+      ).kind,
+    ).toBe('none');
+
+    // And a context this client can bind yields the entry itself.
+    expect(
+      projectPrintFarmerOrcaProfileResult(eligibleCandidate, eligibleContext())
+        .kind,
+    ).toBe('entry');
   });
 
   it('returns null for an empty snapshot id, rather than throwing', () => {

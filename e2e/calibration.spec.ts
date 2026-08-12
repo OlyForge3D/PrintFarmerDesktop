@@ -635,6 +635,11 @@ test.beforeEach(async ({ browserName }) => {
             exportable: true,
           },
         ],
+        // Required, non-defaulted on the response contract, and the preload
+        // re-parses — a fixture without them yields a rejection rather than a
+        // fixture the moment any e2e flow calls this bridge method.
+        printersUnreadable: 0,
+        printersTruncated: false,
       }));
 
       // Note: calibration:startGeneration, calibration:getOrchestrationStatus,
