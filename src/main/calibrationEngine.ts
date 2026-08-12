@@ -19,7 +19,9 @@
  */
 
 import {
+  CALIBRATION_PERMISSIONS,
   CalibrationSyncPhase,
+  hasCalibrationPermission,
   type CalibrationSyncStatus,
   type CalibrationConflict,
 } from '@shared/ipc';
@@ -54,6 +56,7 @@ export type CalibrationEngineErrorCode =
   | 'NOT_FOUND'
   | 'UNAVAILABLE'
   | 'CAPABILITIES_MISMATCH'
+  | 'forbidden'
   | 'CANCELLED'
   | 'DISPOSED';
 
@@ -205,6 +208,12 @@ export interface CalibrationSidecar {
 const PULL_LIMIT = 500;
 const PUSH_BATCH_SIZE = 20;
 
+/** A sync status paired with the typed code for *that* invocation. */
+export interface CalibrationSyncOutcome {
+  readonly status: CalibrationSyncStatus;
+  readonly errorCode: CalibrationLogErrorCode | null;
+}
+
 export class CalibrationSyncEngine {
   private disposed = false;
   private readonly diagnostics: CalibrationDiagnosticsStore;
@@ -233,10 +242,38 @@ export class CalibrationSyncEngine {
    * 4. Hydrate REST aggregates for each changed entity.
    * 5. Commit cursor atomically per page.
    */
+  /**
+   * Synchronise, returning the typed failure code alongside the status.
+   *
+   * The code is returned rather than left in the diagnostics singleton because
+   * that slot is shared: two concurrent syncs, or an aborted one replaced by its
+   * successor, could make an invocation miss its own authorization failure or
+   * act on another's. A caller deciding whether *its* sync was refused needs an
+   * answer that belongs to it.
+   */
   async syncNow(
     profileId: string,
     projectId: string | null,
     signal: AbortSignal,
+    authorizeApply: () => boolean = () => true,
+  ): Promise<CalibrationSyncOutcome> {
+    const captured: { code: CalibrationLogErrorCode | null } = { code: null };
+    const status = await this.runSync(
+      profileId,
+      projectId,
+      signal,
+      captured,
+      authorizeApply,
+    );
+    return { status, errorCode: captured.code };
+  }
+
+  private async runSync(
+    profileId: string,
+    projectId: string | null,
+    signal: AbortSignal,
+    captured: { code: CalibrationLogErrorCode | null },
+    authorizeApply: () => boolean,
   ): Promise<CalibrationSyncStatus> {
     this.requireNotDisposed();
 
@@ -259,10 +296,17 @@ export class CalibrationSyncEngine {
     // on a CalibrationHttpError carries the backend's ProblemDetails `detail`.
     // The record is therefore built here, where the *typed* code is still in
     // hand, rather than in the IPC handler where only the string survives.
+    //
+    // The code is also carried on the returned status. The handler used to
+    // recover it by reading the diagnostics singleton after this call, which is
+    // a shared slot: two concurrent syncs, or an aborted one replaced by its
+    // successor, could make an invocation miss its own authorization failure or
+    // inherit another's. A value returned to the caller belongs to that caller.
     const finish = (
       outcome: 'ok' | 'failed',
       errorCode: CalibrationLogErrorCode | null,
     ): void => {
+      captured.code = errorCode;
       this.diagnostics.recordSyncOutcome({ outcome, errorCode, correlationId });
       emitCalibrationLog({
         level: outcome === 'failed' ? 'error' : 'info',
@@ -288,6 +332,7 @@ export class CalibrationSyncEngine {
         projectId,
         context.baseUrl,
         signal,
+        authorizeApply,
       );
       status.pushedOperations = pushResult.pushed;
       status.conflictCount += pushResult.conflicts;
@@ -415,6 +460,17 @@ export class CalibrationSyncEngine {
           `Server requires ${REQUIRED_SLICER_ENGINE} as the upstream slicer for calibration.`,
         );
       }
+      if (
+        !hasCalibrationPermission(
+          caps.grantedScopes,
+          CALIBRATION_PERMISSIONS.update,
+        )
+      ) {
+        throw new CalibrationEngineError(
+          'forbidden',
+          `Calibration synchronization requires '${CALIBRATION_PERMISSIONS.update}'.`,
+        );
+      }
     } catch (error) {
       if (error instanceof CalibrationEngineError) throw error;
       if (error instanceof CalibrationHttpError && error.code === 'notFound') {
@@ -436,6 +492,7 @@ export class CalibrationSyncEngine {
     projectId: string | null,
     baseUrl: string,
     signal: AbortSignal,
+    authorizeApply: () => boolean,
   ): Promise<{ pushed: number; conflicts: number }> {
     let pushed = 0;
     let conflicts = 0;
@@ -470,6 +527,12 @@ export class CalibrationSyncEngine {
         };
 
         try {
+          if (signal.aborted || !authorizeApply()) {
+            throw new CalibrationEngineError(
+              'CANCELLED',
+              'Calibration synchronization authorization changed before dispatch.',
+            );
+          }
           const result = await this.http.apply(
             profileId,
             baseUrl,

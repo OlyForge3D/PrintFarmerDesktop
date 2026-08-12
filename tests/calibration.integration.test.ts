@@ -590,7 +590,7 @@ describe('CalibrationSyncEngine integration', () => {
     const profileService = fakeProfileService();
     const engine = new CalibrationSyncEngine(http, sidecar, profileService);
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -650,7 +650,7 @@ describe('CalibrationSyncEngine integration', () => {
       sidecar,
       fakeProfileService(),
     );
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -701,7 +701,7 @@ describe('CalibrationSyncEngine integration', () => {
       sidecar,
       fakeProfileService(),
     );
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -778,7 +778,7 @@ describe('CalibrationSyncEngine integration', () => {
       sidecar,
       fakeProfileService(),
     );
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       controller.signal,
@@ -891,7 +891,7 @@ describe('CalibrationSyncEngine integration', () => {
       fakeProfileService(),
     );
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -922,7 +922,7 @@ describe('CalibrationSyncEngine integration', () => {
       fakeProfileService(),
     );
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -946,7 +946,7 @@ describe('CalibrationSyncEngine integration', () => {
       fakeProfileService(),
     );
 
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -1414,7 +1414,7 @@ describe('Two-device divergent offline convergence', () => {
     );
 
     // First sync: creates a conflict
-    const status1 = await engine.syncNow(
+    const { status: status1 } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -1425,7 +1425,7 @@ describe('Two-device divergent offline convergence', () => {
     conflicts.length = 0; // simulate resolution clearing the conflict
 
     // Second sync: no conflict, succeeds
-    const status2 = await engine.syncNow(
+    const { status: status2 } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),
@@ -1707,7 +1707,7 @@ describe('Outbox idempotency and replay', () => {
       sidecar,
       fakeProfileService(),
     );
-    const status = await engine.syncNow(
+    const { status } = await engine.syncNow(
       PROFILE_ID,
       PROJECT_ID,
       AbortSignal.timeout(5000),

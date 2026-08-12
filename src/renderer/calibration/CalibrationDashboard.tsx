@@ -20,6 +20,8 @@ const availabilityCopy = {
     'Printer Calibration was disabled by the server operator. Ask the server operator to re-enable Printer Calibration, then refresh this workspace.',
   legacyServer:
     'This profile points to a server without the calibration API. Select a profile for a PrintFarmer server that exposes the calibration API, or upgrade that server.',
+  sessionExpired:
+    'Your PrintFarmer session expired or was revoked. Reconnect this profile to sign in again, then refresh this workspace.',
   noProfile: 'Select a PrintFarmer profile to continue.',
 } as const;
 

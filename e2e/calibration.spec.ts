@@ -24,10 +24,9 @@
  *   - CalibrationOrchestrationStatus: `orchestrationId` field renamed to `id`;
  *     new nullable fields (workerId, sourceArtifactId, finalArtifactId,
  *     manifestSha256, slicerBinarySha256) required.
- *   - CalibrationQueueJobState: `jobStatus`/`jobEtag`/`bedClearExpiresAtUtc`
- *     renamed to `status`/`rowVersion`/`acknowledgementExpiresAt`; new nullable
- *     required fields (jobKind, dispatchAttemptOutcome, bedClearState,
- *     calibrationAttemptId) added.
+ *   - CalibrationQueueJobState: `jobStatus`/`jobEtag` renamed to
+ *     `status`/`rowVersion`; exact-job lineage, logical revisions, and durable
+ *     bed-clear command fields are required.
  *
  * Tests NOT ported: lines 1405–2284 (D-07 DOM-coupled tests that reference
  * ~37 data-testid attributes absent from the merged implementation; adding
@@ -82,7 +81,6 @@ const requiredArtifacts = [
 
 // ─── Fixture constants ────────────────────────────────────────────────────────
 const F_NOW = '2026-07-29T10:00:00.000Z';
-const F_EXPIRY = new Date(Date.now() + 300_000).toISOString();
 const F_PROFILE_ID = 'f1111111-f111-4111-8111-111111111111';
 const F_PROJECT_ID = 'f2222222-f222-4222-8222-222222222222';
 const F_PRINTER_ID = 'f3333333-f333-4333-8333-333333333333';
@@ -1263,8 +1261,8 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
         printerId,
         projectId,
         attemptId,
+        orchestrationId,
         configRev,
-        expiry,
         now,
       },
     ) => {
@@ -1275,17 +1273,23 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
           jobId,
           jobKind: 'FilamentCalibration',
           rowVersion: 'W/"fixture-etag"',
+          jobRevision: 7,
           dispatchStateRowVersion: 'W/"fixture-dispatch"',
+          dispatchStateRevision: 3,
           status: 'Assigned',
           dispatchAttemptOutcome: null,
           bedClearState: 'None',
           gcodeFileId: gcodeId,
           assignedPrinterId: printerId,
           assignedPrinterName: 'Fixture Printer A',
-          acknowledgementExpiresAt: expiry,
+          acknowledgementExpiresAt: null,
           calibrationProjectId: projectId,
           calibrationAttemptId: attemptId,
+          calibrationOrchestrationId: orchestrationId,
           pinnedPrinterConfigRevision: configRev,
+          bedClearCommandId: null,
+          bedClearIdempotencyKeySha256: null,
+          bedClearExpiresAtUtc: null,
           priority: 50,
           queuePosition: 1,
           updatedAt: now,
@@ -1298,8 +1302,8 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
       printerId: F_PRINTER_ID,
       projectId: F_PROJECT_ID,
       attemptId: F_ATTEMPT_ID,
+      orchestrationId: F_ORCH_ID,
       configRev: F_CONFIG_REV,
-      expiry: F_EXPIRY,
       now: F_NOW,
     },
   );
@@ -1327,12 +1331,19 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
 
 // ─── D-07/B-02: acknowledgeCalibrationBedClear ────────────────────────────────
 
-test('calibration: acknowledgeCalibrationBedClear rejects request with missing rowVersion field (D-07/B-02)', async () => {
-  // All required fields present except rowVersion.
-  // Production handler: request.parse() rejects because rowVersion is
-  //   z.string().min(1).max(256) (required).
-  // Zod error message JSON contains "rowVersion" in the path.
-  // Mutation target: CalibrationAcknowledgeBedClearRequest.rowVersion → optional
+test('calibration: acknowledgeCalibrationBedClear fences the selected profile before it validates the payload (D-07/B-02)', async () => {
+  // This app has no selected server profile, so the request is refused for that
+  // reason and never reaches `request.parse()`.
+  //
+  // The ordering is deliberate, not incidental. Every calibration handler used
+  // to strict-parse its whole payload before checking the profile, which made
+  // cross-profile refusal a downstream consequence of validation succeeding:
+  // add a required field to a request and every cross-profile test for that
+  // channel starts passing for the wrong reason — a validation error standing in
+  // for a refusal the profile check never performed. This test pins the order.
+  //
+  // Mutation target: move `requireSelectedCalibrationProfile` after the schema
+  // parse and the assertion below fails.
   const msg = await page.evaluate(async () => {
     try {
       await (
@@ -1346,7 +1357,8 @@ test('calibration: acknowledgeCalibrationBedClear rejects request with missing r
         jobId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
         printerId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
         operationId: '44444444-4444-4444-8444-444444444444',
-        // rowVersion intentionally absent
+        // rowVersion intentionally absent: the payload is invalid *as well as*
+        // being for an unselected profile, and the profile refusal wins.
         dispatchStateRowVersion: 'W/"def456"',
       });
       return null;
@@ -1355,8 +1367,10 @@ test('calibration: acknowledgeCalibrationBedClear rejects request with missing r
     }
   });
   expect(msg).not.toBeNull();
-  // Zod path ["rowVersion"] serialises into the error message JSON
-  expect(msg).toMatch(/rowVersion/i);
+  expect(msg).toMatch(/does not match the selected profile/i);
+  // Control: the refusal is the profile fence, not the schema. If the schema
+  // spoke first this would name the missing field instead.
+  expect(msg).not.toMatch(/rowVersion/i);
 });
 
 test('calibration: acknowledgeCalibrationBedClear preload response schema parses valid fixture response (D-07/B-02)', async () => {

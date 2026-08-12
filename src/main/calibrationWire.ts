@@ -427,6 +427,24 @@ const RemoteCalibrationCandidateDto = z
         .catch(UNRECOGNIZED_CALIBRATION_INPUT),
     ),
     rejectionReasons: boundedWireList(RemoteCalibrationRejectionReason),
+    /**
+     * Whether the server actually resolved this printer's slicer profiles when
+     * it produced this record.
+     *
+     * Additive: PrintFarmer builds predating the follow-up that introduces it
+     * omit the field. Absence therefore means *unknown*, and unknown is treated
+     * as "not evaluated" — never as evaluated. Reading an omitted field as a
+     * full evaluation would let a candidate listing, which by design does not
+     * resolve profiles, stand in for the authoritative per-printer context.
+     *
+     * `false` on the candidate list is the expected steady state: listing is a
+     * cheap eligibility screen, and profile resolution happens once a printer is
+     * selected.
+     */
+    profilesEvaluated: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .passthrough();
 
@@ -591,6 +609,11 @@ export const RemoteCalibrationPrinterCandidate =
      * silently normalised into an ordinary refusal.
      */
     serverIncoherence: detectServerEligibilityIncoherence(dto),
+    /**
+     * Whether the server resolved this printer's profiles. Absent on builds
+     * predating the field, where it stays null and is read as "not evaluated".
+     */
+    profilesEvaluated: dto.profilesEvaluated,
     eligibility: deriveCandidateEligibility(dto),
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<
@@ -728,6 +751,21 @@ const RemoteToolheadDto = z
       .number()
       .positive()
       .max(10_000)
+      .nullish()
+      .transform((v) => v ?? null),
+    /**
+     * Maximum hotend temperature this toolhead accepts.
+     *
+     * The server treats it as required for eligibility — it emits
+     * `hotend_max_temperature_missing` when absent — so an eligible printer
+     * always carries it. Parsed here so the baseline temperature an operator
+     * enters can be range-checked against the hardware rather than against a
+     * fabricated ceiling.
+     */
+    maxHotendTemperature: z
+      .number()
+      .positive()
+      .max(1_000)
       .nullish()
       .transform((v) => v ?? null),
   })
@@ -920,6 +958,40 @@ export const RemoteCalibrationPrinterContext =
     const snapshot = dto.snapshot;
     const filament = snapshot?.profiles?.filament ?? null;
     const machine = snapshot?.profiles?.machine ?? null;
+    const process = snapshot?.profiles?.process ?? null;
+    const exactProfileIdentity = (
+      profile: typeof filament,
+    ): {
+      backendProfileId: string;
+      orcaProfileName: string;
+      profileRevision: string;
+      contentHash: string;
+    } | null =>
+      profile !== null &&
+      profile.profileRevision !== null &&
+      profile.profileRevision.length > 0 &&
+      profile.sha256 !== null &&
+      /^[a-f0-9]{64}$/.test(profile.sha256)
+        ? {
+            backendProfileId: profile.id,
+            orcaProfileName: profile.name,
+            profileRevision: profile.profileRevision,
+            contentHash: profile.sha256,
+          }
+        : null;
+    const machineIdentity = exactProfileIdentity(machine);
+    const processIdentity = exactProfileIdentity(process);
+    const filamentIdentity = exactProfileIdentity(filament);
+    const profileIdentities =
+      machineIdentity !== null &&
+      processIdentity !== null &&
+      filamentIdentity !== null
+        ? {
+            machine: machineIdentity,
+            process: processIdentity,
+            filament: filamentIdentity,
+          }
+        : null;
     const toolheads = (snapshot?.toolheads ?? []).map((toolhead) => ({
       toolId: toolhead.id,
       toolheadId: toolhead.id,
@@ -938,6 +1010,23 @@ export const RemoteCalibrationPrinterContext =
         material: toolhead.nozzleMaterial,
       },
     }));
+    // Machine limits the DTO does publish, taken across the toolheads it
+    // describes. The most permissive toolhead sets the ceiling because a
+    // baseline value is only unsafe if no installed hardware can accept it.
+    const maximumVolumetricRateMm3S = snapshot?.toolheads.reduce<number | null>(
+      (highest, toolhead) =>
+        toolhead.maxVolumetricFlow === null
+          ? highest
+          : Math.max(highest ?? 0, toolhead.maxVolumetricFlow),
+      null,
+    );
+    const maximumNozzleTemperatureC = snapshot?.toolheads.reduce<number | null>(
+      (highest, toolhead) =>
+        toolhead.maxHotendTemperature === null
+          ? highest
+          : Math.max(highest ?? 0, toolhead.maxHotendTemperature),
+      null,
+    );
     return {
       printerId: dto.id,
       displayName: dto.name,
@@ -960,6 +1049,9 @@ export const RemoteCalibrationPrinterContext =
       /** Machine profile identity, kept distinct from the filament profile. */
       machineProfileId: machine?.id ?? null,
       machineProfileName: machine?.name ?? null,
+      processProfileId: process?.id ?? null,
+      processProfileName: process?.name ?? null,
+      profileIdentities,
       profileRevision: filament?.profileRevision ?? null,
       contentHash: filament?.sha256 ?? null,
       bedWidthMm: snapshot?.buildVolume?.x ?? null,
@@ -979,24 +1071,48 @@ export const RemoteCalibrationPrinterContext =
        */
       snapshotRevision: snapshot?.configurationRevision ?? null,
       /**
-       * `CalibrationContextDto` exposes no safety-interlock block: there is no
-       * server field for emergency-stop availability, thermal-protection
-       * confirmation or ventilation assessment. Reporting `null` reflects that
-       * absence without inventing safety assurances the server never made.
-       * Enforcement for generation and print start is the server's own
-       * refusal plus the `calibrationGenerationEnabled` capability flag — this
-       * module performs no additional client-side safety-interlock check.
-       * Discovery and local profile inspection do not depend on it.
+       * Machine limits come from the snapshot; the interlock assertions do not
+       * exist at all.
+       *
+       * `CalibrationContextDto` publishes real physical limits — build volume,
+       * maximum bed temperature, per-toolhead maximum volumetric flow and nozzle
+       * temperature — and those are carried through here so baseline values can
+       * be range-checked against the machine the operator actually selected.
+       *
+       * What it does not publish is any statement about emergency-stop
+       * availability, thermal-protection confirmation or ventilation assessment.
+       * Those stay `false`: absent evidence is not a safety assurance, and the
+       * app must never claim the server confirmed something it never mentioned.
+       *
+       * Reporting the whole block as `null` (as an earlier revision did) conflated
+       * the two. It discarded limits the server *had* supplied and made
+       * `bindingFromContext` unsatisfiable, so no calibration project could be
+       * created against any real server at all.
+       *
+       * Enforcement for generation and print start lives in
+       * `calibrationActionGate.ts`, not here.
        */
-      safety: null as {
-        buildVolumeMm: { x: number; y: number; z: number };
-        maximumNozzleTemperatureC: number;
-        maximumBedTemperatureC: number;
-        maximumVolumetricRateMm3S: number;
-        emergencyStopAvailable: boolean;
-        thermalProtectionConfirmed: boolean;
-        ventilationAssessed: boolean;
-      } | null,
+      safety:
+        snapshot?.buildVolume == null ||
+        snapshot.maxBedTemperature === null ||
+        maximumNozzleTemperatureC === null ||
+        maximumVolumetricRateMm3S === null
+          ? null
+          : {
+              buildVolumeMm: {
+                x: snapshot.buildVolume.x,
+                y: snapshot.buildVolume.y,
+                z: snapshot.buildVolume.z,
+              },
+              maximumNozzleTemperatureC,
+              maximumBedTemperatureC: snapshot.maxBedTemperature,
+              maximumVolumetricRateMm3S,
+              // Never asserted by PrintFarmer. Machine-moving actions are gated
+              // in `calibrationActionGate.ts` on evidence that does exist.
+              emergencyStopAvailable: false,
+              thermalProtectionConfirmed: false,
+              ventilationAssessed: false,
+            },
       /**
        * Likewise, per-printer calibration permissions are not part of the
        * context DTO. Authorisation is enforced by the server on every call and
@@ -1022,11 +1138,53 @@ export const RemoteCalibrationPrinterContext =
       supportsFirmwareRetraction: dto.supportsFirmwareRetraction,
       capturedBySubject: dto.capturedBySubject,
       schemaVersion: dto.schemaVersion,
+      /**
+       * Whether the server resolved this printer's slicer profiles when it
+       * produced this record.
+       *
+       * Carried, not dropped. The candidate DTO and the context DTO share this
+       * member, and a context is only authoritative when it is exactly `true`.
+       * Losing it here left the downstream completeness and binding checks with
+       * nothing to test, so an explicitly ineligible context could still bind
+       * purely because its identity fields happened to be populated.
+       */
+      profilesEvaluated: dto.profilesEvaluated,
     };
   });
 export type RemoteCalibrationPrinterContext = z.infer<
   typeof RemoteCalibrationPrinterContext
 >;
+
+/**
+ * Whether a context is the server's *authoritative* verdict on a printer,
+ * rather than the preliminary screen the candidate list performs.
+ *
+ * Requires all four, and fails closed on each:
+ *
+ * - `profilesEvaluated === true`. Exactly true: `false` says the server did not
+ *   resolve profiles, and `null` — an older build that omits the field — says
+ *   nothing at all. Neither is a statement that profiles were evaluated, and
+ *   reading silence as one would let the cheap candidate screen stand in for
+ *   the resolution it deliberately does not perform.
+ * - `eligible === true`. The server's own verdict, not re-derived here.
+ * - No `missingInputs` and no `rejectionReasons`. PrintFarmer derives
+ *   `Eligible` from `reasons.Count == 0`, so a record carrying both is
+ *   self-contradicting and must not be treated as a clean pass.
+ *
+ * Candidate eligibility is deliberately *not* consulted. A candidate passing
+ * basic screening is enough to list and select a printer; it is never enough to
+ * bind a calibration project to one.
+ */
+export function isAuthoritativeCalibrationContext(
+  context: RemoteCalibrationPrinterContext,
+): boolean {
+  return (
+    context.profilesEvaluated === true &&
+    context.eligible === true &&
+    context.missingInputs.length === 0 &&
+    context.rejectionReasons.length === 0
+  );
+}
 
 export function isExplicitCalibrationEligibilityComplete(
   candidate: RemoteCalibrationPrinterCandidate,
@@ -1053,29 +1211,39 @@ export function projectCalibrationEligibility(
 }
 
 /**
- * Whether a context carries every identity the calibration contract actually
- * defines.
+ * Whether a context carries every identity the calibration contract defines
+ * *and* is the server's authoritative verdict.
  *
- * Scope note: this predicate answers "is the server's description of this
- * printer complete enough to identify and list it", not "is it safe to print".
- * It deliberately does **not** consult `safety` or `permissions`, because
- * `CalibrationContextDto` has no such members — requiring them here made the
- * predicate unsatisfiable against every real server, which silently disabled
- * profile listing rather than gating anything.
+ * Scope note: this predicate answers "is this snapshot fit to bind a project
+ * to", not "is it safe to print". It deliberately does **not** consult `safety`
+ * or `permissions`, because `CalibrationContextDto` has no such members —
+ * requiring them made the predicate unsatisfiable against every real server,
+ * which silently disabled profile listing rather than gating anything.
  *
- * The safety and permission gates that actually run today are the server's
- * own refusal (PrintFarmer does not permit generation or print start unless
- * it is prepared to serve them) and the `calibrationGenerationEnabled`
- * capability flag, checked at the call sites that trigger those actions.
- * There is no additional client-side safety-interlock predicate in this
- * module beyond the drift detection performed by
- * {@link doesCalibrationWorkspaceMatchContext} when a `safety` block is
- * present.
+ * It does require {@link isAuthoritativeCalibrationContext}. Identity fields
+ * being populated says only that the server described the printer; it says
+ * nothing about whether the server was willing to calibrate it. Without this,
+ * a context explicitly reporting `eligible: false` with rejection reasons could
+ * still be marked current and bound, because every id it needed happened to be
+ * present — the candidate list's preliminary pass standing in for a resolution
+ * it never performed.
+ *
+ * Authorisation for anything that mutates server state or moves a machine lives
+ * in `calibrationActionGate.ts`, which gates on evidence that exists: the
+ * canonical `effectivePermissions`, the negotiated capability flags, the
+ * printer/revision/snapshot/tool binding, and a main-process bed-clear
+ * acknowledgement ledger. Until that gate existed the only checks that actually
+ * ran were the server's own refusal and the `calibrationGenerationEnabled`
+ * flag — a comment here once named `isCalibrationContextSafetyAssured` as the
+ * interlock, but that predicate had no call sites, so the protection it
+ * described did not exist. This module still performs no interlock of its own
+ * beyond the drift detection in {@link doesCalibrationWorkspaceMatchContext}.
  */
 export function isExplicitCalibrationContextComplete(
   context: RemoteCalibrationPrinterContext,
 ): boolean {
   return (
+    isAuthoritativeCalibrationContext(context) &&
     context.configurationId !== null &&
     context.configurationRevision !== null &&
     context.snapshotId !== null &&
@@ -1085,6 +1253,7 @@ export function isExplicitCalibrationContextComplete(
     context.orcaProfileId !== null &&
     context.orcaProfileName !== null &&
     context.profileRevision !== null &&
+    context.profileIdentities !== null &&
     context.toolheads.length > 0
   );
 }
@@ -1215,6 +1384,18 @@ export function projectCalibrationPrinterContext(
     nozzleDiameterMm: context.nozzleDiameterMm,
     snapshotAt: context.snapshotAt,
     isCurrent: context.isCurrent && complete,
+    /**
+     * Whether this is the server's authoritative verdict.
+     *
+     * Surfaced separately from `isCurrent` so the renderer can say *why* a
+     * loaded context cannot be bound: "the snapshot moved on" and "the server
+     * has not evaluated this printer's profiles" are different problems with
+     * different remedies, and collapsing them into one boolean left the
+     * operator with no way to tell which they were looking at.
+     */
+    evaluationScope: isAuthoritativeCalibrationContext(context)
+      ? 'full'
+      : 'preliminary',
     configurationId: context.configurationId,
     configurationRevision: context.configurationRevision,
     snapshotId: context.snapshotId,
@@ -1224,6 +1405,7 @@ export function projectCalibrationPrinterContext(
     slicerDistribution:
       context.slicerDistribution === 'upstream' ? 'upstream' : null,
     profileRevision: context.profileRevision,
+    profileIdentities: context.profileIdentities,
     contentHash:
       context.contentHash !== null && /^[a-f0-9]{64}$/.test(context.contentHash)
         ? context.contentHash
@@ -1271,13 +1453,38 @@ export function doesCalibrationWorkspaceMatchContext(
   request: CalibrationSaveWorkspaceStateRequest,
   context: RemoteCalibrationPrinterContext,
 ): boolean {
+  return doesCalibrationWorkspacePayloadMatchContext(
+    request.workspaceState,
+    context,
+  );
+}
+
+export function doesCalibrationWorkspacePayloadMatchContext(
+  workspaceState: CalibrationSaveWorkspaceStateRequest['workspaceState'],
+  context: RemoteCalibrationPrinterContext,
+): boolean {
   if (!context.isCurrent || !isExplicitCalibrationContextComplete(context)) {
     return false;
   }
-  const binding = request.workspaceState.domainState.binding;
+  const binding = workspaceState.domainState.binding;
   const printer = binding.printer;
   const snapshot = binding.snapshot;
-  const selectedProfile = request.workspaceState.selectedBaseProfile;
+  const selectedProfile = workspaceState.selectedBaseProfile;
+  const boundProfileIdentities = binding.profileIdentities;
+  const remoteProfileIdentities = context.profileIdentities;
+  const profileIdentitiesMatch =
+    boundProfileIdentities !== undefined &&
+    remoteProfileIdentities !== null &&
+    (['machine', 'process', 'filament'] as const).every((kind) => {
+      const bound = boundProfileIdentities[kind];
+      const remote = remoteProfileIdentities[kind];
+      return (
+        bound.backendProfileId === remote.backendProfileId &&
+        bound.orcaProfileName === remote.orcaProfileName &&
+        bound.profileRevision === remote.profileRevision &&
+        bound.contentHash === remote.contentHash
+      );
+    });
   const selectedToolhead = snapshot.toolheads.find(
     (toolhead) =>
       toolhead.toolId === binding.selectedToolId &&
@@ -1298,9 +1505,10 @@ export function doesCalibrationWorkspaceMatchContext(
   // compared exactly.
   //
   // This is drift detection, not authorisation: actions that move the machine
-  // are gated by the server's own refusal to perform them and by the
-  // `calibrationGenerationEnabled` capability flag — this module performs no
-  // additional client-side safety-interlock check of its own.
+  // are gated in `calibrationActionGate.ts` on canonical effective permissions,
+  // negotiated capability flags, the printer/revision/snapshot/tool binding and
+  // a main-process bed-clear acknowledgement ledger. This module performs no
+  // client-side interlock of its own; what follows is drift detection.
   const remoteSafety = context.safety;
   const safetyMatches =
     remoteSafety === null ||
@@ -1326,6 +1534,7 @@ export function doesCalibrationWorkspaceMatchContext(
     context.snapshotRevision === snapshot.snapshotRevision &&
     context.snapshotAt === snapshot.capturedAt &&
     context.configurationRevision === snapshot.configurationRevision &&
+    profileIdentitiesMatch &&
     safetyMatches &&
     selectedToolhead !== undefined &&
     remoteToolhead !== undefined &&
@@ -2286,6 +2495,9 @@ export const RemoteJobQueueJob = z
       .transform((v) => v ?? null),
     calibrationProjectId: ServerGuid.nullish().transform((v) => v ?? null),
     calibrationAttemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    calibrationOrchestrationId: ServerGuid.nullish().transform(
+      (v) => v ?? null,
+    ),
     pinnedPrinterConfigRevision: z
       .number()
       .int()
@@ -2308,6 +2520,13 @@ export const RemoteJobQueueJob = z
       .string()
       .nullish()
       .transform((v) => v ?? null),
+    bedClearCommandId: ServerGuid.nullish().transform((v) => v ?? null),
+    bedClearIdempotencyKeySha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullish()
+      .transform((v) => v ?? null),
+    bedClearExpiresAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
     priority: z.number().int(),
     queuePosition: z.number().int(),
     copies: z.number().int(),

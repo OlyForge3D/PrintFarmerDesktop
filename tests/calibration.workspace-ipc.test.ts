@@ -8,6 +8,7 @@ import {
   type CalibrationWorkspacePayload as CalibrationWorkspacePayloadType,
 } from '@shared/ipc';
 import {
+  isAuthoritativeCalibrationContext,
   isExplicitCalibrationContextComplete,
   isExplicitCalibrationEligibilityComplete,
   prepareCalibrationWorkspaceSave,
@@ -18,224 +19,29 @@ import {
   RemoteCalibrationPrinterCandidate,
   RemoteCalibrationPrinterContext,
 } from '../src/main/calibrationWire.js';
+import { evaluateCalibrationActionGate } from '../src/main/calibrationActionGate.js';
+import { calibrationContextDto } from './fixtures/calibrationContract.js';
 import { resolveCalibrationWorkspaceFreshness } from '../src/main/calibrationFreshness.js';
 import { CalibrationHttpError } from '../src/main/calibrationHttp.js';
+import { bindingFromContext } from '../src/renderer/calibration/projectEligibility.js';
 
-const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
-const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
-const OPERATION_ID = '33333333-3333-4333-8333-333333333333';
-const ATTEMPT_ID = '44444444-4444-4444-8444-444444444444';
-const OBSERVATION_ID = '55555555-5555-4555-8555-555555555555';
-const NOW = '2026-07-26T15:00:00.000Z';
-// Identities shaped like the server's: PrintFarmer keys printers, toolheads and
-// profiles by Guid, and identifies a snapshot by its content hash.
-const PRINTER_GUID = 'aaaaaaaa-1111-4111-8111-222222222222';
-const OTHER_PRINTER_GUID = 'bbbbbbbb-1111-4111-8111-222222222222';
-const FILAMENT_PROFILE_GUID = 'cccccccc-1111-4111-8111-222222222222';
-const TOOLHEAD_GUID = 'dddddddd-1111-4111-8111-222222222222';
-const SNAPSHOT_SHA = 'a'.repeat(64);
-const STAGE_IDS = [
-  'temperature',
-  'flowPass1',
-  'flowPass2',
-  'pressureAdvance',
-  'flowVerification',
-  'retraction',
-  'maximumVolumetricSpeed',
-  'shrinkage',
-  'finalVerification',
-] as const;
-
-function blankWorkflowDraft() {
-  return {
-    method: null,
-    observation: {
-      primary: '',
-      quality: '',
-      notes: '',
-      passed: false,
-      nominalXmm: '',
-      nominalYmm: '',
-      nominalZmm: '',
-      measuredXmm: '',
-      measuredYmm: '',
-      measuredZmm: '',
-    },
-    confidence: null,
-    reason: '',
-    photoAttemptId: null,
-    photoCaption: '',
-    photoOrder: 1,
-  };
-}
-
-function validWorkspace(): CalibrationWorkspacePayloadType {
-  const stages = Object.fromEntries(
-    STAGE_IDS.map((stageId) => [
-      stageId,
-      { stageId, status: 'notStarted', attemptIds: [] },
-    ]),
-  );
-  const workflowDrafts = Object.fromEntries(
-    STAGE_IDS.map((stageId) => [stageId, blankWorkflowDraft()]),
-  );
-  const snapshot = {
-    snapshotId: SNAPSHOT_SHA,
-    snapshotRevision: 7,
-    capturedAt: NOW,
-    configurationRevision: 7,
-    toolheads: [
-      {
-        toolId: TOOLHEAD_GUID,
-        toolheadId: TOOLHEAD_GUID,
-        nozzle: {
-          nozzleId: TOOLHEAD_GUID,
-          diameterMm: 0.4,
-          material: 'brass',
-        },
-        extruderType: 'directDrive',
-      },
-    ],
-    safety: {
-      buildVolumeMm: { x: 220, y: 220, z: 250 },
-      maximumNozzleTemperatureC: 300,
-      maximumBedTemperatureC: 120,
-      maximumVolumetricRateMm3S: 30,
-      emergencyStopAvailable: true,
-      thermalProtectionConfirmed: true,
-      ventilationAssessed: true,
-    },
-  };
-  return CalibrationWorkspacePayload.parse({
-    schemaVersion: 1,
-    domainState: {
-      schemaVersion: 1,
-      projectId: PROJECT_ID,
-      createdAt: NOW,
-      mode: 'coach',
-      baseline: {
-        nozzleTemperatureC: 210,
-        flowRatio: 1,
-        pressureAdvance: 0.04,
-        retractionLengthMm: 0.7,
-        maximumVolumetricRateMm3S: 20,
-        shrinkageCompensationXPercent: 0,
-        shrinkageCompensationYPercent: 0,
-        shrinkageCompensationZPercent: 0,
-      },
-      binding: {
-        printer: {
-          backendProfileId: PROFILE_ID,
-          backendPrinterId: PRINTER_GUID,
-          printerConfigurationId: PRINTER_GUID,
-          printerConfigurationRevision: 7,
-        },
-        snapshot,
-        selectedToolId: TOOLHEAD_GUID,
-        selectedToolheadId: TOOLHEAD_GUID,
-        selectedNozzleId: TOOLHEAD_GUID,
-        filament: {
-          filamentProjectId: 'filament-1',
-          provider: 'PrintFarmer',
-          product: 'PLA',
-          sku: 'PLA-BLACK',
-          spoolId: 'spool-1',
-        },
-      },
-      snapshotHistory: [snapshot],
-      currentStageId: 'temperature',
-      stages,
-      attempts: [],
-      history: [],
-      diagnostics: [],
-    },
-    metadata: { displayName: 'PLA calibration', description: '' },
-    stepDrafts: {},
-    workflowDrafts,
-    photos: [],
-    physicalMatch: null,
-    selectedBaseProfile: {
-      orcaProfileId: FILAMENT_PROFILE_GUID,
-      displayName: 'Upstream PLA',
-      source: 'printFarmer',
-      upstreamVerified: true,
-      printerId: PRINTER_GUID,
-      configurationRevision: 7,
-      snapshotId: SNAPSHOT_SHA,
-      toolId: TOOLHEAD_GUID,
-      toolheadId: TOOLHEAD_GUID,
-      nozzleId: TOOLHEAD_GUID,
-      nozzleDiameterMm: 0.4,
-      profileRevision: 'profile-r7',
-      contentHash: null,
-    },
-    selectedBaseProfileId: FILAMENT_PROFILE_GUID,
-    autosaveRevision: 0,
-  });
-}
-
-function completedTemperatureAttempt(
-  workspace: CalibrationWorkspacePayloadType,
-) {
-  const binding = workspace.domainState.binding;
-  return {
-    attemptId: ATTEMPT_ID,
-    stageId: 'temperature' as const,
-    method: 'temperatureTower' as const,
-    scope: {
-      backendProfileId: binding.printer.backendProfileId,
-      backendPrinterId: binding.printer.backendPrinterId,
-      printerConfigurationId: binding.printer.printerConfigurationId,
-      printerConfigurationRevision:
-        binding.printer.printerConfigurationRevision,
-      snapshotId: binding.snapshot.snapshotId,
-      snapshotRevision: binding.snapshot.snapshotRevision,
-      toolId: binding.selectedToolId,
-      toolheadId: binding.selectedToolheadId,
-      nozzleId: binding.selectedNozzleId,
-      filamentProjectId: binding.filament.filamentProjectId,
-      filamentProvider: binding.filament.provider,
-      filamentProduct: binding.filament.product,
-      filamentSku: binding.filament.sku,
-      spoolId: binding.filament.spoolId,
-    },
-    ordinal: 1,
-    status: 'completed' as const,
-    startedAt: NOW,
-    completedAt: NOW,
-    selectedObservationId: OBSERVATION_ID,
-    confidence: 'high' as const,
-    recommendation: {
-      summary: 'Use 210 C',
-      rationale: 'Best surface quality',
-      values: [],
-    },
-    diagnostics: [],
-    observations: [
-      {
-        observationId: OBSERVATION_ID,
-        attemptId: ATTEMPT_ID,
-        stageId: 'temperature' as const,
-        observedAt: NOW,
-        notes: 'clean',
-        temperatureC: 210,
-        quality: 95,
-      },
-    ],
-  };
-}
-
-function workspaceWithCompletedAttempt(): CalibrationWorkspacePayloadType {
-  const workspace = validWorkspace();
-  workspace.domainState.attempts.push(completedTemperatureAttempt(workspace));
-  workspace.domainState.stages.temperature = {
-    stageId: 'temperature',
-    status: 'completed',
-    attemptIds: [ATTEMPT_ID],
-    selectedAttemptId: ATTEMPT_ID,
-  };
-  return CalibrationWorkspacePayload.parse(workspace);
-}
+import {
+  ATTEMPT_ID,
+  FILAMENT_PROFILE_GUID,
+  MACHINE_PROFILE_GUID,
+  NOW,
+  OPERATION_ID,
+  OTHER_PRINTER_GUID,
+  PRINTER_GUID,
+  PROFILE_ID,
+  PROJECT_ID,
+  PROCESS_PROFILE_GUID,
+  SNAPSHOT_SHA,
+  STAGE_IDS,
+  TOOLHEAD_GUID,
+  validWorkspace,
+  workspaceWithCompletedAttempt,
+} from './fixtures/calibrationWorkspacePayload.js';
 
 function request(workspace = validWorkspace()) {
   const projection = deriveCalibrationWorkspaceProjection(
@@ -684,6 +490,7 @@ function candidateDto(overrides: Record<string, unknown> = {}) {
       profileFormat: 'orca-json',
     },
     eligible: true,
+    profilesEvaluated: false,
     missingInputs: [],
     rejectionReasons: [],
     ...overrides,
@@ -695,6 +502,10 @@ function contextDto(overrides: Record<string, unknown> = {}) {
   const { snapshot: snapshotOverride, ...rest } = overrides;
   return {
     ...candidateDto(),
+    // The selected context is the server's authoritative verdict: it resolved
+    // the printer's profiles. A candidate listing never does, which is why the
+    // two must not be treated as interchangeable evidence.
+    profilesEvaluated: true,
     schemaVersion: '1.0',
     snapshotSha256: SNAPSHOT_SHA,
     capturedAtUtc: NOW,
@@ -719,6 +530,7 @@ function contextDto(overrides: Record<string, unknown> = {}) {
           nozzleMaterial: 'brass',
           isDirectDrive: true,
           maxVolumetricFlow: 30,
+          maxHotendTemperature: 300,
         },
       ],
       maxBedTemperature: 120,
@@ -737,8 +549,28 @@ function contextDto(overrides: Record<string, unknown> = {}) {
         profileFormat: 'orca-json',
       },
       profiles: {
-        machine: null,
-        process: null,
+        machine: {
+          id: MACHINE_PROFILE_GUID,
+          kind: 'machine',
+          name: 'Voron 2.4 0.4 nozzle',
+          slicerType: 'OrcaSlicer',
+          slicerDistribution: 'upstream',
+          slicerVersion: '2.4.2',
+          profileFormat: 'orca-json',
+          profileRevision: 'machine-r7',
+          sha256: 'b'.repeat(64),
+        },
+        process: {
+          id: PROCESS_PROFILE_GUID,
+          kind: 'process',
+          name: '0.20 mm Standard',
+          slicerType: 'OrcaSlicer',
+          slicerDistribution: 'upstream',
+          slicerVersion: '2.4.2',
+          profileFormat: 'orca-json',
+          profileRevision: 'process-r7',
+          sha256: 'c'.repeat(64),
+        },
         filament: {
           id: FILAMENT_PROFILE_GUID,
           kind: 'filament',
@@ -748,7 +580,7 @@ function contextDto(overrides: Record<string, unknown> = {}) {
           slicerVersion: '2.4.2',
           profileFormat: 'orca-json',
           profileRevision: 'profile-r7',
-          sha256: null,
+          sha256: 'd'.repeat(64),
         },
       },
       baselineSettings: { activeNozzleDiameter: 0.4 },
@@ -764,6 +596,139 @@ function contextDto(overrides: Record<string, unknown> = {}) {
 function remoteCandidate(overrides: Record<string, unknown> = {}) {
   return RemoteCalibrationPrinterCandidate.parse(candidateDto(overrides));
 }
+
+describe('only an authoritative context may be bound', () => {
+  // The blocker this covers: the context transform dropped `profilesEvaluated`,
+  // so completeness and binding tested only whether identity fields were
+  // populated. A context the server had explicitly refused could still be
+  // marked current and bound, because the candidate list's preliminary screen
+  // was effectively standing in for a resolution it never performed.
+  const authoritative = RemoteCalibrationPrinterContext.parse(
+    calibrationContextDto(),
+  );
+
+  it('accepts a context that is evaluated, eligible and carries no blockers', () => {
+    // Control. Without it every refusal below is satisfied by a predicate that
+    // refuses everything.
+    expect(authoritative.profilesEvaluated).toBe(true);
+    expect(isAuthoritativeCalibrationContext(authoritative)).toBe(true);
+    expect(isExplicitCalibrationContextComplete(authoritative)).toBe(true);
+    expect(projectCalibrationPrinterContext(authoritative)).toMatchObject({
+      isCurrent: true,
+      profileIdentities: {
+        machine: {
+          backendProfileId: MACHINE_PROFILE_GUID,
+          orcaProfileName: 'Voron 2.4 0.4 nozzle',
+        },
+        process: {
+          backendProfileId: PROCESS_PROFILE_GUID,
+          orcaProfileName: '0.20 mm Standard',
+        },
+        filament: {
+          backendProfileId: FILAMENT_PROFILE_GUID,
+          orcaProfileName: 'Upstream PLA',
+        },
+      },
+    });
+    expect(
+      projectPrintFarmerOrcaProfile(remoteCandidate(), authoritative),
+    ).not.toBeNull();
+    const projected = projectCalibrationPrinterContext(authoritative);
+    expect(
+      bindingFromContext(PROFILE_ID, projected, TOOLHEAD_GUID, {
+        filamentProjectId: 'filament-1',
+        provider: 'PrintFarmer',
+        product: 'PLA',
+        sku: 'PLA-BLACK',
+      })?.profileIdentities,
+    ).toEqual(projected.profileIdentities);
+  });
+
+  const refusals: ReadonlyArray<[string, Record<string, unknown>]> = [
+    [
+      'the server says it did not evaluate profiles',
+      { profilesEvaluated: false },
+    ],
+    [
+      'an older server omits the field entirely',
+      // Silence is not a pass. This is the compatibility case: nothing may be
+      // inferred from a field the server never sent.
+      { profilesEvaluated: null },
+    ],
+    [
+      'the server evaluated profiles and refused the printer',
+      {
+        profilesEvaluated: true,
+        eligible: false,
+        rejectionReasons: [
+          { code: 'profile_hash_mismatch', message: 'hash mismatch' },
+        ],
+      },
+    ],
+    [
+      'the server reports missing inputs despite populated profiles',
+      {
+        profilesEvaluated: true,
+        eligible: false,
+        missingInputs: ['profiles.filament.sha256'],
+      },
+    ],
+    [
+      'the server contradicts itself, claiming eligible while giving reasons',
+      {
+        profilesEvaluated: true,
+        eligible: true,
+        rejectionReasons: [
+          { code: 'printer_in_maintenance', message: 'in maintenance' },
+        ],
+      },
+    ],
+  ];
+
+  for (const [label, override] of refusals) {
+    it(`refuses to bind when ${label}`, () => {
+      const context = RemoteCalibrationPrinterContext.parse(
+        calibrationContextDto(override),
+      );
+      // Every identity the contract names is still present, so this is only
+      // refused because the evaluation itself is not authoritative.
+      expect(context.configurationId).not.toBeNull();
+      expect(context.snapshotId).not.toBeNull();
+      expect(context.orcaProfileName).not.toBeNull();
+
+      expect(isAuthoritativeCalibrationContext(context)).toBe(false);
+      expect(isExplicitCalibrationContextComplete(context)).toBe(false);
+      // The projection must not present it as current, or the renderer would
+      // show a bindable-looking snapshot.
+      expect(projectCalibrationPrinterContext(context).isCurrent).toBe(false);
+      expect(projectCalibrationPrinterContext(context).evaluationScope).toBe(
+        'preliminary',
+      );
+      // And no profile may be derived from it.
+      expect(
+        projectPrintFarmerOrcaProfile(remoteCandidate(), context),
+      ).toBeNull();
+    });
+  }
+
+  it('is not rescued by a candidate that passed the preliminary screen', () => {
+    // The precise failure mode. A candidate list says a printer looks fine;
+    // that is a basic screen and never authorises binding. Here the candidate
+    // is eligible and the context is not, and the context wins.
+    const candidate = remoteCandidate();
+    expect(isExplicitCalibrationEligibilityComplete(candidate)).toBe(true);
+    const refused = RemoteCalibrationPrinterContext.parse(
+      calibrationContextDto({
+        profilesEvaluated: true,
+        eligible: false,
+        rejectionReasons: [
+          { code: 'filament_profile_not_found', message: 'not found' },
+        ],
+      }),
+    );
+    expect(projectPrintFarmerOrcaProfile(candidate, refused)).toBeNull();
+  });
+});
 
 describe('explicit printer context', () => {
   it('blocks missing and non-upstream identities', () => {
@@ -892,6 +857,73 @@ describe('printer-context freshness policy', () => {
       ),
     ).resolves.toBe(true);
   });
+
+  it('requires every exact profile identity while keeping legacy drafts editable offline', async () => {
+    const exactDto = contextDto();
+    const mutations = [
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        id: OTHER_PRINTER_GUID,
+      }),
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        name: `${profile.name} changed`,
+      }),
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        profileRevision: `${profile.profileRevision}-changed`,
+      }),
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        sha256: 'e'.repeat(64),
+      }),
+    ];
+    for (const kind of ['machine', 'process', 'filament'] as const) {
+      for (const mutate of mutations) {
+        const identityMismatch = RemoteCalibrationPrinterContext.parse({
+          ...exactDto,
+          snapshot: {
+            ...exactDto.snapshot,
+            profiles: {
+              ...exactDto.snapshot.profiles,
+              [kind]: mutate(exactDto.snapshot.profiles[kind]),
+            },
+          },
+        });
+        await expect(
+          resolveCalibrationWorkspaceFreshness(
+            request(),
+            {
+              isPrinterContextFresh: true,
+              workspaceState: validWorkspace(),
+            },
+            () => Promise.resolve(identityMismatch),
+          ),
+        ).resolves.toBe(false);
+      }
+    }
+
+    const legacyWorkspace = validWorkspace();
+    delete legacyWorkspace.domainState.binding.profileIdentities;
+    const offline = new CalibrationHttpError('transport', 'offline');
+    await expect(
+      resolveCalibrationWorkspaceFreshness(
+        request(legacyWorkspace),
+        {
+          isPrinterContextFresh: true,
+          workspaceState: legacyWorkspace,
+        },
+        () => Promise.reject(offline),
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      resolveCalibrationWorkspaceFreshness(request(legacyWorkspace), null, () =>
+        Promise.resolve(RemoteCalibrationPrinterContext.parse(exactDto)),
+      ),
+    ).rejects.toMatchObject({
+      code: 'CALIBRATION_PRINTER_CONTEXT_MISMATCH',
+    });
+  });
 });
 
 describe('PrintFarmer Orca profile discovery projection', () => {
@@ -925,7 +957,7 @@ describe('PrintFarmer Orca profile discovery projection', () => {
       nozzleId: TOOLHEAD_GUID,
       nozzleDiameterMm: 0.4,
       profileRevision: 'profile-r7',
-      contentHash: null,
+      contentHash: 'd'.repeat(64),
       exportable: false,
     });
   });
@@ -973,5 +1005,81 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     expect(
       projectPrintFarmerOrcaProfile(remoteCandidate(), wrongPrinter),
     ).toBeNull();
+  });
+
+  it('keeps discovery satisfiable while machine movement stays fail-closed', () => {
+    // PrintFarmer's context DTO carries no safety or permission members, so any
+    // predicate requiring them is unsatisfiable. Listing a profile must still
+    // work against the real DTO, and anything that would move the machine must
+    // still refuse — but for a reason that exists, not one that cannot.
+    const context = RemoteCalibrationPrinterContext.parse(contextDto());
+    expect(isExplicitCalibrationContextComplete(context)).toBe(true);
+    // Machine limits the DTO does publish come through, so baselines can be
+    // range-checked against real hardware.
+    expect(context.safety?.maximumNozzleTemperatureC).toBe(300);
+    // The three interlock assertions it does not publish stay false. Absent
+    // evidence is never promoted to an assurance.
+    expect(context.safety?.emergencyStopAvailable).toBe(false);
+    expect(context.safety?.thermalProtectionConfirmed).toBe(false);
+    expect(context.safety?.ventilationAssessed).toBe(false);
+    // And per-printer permissions genuinely have no counterpart at all.
+    expect(context.permissions).toBeNull();
+
+    const capability = {
+      grantedScopes: [
+        'calibration:read',
+        'calibration:create',
+        'calibration:update',
+        'calibration:generate',
+        'slicing:submit',
+        'queue:read',
+        'queue:write',
+        'queue:acknowledge-bed-clear',
+        'queue:start',
+      ],
+      flags: {
+        calibrationApiEnabled: true,
+        calibrationGenerationEnabled: true,
+      },
+    };
+    const binding = {
+      printerId: context.printerId,
+      configurationRevision: context.configurationRevision,
+      snapshotId: context.snapshotId,
+      toolId: context.toolheads[0]?.toolId ?? null,
+    };
+
+    // Generation moves nothing, so a complete context plus the exact permission
+    // is enough. This is the case the old predicate blocked outright.
+    expect(
+      evaluateCalibrationActionGate({
+        action: 'generate',
+        capability,
+        context,
+        binding,
+      }).allowed,
+    ).toBe(true);
+
+    // Dispatch refuses without a ledger-backed operator acknowledgement.
+    const withoutAcknowledgement = evaluateCalibrationActionGate({
+      action: 'acknowledgeBedClear',
+      capability,
+      context,
+      binding,
+    });
+    expect(withoutAcknowledgement.allowed).toBe(false);
+    expect(withoutAcknowledgement.code).toBe('safetyNotAssured');
+
+    // And permits it with one, so the refusal above is a real gate rather than
+    // an unsatisfiable condition wearing a gate's name.
+    expect(
+      evaluateCalibrationActionGate({
+        action: 'acknowledgeBedClear',
+        capability,
+        context,
+        binding,
+        operatorAcknowledgement: true,
+      }).allowed,
+    ).toBe(true);
   });
 });

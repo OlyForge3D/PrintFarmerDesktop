@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
+  CALIBRATION_PERMISSIONS,
+  hasCalibrationPermission,
   OpenCalibrationPhotoResponse,
   type CalibrationBlockedReason,
   type CalibrationOrchestrationStatus,
@@ -280,11 +282,24 @@ export function CalibrationStepWorkflow({
   const [bedClearOpen, setBedClearOpen] = useState(false);
   const [bedClearSubmitting, setBedClearSubmitting] = useState(false);
   const [bedClearError, setBedClearError] = useState<string | null>(null);
+  const [queuePrintSubmitting, setQueuePrintSubmitting] = useState(false);
+  /**
+   * Why the last queue attempt was refused.
+   *
+   * Rendered rather than swallowed: the interlock refuses on permission,
+   * capability and stale-binding grounds, and every one of those is something
+   * the operator can act on once told.
+   */
+  const [queuePrintError, setQueuePrintError] = useState<string | null>(null);
   /** Expiry received from a bed-clear queue event; wired into the dialog countdown. */
   const [bedClearExpiresAt, setBedClearExpiresAt] = useState<string | null>(
     null,
   );
   const bedClearTriggerRef = useRef<HTMLButtonElement>(null);
+  const bedClearOperationRef = useRef<{
+    readonly jobId: string;
+    readonly operationId: string;
+  } | null>(null);
 
   const [handoffProvenance, setHandoffProvenance] =
     useState<CalibrationJobProvenance | null>(null);
@@ -330,6 +345,16 @@ export function CalibrationStepWorkflow({
         method: attempt.method,
         operationId: store.environment.createId(),
         baseRevision: null,
+        // The same binding the project was created against. Main verifies it
+        // against the authoritative context before dispatching, so a printer
+        // whose configuration moved on cannot be generated for silently.
+        binding: {
+          printerId: state.binding.printer.backendPrinterId,
+          configurationRevision:
+            state.binding.printer.printerConfigurationRevision,
+          snapshotId: state.binding.snapshot.snapshotId,
+          toolId: state.binding.selectedToolId,
+        },
       });
       if (res.status === 'submitted') {
         setOrchId(res.orchestrationId);
@@ -357,6 +382,13 @@ export function CalibrationStepWorkflow({
     orchLoading,
     state.attempts,
     state.projectId,
+    // The binding this generation is verified against. Listed explicitly so a
+    // later change to which printer or revision the project is pinned to
+    // rebuilds the callback rather than leaving it closing over the old one.
+    state.binding.printer.backendPrinterId,
+    state.binding.printer.printerConfigurationRevision,
+    state.binding.snapshot.snapshotId,
+    state.binding.selectedToolId,
     stageId,
   ]);
 
@@ -367,6 +399,8 @@ export function CalibrationStepWorkflow({
     );
     if (!attempt) return;
     const printerId = state.binding.printer.backendPrinterId;
+    setQueuePrintError(null);
+    setQueuePrintSubmitting(true);
     try {
       const res = await calibrationApi().startCalibrationPrint({
         profileId: store.profileId,
@@ -441,9 +475,22 @@ export function CalibrationStepWorkflow({
             rowVersion: res.rowVersion ?? null,
           });
         }
+      } else {
+        // A refused queue attempt used to fall through here and leave the
+        // button looking inert: the operator clicked, nothing moved, and no
+        // reason was given. Every non-ok outcome now says why, including the
+        // interlock refusals (permission, capability, stale binding) that are
+        // the most likely reason a correctly configured farm still says no.
+        setQueuePrintError(calibrationErrorText(res.error));
       }
-    } catch {
-      // Queue errors surface via the dispatch panel's own polling
+    } catch (cause) {
+      setQueuePrintError(
+        cause instanceof Error
+          ? cause.message
+          : 'The calibration print could not be queued.',
+      );
+    } finally {
+      setQueuePrintSubmitting(false);
     }
   }, [
     store.profileId,
@@ -459,6 +506,7 @@ export function CalibrationStepWorkflow({
     setQueueJobId(null);
     setQueueJob(null);
     setHandoffProvenance(null);
+    bedClearOperationRef.current = null;
     void reason; // Acknowledged
   }, []);
 
@@ -467,15 +515,46 @@ export function CalibrationStepWorkflow({
     setBedClearSubmitting(true);
     setBedClearError(null);
     try {
-      const printerId = queueJob.assignedPrinterId ?? '';
+      const printerId = queueJob.assignedPrinterId;
+      const attemptId = queueJob.calibrationAttemptId;
+      const orchestrationId = queueJob.calibrationOrchestrationId;
+      const rowVersion = queueJob.rowVersion;
+      const dispatchStateRowVersion = queueJob.dispatchStateRowVersion;
+      const dispatchStateRevision = queueJob.dispatchStateRevision;
+      const configurationRevision = queueJob.pinnedPrinterConfigRevision;
+      if (
+        printerId === null ||
+        attemptId === null ||
+        orchestrationId === null ||
+        rowVersion === null ||
+        dispatchStateRowVersion === null ||
+        dispatchStateRevision === null ||
+        configurationRevision === null
+      ) {
+        setBedClearError(
+          'The authoritative calibration job is missing exact lineage, revision, printer, or configuration evidence.',
+        );
+        return;
+      }
+      const existingOperation = bedClearOperationRef.current;
+      const operationId =
+        existingOperation?.jobId === queueJob.jobId
+          ? existingOperation.operationId
+          : store.environment.createId();
+      bedClearOperationRef.current = { jobId: queueJob.jobId, operationId };
       const res = await calibrationApi().acknowledgeCalibrationBedClear({
         profileId: store.profileId,
+        projectId: state.projectId,
+        calibrationAttemptId: attemptId,
+        calibrationOrchestrationId: orchestrationId,
         jobId: queueJob.jobId,
         printerId,
-        operationId: store.environment.createId(),
-        rowVersion: queueJob.rowVersion ?? '',
-        dispatchStateRowVersion: queueJob.dispatchStateRowVersion ?? '',
-        expectedPrinterConfigRevision: null,
+        operationId,
+        rowVersion,
+        jobRevision: queueJob.jobRevision,
+        dispatchStateRowVersion,
+        dispatchStateRevision,
+        expectedPrinterConfigRevision: configurationRevision,
       });
       if (res.status === 'ok') {
         setBedClearOpen(false);
@@ -483,19 +562,26 @@ export function CalibrationStepWorkflow({
           prev ? { ...prev, bedClearState: 'Acknowledged' } : null,
         );
       } else if (res.status === 'revisionConflict') {
-        // Server returned 412: update our ETags so the next attempt uses the
-        // authoritative versions, then close the dialog.
-        setQueueJob((prev) =>
-          prev
-            ? {
-                ...prev,
-                rowVersion: res.jobRowVersion ?? prev.rowVersion,
-                dispatchStateRowVersion:
-                  res.dispatchStateRowVersion ?? prev.dispatchStateRowVersion,
-              }
-            : null,
-        );
-        setBedClearOpen(false);
+        // ETags alone are not enough: the exact-job interlock also binds both
+        // logical revisions, lineage, bed-clear state, command hash and expiry.
+        // Re-read the complete job while retaining this operation ID so a lost
+        // successful response can be replayed only against the exact hash.
+        const refreshed = await calibrationApi().getCalibrationQueueState({
+          profileId: store.profileId,
+          projectId: state.projectId,
+          jobId: queueJob.jobId,
+        });
+        if (refreshed.status === 'ok') {
+          setQueueJobId(refreshed.job.jobId);
+          setQueueJob(refreshed.job);
+          setBedClearOpen(false);
+        } else {
+          setBedClearError(
+            refreshed.status === 'error'
+              ? calibrationErrorText(refreshed.error)
+              : 'The authoritative queue job could not be refreshed after its revision changed.',
+          );
+        }
       } else {
         setBedClearError(
           res.status === 'error'
@@ -508,7 +594,7 @@ export function CalibrationStepWorkflow({
     } finally {
       setBedClearSubmitting(false);
     }
-  }, [store.profileId, store.environment, queueJob]);
+  }, [store.profileId, store.environment, queueJob, state.projectId]);
 
   const handleAddObservation = useCallback(
     (
@@ -677,15 +763,21 @@ export function CalibrationStepWorkflow({
           'Printer context is stale. Re-open the project or force-sync to refresh.',
       };
     }
-    // Priority 5: permission (grantedScopes present but CalibrationWrite absent)
+    // Priority 5: permission. Compared against the canonical `resource:action`
+    // permission PrintFarmer actually publishes in `effectivePermissions`. The
+    // previous needle was the PascalCase JWT scope `CalibrationWrite`, which no
+    // PrintFarmer build has ever emitted, so this branch could never be taken
+    // and a genuinely unauthorised operator was told nothing at all.
     if (
       store.availability.grantedScopes != null &&
-      !store.availability.grantedScopes.includes('CalibrationWrite')
+      !hasCalibrationPermission(
+        store.availability.grantedScopes,
+        CALIBRATION_PERMISSIONS.update,
+      )
     ) {
       return {
         code: 'permissionFailure',
-        detail:
-          'Your token does not include the CalibrationWrite scope. Contact your administrator.',
+        detail: `Your PrintFarmer account does not grant ${CALIBRATION_PERMISSIONS.update}. Contact your administrator.`,
       };
     }
     // Priority 6: pinned revision mismatch (config changed since queuing)
@@ -1305,12 +1397,15 @@ export function CalibrationStepWorkflow({
                 disabled={
                   !queueDecision.allowed ||
                   orchStatus?.gcodeFileId == null ||
-                  queueJobId !== null
+                  queueJobId !== null ||
+                  queuePrintSubmitting
                 }
                 aria-describedby="queue-gate"
                 onClick={() => void handleQueuePrint()}
               >
-                Queue calibration print
+                {queuePrintSubmitting
+                  ? 'Verifying and queueing'
+                  : 'Queue calibration print'}
               </button>
               <button
                 ref={bedClearTriggerRef}
@@ -1334,6 +1429,11 @@ export function CalibrationStepWorkflow({
                 Start calibration print
               </button>
             </div>
+            {queuePrintError ? (
+              <p className="cal-field-error" role="alert">
+                {queuePrintError}
+              </p>
+            ) : null}
             <div className="cal-gate-list">
               <p id="generation-gate">
                 <strong>Generation gate:</strong>{' '}

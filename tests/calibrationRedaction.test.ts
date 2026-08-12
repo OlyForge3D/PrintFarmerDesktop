@@ -58,12 +58,19 @@ import { once } from 'node:events';
 import osDefault from 'node:os';
 import * as osNamespace from 'node:os';
 import { IpcChannel } from '@shared/ipc';
+import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
+import {
+  CALIBRATION_FIXTURE_IDS,
+  calibrationActionBindingFixture,
+  calibrationContextDto,
+} from './fixtures/calibrationContract.js';
 import {
   captureCalibrationLogs,
   resetCalibrationLogSink,
   type CalibrationLogRecord,
 } from '../src/main/calibrationLog.js';
 import { calibrationCorrelation } from '../src/main/calibrationCorrelation.js';
+import { validWorkspace } from './fixtures/calibrationWorkspacePayload.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -140,6 +147,7 @@ const ATTEMPT_ID = '33333333-3333-4333-8333-333333333333';
 const JOB_ID = '44444444-4444-4444-8444-444444444444';
 const PRINTER_ID = '55555555-5555-4555-8555-555555555555';
 const ORCHESTRATION_ID = '77777777-7777-4777-8777-777777777777';
+const GCODE_FILE_ID = '99999999-9999-4999-8999-999999999999';
 const BASE_URL = 'http://farm.local';
 
 /** A structurally real JWT: three base64url segments. */
@@ -203,13 +211,17 @@ const QUEUE_JOB_FIXTURE: Record<string, unknown> = {
   jobKind: 'FilamentCalibration',
   calibrationProjectId: PROJECT_ID,
   calibrationAttemptId: ATTEMPT_ID,
+  calibrationOrchestrationId: ORCHESTRATION_ID,
   pinnedPrinterConfigRevision: 42,
-  gcodeFileId: null,
+  gcodeFileId: GCODE_FILE_ID,
   gcodeFileName: 'test.gcode',
   assignedPrinterId: PRINTER_ID,
   assignedPrinterName: 'Printer A',
   status: 'Queued',
   bedClearState: 'None',
+  bedClearCommandId: null,
+  bedClearIdempotencyKeySha256: null,
+  bedClearExpiresAtUtc: null,
   priority: 0,
   queuePosition: 0,
   copies: 1,
@@ -246,6 +258,7 @@ function fakeProfiles() {
  * passes and the generation/queue handlers reach the network.
  */
 function fakeSidecar(overrides: Record<string, unknown> = {}) {
+  const workspace = validWorkspace();
   return {
     initialize: () => Promise.resolve(),
     dispose: () => Promise.resolve(),
@@ -254,7 +267,36 @@ function fakeSidecar(overrides: Record<string, unknown> = {}) {
     isCalibrationPrinterContextFresh: () => Promise.resolve(true),
     listCalibrationConflicts: () => Promise.resolve([]),
     listCalibrationPendingOps: () => Promise.resolve([]),
-    getCalibrationCursorState: () => Promise.resolve(null),
+    getCalibrationCursorState: () =>
+      Promise.resolve({
+        cursor: null,
+        serverRevision: 0,
+        checkpointGeneration: 0,
+      }),
+    commitCalibrationCursor: () => Promise.resolve(),
+    applyCalibrationSnapshot: () => Promise.resolve(),
+    settleCalibrationOp: () => Promise.resolve(),
+    replayCalibrationOp: () => Promise.resolve(),
+    recordCalibrationConflict: () => Promise.resolve(),
+    getCalibrationWorkspaceState: () =>
+      Promise.resolve({
+        profileId: PROFILE_ID,
+        projectId: workspace.domainState.projectId,
+        printerId: workspace.domainState.binding.printer.backendPrinterId,
+        displayName: workspace.metadata.displayName,
+        description: null,
+        status: 'draft',
+        completedStepCount: 0,
+        totalStepCount: 9,
+        isSynced: false,
+        isPrinterContextFresh: true,
+        hasConflicts: false,
+        remoteProjectId: null,
+        baseRevision: null,
+        createdAt: CALIBRATION_FIXTURE_IDS.now,
+        updatedAt: CALIBRATION_FIXTURE_IDS.now,
+        workspaceState: workspace,
+      }),
     ...overrides,
   };
 }
@@ -485,6 +527,32 @@ describe('correlation across one calibration operation', () => {
     capture = captureCalibrationLogs();
     fetchMock = vi.fn((url: URL | string) => {
       const href = typeof url === 'string' ? url : url.href;
+      // Capability negotiation and the authoritative context read are served
+      // here because generation now verifies both before dispatching. A stub
+      // that omitted them would make the flow refuse, and a test that removed
+      // the interlock to keep passing would be testing nothing.
+      if (href.includes('/api/calibration/capabilities')) {
+        return Promise.resolve(
+          json(
+            printFarmerCapabilitiesResponse({
+              effectivePermissions: [
+                'calibration:read',
+                'calibration:create',
+                'calibration:update',
+                'calibration:generate',
+                'slicing:submit',
+                'queue:read',
+                'queue:write',
+                'queue:acknowledge-bed-clear',
+                'queue:start',
+              ],
+            }),
+          ),
+        );
+      }
+      if (href.includes('calibration-context')) {
+        return Promise.resolve(json(calibrationContextDto()));
+      }
       if (href.includes('generate-job')) {
         return Promise.resolve(json(orchestrationFixture(GENERATION_OP)));
       }
@@ -500,7 +568,19 @@ describe('correlation across one calibration operation', () => {
         );
       }
       if (href.includes('job-queue')) {
-        return Promise.resolve(json(QUEUE_JOB_FIXTURE));
+        // Assigned to the same printer the ack targets, and pinned to the same
+        // configuration revision the context reports. The bed-clear interlock
+        // mints its ledger record only after seeing the server agree on both,
+        // so a fixture that disagreed would refuse the dispatch — correctly,
+        // but it would stop this test exercising the acknowledged path at all.
+        return Promise.resolve(
+          json({
+            ...QUEUE_JOB_FIXTURE,
+            assignedPrinterId: CALIBRATION_FIXTURE_IDS.printerId,
+            pinnedPrinterConfigRevision:
+              CALIBRATION_FIXTURE_IDS.configurationRevision,
+          }),
+        );
       }
       return Promise.resolve(json({}, 404));
     });
@@ -516,6 +596,10 @@ describe('correlation across one calibration operation', () => {
 
   async function runWholeFlow(): Promise<CalibrationLogRecord[]> {
     const registered = handlers();
+    // Negotiate first so the interlock has real capability evidence to read.
+    // This is what a running app does before the workspace opens; doing it here
+    // keeps the flow exercising the production gate rather than sidestepping it.
+    await invoke(registered, IpcChannel.CalibrationGetAvailability, undefined);
     await invoke(registered, IpcChannel.CalibrationStartGeneration, {
       profileId: PROFILE_ID,
       projectId: PROJECT_ID,
@@ -525,6 +609,7 @@ describe('correlation across one calibration operation', () => {
       definitionVersion: '1.0',
       options: {},
       baseRevision: null,
+      binding: calibrationActionBindingFixture(),
     });
     await invoke(registered, IpcChannel.CalibrationGetOrchestrationStatus, {
       profileId: PROFILE_ID,
@@ -538,11 +623,17 @@ describe('correlation across one calibration operation', () => {
     await invoke(registered, IpcChannel.CalibrationAcknowledgeBedClear, {
       profileId: PROFILE_ID,
       jobId: JOB_ID,
-      printerId: PRINTER_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
       operationId: ACK_OP,
+      projectId: PROJECT_ID,
+      calibrationAttemptId: ATTEMPT_ID,
+      calibrationOrchestrationId: ORCHESTRATION_ID,
       rowVersion: 'AAAAAAAAAAAA==',
+      jobRevision: 1,
       dispatchStateRowVersion: 'BBBBBBBBBBBB==',
-      expectedPrinterConfigRevision: 42,
+      dispatchStateRevision: 1,
+      expectedPrinterConfigRevision:
+        CALIBRATION_FIXTURE_IDS.configurationRevision,
     });
     return capture.records;
   }
@@ -690,8 +781,43 @@ describe('redaction on real calibration failure paths', () => {
    * reaches neither `CalibrationApiError.message` nor
    * `CalibrationSyncStatus.error`.
    */
-  function leakyServer(): ReturnType<typeof vi.fn> {
-    const fetchMock = vi.fn(() => {
+  function leakyServer(
+    options: { readonly serveActionGate?: boolean } = {},
+  ): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn((url: URL | string) => {
+      // Defensive: this stub is shared with call sites that pass a `Request`,
+      // where `.href` is undefined.
+      const href = typeof url === 'string' ? url : (url?.href ?? '');
+      // Opt-in, because it must not apply to every caller. The action interlock
+      // reads capabilities and the authoritative context before dispatching, so
+      // the generation test needs both to succeed or the action is refused and
+      // there is no failing generation left to assert redaction on. The sync
+      // test needs the opposite: its leak *is* the request under test, and
+      // answering anything here would stop it reaching the leaky branch.
+      if (options.serveActionGate === true) {
+        if (href.includes('/api/calibration/capabilities')) {
+          return Promise.resolve(
+            json(
+              printFarmerCapabilitiesResponse({
+                effectivePermissions: [
+                  'calibration:read',
+                  'calibration:create',
+                  'calibration:update',
+                  'calibration:generate',
+                  'slicing:submit',
+                  'queue:read',
+                  'queue:write',
+                  'queue:acknowledge-bed-clear',
+                  'queue:start',
+                ],
+              }),
+            ),
+          );
+        }
+        if (href.includes('calibration-context')) {
+          return Promise.resolve(json(calibrationContextDto()));
+        }
+      }
       const response = json(
         {
           title: 'Calibration worker rejected the request',
@@ -738,8 +864,9 @@ describe('redaction on real calibration failure paths', () => {
   }
 
   it('keeps every secret class out of the records emitted by a failing generation', async () => {
-    const fetchMock = leakyServer();
+    const fetchMock = leakyServer({ serveActionGate: true });
     const registered = handlers();
+    await invoke(registered, IpcChannel.CalibrationGetAvailability, undefined);
     const response = (await invoke(
       registered,
       IpcChannel.CalibrationStartGeneration,
@@ -752,6 +879,7 @@ describe('redaction on real calibration failure paths', () => {
         definitionVersion: '1.0',
         options: {},
         baseRevision: null,
+        binding: calibrationActionBindingFixture(),
       },
     )) as { status: string; error?: { message?: string } };
 
@@ -924,8 +1052,9 @@ describe('redaction on real calibration failure paths', () => {
   });
 
   it('keeps every secret class out of the records emitted by a failing sync', async () => {
-    const fetchMock = leakyServer();
+    const fetchMock = leakyServer({ serveActionGate: true });
     const registered = handlers();
+    await invoke(registered, IpcChannel.CalibrationGetAvailability, undefined);
     const status = (await invoke(registered, IpcChannel.CalibrationSyncNow, {
       profileId: PROFILE_ID,
       projectId: PROJECT_ID,

@@ -30,6 +30,7 @@
 
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
   readFile,
   writeFile,
@@ -398,6 +399,7 @@ export async function installOrcaProfileWindows(
   expectedHash: string,
   safeFilename: string,
   operationId: string,
+  revalidateBeforeWrite: () => Promise<void> = () => Promise.resolve(),
 ): Promise<InstallResult> {
   if (process.platform !== 'win32') {
     throw makeError(
@@ -475,11 +477,13 @@ export async function installOrcaProfileWindows(
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     backupPath = `${destPath}.bak-${ts}`;
     const priorBytes = await readFile(destPath);
+    await revalidateBeforeWrite();
     await writeFile(backupPath, priorBytes, { flag: 'wx' }); // exclusive create
     backupHash = sha256(priorBytes);
     // Durably record which operation produced this backup and what its
     // original safeFilename was, so restore can find it later without
     // depending on profileCache or on parsing the backup's own filename.
+    await revalidateBeforeWrite();
     await writeBackupMeta(installRoot, operationId, {
       safeFilename,
       backupFileName: path.basename(backupPath),
@@ -491,6 +495,7 @@ export async function installOrcaProfileWindows(
   // 6. Write to a temp file in the same directory (same-directory = same FS for rename).
   const tempPath = path.join(installRoot, `.pfd-tmp-${randomUUID()}.json`);
   try {
+    await revalidateBeforeWrite();
     await writeFile(tempPath, generatedJson, { encoding: 'utf8', flag: 'wx' });
 
     // 7. Read back and verify before atomic rename.
@@ -514,6 +519,7 @@ export async function installOrcaProfileWindows(
     }
 
     // 8. Atomic rename: replaces destination if it exists.
+    await revalidateBeforeWrite();
     await rename(tempPath, destPath);
   } catch (writeErr) {
     // Best-effort cleanup of the temp file.
@@ -1536,6 +1542,42 @@ export async function verifyExportedProfile(
 }
 
 /**
+ * Write a save-dialog export without following a leaf symlink that appears
+ * after path canonicalization. The descriptor pins the opened file identity;
+ * later swaps of the path cannot redirect the bytes already being written.
+ */
+export async function writeExportedProfileNoFollow(
+  filePath: string,
+  generatedJson: string,
+): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      filePath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (error) {
+    if (isErrno(error, 'ELOOP')) {
+      throw makeError(
+        'pathRestricted',
+        'Save target became a symlink before it could be opened.',
+      );
+    }
+    throw error;
+  }
+  try {
+    await handle.writeFile(generatedJson, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
  * Canonicalize a save-dialog-chosen path and verify it does not point to a
  * symlink (on macOS, the dialog should prevent this, but we guard anyway).
  */
@@ -1597,12 +1639,39 @@ export async function canonicalizeSaveTarget(
  */
 const MAX_CACHE_ENTRIES = 50;
 
+/**
+ * Generated profile bytes, together with everything they were derived from.
+ *
+ * The binding is not decoration. These bytes are produced by one generation,
+ * against one server profile, one calibration project, one printer-configuration
+ * snapshot and one exact base file; an `operationId` alone proves none of that.
+ * Without the binding, a cache entry survived a profile switch and could be
+ * written to disk under a farm and a project it was never generated for — the
+ * renderer only had to present the same operation id.
+ */
 interface CachedProfile {
   readonly generatedJson: string;
   readonly profileJsonHash: string;
   readonly displayName: string;
   readonly safeFilename: string;
   readonly cachedAt: number;
+  /** The server profile selected when these bytes were generated. */
+  readonly profileId: string;
+  /** The calibration project whose observations produced them. */
+  readonly projectId: string;
+  /** The bound printer-configuration snapshot. */
+  readonly snapshotId: string;
+  /** The exact content hash of the base profile that was patched. */
+  readonly baseContentHash: string;
+  /** The OrcaSlicer lookup name of that exact base profile. */
+  readonly baseProfileName: string;
+  /**
+   * The calibration action epoch at generation time. Any invalidation — a
+   * profile switch, a refusal, an expired session — advances it and strands
+   * these bytes, which is the intended outcome: they describe a farm the app
+   * has since stopped trusting its knowledge of.
+   */
+  readonly epoch: number;
 }
 
 const profileCache = new Map<string, CachedProfile>();
@@ -1626,6 +1695,8 @@ export function getCachedProfile(
 ): CachedProfile | undefined {
   return profileCache.get(operationId);
 }
+
+export type { CachedProfile };
 
 export function clearProfileCache(): void {
   profileCache.clear();

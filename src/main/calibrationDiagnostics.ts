@@ -144,12 +144,64 @@ export interface CalibrationDiagnosticsOutboxSource {
  */
 export class CalibrationDiagnosticsStore {
   private capability: CalibrationCapabilitySnapshot | null = null;
+  /**
+   * Which server profile {@link capability} describes.
+   *
+   * A capability snapshot is one farm's answer about one account. Holding it
+   * without recording whose answer it was made it usable as evidence for a
+   * different profile entirely: negotiate a permissive profile A, switch to B
+   * whose own negotiation is still in flight or has failed, and every gate would
+   * read A's permissions and flags and authorise a mutation against B.
+   *
+   * Kept beside the snapshot rather than inside it so the diagnostics wire shape
+   * is unchanged; the report already names the selected profile separately.
+   */
+  private capabilityProfileId: string | null = null;
+  /**
+   * Generation counter for capability negotiations.
+   *
+   * Profile binding alone cannot reject a *stale completion for the same
+   * profile*. Two sequences need this: a 403 discards the snapshot while an
+   * earlier capability GET is still in flight, and that GET then records
+   * positive evidence after the refusal it was supposed to be corrected by; and
+   * A → B → A, where the pre-switch response for A lands after A is current
+   * again and silently becomes authoritative despite everything that happened
+   * in between.
+   *
+   * Every discard advances the counter, so a negotiation started before it can
+   * no longer write. Last start wins; earlier ones are dropped.
+   */
+  private capabilityEpoch = 0;
   private lastSync: CalibrationLastSyncSnapshot | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
-  /** Called at every successful capability negotiation. */
-  recordCapabilities(capabilities: RemoteCalibrationCapabilities): void {
+  /**
+   * Discard the current snapshot and take a token for the negotiation about to
+   * start.
+   *
+   * Clearing and starting are one operation on purpose: the window between them
+   * is exactly where a gate would read evidence the caller has already decided
+   * is suspect.
+   */
+  beginCapabilityNegotiation(): number {
+    this.clearCapabilities();
+    return this.capabilityEpoch;
+  }
+
+  /**
+   * Record a completed negotiation, if it is still the current one.
+   *
+   * Returns whether the result was accepted. A stale completion is dropped
+   * rather than applied, so a response that was already overtaken cannot
+   * reinstate evidence for a decision that has since been made differently.
+   */
+  recordCapabilities(
+    token: number,
+    profileId: string,
+    capabilities: RemoteCalibrationCapabilities,
+  ): boolean {
+    if (token !== this.capabilityEpoch) return false;
     this.capability = {
       negotiatedApiVersion: capabilities.apiVersion,
       negotiatedSchemaVersion: capabilities.schemaVersion,
@@ -159,6 +211,8 @@ export class CalibrationDiagnosticsStore {
       grantedScopes: [...capabilities.grantedScopes],
       negotiatedAt: this.now().toISOString(),
     };
+    this.capabilityProfileId = profileId;
+    return true;
   }
 
   /** Called at the end of every calibration sync, successful or not. */
@@ -175,8 +229,55 @@ export class CalibrationDiagnosticsStore {
     };
   }
 
-  capabilitySnapshot(): CalibrationCapabilitySnapshot | null {
+  /**
+   * The negotiated capabilities for exactly this server profile.
+   *
+   * Returns null when the stored snapshot belongs to another profile, which is
+   * the whole point: an unmatched read is indistinguishable from never having
+   * negotiated, so every gate fails closed on a profile switch instead of
+   * inheriting the previous farm's permissions.
+   *
+   * The profile must be named. There is no "current" reading, because the caller
+   * that knows which profile it is acting for is the only one that can say.
+   */
+  capabilitySnapshot(profileId: string): CalibrationCapabilitySnapshot | null {
+    if (this.capabilityProfileId !== profileId) return null;
     return this.capability;
+  }
+
+  /**
+   * Drop the capability snapshot before an attempt to replace it.
+   *
+   * Called before every negotiation and before a post-refusal refresh, so a
+   * fetch that fails, times out or is itself refused leaves *no* evidence rather
+   * than the previous positive answer. Clearing afterwards would be too late:
+   * the window between starting a fetch and failing it is exactly when a gate
+   * would read the stale snapshot.
+   */
+  clearCapabilities(): void {
+    this.capability = null;
+    this.capabilityProfileId = null;
+    // Invalidates any negotiation already in flight. Without this a response
+    // that left before the discard would land after it and undo it.
+    this.capabilityEpoch += 1;
+  }
+
+  /**
+   * Forget everything recorded for one server profile.
+   *
+   * The correct response to a profile being selected away from, or deleted: its
+   * observations describe a farm this app is no longer acting against.
+   */
+  forgetProfile(profileId: string): void {
+    if (this.capabilityProfileId === profileId) this.clearCapabilities();
+  }
+
+  /**
+   * Forget every observation, returning the store to its just-started state.
+   */
+  reset(): void {
+    this.clearCapabilities();
+    this.lastSync = null;
   }
 
   lastSyncSnapshot(): CalibrationLastSyncSnapshot | null {
@@ -223,7 +324,13 @@ export class CalibrationDiagnosticsStore {
     const diagnostics: Omit<CalibrationDiagnostics, 'report'> = {
       generatedAt: this.now().toISOString(),
       profileId,
-      capability: this.capability,
+      // Reported only when it belongs to the profile being reported on. A
+      // report that showed another profile's permissions beside this profile's
+      // id would be actively misleading in exactly the situation it is run for.
+      capability:
+        profileId !== null && this.capabilityProfileId === profileId
+          ? this.capability
+          : null,
       outbox: outboxSnapshot,
       outboxUnavailableReason,
       lastSync: this.lastSync,

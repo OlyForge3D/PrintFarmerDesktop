@@ -61,7 +61,11 @@ describe('CalibrationDiagnosticsStore', () => {
 
   it('reports negotiated versions, flags and granted scopes after negotiation', async () => {
     const subject = store();
-    subject.recordCapabilities(capabilities());
+    subject.recordCapabilities(
+      subject.beginCapabilityNegotiation(),
+      PROFILE_ID,
+      capabilities(),
+    );
     const diagnostics = await subject.collect({ profileId: PROFILE_ID });
     expect(diagnostics.capability).not.toBeNull();
     expect(diagnostics.capability?.negotiatedApiVersion).toBe('2026-07-01');
@@ -214,7 +218,11 @@ describe('outbox unavailability is diagnosable, not merely visible', () => {
 describe('diagnostics report text', () => {
   it('names every field a runbook will tell an operator to read', async () => {
     const subject = store();
-    subject.recordCapabilities(capabilities());
+    subject.recordCapabilities(
+      subject.beginCapabilityNegotiation(),
+      PROFILE_ID,
+      capabilities(),
+    );
     subject.recordSyncOutcome({
       outcome: 'failed',
       errorCode: 'workerUnavailable',

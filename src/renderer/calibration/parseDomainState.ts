@@ -111,6 +111,14 @@ const filament = z
     spoolId: z.string().trim().min(1).max(256).optional(),
   })
   .strict();
+const profileIdentity = z
+  .object({
+    backendProfileId: nonEmptyId,
+    orcaProfileName: z.string().trim().min(1).max(512),
+    profileRevision: z.string().trim().min(1).max(256),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
 const binding = z
   .object({
     printer: z
@@ -125,6 +133,16 @@ const binding = z
     selectedToolId: nonEmptyId,
     selectedToolheadId: nonEmptyId,
     selectedNozzleId: nonEmptyId,
+    // Optional only so workspaces persisted before exact-triple binding remain
+    // loadable and editable offline. New creation and online sync require it.
+    profileIdentities: z
+      .object({
+        machine: profileIdentity,
+        process: profileIdentity,
+        filament: profileIdentity,
+      })
+      .strict()
+      .optional(),
     filament,
   })
   .strict();

@@ -580,10 +580,14 @@ export async function applyCalibrationScenario(
           calibrationGenerationEnabled:
             availabilityKind !== 'missingCapabilityFlags',
         },
+        // Canonical `resource:action` permissions, exactly as PrintFarmer's
+        // capability payload spells them in `effectivePermissions`. The former
+        // PascalCase values matched nothing in production, so a fixture using
+        // them proved only that the assertion never fired.
         grantedScopes:
           availabilityKind === 'missingScopes'
-            ? ['CalibrationRead']
-            : ['CalibrationRead', 'CalibrationWrite'],
+            ? ['calibration:read']
+            : ['calibration:read', 'calibration:create', 'calibration:update'],
         offlineEditingEnabled: true,
       };
     });
@@ -613,6 +617,8 @@ export async function applyCalibrationScenario(
       bedWidthMm: 250,
       bedDepthMm: 250,
       nozzleDiameterMm: ids.nozzleDiameterMm,
+      // A selected context is the server's authoritative verdict.
+      evaluationScope: 'full' as const,
       snapshotAt: ids.now,
       isCurrent: scenario.staleContext !== true,
       configurationId: 'config-a11y-1',
@@ -662,6 +668,8 @@ export async function applyCalibrationScenario(
           orcaProfileId: ids.orcaProfileId,
           isOnline: scenario.offline !== true,
           updatedAt: ids.now,
+          // Basic screening only; the candidate list does not resolve profiles.
+          evaluationScope: 'preliminary' as const,
           rejectionReasonCodes: [],
           missingInputs: [],
           eligibility: {
@@ -703,6 +711,10 @@ export async function applyCalibrationScenario(
           exportable: true,
         },
       ],
+      // Echoed so the renderer's printer/revision fence has something to match
+      // against, exactly as the production handler does.
+      printerId: ids.printerId,
+      configurationRevision: ids.configurationRevision,
       discovery: {
         kind: 'ok',
         message: 'Server profile discovery completed.',
@@ -815,7 +827,9 @@ export async function applyCalibrationScenario(
           jobId: ids.jobId,
           jobKind: 'FilamentCalibration',
           rowVersion: 'W/"a11y-etag"',
+          jobRevision: 1,
           dispatchStateRowVersion: 'W/"a11y-dispatch"',
+          dispatchStateRevision: 1,
           status: unresolvedOutcome ? 'Starting' : 'Assigned',
           dispatchAttemptOutcome: unresolvedOutcome ? 'Unknown' : null,
           bedClearState: 'None',
@@ -825,7 +839,11 @@ export async function applyCalibrationScenario(
           acknowledgementExpiresAt: expiry,
           calibrationProjectId: ids.projectId,
           calibrationAttemptId: ids.attemptId,
+          calibrationOrchestrationId: ids.orchestrationId,
           pinnedPrinterConfigRevision: ids.configurationRevision,
+          bedClearCommandId: null,
+          bedClearIdempotencyKeySha256: null,
+          bedClearExpiresAtUtc: null,
           priority: 50,
           queuePosition: 1,
           updatedAt: ids.now,
