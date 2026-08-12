@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { join, resolve, sep } from 'node:path';
-import { rmSync, writeFileSync } from 'node:fs';
+import { join, resolve, sep, dirname } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import {
   LOCK_PATH,
   LOCK_RELATIVE_PATH,
   MUTATION_TOKEN_VARIABLE,
   describeForeignMutationWindow,
   isFileDirty,
+  removeLockIfUnchanged,
 } from './mutationWindowGuard';
 import {
   MUTATION_TOKEN_VARIABLE as HARNESS_TOKEN_VARIABLE,
@@ -104,18 +111,22 @@ describe('foreign mutation window guard', () => {
   it('sweeps a debris lock instead of leaving it to slow every later run', () => {
     // The guard runs in every afterEach. A lock nobody removes costs a
     // `git status` per test for the life of the checkout.
-    let swept = 0;
+    const readLock = lock({ pid: dead });
+    const swept: string[] = [];
     describeForeignMutationWindow({
-      readLock: lock({ pid: dead }),
+      readLock,
       token: 'a-different-token',
       isHolderAlive: () => false,
       isDirty: () => false,
-      removeLock: () => {
-        swept += 1;
+      removeLock: (expected) => {
+        swept.push(expected);
       },
     });
 
-    expect(swept).toBe(1);
+    // Handing the sweeper anything other than the bytes that were classified
+    // means it can never match, so the lock is never removed and the cost this
+    // sweep exists to remove comes silently back.
+    expect(swept).toEqual([readLock()]);
   });
 
   it('keeps the lock when it is still refusing', () => {
@@ -242,6 +253,72 @@ describe('the lock protocol is shared, not duplicated', () => {
     // arm. A lock visible to git would read as an introduced change and report
     // every arm confounded.
     expect(LOCK_RELATIVE_PATH.startsWith('node_modules/')).toBe(true);
+  });
+});
+
+/**
+ * The real sweeper, which every case above replaces with a fake.
+ *
+ * Injecting the remover everywhere left the implementation invisible: it could
+ * be emptied, or pointed at a recursive delete of the whole cache directory,
+ * with the entire suite green. That is the same shape as the `tests/undefined`
+ * lock path recorded above -- behaviour green under injected probes, broken on
+ * the only path that ever runs.
+ */
+describe('the sweeper behind the debris path', () => {
+  const scratch = (name: string): string =>
+    join(process.cwd(), 'node_modules', '.cache', `sweep-probe-${name}.tmp`);
+
+  it('removes the lock it was given, and nothing around it', () => {
+    const lock = scratch('match');
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, 'the-classified-bytes');
+    try {
+      removeLockIfUnchanged('the-classified-bytes', lock);
+      expect(existsSync(lock)).toBe(false);
+      // A sweeper that takes the directory with it destroys every other
+      // tool's cache, and no assertion on the lock alone would notice.
+      expect(existsSync(dirname(lock))).toBe(true);
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  it('leaves a lock whose bytes changed since it was classified', () => {
+    // The measured fail-open: classification reads the lock, spends ~35ms in
+    // `git status`, and a harness opening a window in that gap writes its lock
+    // before its mutant. Deleting unconditionally removed that live lock and
+    // the next run was admitted with the mutant on disk.
+    const lock = scratch('raced');
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, 'a-live-window-opened-here');
+    try {
+      removeLockIfUnchanged('the-debris-that-was-classified', lock);
+      expect(existsSync(lock)).toBe(true);
+      expect(readFileSync(lock, 'utf8')).toBe('a-live-window-opened-here');
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  it('stays quiet when it cannot remove the lock at all', () => {
+    // Several workers meet the same debris and all try to remove it; the
+    // losers see EPERM on Windows, which `force` does not suppress. Throwing
+    // here would fail an unrelated test from inside `afterEach`. A directory
+    // stands in for the unreadable case.
+    const busy = scratch('directory');
+    mkdirSync(busy, { recursive: true });
+    try {
+      expect(() => removeLockIfUnchanged('anything', busy)).not.toThrow();
+    } finally {
+      rmSync(busy, { force: true, recursive: true });
+    }
+  });
+
+  it('does not mind a lock that has already been swept', () => {
+    expect(() =>
+      removeLockIfUnchanged('anything', scratch('absent')),
+    ).not.toThrow();
   });
 });
 

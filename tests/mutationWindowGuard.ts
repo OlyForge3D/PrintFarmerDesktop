@@ -46,15 +46,43 @@ export interface MutationWindowProbes {
   readonly token?: string | undefined;
   readonly isHolderAlive?: (pid: unknown) => boolean;
   readonly isDirty?: (file: string) => boolean;
-  readonly removeLock?: () => void;
+  readonly removeLock?: (expected: string) => void;
 }
 
 function defaultReadLock(): string {
   return readFileSync(LOCK_PATH, 'utf8');
 }
 
-function defaultRemoveLock(): void {
-  rmSync(LOCK_PATH, { force: true });
+/**
+ * Delete the lock only while it is still the one that was classified.
+ *
+ * The unconditional delete this replaces was a fail-open: classification reads
+ * the lock, then spends ~35ms in a `git status` subprocess, and only then
+ * removes it. A harness starting inside that gap writes its lock *before* it
+ * writes the mutant, so the sweep deleted a **live** window's lock -- measured,
+ * with the following run admitted while the mutant sat on disk. Nothing
+ * reported it, because `closeMutationWindow` removes the lock with
+ * `force: true` and never notices it is already gone. Re-reading and comparing
+ * closes that: a lock whose bytes changed belongs to someone else now.
+ *
+ * Failures are swallowed on purpose. Several vitest workers meet the same
+ * debris at once and all try to remove it; on Windows the losers get `EPERM`
+ * rather than `ENOENT`, which `force` does not suppress. Letting that escape
+ * would throw out of an `afterEach` and fail an unrelated test with a message
+ * naming neither the guard nor the cause -- a new unreproducible red inserted
+ * by the mechanism whose whole purpose is to remove one.
+ */
+export function removeLockIfUnchanged(
+  expected: string,
+  lockPath: string = LOCK_PATH,
+): void {
+  try {
+    if (readFileSync(lockPath, 'utf8') !== expected) return;
+    rmSync(lockPath, { force: true });
+  } catch {
+    // Another sweeper won, or the lock is already gone. Either way there is
+    // nothing left to do and nothing worth failing a test over.
+  }
 }
 
 function defaultIsHolderAlive(pid: unknown): boolean {
@@ -106,7 +134,7 @@ export function describeForeignMutationWindow(
     token = process.env[MUTATION_TOKEN_VARIABLE],
     isHolderAlive = defaultIsHolderAlive,
     isDirty = isFileDirty,
-    removeLock = defaultRemoveLock,
+    removeLock = removeLockIfUnchanged,
   } = probes;
 
   let raw: string;
@@ -151,9 +179,9 @@ export function describeForeignMutationWindow(
       // Debris, and swept rather than left. `assertNoForeignMutationWindow`
       // runs in every `afterEach`, so a lock nobody will ever remove costs a
       // `git status` per test: measured at ~10.2s -> ~29.7s on a single file.
-      // The tree is clean and the holder is gone, so there is nothing left to
-      // protect and nothing to lose by removing it.
-      removeLock();
+      // Passing the bytes that were classified keeps the sweep from removing a
+      // window that opened while this one was deciding.
+      removeLock(raw);
       return null;
     }
     return [
