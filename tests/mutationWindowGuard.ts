@@ -46,11 +46,8 @@ export interface MutationWindowProbes {
   readonly token?: string | undefined;
   readonly isHolderAlive?: (pid: unknown) => boolean;
   readonly isDirty?: (file: string) => boolean;
-  readonly removeLock?: (expected: string) => void;
-}
-
-function defaultReadLock(): string {
-  return readFileSync(LOCK_PATH, 'utf8');
+  readonly removeLock?: (expected: string, lockPath: string) => void;
+  readonly lockPath?: string;
 }
 
 /**
@@ -71,10 +68,15 @@ function defaultReadLock(): string {
  * would throw out of an `afterEach` and fail an unrelated test with a message
  * naming neither the guard nor the cause -- a new unreproducible red inserted
  * by the mechanism whose whole purpose is to remove one.
+ *
+ * `lockPath` is required rather than defaulted. A default could only ever be
+ * exercised by writing to the single real lock the whole checkout shares, which
+ * makes concurrent suite runs clobber one another -- so it would have been
+ * either untested or actively harmful. The caller names the path.
  */
 export function removeLockIfUnchanged(
   expected: string,
-  lockPath: string = LOCK_PATH,
+  lockPath: string,
 ): void {
   try {
     if (readFileSync(lockPath, 'utf8') !== expected) return;
@@ -130,7 +132,8 @@ export function describeForeignMutationWindow(
   probes: MutationWindowProbes = {},
 ): string | null {
   const {
-    readLock = defaultReadLock,
+    lockPath = LOCK_PATH,
+    readLock = (): string => readFileSync(lockPath, 'utf8'),
     token = process.env[MUTATION_TOKEN_VARIABLE],
     isHolderAlive = defaultIsHolderAlive,
     isDirty = isFileDirty,
@@ -181,7 +184,7 @@ export function describeForeignMutationWindow(
       // `git status` per test: measured at ~10.2s -> ~29.7s on a single file.
       // Passing the bytes that were classified keeps the sweep from removing a
       // window that opened while this one was deciding.
-      removeLock(raw);
+      removeLock(raw, lockPath);
       return null;
     }
     return [
@@ -191,7 +194,7 @@ export function describeForeignMutationWindow(
       `  arm:          ${String(lock.label)}`,
       `  holder pid:   ${String(lock.pid)} (no longer running)`,
       `  opened at:    ${openedAt}`,
-      `  lock file:    ${LOCK_PATH}`,
+      `  lock file:    ${lockPath}`,
       'Restore that file, then delete the lock file named above. Until then a',
       'result here would describe the mutation rather than the code.',
     ].join('\n');
@@ -203,7 +206,7 @@ export function describeForeignMutationWindow(
     `  arm:          ${String(lock.label)}`,
     `  holder pid:   ${String(lock.pid)}`,
     `  opened at:    ${openedAt}`,
-    `  lock file:    ${LOCK_PATH}`,
+    `  lock file:    ${lockPath}`,
     'The tree currently holds a deliberate mutation, so any result here is',
     'meaningless: failures would name a defect that does not exist. Wait for',
     'scripts/mutation-harness.mjs to finish, then run again. If nothing is',

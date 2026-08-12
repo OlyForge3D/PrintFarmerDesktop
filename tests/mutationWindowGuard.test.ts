@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { join, resolve, sep, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -266,8 +267,65 @@ describe('the lock protocol is shared, not duplicated', () => {
  * the only path that ever runs.
  */
 describe('the sweeper behind the debris path', () => {
+  // Names carry the pid: two suite runs sharing a checkout would otherwise
+  // race, one run's `finally` deleting the other's file before it asserts.
   const scratch = (name: string): string =>
-    join(process.cwd(), 'node_modules', '.cache', `sweep-probe-${name}.tmp`);
+    join(
+      process.cwd(),
+      'node_modules',
+      '.cache',
+      `sweep-probe-${process.pid}-${name}.tmp`,
+    );
+
+  /**
+   * Deny the permissions Windows needs to unlink `lock`, leaving reads intact.
+   *
+   * Returns false where the platform or the tooling cannot express that, so
+   * the caller can decline to assert rather than assert something untrue.
+   */
+  const denyDelete = (holder: string, lock: string): boolean => {
+    if (process.platform !== 'win32') return false;
+    try {
+      const user = process.env.USERNAME ?? '';
+      if (user === '') return false;
+      execFileSync(
+        'icacls',
+        [lock, '/inheritance:r', '/grant', `${user}:(RX)`],
+        {
+          stdio: 'ignore',
+        },
+      );
+      execFileSync(
+        'icacls',
+        [holder, '/inheritance:r', '/grant', `${user}:(RX)`],
+        { stdio: 'ignore' },
+      );
+      // Only claim success if the unlink really is refused now.
+      try {
+        rmSync(lock, { force: true });
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  };
+
+  const restoreDelete = (holder: string, lock: string): void => {
+    if (process.platform !== 'win32') return;
+    const user = process.env.USERNAME ?? '';
+    if (user === '') return;
+    for (const target of [lock, holder]) {
+      try {
+        execFileSync('icacls', [target, '/grant', `${user}:(F)`], {
+          stdio: 'ignore',
+        });
+      } catch {
+        // Best effort; the temp directory is disposable either way.
+      }
+    }
+  };
 
   it('removes the lock it was given, and nothing around it', () => {
     const lock = scratch('match');
@@ -301,11 +359,11 @@ describe('the sweeper behind the debris path', () => {
     }
   });
 
-  it('stays quiet when it cannot remove the lock at all', () => {
-    // Several workers meet the same debris and all try to remove it; the
-    // losers see EPERM on Windows, which `force` does not suppress. Throwing
-    // here would fail an unrelated test from inside `afterEach`. A directory
-    // stands in for the unreadable case.
+  it('stays quiet when the read fails outright', () => {
+    // A directory fails at `readFileSync` with EISDIR, so this pins the read
+    // half of the swallow and nothing else. It is deliberately no longer
+    // labelled as the EPERM case: `rmSync` is never reached here, and calling
+    // it an unlink test left the unlink half pinned by nothing.
     const busy = scratch('directory');
     mkdirSync(busy, { recursive: true });
     try {
@@ -315,10 +373,118 @@ describe('the sweeper behind the debris path', () => {
     }
   });
 
+  it('stays quiet when the read succeeds but the unlink is refused', () => {
+    // The case the swallow actually exists for, and the one the directory
+    // above cannot reach. Several workers meet the same debris and all try to
+    // remove it; the losers see EPERM, which `force` does not suppress.
+    // Throwing here fails an unrelated test from inside `afterEach` with a
+    // message naming neither the guard nor the cause.
+    //
+    // Deleting on Windows needs DELETE on the file or FILE_DELETE_CHILD on its
+    // parent, so denying both makes the unlink fail while the read still
+    // succeeds -- verified as read=ok, rm=EPERM.
+    const holder = scratch('undeletable-dir');
+    const lock = join(holder, 'the.lock');
+    mkdirSync(holder, { recursive: true });
+    writeFileSync(lock, 'classified-bytes');
+    const denied = denyDelete(holder, lock);
+    try {
+      if (!denied) return; // Nothing was locked down; assert nothing.
+      // The read must genuinely succeed, or this is the previous test again.
+      expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
+      expect(() => rmSync(lock, { force: true })).toThrow();
+
+      expect(() =>
+        removeLockIfUnchanged('classified-bytes', lock),
+      ).not.toThrow();
+    } finally {
+      restoreDelete(holder, lock);
+      rmSync(holder, { force: true, recursive: true });
+    }
+  });
+
   it('does not mind a lock that has already been swept', () => {
     expect(() =>
       removeLockIfUnchanged('anything', scratch('absent')),
     ).not.toThrow();
+  });
+});
+
+/**
+ * The wiring, which the cases above all step around.
+ *
+ * Every behavioural test injects `removeLock`, so the binding itself -- the
+ * line this delta changed -- was pinned by nothing and could be replaced with
+ * a no-op while debris silently stopped being swept. These drive the real
+ * path end to end: real read, real liveness probe, real git, real sweep, with
+ * only the lock's location redirected.
+ *
+ * The location is redirected on purpose. An earlier attempt pinned this
+ * against the one real lock the checkout shares and reintroduced exactly the
+ * collision it was meant to remove -- measured at 5 failures in 20 concurrent
+ * same-checkout runs, because two runs clobber each other's sentinel. A
+ * per-process path keeps the wiring honest without inventing a new flake.
+ */
+describe('the sweeper is wired to the guard, not just present', () => {
+  const isolatedLock = (name: string): string =>
+    join(
+      process.cwd(),
+      'node_modules',
+      '.cache',
+      `wiring-probe-${process.pid}-${name}.lock`,
+    );
+
+  const debris = JSON.stringify({
+    token: `wiring-probe-${process.pid}`,
+    pid: 0x7fffffff,
+    file: 'no/such/file-2f4a1c.ts',
+    label: 'wiring probe',
+    openedAt: '2026-08-12T00:00:00.000Z',
+  });
+
+  it('sweeps real debris with nothing injected but the location', () => {
+    const lockPath = isolatedLock('swept');
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, debris);
+    try {
+      const problem = describeForeignMutationWindow({ lockPath });
+
+      expect(problem).toBeNull();
+      expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      rmSync(lockPath, { force: true });
+    }
+  });
+
+  it('keeps the lock it is still refusing over, with nothing injected', () => {
+    // The converse: a dead holder whose file really is modified must keep its
+    // lock, because that lock is the only record of what was abandoned.
+    const lockPath = isolatedLock('retained');
+    const dirty = `tests/.wiring-probe-${process.pid}.tmp`;
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        token: `wiring-probe-${process.pid}`,
+        pid: 0x7fffffff,
+        file: dirty,
+        label: 'wiring probe',
+        openedAt: '2026-08-12T00:00:00.000Z',
+      }),
+    );
+    writeFileSync(join(process.cwd(), dirty), 'transient\n');
+    try {
+      const problem = describeForeignMutationWindow({ lockPath });
+
+      expect(problem).not.toBeNull();
+      expect(problem).toContain('killed before it restored');
+      // The message must name the lock actually consulted.
+      expect(problem).toContain(lockPath);
+      expect(existsSync(lockPath)).toBe(true);
+    } finally {
+      rmSync(join(process.cwd(), dirty), { force: true });
+      rmSync(lockPath, { force: true });
+    }
   });
 });
 
@@ -344,7 +510,14 @@ describe('the dirtiness probe behind the crash check', () => {
     // the probe could ask git about some fixed clean path instead of the one it
     // was given, and every other case here stayed green. Both mutants have to
     // fail this.
-    const scratch = 'tests/.dirty-probe-9c1f7a2e.tmp';
+    //
+    // The name carries the pid because this file must live in the tracked tree
+    // for git to see it at all. A fixed name let two concurrent suite runs in
+    // one checkout race -- one run's `finally` deleting the file between the
+    // other's write and its assertion, measured at 2 failures in 15 concurrent
+    // runs. A flaky test inside the anti-flake guard is not a joke worth
+    // keeping.
+    const scratch = `tests/.dirty-probe-${process.pid}.tmp`;
     const absolute = join(process.cwd(), scratch);
     writeFileSync(absolute, 'transient\n');
     try {
