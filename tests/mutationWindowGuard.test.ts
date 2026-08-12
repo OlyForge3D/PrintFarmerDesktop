@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { join, resolve, sep, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -266,8 +270,76 @@ describe('the lock protocol is shared, not duplicated', () => {
  * the only path that ever runs.
  */
 describe('the sweeper behind the debris path', () => {
+  // Names carry the pid: two suite runs sharing a checkout would otherwise
+  // race, one run's `finally` deleting the other's file before it asserts.
   const scratch = (name: string): string =>
-    join(process.cwd(), 'node_modules', '.cache', `sweep-probe-${name}.tmp`);
+    join(
+      process.cwd(),
+      'node_modules',
+      '.cache',
+      `sweep-probe-${process.pid}-${name}.tmp`,
+    );
+
+  /**
+   * Make `lock` undeletable while leaving it readable.
+   *
+   * Deleting needs different permissions on each platform: Windows wants
+   * DELETE on the file or FILE_DELETE_CHILD on its parent, POSIX wants write
+   * on the containing directory. Both are denied here.
+   *
+   * Applying the denial is not the same as it taking effect: a privileged
+   * account bypasses the DACL on Windows and `CAP_DAC_OVERRIDE` on POSIX. The
+   * caller therefore probes whether the refusal actually holds and skips
+   * visibly when it does not, rather than trusting this to have worked.
+   *
+   * Failures to even attempt the denial still throw, because that is a broken
+   * fixture rather than a privileged host.
+   */
+  const denyDelete = (holder: string, lock: string): void => {
+    if (process.platform === 'win32') {
+      const user = process.env.USERNAME;
+      if (user === undefined || user === '') {
+        throw new Error(
+          'Cannot attempt the unlink-refusal premise: USERNAME is unset, so ' +
+            'icacls has no principal to restrict.',
+        );
+      }
+      for (const target of [lock, holder]) {
+        execFileSync(
+          'icacls',
+          [target, '/inheritance:r', '/grant', `${user}:(RX)`],
+          { stdio: 'ignore' },
+        );
+      }
+      return;
+    }
+    // POSIX: unlink is governed by write permission on the directory, not the
+    // file. Verified in WSL as read=ok, rm=EACCES for an unprivileged user.
+    chmodSync(holder, 0o555);
+  };
+
+  const restoreDelete = (holder: string, lock: string): void => {
+    if (process.platform === 'win32') {
+      const user = process.env.USERNAME ?? '';
+      if (user === '') return;
+      for (const target of [lock, holder]) {
+        try {
+          execFileSync('icacls', [target, '/grant', `${user}:(F)`], {
+            stdio: 'ignore',
+          });
+        } catch {
+          // Best effort: the assertions have already run and the directory is
+          // scoped to this process.
+        }
+      }
+      return;
+    }
+    try {
+      chmodSync(holder, 0o755);
+    } catch {
+      // Same.
+    }
+  };
 
   it('removes the lock it was given, and nothing around it', () => {
     const lock = scratch('match');
@@ -301,11 +373,11 @@ describe('the sweeper behind the debris path', () => {
     }
   });
 
-  it('stays quiet when it cannot remove the lock at all', () => {
-    // Several workers meet the same debris and all try to remove it; the
-    // losers see EPERM on Windows, which `force` does not suppress. Throwing
-    // here would fail an unrelated test from inside `afterEach`. A directory
-    // stands in for the unreadable case.
+  it('stays quiet when the read fails outright', () => {
+    // A directory fails at `readFileSync` with EISDIR, so this pins the read
+    // half of the swallow and nothing else. It is deliberately no longer
+    // labelled as the EPERM case: `rmSync` is never reached here, and calling
+    // it an unlink test left the unlink half pinned by nothing.
     const busy = scratch('directory');
     mkdirSync(busy, { recursive: true });
     try {
@@ -315,10 +387,251 @@ describe('the sweeper behind the debris path', () => {
     }
   });
 
+  it('stays quiet when the read succeeds but the unlink throws', () => {
+    // The case the swallow exists for, made deterministic. Several workers meet
+    // the same debris and all try to remove it; the losers see EPERM/EACCES,
+    // which `force` does not suppress. Throwing here fails an unrelated test
+    // from inside `afterEach` with a message naming neither the guard nor the
+    // cause.
+    //
+    // The removal is substituted rather than genuinely refused, because a real
+    // refusal needs the filesystem to deny a permission and a privileged
+    // account bypasses that -- measured on a GitHub windows-latest runner,
+    // where the ACL denial does not take. This runs on every host. The real
+    // binding is not left unpinned: the neighbouring cases call this with the
+    // default removal against real files, and the guard-wiring cases drive the
+    // whole path with nothing injected.
+    const lock = scratch('unlink-throws');
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, 'classified-bytes');
+    try {
+      let attempted = 0;
+      const refusing = (path: string): void => {
+        attempted += 1;
+        const error = new Error(
+          `EPERM: operation not permitted, unlink '${path}'`,
+        );
+        (error as NodeJS.ErrnoException).code = 'EPERM';
+        throw error;
+      };
+
+      // The read half of the premise, so this cannot decay into the
+      // read-failure case above.
+      expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
+
+      expect(() =>
+        removeLockIfUnchanged('classified-bytes', lock, refusing),
+      ).not.toThrow();
+
+      // The unlink half: it was actually reached, so the swallow is what
+      // absorbed the throw rather than the comparison returning early.
+      expect(attempted).toBe(1);
+      expect(existsSync(lock)).toBe(true);
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  it('does not swallow by never attempting the unlink', () => {
+    // The control for the case above: a sweeper that simply never calls the
+    // removal would also "not throw". Bytes that match must reach the unlink.
+    const lock = scratch('unlink-attempted');
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, 'classified-bytes');
+    try {
+      const seen: string[] = [];
+      removeLockIfUnchanged('classified-bytes', lock, (path) => {
+        seen.push(path);
+      });
+      expect(seen).toEqual([lock]);
+
+      // And bytes that do not match must not reach it.
+      const skipped: string[] = [];
+      removeLockIfUnchanged('different-bytes', lock, (path) => {
+        skipped.push(path);
+      });
+      expect(skipped).toEqual([]);
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  /**
+   * Did this host actually delete the file, i.e. is deletion permitted here?
+   *
+   * Deliberately **without** `force`. `force` suppresses ENOENT, which would
+   * make a file that is simply *gone* answer "yes, deletion is permitted" --
+   * so a fixture that vanished for any reason would be classified as a
+   * privileged host and quietly skipped. Those are two different states and
+   * this file's whole argument is that two different states must not be
+   * reported identically. Without `force`, a missing file throws, this answers
+   * "no", and the caller proceeds to assert on the fixture and fails loudly on
+   * the absent file rather than skipping.
+   */
+  const deletionPermitted = (path: string): boolean => {
+    try {
+      rmSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('classifies a vanished fixture as not-permitted, never as a skip', () => {
+    // The regression pin for that reasoning. With `force` restored, an absent
+    // path reports "deletion permitted", which is exactly how a broken fixture
+    // would disguise itself as an elevated host and take the skip branch.
+    const base = mkdtempSync(join(tmpdir(), `guard-probe-${process.pid}-`));
+    try {
+      const vanished = join(base, 'never-existed.lock');
+      expect(existsSync(vanished)).toBe(false);
+      expect(deletionPermitted(vanished)).toBe(false);
+
+      // Control: a file that really is deletable must still answer yes, or the
+      // probe would never skip and the assertion above would be vacuous.
+      const deletable = join(base, 'ordinary.lock');
+      writeFileSync(deletable, 'classified-bytes');
+      expect(deletionPermitted(deletable)).toBe(true);
+      expect(existsSync(deletable)).toBe(false);
+    } finally {
+      rmSync(base, { force: true, recursive: true });
+    }
+  });
+
+  it('refuses a genuinely undeletable lock where the platform can deny it', (ctx) => {
+    // Corroboration for the substituted case above, against the real
+    // filesystem. Windows denies DELETE on the file and FILE_DELETE_CHILD on
+    // its parent; POSIX drops write on the containing directory. Verified as
+    // read=ok with a bare unlink throwing -- EPERM on Windows, EACCES on Linux
+    // as an unprivileged user.
+    //
+    // A privileged account bypasses both (Administrator on a GitHub runner,
+    // root via CAP_DAC_OVERRIDE), and there the premise cannot be established
+    // at all. That is reported as a visible skip naming the reason, never as a
+    // pass: a green result here would assert nothing, which is the defect this
+    // whole file exists to prevent. The substituted case above still runs, so
+    // the swallow itself is never left unpinned.
+    const base = mkdtempSync(join(tmpdir(), `guard-unlink-${process.pid}-`));
+    const holder = join(base, 'holder');
+    const lock = join(holder, 'the.lock');
+    mkdirSync(holder, { recursive: true });
+    writeFileSync(lock, 'classified-bytes');
+    try {
+      denyDelete(holder, lock);
+
+      if (deletionPermitted(lock)) {
+        // vitest 2.x `ctx.skip()` carries no reason, so the reason is written
+        // where a reader will actually see it: the run's own output. A skip is
+        // visible in every reporter as a distinct outcome, which a pass is not.
+        console.warn(
+          `[mutation-window-guard] SKIPPED "refuses a genuinely undeletable lock": ` +
+            `this host (${process.platform}) deleted a file whose permissions deny it, ` +
+            'which means an elevated or root account is bypassing the check, so the ' +
+            'unlink-refusal premise cannot be established here. The substituted-removal ' +
+            'case still pins the swallow on this host; only the real-permission ' +
+            'corroboration is unavailable.',
+        );
+        ctx.skip();
+        return;
+      }
+
+      // Reached only when deletion was refused, so the fixture is still here.
+      // A vanished fixture arrives here too -- and fails on this line rather
+      // than skipping, which is the point of probing without `force`.
+      expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
+      expect(() => rmSync(lock, { force: true })).toThrow();
+
+      expect(() =>
+        removeLockIfUnchanged('classified-bytes', lock),
+      ).not.toThrow();
+    } finally {
+      restoreDelete(holder, lock);
+      rmSync(base, { force: true, recursive: true });
+    }
+  });
+
   it('does not mind a lock that has already been swept', () => {
     expect(() =>
       removeLockIfUnchanged('anything', scratch('absent')),
     ).not.toThrow();
+  });
+});
+
+/**
+ * The wiring, which the cases above all step around.
+ *
+ * Every behavioural test injects `removeLock`, so the binding itself -- the
+ * line this delta changed -- was pinned by nothing and could be replaced with
+ * a no-op while debris silently stopped being swept. These drive the real
+ * path end to end: real read, real liveness probe, real git, real sweep, with
+ * only the lock's location redirected.
+ *
+ * The location is redirected on purpose. An earlier attempt pinned this
+ * against the one real lock the checkout shares and reintroduced exactly the
+ * collision it was meant to remove -- measured at 5 failures in 20 concurrent
+ * same-checkout runs, because two runs clobber each other's sentinel. A
+ * per-process path keeps the wiring honest without inventing a new flake.
+ */
+describe('the sweeper is wired to the guard, not just present', () => {
+  const isolatedLock = (name: string): string =>
+    join(
+      process.cwd(),
+      'node_modules',
+      '.cache',
+      `wiring-probe-${process.pid}-${name}.lock`,
+    );
+
+  const debris = JSON.stringify({
+    token: `wiring-probe-${process.pid}`,
+    pid: 0x7fffffff,
+    file: 'no/such/file-2f4a1c.ts',
+    label: 'wiring probe',
+    openedAt: '2026-08-12T00:00:00.000Z',
+  });
+
+  it('sweeps real debris with nothing injected but the location', () => {
+    const lockPath = isolatedLock('swept');
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, debris);
+    try {
+      const problem = describeForeignMutationWindow({ lockPath });
+
+      expect(problem).toBeNull();
+      expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      rmSync(lockPath, { force: true });
+    }
+  });
+
+  it('keeps the lock it is still refusing over, with nothing injected', () => {
+    // The converse: a dead holder whose file really is modified must keep its
+    // lock, because that lock is the only record of what was abandoned.
+    const lockPath = isolatedLock('retained');
+    const dirty = `tests/.wiring-probe-${process.pid}.tmp`;
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        token: `wiring-probe-${process.pid}`,
+        pid: 0x7fffffff,
+        file: dirty,
+        label: 'wiring probe',
+        openedAt: '2026-08-12T00:00:00.000Z',
+      }),
+    );
+    writeFileSync(join(process.cwd(), dirty), 'transient\n');
+    try {
+      const problem = describeForeignMutationWindow({ lockPath });
+
+      expect(problem).not.toBeNull();
+      expect(problem).toContain('killed before it restored');
+      // The message must name the lock actually consulted.
+      expect(problem).toContain(lockPath);
+      expect(existsSync(lockPath)).toBe(true);
+    } finally {
+      rmSync(join(process.cwd(), dirty), { force: true });
+      rmSync(lockPath, { force: true });
+    }
   });
 });
 
@@ -344,7 +657,14 @@ describe('the dirtiness probe behind the crash check', () => {
     // the probe could ask git about some fixed clean path instead of the one it
     // was given, and every other case here stayed green. Both mutants have to
     // fail this.
-    const scratch = 'tests/.dirty-probe-9c1f7a2e.tmp';
+    //
+    // The name carries the pid because this file must live in the tracked tree
+    // for git to see it at all. A fixed name let two concurrent suite runs in
+    // one checkout race -- one run's `finally` deleting the file between the
+    // other's write and its assertion, measured at 2 failures in 15 concurrent
+    // runs. A flaky test inside the anti-flake guard is not a joke worth
+    // keeping.
+    const scratch = `tests/.dirty-probe-${process.pid}.tmp`;
     const absolute = join(process.cwd(), scratch);
     writeFileSync(absolute, 'transient\n');
     try {
