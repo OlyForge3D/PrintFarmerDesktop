@@ -24,10 +24,9 @@
  *   - CalibrationOrchestrationStatus: `orchestrationId` field renamed to `id`;
  *     new nullable fields (workerId, sourceArtifactId, finalArtifactId,
  *     manifestSha256, slicerBinarySha256) required.
- *   - CalibrationQueueJobState: `jobStatus`/`jobEtag`/`bedClearExpiresAtUtc`
- *     renamed to `status`/`rowVersion`/`acknowledgementExpiresAt`; new nullable
- *     required fields (jobKind, dispatchAttemptOutcome, bedClearState,
- *     calibrationAttemptId) added.
+ *   - CalibrationQueueJobState: `jobStatus`/`jobEtag` renamed to
+ *     `status`/`rowVersion`; exact-job lineage, logical revisions, and durable
+ *     bed-clear command fields are required.
  *
  * Tests NOT ported: lines 1405–2284 (D-07 DOM-coupled tests that reference
  * ~37 data-testid attributes absent from the merged implementation; adding
@@ -1263,8 +1262,8 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
         printerId,
         projectId,
         attemptId,
+        orchestrationId,
         configRev,
-        expiry,
         now,
       },
     ) => {
@@ -1275,17 +1274,23 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
           jobId,
           jobKind: 'FilamentCalibration',
           rowVersion: 'W/"fixture-etag"',
+          jobRevision: 7,
           dispatchStateRowVersion: 'W/"fixture-dispatch"',
+          dispatchStateRevision: 3,
           status: 'Assigned',
           dispatchAttemptOutcome: null,
           bedClearState: 'None',
           gcodeFileId: gcodeId,
           assignedPrinterId: printerId,
           assignedPrinterName: 'Fixture Printer A',
-          acknowledgementExpiresAt: expiry,
+          acknowledgementExpiresAt: null,
           calibrationProjectId: projectId,
           calibrationAttemptId: attemptId,
+          calibrationOrchestrationId: orchestrationId,
           pinnedPrinterConfigRevision: configRev,
+          bedClearCommandId: null,
+          bedClearIdempotencyKeySha256: null,
+          bedClearExpiresAtUtc: null,
           priority: 50,
           queuePosition: 1,
           updatedAt: now,
@@ -1298,8 +1303,8 @@ test('calibration: getCalibrationQueueState preload response schema parses valid
       printerId: F_PRINTER_ID,
       projectId: F_PROJECT_ID,
       attemptId: F_ATTEMPT_ID,
+      orchestrationId: F_ORCH_ID,
       configRev: F_CONFIG_REV,
-      expiry: F_EXPIRY,
       now: F_NOW,
     },
   );
