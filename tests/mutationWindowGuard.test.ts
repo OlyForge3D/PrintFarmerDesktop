@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { join, resolve, sep, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -278,52 +281,61 @@ describe('the sweeper behind the debris path', () => {
     );
 
   /**
-   * Deny the permissions Windows needs to unlink `lock`, leaving reads intact.
+   * Make `lock` undeletable while leaving it readable.
    *
-   * Returns false where the platform or the tooling cannot express that, so
-   * the caller can decline to assert rather than assert something untrue.
+   * Deleting needs different permissions on each platform: Windows wants
+   * DELETE on the file or FILE_DELETE_CHILD on its parent, POSIX wants write
+   * on the containing directory. Both are denied here.
+   *
+   * Throws rather than reporting failure. A fixture that cannot establish its
+   * premise must not let the test quietly pass: an earlier revision returned a
+   * boolean and the caller returned early on false, which made this case inert
+   * on every non-Windows platform while still counting as green -- a test that
+   * cannot fail, which is the exact thing this file exists to stamp out.
    */
-  const denyDelete = (holder: string, lock: string): boolean => {
-    if (process.platform !== 'win32') return false;
-    try {
-      const user = process.env.USERNAME ?? '';
-      if (user === '') return false;
-      execFileSync(
-        'icacls',
-        [lock, '/inheritance:r', '/grant', `${user}:(RX)`],
-        {
-          stdio: 'ignore',
-        },
-      );
-      execFileSync(
-        'icacls',
-        [holder, '/inheritance:r', '/grant', `${user}:(RX)`],
-        { stdio: 'ignore' },
-      );
-      // Only claim success if the unlink really is refused now.
-      try {
-        rmSync(lock, { force: true });
-        return false;
-      } catch {
-        return true;
+  const denyDelete = (holder: string, lock: string): void => {
+    if (process.platform === 'win32') {
+      const user = process.env.USERNAME;
+      if (user === undefined || user === '') {
+        throw new Error(
+          'Cannot establish the unlink-refusal premise: USERNAME is unset, so ' +
+            'icacls has no principal to restrict.',
+        );
       }
-    } catch {
-      return false;
+      for (const target of [lock, holder]) {
+        execFileSync(
+          'icacls',
+          [target, '/inheritance:r', '/grant', `${user}:(RX)`],
+          { stdio: 'ignore' },
+        );
+      }
+      return;
     }
+    // POSIX: unlink is governed by write permission on the directory, not the
+    // file. Verified in WSL as read=ok, rm=EACCES for an unprivileged user.
+    chmodSync(holder, 0o555);
   };
 
   const restoreDelete = (holder: string, lock: string): void => {
-    if (process.platform !== 'win32') return;
-    const user = process.env.USERNAME ?? '';
-    if (user === '') return;
-    for (const target of [lock, holder]) {
-      try {
-        execFileSync('icacls', [target, '/grant', `${user}:(F)`], {
-          stdio: 'ignore',
-        });
-      } catch {
-        // Best effort; the temp directory is disposable either way.
+    if (process.platform === 'win32') {
+      const user = process.env.USERNAME ?? '';
+      if (user === '') return;
+      for (const target of [lock, holder]) {
+        try {
+          execFileSync('icacls', [target, '/grant', `${user}:(F)`], {
+            stdio: 'ignore',
+          });
+        } catch {
+          // Best effort: the assertions have already run and the directory is
+          // scoped to this process.
+        }
       }
+      return;
+    }
+    try {
+      chmodSync(holder, 0o755);
+    } catch {
+      // Same.
     }
   };
 
@@ -376,21 +388,28 @@ describe('the sweeper behind the debris path', () => {
   it('stays quiet when the read succeeds but the unlink is refused', () => {
     // The case the swallow actually exists for, and the one the directory
     // above cannot reach. Several workers meet the same debris and all try to
-    // remove it; the losers see EPERM, which `force` does not suppress.
+    // remove it; the losers see EPERM/EACCES, which `force` does not suppress.
     // Throwing here fails an unrelated test from inside `afterEach` with a
     // message naming neither the guard nor the cause.
     //
-    // Deleting on Windows needs DELETE on the file or FILE_DELETE_CHILD on its
-    // parent, so denying both makes the unlink fail while the read still
-    // succeeds -- verified as read=ok, rm=EPERM.
-    const holder = scratch('undeletable-dir');
+    // Runs on both platforms: Windows denies DELETE on the file and
+    // FILE_DELETE_CHILD on its parent, POSIX drops write on the containing
+    // directory. Both were verified to give read=ok with a bare unlink
+    // throwing (Windows EPERM, Linux EACCES). There is no early return: if the
+    // premise cannot be established the fixture throws and this test fails,
+    // rather than passing while asserting nothing.
+    const holder = join(
+      mkdtempSync(join(tmpdir(), `guard-unlink-${process.pid}-`)),
+      'holder',
+    );
     const lock = join(holder, 'the.lock');
     mkdirSync(holder, { recursive: true });
     writeFileSync(lock, 'classified-bytes');
-    const denied = denyDelete(holder, lock);
     try {
-      if (!denied) return; // Nothing was locked down; assert nothing.
-      // The read must genuinely succeed, or this is the previous test again.
+      denyDelete(holder, lock);
+
+      // Both halves of the premise, asserted before the behaviour. Without
+      // these the case silently decays into the read-failure test above.
       expect(readFileSync(lock, 'utf8')).toBe('classified-bytes');
       expect(() => rmSync(lock, { force: true })).toThrow();
 
@@ -399,7 +418,7 @@ describe('the sweeper behind the debris path', () => {
       ).not.toThrow();
     } finally {
       restoreDelete(holder, lock);
-      rmSync(holder, { force: true, recursive: true });
+      rmSync(dirname(holder), { force: true, recursive: true });
     }
   });
 
