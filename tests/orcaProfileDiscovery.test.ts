@@ -402,6 +402,8 @@ describe('CalibrationInstallOrcaProfileRequest schema', () => {
   it('parses a valid request', () => {
     const result = CalibrationInstallOrcaProfileRequest.safeParse({
       profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
+      projectId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
+      snapshotId: 'snapshot-7',
       operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-222222222222',
       confirmedProfileJsonHash: 'a'.repeat(64),
     });
@@ -411,6 +413,8 @@ describe('CalibrationInstallOrcaProfileRequest schema', () => {
   it('rejects confirmedProfileJsonHash that is not 64 hex chars', () => {
     const result = CalibrationInstallOrcaProfileRequest.safeParse({
       profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
+      projectId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
+      snapshotId: 'snapshot-7',
       operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-222222222222',
       confirmedProfileJsonHash: 'not-a-hash',
     });
@@ -587,6 +591,9 @@ describe('Renderer privilege denial — export/install IPC contracts', () => {
   it('CalibrationExportOrcaProfileRequest does not accept filePath', () => {
     // The request schema must not have filePath; renderer cannot choose destination
     const result = CalibrationExportOrcaProfileRequest.safeParse({
+      profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
+      projectId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
+      snapshotId: 'snapshot-7',
       orcaProfileId: 'some-profile',
       operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
       filePath: '/etc/evil/path', // must be rejected (extra field with strict)
@@ -598,6 +605,8 @@ describe('Renderer privilege denial — export/install IPC contracts', () => {
   it('CalibrationInstallOrcaProfileRequest does not accept installPath', () => {
     const result = CalibrationInstallOrcaProfileRequest.safeParse({
       profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
+      projectId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
+      snapshotId: 'snapshot-7',
       operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-222222222222',
       confirmedProfileJsonHash: 'a'.repeat(64),
       installPath: 'C:\\Evil\\path\\profile.json', // must be rejected

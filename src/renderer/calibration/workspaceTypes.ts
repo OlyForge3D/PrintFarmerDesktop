@@ -111,11 +111,11 @@ export interface CreationDataState {
    * "500 printer candidates loaded" for a farm of 540 would send an operator
    * looking for a printer that is simply off the end.
    */
-   readonly printersTruncated: boolean;
-   /**
-    * How many candidates the server sent that could not be read.
-    *
-    * A malformed record is dropped on its own rather than failing the whole
+  readonly printersTruncated: boolean;
+  /**
+   * How many candidates the server sent that could not be read.
+   *
+   * A malformed record is dropped on its own rather than failing the whole
    * farm, so this is the difference between the list shown and the list the
    * server actually offered.
    */
@@ -255,6 +255,9 @@ export interface CalibrationWorkspaceStoreValue {
 export interface GeneratedProfileState {
   /** Client-generated operation ID used to correlate generate → export/install. */
   readonly operationId: string;
+  readonly profileId: string;
+  readonly projectId: string;
+  readonly snapshotId: string;
   readonly displayName: string;
   readonly safeFilename: string;
   readonly profileJsonHash: string;

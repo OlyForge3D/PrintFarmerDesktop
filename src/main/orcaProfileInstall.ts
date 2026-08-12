@@ -30,6 +30,7 @@
 
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
   readFile,
   writeFile,
@@ -398,6 +399,7 @@ export async function installOrcaProfileWindows(
   expectedHash: string,
   safeFilename: string,
   operationId: string,
+  revalidateBeforeWrite: () => Promise<void> = () => Promise.resolve(),
 ): Promise<InstallResult> {
   if (process.platform !== 'win32') {
     throw makeError(
@@ -475,11 +477,13 @@ export async function installOrcaProfileWindows(
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     backupPath = `${destPath}.bak-${ts}`;
     const priorBytes = await readFile(destPath);
+    await revalidateBeforeWrite();
     await writeFile(backupPath, priorBytes, { flag: 'wx' }); // exclusive create
     backupHash = sha256(priorBytes);
     // Durably record which operation produced this backup and what its
     // original safeFilename was, so restore can find it later without
     // depending on profileCache or on parsing the backup's own filename.
+    await revalidateBeforeWrite();
     await writeBackupMeta(installRoot, operationId, {
       safeFilename,
       backupFileName: path.basename(backupPath),
@@ -491,6 +495,7 @@ export async function installOrcaProfileWindows(
   // 6. Write to a temp file in the same directory (same-directory = same FS for rename).
   const tempPath = path.join(installRoot, `.pfd-tmp-${randomUUID()}.json`);
   try {
+    await revalidateBeforeWrite();
     await writeFile(tempPath, generatedJson, { encoding: 'utf8', flag: 'wx' });
 
     // 7. Read back and verify before atomic rename.
@@ -514,6 +519,7 @@ export async function installOrcaProfileWindows(
     }
 
     // 8. Atomic rename: replaces destination if it exists.
+    await revalidateBeforeWrite();
     await rename(tempPath, destPath);
   } catch (writeErr) {
     // Best-effort cleanup of the temp file.
@@ -1536,6 +1542,42 @@ export async function verifyExportedProfile(
 }
 
 /**
+ * Write a save-dialog export without following a leaf symlink that appears
+ * after path canonicalization. The descriptor pins the opened file identity;
+ * later swaps of the path cannot redirect the bytes already being written.
+ */
+export async function writeExportedProfileNoFollow(
+  filePath: string,
+  generatedJson: string,
+): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      filePath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (error) {
+    if (isErrno(error, 'ELOOP')) {
+      throw makeError(
+        'pathRestricted',
+        'Save target became a symlink before it could be opened.',
+      );
+    }
+    throw error;
+  }
+  try {
+    await handle.writeFile(generatedJson, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
  * Canonicalize a save-dialog-chosen path and verify it does not point to a
  * symlink (on macOS, the dialog should prevent this, but we guard anyway).
  */
@@ -1621,6 +1663,8 @@ interface CachedProfile {
   readonly snapshotId: string;
   /** The exact content hash of the base profile that was patched. */
   readonly baseContentHash: string;
+  /** The OrcaSlicer lookup name of that exact base profile. */
+  readonly baseProfileName: string;
   /**
    * The calibration action epoch at generation time. Any invalidation — a
    * profile switch, a refusal, an expired session — advances it and strands

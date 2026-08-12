@@ -19,7 +19,9 @@
  */
 
 import {
+  CALIBRATION_PERMISSIONS,
   CalibrationSyncPhase,
+  hasCalibrationPermission,
   type CalibrationSyncStatus,
   type CalibrationConflict,
 } from '@shared/ipc';
@@ -54,6 +56,7 @@ export type CalibrationEngineErrorCode =
   | 'NOT_FOUND'
   | 'UNAVAILABLE'
   | 'CAPABILITIES_MISMATCH'
+  | 'forbidden'
   | 'CANCELLED'
   | 'DISPOSED';
 
@@ -252,9 +255,16 @@ export class CalibrationSyncEngine {
     profileId: string,
     projectId: string | null,
     signal: AbortSignal,
+    authorizeApply: () => boolean = () => true,
   ): Promise<CalibrationSyncOutcome> {
     const captured: { code: CalibrationLogErrorCode | null } = { code: null };
-    const status = await this.runSync(profileId, projectId, signal, captured);
+    const status = await this.runSync(
+      profileId,
+      projectId,
+      signal,
+      captured,
+      authorizeApply,
+    );
     return { status, errorCode: captured.code };
   }
 
@@ -263,6 +273,7 @@ export class CalibrationSyncEngine {
     projectId: string | null,
     signal: AbortSignal,
     captured: { code: CalibrationLogErrorCode | null },
+    authorizeApply: () => boolean,
   ): Promise<CalibrationSyncStatus> {
     this.requireNotDisposed();
 
@@ -321,6 +332,7 @@ export class CalibrationSyncEngine {
         projectId,
         context.baseUrl,
         signal,
+        authorizeApply,
       );
       status.pushedOperations = pushResult.pushed;
       status.conflictCount += pushResult.conflicts;
@@ -448,6 +460,17 @@ export class CalibrationSyncEngine {
           `Server requires ${REQUIRED_SLICER_ENGINE} as the upstream slicer for calibration.`,
         );
       }
+      if (
+        !hasCalibrationPermission(
+          caps.grantedScopes,
+          CALIBRATION_PERMISSIONS.update,
+        )
+      ) {
+        throw new CalibrationEngineError(
+          'forbidden',
+          `Calibration synchronization requires '${CALIBRATION_PERMISSIONS.update}'.`,
+        );
+      }
     } catch (error) {
       if (error instanceof CalibrationEngineError) throw error;
       if (error instanceof CalibrationHttpError && error.code === 'notFound') {
@@ -469,6 +492,7 @@ export class CalibrationSyncEngine {
     projectId: string | null,
     baseUrl: string,
     signal: AbortSignal,
+    authorizeApply: () => boolean,
   ): Promise<{ pushed: number; conflicts: number }> {
     let pushed = 0;
     let conflicts = 0;
@@ -503,6 +527,12 @@ export class CalibrationSyncEngine {
         };
 
         try {
+          if (signal.aborted || !authorizeApply()) {
+            throw new CalibrationEngineError(
+              'CANCELLED',
+              'Calibration synchronization authorization changed before dispatch.',
+            );
+          }
           const result = await this.http.apply(
             profileId,
             baseUrl,

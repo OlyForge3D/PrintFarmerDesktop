@@ -157,6 +157,7 @@ const QUEUE_JOB = {
   jobKind: 'FilamentCalibration',
   calibrationProjectId: PROJECT_ID,
   calibrationAttemptId: ATTEMPT_ID,
+  calibrationOrchestrationId: ORCHESTRATION_ID,
   pinnedPrinterConfigRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
   gcodeFileId: '33333333-3333-4333-8333-333333333333',
   gcodeFileName: 'calibration.gcode',
@@ -164,6 +165,9 @@ const QUEUE_JOB = {
   assignedPrinterName: 'Voron 2.4',
   status: 'Queued',
   bedClearState: 'None',
+  bedClearCommandId: null,
+  bedClearIdempotencyKeySha256: null,
+  bedClearExpiresAtUtc: null,
   priority: 0,
   queuePosition: 1,
   copies: 1,
@@ -183,8 +187,10 @@ function json(body: unknown, status = 200): Response {
 interface ServerOptions {
   /** Tokens the server accepts. Anything else is answered 401. */
   accepts?: (token: string) => boolean;
-  /** Force a 401 for requests whose URL contains this fragment. */
+  /** Force an authorization response for requests matching this fragment. */
   rejectFragment?: string;
+  /** Status used by the forced refusal. */
+  rejectStatus?: 401 | 403;
   job?: Record<string, unknown>;
 }
 
@@ -206,8 +212,18 @@ function server(options: ServerOptions = {}): { calls: string[] } {
         (options.rejectFragment !== undefined &&
           href.includes(options.rejectFragment))
       ) {
+        const status =
+          !accepts(presented) || options.rejectStatus === undefined
+            ? 401
+            : options.rejectStatus;
         return Promise.resolve(
-          json({ title: 'Unauthorized', status: 401 }, 401),
+          json(
+            {
+              title: status === 401 ? 'Unauthorized' : 'Forbidden',
+              status,
+            },
+            status,
+          ),
         );
       }
       if (href.includes('/api/calibration/capabilities')) {
@@ -315,11 +331,16 @@ const generationRequest = (): Record<string, unknown> => ({
 
 const bedClearRequest = (): Record<string, unknown> => ({
   profileId: PROFILE_ID,
+  projectId: PROJECT_ID,
+  calibrationAttemptId: ATTEMPT_ID,
+  calibrationOrchestrationId: ORCHESTRATION_ID,
   jobId: JOB_ID,
   operationId: OPERATION_ID,
   printerId: CALIBRATION_FIXTURE_IDS.printerId,
   rowVersion: QUEUE_JOB.rowVersion,
+  jobRevision: QUEUE_JOB.revision,
   dispatchStateRowVersion: QUEUE_JOB.dispatchStateRowVersion,
+  dispatchStateRevision: QUEUE_JOB.dispatchStateRevision,
   expectedPrinterConfigRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
 });
 
@@ -485,6 +506,50 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     expect(
       calls.filter((call) => call.startsWith('GET')).length,
     ).toBeGreaterThan(jobReadsBefore);
+  });
+
+  it('never replays a mutation or exchanges credentials after a 403', async () => {
+    const tokens = tokenService();
+    const { calls } = server({
+      rejectFragment: 'acknowledge-bed-clear-and-start',
+      rejectStatus: 403,
+    });
+    registered = handlers(tokens.service);
+    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
+    const capabilityReadsBefore = countingExchangeReads(calls);
+
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest(),
+    )) as { status: string };
+
+    expect(response.status).toBe('error');
+    expect(
+      calls.filter((call) => call.includes('acknowledge-bed-clear-and-start')),
+    ).toHaveLength(1);
+    expect(tokens.state.exchanges).toBe(0);
+    expect(countingExchangeReads(calls) - capabilityReadsBefore).toBe(1);
+  });
+
+  it('a 403 exact-job read never mints the ledger or reaches dispatch', async () => {
+    const tokens = tokenService();
+    const { calls } = server({
+      rejectFragment: `/api/job-queue/${JOB_ID}`,
+      rejectStatus: 403,
+    });
+    registered = handlers(tokens.service);
+    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
+
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest(),
+    )) as { status: string };
+
+    expect(response.status).toBe('error');
+    expect(
+      calls.filter((call) => call.includes('acknowledge-bed-clear-and-start')),
+    ).toHaveLength(0);
+    expect(tokens.state.exchanges).toBe(0);
   });
 });
 

@@ -23,16 +23,19 @@ import { evaluateCalibrationActionGate } from '../src/main/calibrationActionGate
 import { calibrationContextDto } from './fixtures/calibrationContract.js';
 import { resolveCalibrationWorkspaceFreshness } from '../src/main/calibrationFreshness.js';
 import { CalibrationHttpError } from '../src/main/calibrationHttp.js';
+import { bindingFromContext } from '../src/renderer/calibration/projectEligibility.js';
 
 import {
   ATTEMPT_ID,
   FILAMENT_PROFILE_GUID,
+  MACHINE_PROFILE_GUID,
   NOW,
   OPERATION_ID,
   OTHER_PRINTER_GUID,
   PRINTER_GUID,
   PROFILE_ID,
   PROJECT_ID,
+  PROCESS_PROFILE_GUID,
   SNAPSHOT_SHA,
   STAGE_IDS,
   TOOLHEAD_GUID,
@@ -487,6 +490,7 @@ function candidateDto(overrides: Record<string, unknown> = {}) {
       profileFormat: 'orca-json',
     },
     eligible: true,
+    profilesEvaluated: false,
     missingInputs: [],
     rejectionReasons: [],
     ...overrides,
@@ -545,8 +549,28 @@ function contextDto(overrides: Record<string, unknown> = {}) {
         profileFormat: 'orca-json',
       },
       profiles: {
-        machine: null,
-        process: null,
+        machine: {
+          id: MACHINE_PROFILE_GUID,
+          kind: 'machine',
+          name: 'Voron 2.4 0.4 nozzle',
+          slicerType: 'OrcaSlicer',
+          slicerDistribution: 'upstream',
+          slicerVersion: '2.4.2',
+          profileFormat: 'orca-json',
+          profileRevision: 'machine-r7',
+          sha256: 'b'.repeat(64),
+        },
+        process: {
+          id: PROCESS_PROFILE_GUID,
+          kind: 'process',
+          name: '0.20 mm Standard',
+          slicerType: 'OrcaSlicer',
+          slicerDistribution: 'upstream',
+          slicerVersion: '2.4.2',
+          profileFormat: 'orca-json',
+          profileRevision: 'process-r7',
+          sha256: 'c'.repeat(64),
+        },
         filament: {
           id: FILAMENT_PROFILE_GUID,
           kind: 'filament',
@@ -556,7 +580,7 @@ function contextDto(overrides: Record<string, unknown> = {}) {
           slicerVersion: '2.4.2',
           profileFormat: 'orca-json',
           profileRevision: 'profile-r7',
-          sha256: null,
+          sha256: 'd'.repeat(64),
         },
       },
       baselineSettings: { activeNozzleDiameter: 0.4 },
@@ -589,12 +613,35 @@ describe('only an authoritative context may be bound', () => {
     expect(authoritative.profilesEvaluated).toBe(true);
     expect(isAuthoritativeCalibrationContext(authoritative)).toBe(true);
     expect(isExplicitCalibrationContextComplete(authoritative)).toBe(true);
-    expect(projectCalibrationPrinterContext(authoritative).isCurrent).toBe(
-      true,
-    );
+    expect(projectCalibrationPrinterContext(authoritative)).toMatchObject({
+      isCurrent: true,
+      profileIdentities: {
+        machine: {
+          backendProfileId: MACHINE_PROFILE_GUID,
+          orcaProfileName: 'Voron 2.4 0.4 nozzle',
+        },
+        process: {
+          backendProfileId: PROCESS_PROFILE_GUID,
+          orcaProfileName: '0.20 mm Standard',
+        },
+        filament: {
+          backendProfileId: FILAMENT_PROFILE_GUID,
+          orcaProfileName: 'Upstream PLA',
+        },
+      },
+    });
     expect(
       projectPrintFarmerOrcaProfile(remoteCandidate(), authoritative),
     ).not.toBeNull();
+    const projected = projectCalibrationPrinterContext(authoritative);
+    expect(
+      bindingFromContext(PROFILE_ID, projected, TOOLHEAD_GUID, {
+        filamentProjectId: 'filament-1',
+        provider: 'PrintFarmer',
+        product: 'PLA',
+        sku: 'PLA-BLACK',
+      })?.profileIdentities,
+    ).toEqual(projected.profileIdentities);
   });
 
   const refusals: ReadonlyArray<[string, Record<string, unknown>]> = [
@@ -810,6 +857,73 @@ describe('printer-context freshness policy', () => {
       ),
     ).resolves.toBe(true);
   });
+
+  it('requires every exact profile identity while keeping legacy drafts editable offline', async () => {
+    const exactDto = contextDto();
+    const mutations = [
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        id: OTHER_PRINTER_GUID,
+      }),
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        name: `${profile.name} changed`,
+      }),
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        profileRevision: `${profile.profileRevision}-changed`,
+      }),
+      (profile: typeof exactDto.snapshot.profiles.machine) => ({
+        ...profile,
+        sha256: 'e'.repeat(64),
+      }),
+    ];
+    for (const kind of ['machine', 'process', 'filament'] as const) {
+      for (const mutate of mutations) {
+        const identityMismatch = RemoteCalibrationPrinterContext.parse({
+          ...exactDto,
+          snapshot: {
+            ...exactDto.snapshot,
+            profiles: {
+              ...exactDto.snapshot.profiles,
+              [kind]: mutate(exactDto.snapshot.profiles[kind]),
+            },
+          },
+        });
+        await expect(
+          resolveCalibrationWorkspaceFreshness(
+            request(),
+            {
+              isPrinterContextFresh: true,
+              workspaceState: validWorkspace(),
+            },
+            () => Promise.resolve(identityMismatch),
+          ),
+        ).resolves.toBe(false);
+      }
+    }
+
+    const legacyWorkspace = validWorkspace();
+    delete legacyWorkspace.domainState.binding.profileIdentities;
+    const offline = new CalibrationHttpError('transport', 'offline');
+    await expect(
+      resolveCalibrationWorkspaceFreshness(
+        request(legacyWorkspace),
+        {
+          isPrinterContextFresh: true,
+          workspaceState: legacyWorkspace,
+        },
+        () => Promise.reject(offline),
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      resolveCalibrationWorkspaceFreshness(request(legacyWorkspace), null, () =>
+        Promise.resolve(RemoteCalibrationPrinterContext.parse(exactDto)),
+      ),
+    ).rejects.toMatchObject({
+      code: 'CALIBRATION_PRINTER_CONTEXT_MISMATCH',
+    });
+  });
 });
 
 describe('PrintFarmer Orca profile discovery projection', () => {
@@ -843,7 +957,7 @@ describe('PrintFarmer Orca profile discovery projection', () => {
       nozzleId: TOOLHEAD_GUID,
       nozzleDiameterMm: 0.4,
       profileRevision: 'profile-r7',
-      contentHash: null,
+      contentHash: 'd'.repeat(64),
       exportable: false,
     });
   });

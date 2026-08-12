@@ -43,6 +43,7 @@ function candidate(
     orcaProfileId: null,
     isOnline: true,
     updatedAt: NOW,
+    evaluationScope: 'preliminary',
     rejectionReasonCodes: eligible ? [] : ['printer_offline'],
     missingInputs: [],
     eligibility: eligible
@@ -82,6 +83,7 @@ function contextFor(
     bedDepthMm: 220,
     nozzleDiameterMm: 0.4,
     snapshotAt: NOW,
+    evaluationScope: 'full',
     isCurrent: true,
     configurationId: printerId,
     configurationRevision,
@@ -89,6 +91,28 @@ function contextFor(
     snapshotRevision: configurationRevision,
     slicerIdentity: 'OrcaSlicer',
     slicerDistribution: 'upstream',
+    profileRevision: 'filament-r7',
+    profileIdentities: {
+      machine: {
+        backendProfileId: 'dddddddd-2222-4222-8222-333333333333',
+        orcaProfileName: 'Voron 2.4 0.4 nozzle',
+        profileRevision: 'machine-r7',
+        contentHash: 'b'.repeat(64),
+      },
+      process: {
+        backendProfileId: 'dddddddd-3333-4333-8333-444444444444',
+        orcaProfileName: '0.20 mm Standard',
+        profileRevision: 'process-r7',
+        contentHash: 'c'.repeat(64),
+      },
+      filament: {
+        backendProfileId: 'cccccccc-1111-4111-8111-222222222222',
+        orcaProfileName: 'Upstream PLA',
+        profileRevision: 'filament-r7',
+        contentHash: 'd'.repeat(64),
+      },
+    },
+    contentHash: 'd'.repeat(64),
     toolheads: [
       {
         toolId: 'tool-a',
@@ -163,6 +187,7 @@ function makeApi(
     listCalibrationPrinters: vi.fn().mockResolvedValue({
       printers: candidates,
       printersTruncated: false,
+      printersUnreadable: 0,
       fetchedAt: NOW,
     }),
     getCalibrationPrinterContext: vi
@@ -245,6 +270,7 @@ describe('nothing per-printer is fetched before the operator chooses', () => {
         candidate(PRINTER_B, 'Voron in bay two'),
       ],
       printersTruncated: true,
+      printersUnreadable: 0,
       fetchedAt: NOW,
     });
     await openWizard(renderWizard(api));
@@ -273,6 +299,7 @@ describe('nothing per-printer is fetched before the operator chooses', () => {
     // context, a profile resolution or a local OrcaSlicer scan to.
     expect(api.getCalibrationPrinterContext).not.toHaveBeenCalled();
     expect(api.listOrcaProfiles).not.toHaveBeenCalled();
+    expect(api.syncCalibrationNow).not.toHaveBeenCalled();
   });
 
   it('does not auto-select the first printer', async () => {
@@ -378,6 +405,30 @@ describe('a reply may never populate a printer it is not about', () => {
     );
     expect(resolvedFor).not.toContain(PRINTER_A);
     expect(resolvedFor).toContain(PRINTER_B);
+  });
+
+  it('discards a slow reply when the selection is cancelled', async () => {
+    const api = makeApi();
+    const slowA = deferred<Record<string, unknown>>();
+    api.getCalibrationPrinterContext.mockReturnValueOnce(slowA.promise);
+    await openWizard(renderWizard(api));
+
+    fireEvent.click(screen.getByRole('radio', { name: /Voron in bay one/ }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continue with this printer' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Choose a different printer' }),
+    );
+    slowA.resolve(contextFor(PRINTER_A, 'Voron in bay one'));
+    await settle();
+
+    expect(api.listOrcaProfiles).not.toHaveBeenCalled();
+    expect(
+      screen
+        .getAllByRole('radio')
+        .every((radio) => !(radio as HTMLInputElement).checked),
+    ).toBe(true);
   });
 
   it('refuses a context that names a different printer than was requested', async () => {
@@ -510,7 +561,7 @@ describe('failure is scoped to the printer it is about', () => {
     // A project pinned to "whatever was current" is not pinned to anything, so
     // this fails closed rather than binding permissively.
     expect(
-      await screen.findByText(/did not report a configuration revision/i),
+      await screen.findByText(/did not return a current, fully evaluated/i),
     ).toBeInTheDocument();
     expect(api.listOrcaProfiles).not.toHaveBeenCalled();
   });

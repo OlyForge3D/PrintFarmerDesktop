@@ -344,11 +344,17 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     channel: IpcChannel.CalibrationAcknowledgeBedClear,
     request: (profileId) => ({
       profileId,
+      projectId: uuid(4),
+      calibrationAttemptId: uuid(6),
+      calibrationOrchestrationId: uuid(7),
       jobId: uuid(1),
       operationId: uuid(5),
       printerId: uuid(3),
       rowVersion: 'AAAAAAAAAAA=',
+      jobRevision: 1,
       dispatchStateRowVersion: 'AAAAAAAAAAA=',
+      dispatchStateRevision: 1,
+      expectedPrinterConfigRevision: 1,
     }),
   },
   {
@@ -400,6 +406,16 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationExportOrcaProfile,
+    request: (profileId) => ({
+      profileId,
+      projectId: uuid(4),
+      snapshotId: SHA256,
+      orcaProfileId: 'Generated PLA',
+      operationId: uuid(5),
+    }),
+  },
+  {
     channel: IpcChannel.CalibrationGenerateOrcaProfile,
     request: (profileId) => ({
       profileId,
@@ -411,6 +427,8 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     channel: IpcChannel.CalibrationInstallOrcaProfile,
     request: (profileId) => ({
       profileId,
+      projectId: uuid(4),
+      snapshotId: SHA256,
       operationId: uuid(5),
       confirmedProfileJsonHash: SHA256,
     }),

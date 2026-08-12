@@ -77,6 +77,14 @@ export function contextEligibilityBlockers(
       'Current context is missing its OrcaSlicer profile identity.',
     );
   }
+  if (
+    context.profileIdentities === null ||
+    context.profileIdentities === undefined
+  ) {
+    blockers.push(
+      'Current context is missing exact machine, process, or filament profile identity.',
+    );
+  }
   if (!context.bedWidthMm || !context.bedDepthMm || !context.nozzleDiameterMm) {
     blockers.push('Current bed or nozzle dimensions are incomplete.');
   }
@@ -223,6 +231,8 @@ export function bindingFromContext(
     context.snapshotRevision === null ||
     context.slicerIdentity !== 'OrcaSlicer' ||
     context.slicerDistribution !== 'upstream' ||
+    context.profileIdentities === null ||
+    context.profileIdentities === undefined ||
     // Machine limits are required because the snapshot records them; the
     // interlock booleans inside are not consulted here. `permissions` is not
     // required at all: `CalibrationContextDto` has no such member, so requiring
@@ -264,6 +274,7 @@ export function bindingFromContext(
     selectedToolId: selected.toolId,
     selectedToolheadId: selected.toolheadId,
     selectedNozzleId: selected.nozzle.id,
+    profileIdentities: context.profileIdentities,
     filament,
   };
 }

@@ -958,6 +958,40 @@ export const RemoteCalibrationPrinterContext =
     const snapshot = dto.snapshot;
     const filament = snapshot?.profiles?.filament ?? null;
     const machine = snapshot?.profiles?.machine ?? null;
+    const process = snapshot?.profiles?.process ?? null;
+    const exactProfileIdentity = (
+      profile: typeof filament,
+    ): {
+      backendProfileId: string;
+      orcaProfileName: string;
+      profileRevision: string;
+      contentHash: string;
+    } | null =>
+      profile !== null &&
+      profile.profileRevision !== null &&
+      profile.profileRevision.length > 0 &&
+      profile.sha256 !== null &&
+      /^[a-f0-9]{64}$/.test(profile.sha256)
+        ? {
+            backendProfileId: profile.id,
+            orcaProfileName: profile.name,
+            profileRevision: profile.profileRevision,
+            contentHash: profile.sha256,
+          }
+        : null;
+    const machineIdentity = exactProfileIdentity(machine);
+    const processIdentity = exactProfileIdentity(process);
+    const filamentIdentity = exactProfileIdentity(filament);
+    const profileIdentities =
+      machineIdentity !== null &&
+      processIdentity !== null &&
+      filamentIdentity !== null
+        ? {
+            machine: machineIdentity,
+            process: processIdentity,
+            filament: filamentIdentity,
+          }
+        : null;
     const toolheads = (snapshot?.toolheads ?? []).map((toolhead) => ({
       toolId: toolhead.id,
       toolheadId: toolhead.id,
@@ -1015,6 +1049,9 @@ export const RemoteCalibrationPrinterContext =
       /** Machine profile identity, kept distinct from the filament profile. */
       machineProfileId: machine?.id ?? null,
       machineProfileName: machine?.name ?? null,
+      processProfileId: process?.id ?? null,
+      processProfileName: process?.name ?? null,
+      profileIdentities,
       profileRevision: filament?.profileRevision ?? null,
       contentHash: filament?.sha256 ?? null,
       bedWidthMm: snapshot?.buildVolume?.x ?? null,
@@ -1216,6 +1253,7 @@ export function isExplicitCalibrationContextComplete(
     context.orcaProfileId !== null &&
     context.orcaProfileName !== null &&
     context.profileRevision !== null &&
+    context.profileIdentities !== null &&
     context.toolheads.length > 0
   );
 }
@@ -1367,6 +1405,7 @@ export function projectCalibrationPrinterContext(
     slicerDistribution:
       context.slicerDistribution === 'upstream' ? 'upstream' : null,
     profileRevision: context.profileRevision,
+    profileIdentities: context.profileIdentities,
     contentHash:
       context.contentHash !== null && /^[a-f0-9]{64}$/.test(context.contentHash)
         ? context.contentHash
@@ -1414,13 +1453,38 @@ export function doesCalibrationWorkspaceMatchContext(
   request: CalibrationSaveWorkspaceStateRequest,
   context: RemoteCalibrationPrinterContext,
 ): boolean {
+  return doesCalibrationWorkspacePayloadMatchContext(
+    request.workspaceState,
+    context,
+  );
+}
+
+export function doesCalibrationWorkspacePayloadMatchContext(
+  workspaceState: CalibrationSaveWorkspaceStateRequest['workspaceState'],
+  context: RemoteCalibrationPrinterContext,
+): boolean {
   if (!context.isCurrent || !isExplicitCalibrationContextComplete(context)) {
     return false;
   }
-  const binding = request.workspaceState.domainState.binding;
+  const binding = workspaceState.domainState.binding;
   const printer = binding.printer;
   const snapshot = binding.snapshot;
-  const selectedProfile = request.workspaceState.selectedBaseProfile;
+  const selectedProfile = workspaceState.selectedBaseProfile;
+  const boundProfileIdentities = binding.profileIdentities;
+  const remoteProfileIdentities = context.profileIdentities;
+  const profileIdentitiesMatch =
+    boundProfileIdentities !== undefined &&
+    remoteProfileIdentities !== null &&
+    (['machine', 'process', 'filament'] as const).every((kind) => {
+      const bound = boundProfileIdentities[kind];
+      const remote = remoteProfileIdentities[kind];
+      return (
+        bound.backendProfileId === remote.backendProfileId &&
+        bound.orcaProfileName === remote.orcaProfileName &&
+        bound.profileRevision === remote.profileRevision &&
+        bound.contentHash === remote.contentHash
+      );
+    });
   const selectedToolhead = snapshot.toolheads.find(
     (toolhead) =>
       toolhead.toolId === binding.selectedToolId &&
@@ -1470,6 +1534,7 @@ export function doesCalibrationWorkspaceMatchContext(
     context.snapshotRevision === snapshot.snapshotRevision &&
     context.snapshotAt === snapshot.capturedAt &&
     context.configurationRevision === snapshot.configurationRevision &&
+    profileIdentitiesMatch &&
     safetyMatches &&
     selectedToolhead !== undefined &&
     remoteToolhead !== undefined &&
@@ -2430,6 +2495,9 @@ export const RemoteJobQueueJob = z
       .transform((v) => v ?? null),
     calibrationProjectId: ServerGuid.nullish().transform((v) => v ?? null),
     calibrationAttemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    calibrationOrchestrationId: ServerGuid.nullish().transform(
+      (v) => v ?? null,
+    ),
     pinnedPrinterConfigRevision: z
       .number()
       .int()
@@ -2452,6 +2520,13 @@ export const RemoteJobQueueJob = z
       .string()
       .nullish()
       .transform((v) => v ?? null),
+    bedClearCommandId: ServerGuid.nullish().transform((v) => v ?? null),
+    bedClearIdempotencyKeySha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullish()
+      .transform((v) => v ?? null),
+    bedClearExpiresAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
     priority: z.number().int(),
     queuePosition: z.number().int(),
     copies: z.number().int(),

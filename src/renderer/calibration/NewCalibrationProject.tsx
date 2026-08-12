@@ -648,18 +648,18 @@ export function NewCalibrationProject(): React.JSX.Element {
 
               {!store.creation.loading &&
               store.creation.printersUnreadable > 0 ? (
-               <p role="status" className="cal-hint">
-                 {store.creation.printersUnreadable} printer record
-                 {store.creation.printersUnreadable === 1 ? '' : 's'} could not
-                 be read and{' '}
-                 {store.creation.printersUnreadable === 1 ? 'is' : 'are'} not
-                 listed.{' '}
-                 {store.creation.printers.length > 0
-                   ? 'The rest of the list is unaffected.'
-                   : store.creation.printersTruncated
-                     ? 'None of the printers this view could consider were readable, and more were offered than it can show.'
-                     : 'No other printers were returned, so nothing can be selected yet.'}
-               </p>
+                <p role="status" className="cal-hint">
+                  {store.creation.printersUnreadable} printer record
+                  {store.creation.printersUnreadable === 1 ? '' : 's'} could not
+                  be read and{' '}
+                  {store.creation.printersUnreadable === 1 ? 'is' : 'are'} not
+                  listed.{' '}
+                  {store.creation.printers.length > 0
+                    ? 'The rest of the list is unaffected.'
+                    : store.creation.printersTruncated
+                      ? 'None of the printers this view could consider were readable, and more were offered than it can show.'
+                      : 'No other printers were returned, so nothing can be selected yet.'}
+                </p>
               ) : null}
 
               {!store.creation.loading &&
@@ -733,9 +733,7 @@ export function NewCalibrationProject(): React.JSX.Element {
                               // the server was asked. The profile check happens
                               // after Continue, against the authoritative
                               // context.
-                              candidate.evaluationScope === 'full'
-                              ? 'eligible for calibration'
-                              : 'passes basic checks; profiles verified after you continue'
+                              'passes basic checks; profiles verified after you continue'
                             : 'not eligible for calibration'}
                         </small>
                       </span>

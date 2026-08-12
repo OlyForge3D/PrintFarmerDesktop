@@ -1689,7 +1689,7 @@ export const CalibrationPrinterCandidate = z
      * conflating the two would let the cheap screen authorise work that only the
      * authoritative snapshot can.
      */
-    evaluationScope: z.enum(['preliminary', 'full']).default('preliminary'),
+    evaluationScope: z.literal('preliminary').default('preliminary'),
     /**
      * Machine-readable codes for why PrintFarmer judged this printer
      * ineligible, e.g. `firmware_family_not_klipper`.
@@ -1882,6 +1882,42 @@ export const CalibrationPrinterContext = z
       .nullable()
       .optional()
       .default(null),
+    /**
+     * Exact PrintFarmer profile identities from the authoritative snapshot.
+     *
+     * Backend GUIDs and OrcaSlicer names are carried in separate members so a
+     * local display/file name can never be mistaken for a server identity.
+     */
+    profileIdentities: z
+      .object({
+        machine: z
+          .object({
+            backendProfileId: z.string().uuid(),
+            orcaProfileName: z.string().min(1).max(512),
+            profileRevision: z.string().min(1).max(256),
+            contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+        process: z
+          .object({
+            backendProfileId: z.string().uuid(),
+            orcaProfileName: z.string().min(1).max(512),
+            profileRevision: z.string().min(1).max(256),
+            contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+        filament: z
+          .object({
+            backendProfileId: z.string().uuid(),
+            orcaProfileName: z.string().min(1).max(512),
+            profileRevision: z.string().min(1).max(256),
+            contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     contentHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -2094,6 +2130,35 @@ const WorkspaceBinding = z
     selectedToolId: WorkspaceId,
     selectedToolheadId: WorkspaceId,
     selectedNozzleId: WorkspaceId,
+    profileIdentities: z
+      .object({
+        machine: z
+          .object({
+            backendProfileId: WorkspaceId,
+            orcaProfileName: z.string().min(1).max(512),
+            profileRevision: z.string().min(1).max(256),
+            contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+        process: z
+          .object({
+            backendProfileId: WorkspaceId,
+            orcaProfileName: z.string().min(1).max(512),
+            profileRevision: z.string().min(1).max(256),
+            contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+        filament: z
+          .object({
+            backendProfileId: WorkspaceId,
+            orcaProfileName: z.string().min(1).max(512),
+            profileRevision: z.string().min(1).max(256),
+            contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
     filament: WorkspaceFilament,
   })
   .strict();
@@ -4348,8 +4413,12 @@ export const CalibrationQueueJobState = z
     jobKind: z.string().nullable(),
     /** Job rowVersion (opaque base-64 ETag). Send byte-identical as If-Match. */
     rowVersion: z.string().nullable(),
+    /** Logical job revision persisted alongside the row-version token. */
+    jobRevision: z.number().int().nonnegative(),
     /** Dispatch state rowVersion (opaque base-64 ETag). Send as X-Dispatch-State-If-Match. */
     dispatchStateRowVersion: z.string().nullable(),
+    /** Logical dispatch-state revision persisted alongside its ETag. */
+    dispatchStateRevision: z.number().int().nonnegative().nullable(),
     /** PrintJobStatus literal: Queued|Assigned|Starting|Printing|Paused|Completed|Failed|Cancelled */
     status: z.string().nullable(),
     /** DispatchAttemptOutcome literal: InProgress|Accepted|Rejected|FailedBeforeStart|Unknown */
@@ -4364,7 +4433,16 @@ export const CalibrationQueueJobState = z
     acknowledgementExpiresAt: z.string().datetime().nullable().optional(),
     calibrationProjectId: z.string().uuid().nullable(),
     calibrationAttemptId: z.string().uuid().nullable(),
+    calibrationOrchestrationId: z.string().uuid().nullable(),
     pinnedPrinterConfigRevision: z.number().int().nullable(),
+    /** Durable exact-job bed-clear command identity, when one exists. */
+    bedClearCommandId: z.string().uuid().nullable(),
+    /** Lowercase SHA-256 of the exact case-sensitive UTF-8 idempotency key. */
+    bedClearIdempotencyKeySha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    bedClearExpiresAtUtc: z.string().datetime().nullable(),
     priority: z.number().int(),
     queuePosition: z.number().int(),
     updatedAt: z.string().datetime(),
@@ -4434,6 +4512,9 @@ export type CalibrationGetQueueStateResponse = z.infer<
 export const CalibrationAcknowledgeBedClearRequest = z
   .object({
     profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    calibrationAttemptId: z.string().uuid(),
+    calibrationOrchestrationId: z.string().uuid(),
     jobId: z.string().uuid(),
     operationId: z.string().uuid(),
     /** Printer UUID for the request body `printerId`. */
@@ -4443,13 +4524,15 @@ export const CalibrationAcknowledgeBedClearRequest = z
      * Sent byte-identical as the `If-Match` request header.
      */
     rowVersion: z.string().min(1).max(256),
+    jobRevision: z.number().int().nonnegative(),
     /**
      * Opaque base-64 dispatch state rowVersion (from `CalibrationQueueJobState.dispatchStateRowVersion`).
      * Sent byte-identical as the `X-Dispatch-State-If-Match` request header.
      */
     dispatchStateRowVersion: z.string().min(1).max(256),
-    /** Optional: guard against printer configuration advancing since job was read. */
-    expectedPrinterConfigRevision: z.number().int().nullable().optional(),
+    dispatchStateRevision: z.number().int().nonnegative(),
+    /** Exact pinned printer configuration revision from the authoritative job. */
+    expectedPrinterConfigRevision: z.number().int().nonnegative(),
   })
   .strict();
 export type CalibrationAcknowledgeBedClearRequest = z.infer<
@@ -5321,6 +5404,9 @@ export type OrcaProfileOperationError = z.infer<
  */
 export const CalibrationExportOrcaProfileRequest = z
   .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    snapshotId: z.string().min(1).max(256),
     orcaProfileId: z.string().min(1).max(512),
     /** Client-generated idempotency key. */
     operationId: z.string().uuid(),
@@ -5615,6 +5701,8 @@ export type CalibrationGenerateOrcaProfileResponse = z.infer<
 export const CalibrationInstallOrcaProfileRequest = z
   .object({
     profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    snapshotId: z.string().min(1).max(256),
     /**
      * Must match the operationId from a prior CalibrationGenerateOrcaProfile
      * call. Used to retrieve the cached generated profile bytes.

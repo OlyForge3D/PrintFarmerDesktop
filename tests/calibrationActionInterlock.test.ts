@@ -14,13 +14,16 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { IpcChannel } from '@shared/ipc';
 import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
 import {
   CALIBRATION_FIXTURE_IDS,
   calibrationActionBindingFixture,
+  calibrationCandidateDto,
   calibrationContextDto,
 } from './fixtures/calibrationContract.js';
+import { validWorkspace } from './fixtures/calibrationWorkspacePayload.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -61,6 +64,10 @@ const ORCHESTRATION_ID = '22222222-2222-4222-8222-222222222222';
 const GCODE_FILE_ID = '33333333-3333-4333-8333-333333333333';
 const JOB_ID = '55555555-5555-4555-8555-555555555555';
 const OPERATION_ID = '66666666-6666-4666-8666-666666666666';
+const BED_CLEAR_COMMAND_ID = '88888888-8888-4888-8888-888888888888';
+
+const operationHash = (operationId: string): string =>
+  createHash('sha256').update(operationId, 'utf8').digest('hex');
 
 const CANONICAL_PERMISSIONS = [
   'calibration:read',
@@ -116,6 +123,28 @@ const sidecar = {
   applyCalibrationSnapshot: () => Promise.resolve(),
   settleCalibrationOperation: () => Promise.resolve(),
   recordCalibrationConflict: () => Promise.resolve(),
+  listCalibrationWorkspaceStates: () =>
+    Promise.resolve([
+      {
+        profileId: PROFILE_ID,
+        projectId: validWorkspace().domainState.projectId,
+        printerId:
+          validWorkspace().domainState.binding.printer.backendPrinterId,
+        displayName: validWorkspace().metadata.displayName,
+        description: null,
+        status: 'draft',
+        completedStepCount: 0,
+        totalStepCount: 9,
+        isSynced: false,
+        isPrinterContextFresh: true,
+        hasConflicts: false,
+        remoteProjectId: null,
+        baseRevision: null,
+        createdAt: CALIBRATION_FIXTURE_IDS.now,
+        updatedAt: CALIBRATION_FIXTURE_IDS.now,
+        workspaceState: validWorkspace(),
+      },
+    ]),
 };
 
 const QUEUE_JOB = {
@@ -128,6 +157,7 @@ const QUEUE_JOB = {
   jobKind: 'FilamentCalibration',
   calibrationProjectId: PROJECT_ID,
   calibrationAttemptId: ATTEMPT_ID,
+  calibrationOrchestrationId: ORCHESTRATION_ID,
   pinnedPrinterConfigRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
   gcodeFileId: GCODE_FILE_ID,
   gcodeFileName: 'calibration.gcode',
@@ -135,6 +165,9 @@ const QUEUE_JOB = {
   assignedPrinterName: 'Voron 2.4',
   status: 'Queued',
   bedClearState: 'None',
+  bedClearCommandId: null,
+  bedClearIdempotencyKeySha256: null,
+  bedClearExpiresAtUtc: null,
   priority: 0,
   queuePosition: 1,
   copies: 1,
@@ -157,10 +190,14 @@ function server(
     permissions?: readonly string[];
     generationEnabled?: boolean;
     context?: unknown;
+    contextResponse?: () => Promise<Response>;
+    orchestrationStatus?: number;
     job?: Record<string, unknown>;
+    jobSequence?: readonly Record<string, unknown>[];
   } = {},
 ): { calls: string[] } {
   const calls: string[] = [];
+  let jobRead = 0;
   vi.stubGlobal(
     'fetch',
     vi.fn((url: URL | string, init?: RequestInit) => {
@@ -177,7 +214,11 @@ function server(
           ),
         );
       }
+      if (href.includes('calibration-candidates')) {
+        return Promise.resolve(json([calibrationCandidateDto()]));
+      }
       if (href.includes('calibration-context')) {
+        if (options.contextResponse) return options.contextResponse();
         return Promise.resolve(
           json(options.context ?? calibrationContextDto()),
         );
@@ -220,8 +261,26 @@ function server(
           }),
         );
       }
+      if (
+        options.orchestrationStatus !== undefined &&
+        href.includes('calibration-orchestration')
+      ) {
+        return Promise.resolve(
+          json(
+            { status: options.orchestrationStatus },
+            options.orchestrationStatus,
+          ),
+        );
+      }
       if (href.includes('job-queue')) {
-        return Promise.resolve(json({ ...QUEUE_JOB, ...options.job }));
+        const sequenceOverride =
+          options.jobSequence?.[
+            Math.min(jobRead, options.jobSequence.length - 1)
+          ];
+        jobRead += 1;
+        return Promise.resolve(
+          json({ ...QUEUE_JOB, ...options.job, ...sequenceOverride }),
+        );
       }
       return Promise.resolve(json({}, 404));
     }),
@@ -284,11 +343,16 @@ const bedClearRequest = (
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> => ({
   profileId: PROFILE_ID,
+  projectId: PROJECT_ID,
+  calibrationAttemptId: ATTEMPT_ID,
+  calibrationOrchestrationId: ORCHESTRATION_ID,
   jobId: JOB_ID,
   operationId: OPERATION_ID,
   printerId: CALIBRATION_FIXTURE_IDS.printerId,
   rowVersion: 'AAAAAAAAAAAA==',
+  jobRevision: 1,
   dispatchStateRowVersion: 'BBBBBBBBBBBB==',
+  dispatchStateRevision: 1,
   expectedPrinterConfigRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
   ...overrides,
 });
@@ -317,6 +381,37 @@ describe('generation dispatches only with complete evidence', () => {
       generationRequest(),
     )) as { status: string };
     expect(response.status).toBe('submitted');
+    expect(dispatched(calls, 'generate-job')).toBe(true);
+  });
+
+  it('does not authorize generation from a context cached under an older candidate observation', async () => {
+    const { calls } = server();
+    registered = handlers();
+    await negotiate();
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+    await invoke(IpcChannel.CalibrationGetPrinterContext, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+      configurationRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
+    });
+    expect(
+      calls.filter((call) => call.includes('calibration-context')),
+    ).toHaveLength(1);
+
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+    const response = (await invoke(
+      IpcChannel.CalibrationStartGeneration,
+      generationRequest(),
+    )) as { status: string };
+
+    expect(response.status).toBe('submitted');
+    expect(
+      calls.filter((call) => call.includes('calibration-context')),
+    ).toHaveLength(2);
     expect(dispatched(calls, 'generate-job')).toBe(true);
   });
 
@@ -423,6 +518,135 @@ describe('bed-clear dispatch requires a ledger-backed acknowledgement', () => {
     )) as { status: string };
     expect(response.status).toBe('ok');
     expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(true);
+    expect(
+      calls.filter(
+        (call) =>
+          call.startsWith('GET') && call.includes(`/job-queue/${JOB_ID}`),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('allows an Acknowledged replay only for the exact operation hash', async () => {
+    const { calls } = server({
+      job: {
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearIdempotencyKeySha256: operationHash(OPERATION_ID),
+        bedClearExpiresAtUtc: '2999-01-01T00:00:00.000Z',
+      },
+    });
+    registered = handlers();
+    await negotiate();
+
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest(),
+    )) as { status: string };
+
+    expect(response.status).toBe('ok');
+    expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(true);
+  });
+
+  it('replays an exact Acknowledged operation after authoritative revisions advanced', async () => {
+    const { calls } = server({
+      job: {
+        rowVersion: 'CCCCCCCCCCCC==',
+        revision: 2,
+        dispatchStateRowVersion: 'DDDDDDDDDDDD==',
+        dispatchStateRevision: 2,
+        status: 'Printing',
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearIdempotencyKeySha256: operationHash(OPERATION_ID),
+        bedClearExpiresAtUtc: '2999-01-01T00:00:00.000Z',
+      },
+    });
+    registered = handlers();
+    await negotiate();
+
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest(),
+    )) as { status: string };
+
+    expect(response.status).toBe('ok');
+    expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(true);
+  });
+
+  for (const [label, job] of [
+    [
+      'missing hash',
+      {
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearExpiresAtUtc: '2999-01-01T00:00:00.000Z',
+      },
+    ],
+    [
+      'different hash',
+      {
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearIdempotencyKeySha256: 'a'.repeat(64),
+        bedClearExpiresAtUtc: '2999-01-01T00:00:00.000Z',
+      },
+    ],
+    [
+      'uppercase hash',
+      {
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearIdempotencyKeySha256: operationHash(OPERATION_ID).toUpperCase(),
+        bedClearExpiresAtUtc: '2999-01-01T00:00:00.000Z',
+      },
+    ],
+    [
+      'expired command',
+      {
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearIdempotencyKeySha256: operationHash(OPERATION_ID),
+        bedClearExpiresAtUtc: '2000-01-01T00:00:00.000Z',
+      },
+    ],
+  ] as const) {
+    it(`refuses an Acknowledged replay with a ${label}`, async () => {
+      const { calls } = server({ job });
+      registered = handlers();
+      await negotiate();
+
+      const response = (await invoke(
+        IpcChannel.CalibrationAcknowledgeBedClear,
+        bedClearRequest(),
+      )) as { status: string };
+
+      expect(response.status).toBe('error');
+      expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
+    });
+  }
+
+  it('hashes the exact case-sensitive UTF-8 operation ID', async () => {
+    const mixedCaseOperationId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
+    const { calls } = server({
+      job: {
+        bedClearState: 'Acknowledged',
+        bedClearCommandId: BED_CLEAR_COMMAND_ID,
+        bedClearIdempotencyKeySha256: operationHash(
+          mixedCaseOperationId.toUpperCase(),
+        ),
+        bedClearExpiresAtUtc: '2999-01-01T00:00:00.000Z',
+      },
+    });
+    registered = handlers();
+    await negotiate();
+
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest({ operationId: mixedCaseOperationId }),
+    )) as { status: string };
+
+    expect(response.status).toBe('error');
+    expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
   });
 
   it('refuses before dispatch when the server already consumed the acknowledgement', async () => {
@@ -436,8 +660,7 @@ describe('bed-clear dispatch requires a ledger-backed acknowledgement', () => {
       bedClearRequest(),
     )) as { status: string; error: { code: string; message: string } };
     expect(response.status).toBe('error');
-    expect(response.error.code).toBe('forbidden');
-    expect(response.error.message).toMatch(/machine is clear/i);
+    expect(response.error.code).toBe('jobNotDispatchable');
     expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
   });
 
@@ -526,6 +749,50 @@ describe('bed-clear dispatch requires a ledger-backed acknowledgement', () => {
     expect(response.status).toBe('error');
     expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
   });
+
+  for (const [label, job] of [
+    ['project lineage', { calibrationProjectId: ATTEMPT_ID }],
+    ['attempt lineage', { calibrationAttemptId: PROJECT_ID }],
+    ['orchestration lineage', { calibrationOrchestrationId: PROJECT_ID }],
+    ['job revision', { revision: 2 }],
+    ['dispatch revision', { dispatchStateRevision: 2 }],
+  ] as const) {
+    it(`refuses before dispatch when ${label} differs`, async () => {
+      const { calls } = server({ job });
+      registered = handlers();
+      await negotiate();
+
+      const response = (await invoke(
+        IpcChannel.CalibrationAcknowledgeBedClear,
+        bedClearRequest(),
+      )) as { status: string };
+
+      expect(response.status).toBe('error');
+      expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
+    });
+  }
+
+  it('re-reads the exact job and refuses a change immediately before dispatch', async () => {
+    const { calls } = server({
+      jobSequence: [{}, { bedClearState: 'Consumed' }],
+    });
+    registered = handlers();
+    await negotiate();
+
+    const response = (await invoke(
+      IpcChannel.CalibrationAcknowledgeBedClear,
+      bedClearRequest(),
+    )) as { status: string };
+
+    expect(response.status).toBe('error');
+    expect(dispatched(calls, 'acknowledge-bed-clear-and-start')).toBe(false);
+    expect(
+      calls.filter(
+        (call) =>
+          call.startsWith('GET') && call.includes(`/job-queue/${JOB_ID}`),
+      ),
+    ).toHaveLength(2);
+  });
 });
 
 describe('enqueue is gated, but not on a bed-clear acknowledgement', () => {
@@ -607,6 +874,98 @@ describe('outbox application is gated too', () => {
     })) as { phase: string; error: string | null };
     expect(response.phase).toBe('failed');
     expect(response.error).toContain('calibration:update');
+    expect(calls.some((call) => call.includes('calibration-sync'))).toBe(false);
+  });
+
+  const profileIdentityMutations = (
+    ['machine', 'process', 'filament'] as const
+  ).flatMap((kind) =>
+    (
+      [
+        ['backend id', 'id', CALIBRATION_FIXTURE_IDS.otherPrinterId],
+        ['Orca name', 'name', `Mutated ${kind} profile`],
+        ['revision', 'profileRevision', `mutated-${kind}-revision`],
+        ['content hash', 'sha256', 'e'.repeat(64)],
+      ] as const
+    ).map(([label, field, value]) => ({
+      label: `${kind} ${label}`,
+      kind,
+      field,
+      value,
+    })),
+  );
+
+  it.each(profileIdentityMutations)(
+    'refuses sync before dispatch when the exact $label changes',
+    async ({ kind, field, value }) => {
+      const context = structuredClone(calibrationContextDto()) as {
+        snapshot: {
+          profiles: Record<
+            (typeof profileIdentityMutations)[number]['kind'],
+            Record<(typeof profileIdentityMutations)[number]['field'], string>
+          >;
+        };
+      };
+      context.snapshot.profiles[kind][field] = value;
+      const { calls } = server({ context });
+      registered = handlers();
+      await negotiate();
+
+      const response = (await invoke(IpcChannel.CalibrationSyncNow, {
+        profileId: PROFILE_ID,
+      })) as { phase: string; error: string | null };
+
+      expect(response.phase).toBe('failed');
+      expect(response.error).toContain('profile binding changed');
+      expect(
+        calls.filter((call) => call.includes('calibration-context')),
+      ).toHaveLength(1);
+      expect(calls.some((call) => call.includes('calibration-sync'))).toBe(
+        false,
+      );
+    },
+  );
+
+  it('does not dispatch sync when its action epoch changes during context preflight', async () => {
+    let releaseContext: ((response: Response) => void) | undefined;
+    let markContextStarted: (() => void) | undefined;
+    const contextStarted = new Promise<void>((resolve) => {
+      markContextStarted = resolve;
+    });
+    const deferredContext = new Promise<Response>((resolve) => {
+      releaseContext = resolve;
+    });
+    const { calls } = server({
+      orchestrationStatus: 403,
+      contextResponse: () => {
+        markContextStarted?.();
+        return deferredContext;
+      },
+    });
+    registered = handlers();
+    await negotiate();
+
+    const pendingSync = invoke(IpcChannel.CalibrationSyncNow, {
+      profileId: PROFILE_ID,
+    });
+    await contextStarted;
+    await expect(
+      invoke(IpcChannel.CalibrationGetOrchestrationStatus, {
+        profileId: PROFILE_ID,
+        orchestrationId: ORCHESTRATION_ID,
+      }),
+    ).resolves.toMatchObject({
+      status: 'error',
+      error: { code: 'serverError' },
+    });
+    releaseContext?.(json(calibrationContextDto()));
+
+    const response = (await pendingSync) as {
+      phase: string;
+      error: string | null;
+    };
+    expect(response.phase).toBe('failed');
+    expect(response.error).toContain('authorization state changed');
     expect(calls.some((call) => call.includes('calibration-sync'))).toBe(false);
   });
 });

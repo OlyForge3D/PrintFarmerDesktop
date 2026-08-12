@@ -541,11 +541,12 @@ describe('selection cache', () => {
   });
 
   it('returns a remembered context for the same printer and revision', () => {
-    cache.rememberContext(profileId, context);
+    cache.rememberContext(profileId, 0, context);
     expect(
       cache.context(
         profileId,
         context.printerId,
+        0,
         CALIBRATION_FIXTURE_IDS.configurationRevision,
       ),
     ).not.toBeNull();
@@ -554,31 +555,36 @@ describe('selection cache', () => {
   it('treats a different revision as a miss rather than a hit', () => {
     // The caller asked about one configuration. Answering with another is
     // exactly the confusion the revision fence exists to prevent.
-    cache.rememberContext(profileId, context);
-    expect(cache.context(profileId, context.printerId, 99)).toBeNull();
+    cache.rememberContext(profileId, 0, context);
+    expect(cache.context(profileId, context.printerId, 0, 99)).toBeNull();
   });
 
   it('never answers for a printer it was not told about', () => {
-    cache.rememberContext(profileId, context);
+    cache.rememberContext(profileId, 0, context);
     expect(
-      cache.context(profileId, CALIBRATION_FIXTURE_IDS.otherPrinterId),
+      cache.context(profileId, CALIBRATION_FIXTURE_IDS.otherPrinterId, 0),
     ).toBeNull();
   });
 
   it('never answers across server profiles', () => {
-    cache.rememberContext(profileId, context);
-    expect(cache.context('another-profile', context.printerId)).toBeNull();
+    cache.rememberContext(profileId, 0, context);
+    expect(cache.context('another-profile', context.printerId, 0)).toBeNull();
   });
 
   it('expires observations rather than holding them indefinitely', () => {
-    cache.rememberContext(profileId, context);
+    cache.rememberContext(profileId, 0, context);
     clock += 60_000;
-    expect(cache.context(profileId, context.printerId)).toBeNull();
+    expect(cache.context(profileId, context.printerId, 0)).toBeNull();
   });
 
   it('forgets everything for a profile whose binding changed', () => {
-    cache.rememberContext(profileId, context);
+    cache.rememberContext(profileId, 0, context);
     cache.forgetProfile(profileId);
-    expect(cache.context(profileId, context.printerId)).toBeNull();
+    expect(cache.context(profileId, context.printerId, 0)).toBeNull();
+  });
+
+  it('refuses observations from an earlier action epoch', () => {
+    cache.rememberContext(profileId, 3, context);
+    expect(cache.context(profileId, context.printerId, 4)).toBeNull();
   });
 });

@@ -31,6 +31,7 @@ import {
   clearProfileCache,
   verifyExportedProfile,
   canonicalizeSaveTarget,
+  writeExportedProfileNoFollow,
 } from '../src/main/orcaProfileInstall.js';
 
 // ---------------------------------------------------------------------------
@@ -196,6 +197,7 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
       projectId: '22222222-2222-4222-8222-222222222222',
       snapshotId: 'a'.repeat(64),
       baseContentHash: 'b'.repeat(64),
+      baseProfileName: 'Base Profile',
       epoch: 0,
     };
     cacheGeneratedProfile(operationId, entry);
@@ -218,6 +220,7 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
       projectId: '22222222-2222-4222-8222-222222222222',
       snapshotId: 'a'.repeat(64),
       baseContentHash: 'b'.repeat(64),
+      baseProfileName: 'Base Profile',
       epoch: 0,
     });
     clearProfileCache();
@@ -237,6 +240,7 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
         projectId: '22222222-2222-4222-8222-222222222222',
         snapshotId: 'a'.repeat(64),
         baseContentHash: 'b'.repeat(64),
+        baseProfileName: 'Base Profile',
         epoch: 0,
       });
     }
@@ -254,6 +258,7 @@ describe('Profile cache (cacheGeneratedProfile / getCachedProfile)', () => {
       projectId: '22222222-2222-4222-8222-222222222222',
       snapshotId: 'a'.repeat(64),
       baseContentHash: 'b'.repeat(64),
+      baseProfileName: 'Base Profile',
       epoch: 0,
     });
     // op-000 should be gone
@@ -341,6 +346,22 @@ describe('canonicalizeSaveTarget', () => {
       code: 'pathRestricted',
     });
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'refuses a leaf symlink planted after canonicalization',
+    async () => {
+      const target = path.join(tmpDir, 'output.json');
+      const escaped = path.join(tmpDir, 'must-not-change.json');
+      await writeFile(escaped, 'safe', 'utf8');
+      const canonical = await canonicalizeSaveTarget(target);
+      await symlink(escaped, canonical, 'file');
+
+      await expect(
+        writeExportedProfileNoFollow(canonical, '{"generated":true}'),
+      ).rejects.toMatchObject({ code: 'pathRestricted' });
+      await expect(readFile(escaped, 'utf8')).resolves.toBe('safe');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -540,6 +561,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         projectId: '22222222-2222-4222-8222-222222222222',
         snapshotId: 'a'.repeat(64),
         baseContentHash: 'b'.repeat(64),
+        baseProfileName: 'Base Profile',
         epoch: 0,
       });
       const installResult = await installOrcaProfileWindows(
@@ -593,6 +615,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         projectId: '22222222-2222-4222-8222-222222222222',
         snapshotId: 'a'.repeat(64),
         baseContentHash: 'b'.repeat(64),
+        baseProfileName: 'Base Profile',
         epoch: 0,
       });
       const installResult = await installOrcaProfileWindows(
@@ -617,6 +640,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
           projectId: '22222222-2222-4222-8222-222222222222',
           snapshotId: 'a'.repeat(64),
           baseContentHash: 'b'.repeat(64),
+          baseProfileName: 'Base Profile',
           epoch: 0,
         });
       }

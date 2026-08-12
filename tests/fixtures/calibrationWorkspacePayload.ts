@@ -23,6 +23,8 @@ export const NOW = '2026-07-26T15:00:00.000Z';
 export const PRINTER_GUID = 'aaaaaaaa-1111-4111-8111-222222222222';
 export const OTHER_PRINTER_GUID = 'bbbbbbbb-1111-4111-8111-222222222222';
 export const FILAMENT_PROFILE_GUID = 'cccccccc-1111-4111-8111-222222222222';
+export const MACHINE_PROFILE_GUID = 'bbbbbbbb-2222-4222-8222-333333333333';
+export const PROCESS_PROFILE_GUID = 'bbbbbbbb-3333-4333-8333-444444444444';
 export const TOOLHEAD_GUID = 'dddddddd-1111-4111-8111-222222222222';
 export const SNAPSHOT_SHA = 'a'.repeat(64);
 export const STAGE_IDS = [
@@ -129,6 +131,26 @@ export function validWorkspace(): CalibrationWorkspacePayloadType {
         selectedToolId: TOOLHEAD_GUID,
         selectedToolheadId: TOOLHEAD_GUID,
         selectedNozzleId: TOOLHEAD_GUID,
+        profileIdentities: {
+          machine: {
+            backendProfileId: MACHINE_PROFILE_GUID,
+            orcaProfileName: 'Voron 2.4 0.4 nozzle',
+            profileRevision: 'machine-r7',
+            contentHash: 'b'.repeat(64),
+          },
+          process: {
+            backendProfileId: PROCESS_PROFILE_GUID,
+            orcaProfileName: '0.20 mm Standard',
+            profileRevision: 'process-r7',
+            contentHash: 'c'.repeat(64),
+          },
+          filament: {
+            backendProfileId: FILAMENT_PROFILE_GUID,
+            orcaProfileName: 'Upstream PLA',
+            profileRevision: 'profile-r7',
+            contentHash: 'd'.repeat(64),
+          },
+        },
         filament: {
           filamentProjectId: 'filament-1',
           provider: 'PrintFarmer',
@@ -162,7 +184,7 @@ export function validWorkspace(): CalibrationWorkspacePayloadType {
       nozzleId: TOOLHEAD_GUID,
       nozzleDiameterMm: 0.4,
       profileRevision: 'profile-r7',
-      contentHash: null,
+      contentHash: 'd'.repeat(64),
     },
     selectedBaseProfileId: FILAMENT_PROFILE_GUID,
     autosaveRevision: 0,

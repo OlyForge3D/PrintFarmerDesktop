@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { rm } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   app,
   BrowserWindow,
@@ -29,9 +29,8 @@ import {
   CALIBRATION_SERVER_UNEXPLAINED_REFUSAL_CODE,
   CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
-  CALIBRATION_MAX_PRINTER_CANDIDATES,
   CalibrationPrinterCandidate,
-  type OrcaProfileEntry,
+  type OrcaProfileOperationError,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -60,95 +59,12 @@ import {
  */
 const LOCAL_PROFILE_EXEMPLAR_LIMIT = 5;
 
-/**
- * Turns a failed calibration-candidate request into an operator-facing
- * diagnosis.
- *
- * Each branch names a *different* remedy, which is the whole point: an empty
- * printer list previously looked the same whether the operator needed to sign
- * in, be granted a permission, upgrade the server, configure a server
- * dependency, or simply had no eligible printer. Only server-supplied codes and
- * this module's own literals are used — no server-controlled prose, no URLs and
- * no filesystem paths are echoed.
- */
-function classifyDiscoveryFailure(
-  error: unknown,
-): CalibrationProfileDiscoveryDiagnostic {
-  if (!(error instanceof CalibrationHttpError)) {
-    return {
-      kind: 'unreachable',
-      message: 'PrintFarmer could not be reached to list calibration printers.',
-      serverCode: null,
-    };
-  }
-  // The server's ProblemDetails extension code is in-process-only by the #177
-  // disposition, so it is deliberately NOT forwarded to the renderer here.
-  // Only this module's own literals cross the boundary.
-  const serverCode = null;
-  switch (error.code) {
-    case 'authentication':
-      return {
-        kind: 'unauthenticated',
-        message:
-          'Sign in to PrintFarmer again: this session is not authenticated for calibration.',
-        serverCode,
-      };
-    case 'authorization':
-    case 'forbidden':
-      return {
-        kind: 'forbidden',
-        message:
-          'This PrintFarmer account lacks the calibration read permission. Ask a farm admin to grant it.',
-        serverCode,
-      };
-    case 'notFound':
-      return {
-        kind: 'routeUnavailable',
-        message:
-          'This PrintFarmer server does not expose the calibration candidate endpoint. Upgrade the server to a build that supports calibration.',
-        serverCode,
-      };
-    case 'profileServiceUnavailable':
-      return {
-        kind: 'profileResolverUnavailable',
-        message:
-          'PrintFarmer cannot reach its upstream OrcaSlicer profile resolver, so it cannot resolve calibration profiles. This is a server configuration issue.',
-        serverCode,
-      };
-    case 'printerStatusUnavailable':
-      return {
-        kind: 'serverDependencyUnavailable',
-        message:
-          'PrintFarmer could not read live printer status, so calibration candidates are unavailable right now.',
-        serverCode,
-      };
-    case 'workerUnavailable':
-      return {
-        kind: 'serverDependencyUnavailable',
-        message:
-          'A PrintFarmer service required for calibration is unavailable.',
-        serverCode,
-      };
-    case 'invalidResponse':
-      return {
-        kind: 'malformedResponse',
-        message:
-          'PrintFarmer returned a calibration response this version cannot read.',
-        serverCode,
-      };
-    default:
-      return {
-        kind: 'unreachable',
-        message: 'PrintFarmer could not list calibration printers.',
-        serverCode,
-      };
-  }
-}
 import {
   REQUIRED_FIRMWARE_FAMILY,
   REQUIRED_SLICER_ENGINE,
   isExplicitCalibrationEligibilityComplete,
   missingCalibrationFlags,
+  doesCalibrationWorkspacePayloadMatchContext,
   prepareCalibrationWorkspaceSave,
   projectCalibrationEligibility,
   projectCalibrationPrinterContext,
@@ -192,6 +108,7 @@ import {
   installOrcaProfileWindows,
   restoreOrcaProfileWindows,
   verifyExportedProfile,
+  writeExportedProfileNoFollow,
   canonicalizeSaveTarget,
   cacheGeneratedProfile,
   getCachedProfile,
@@ -437,42 +354,6 @@ export function explainIneligibility(
       : []),
   ];
   return codes.length > 0 ? codes : [CALIBRATION_ELIGIBILITY_UNVERIFIED_CODE];
-}
-
-/**
- * Why a printer contributed no calibration profile, when the reason was a
- * fault rather than an ordinary absence.
- *
- * The two are told apart because they point an operator in opposite
- * directions. `contextUnreadable` is the server or the network: the context
- * could not be fetched or did not match the contract. `profileRefused` is this
- * client: the context arrived intact and was read, and the profile inside it
- * was one this build will not render.
- *
- * Merging them under a single "printer contexts could not be read" sentence
- * would repeat, one branch over, the exact falsehood this handler removed when
- * it stopped calling an unreadable farm an empty one — an operator sent to
- * investigate a context-read problem that does not exist. It matters in
- * practice: a build that serialises an unversioned filament profile as `""`
- * rather than `null` would report every healthy printer in the farm as a
- * server fault.
- */
-type CalibrationProfileFault = 'contextUnreadable' | 'profileRefused' | null;
-
-/**
- * Joins fault clauses into one sentence fragment with ordinary English
- * grammar: `a`, `a and b`, `a, b, and c`.
- *
- * Spelled out because the counts and the causes are variable and the previous
- * fixed phrasing produced "1 printer context could not be read, so those
- * printers' profiles are missing" — plural possessive against a singular
- * count. A sentence an operator has to squint at is a sentence they stop
- * trusting.
- */
-function joinClauses(clauses: string[]): string {
-  if (clauses.length <= 1) return clauses[0] ?? '';
-  if (clauses.length === 2) return `${clauses[0]} and ${clauses[1]}`;
-  return `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}`;
 }
 
 /**
@@ -1087,6 +968,7 @@ export function registerIpcHandlers(
         : selectionCache.context(
             selectedId,
             binding.printerId,
+            entryEpoch,
             binding.configurationRevision ?? undefined,
           );
     if (context === null) {
@@ -1102,7 +984,7 @@ export function registerIpcHandlers(
         // Only cache what is still relevant. A write here after a switch would
         // repopulate a cache that was deliberately emptied.
         if (calibrationStateEpoch === entryEpoch) {
-          selectionCache.rememberContext(selectedId, context);
+          selectionCache.rememberContext(selectedId, entryEpoch, context);
         }
       } catch (error) {
         // A 403 here is the server refusing this account's context read, and a
@@ -1943,6 +1825,12 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.SaveServerProfile].request.parse(rawRequest);
+      // Updating a profile in place preserves its UUID while changing the
+      // server URL, credential or principal behind it. Profile-scoped evidence
+      // must be stranded before that same ID can name the replacement binding.
+      if (request.id !== undefined) {
+        forgetCalibrationProfileState(request.id);
+      }
       const response = await profiles.save(request);
       return ipcSchemas[IpcChannel.SaveServerProfile].response.parse(response);
     },
@@ -2279,6 +2167,7 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      const entryEpoch = calibrationStateEpoch;
       const signal = AbortSignal.timeout(10_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
       const printers = await calibrationHttp.getPrinters(
@@ -2295,9 +2184,14 @@ export function registerIpcHandlers(
       // while reporting nothing lost. A candidate that fails here joins the
       // ones that failed upstream: dropped alone, and counted.
       const projected: unknown[] = [];
+      const renderableCandidates: RemoteCalibrationPrinterCandidate[] = [];
       let unprojectable = 0;
       for (const printer of printers.printers) {
         const eligibility = projectCalibrationEligibility(printer);
+        if (printer.profilesEvaluated !== false) {
+          unprojectable += 1;
+          continue;
+        }
         const candidate = CalibrationPrinterCandidate.safeParse({
           printerId: printer.printerId,
           displayName: printer.displayName,
@@ -2318,22 +2212,30 @@ export function registerIpcHandlers(
               : [],
           // Candidate listing is preliminary unless the server explicitly
           // confirms that profiles were evaluated.
-          evaluationScope:
-            printer.profilesEvaluated === true ? 'full' : 'preliminary',
+          evaluationScope: 'preliminary',
           eligibility,
         });
         if (candidate.success) {
           projected.push(candidate.data);
+          renderableCandidates.push(printer);
         } else {
           unprojectable += 1;
         }
+      }
+      const printersUnreadable = printers.unreadable + unprojectable;
+      if (calibrationStateEpoch === entryEpoch) {
+        selectionCache.rememberCandidates(selectedId, entryEpoch, {
+          candidates: renderableCandidates,
+          unreadable: printersUnreadable,
+          truncated: printers.truncated,
+        });
       }
       return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
         printers: projected,
         printersTruncated: printers.truncated,
         // Both losses are the same loss to the operator: a printer the server
         // named that this client cannot show.
-        printersUnreadable: printers.unreadable + unprojectable,
+        printersUnreadable,
         fetchedAt: new Date().toISOString(),
       });
     },
@@ -2349,6 +2251,34 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      const entryEpoch = calibrationStateEpoch;
+      const selectedCandidate = selectionCache.selectedCandidate(
+        selectedId,
+        request.printerId,
+        entryEpoch,
+      );
+      const candidate = selectedCandidate?.candidate ?? null;
+      const candidateConfigurationRevision =
+        candidate?.configurationRevision ?? null;
+      if (
+        candidate === null ||
+        candidate.profilesEvaluated !== false ||
+        candidateConfigurationRevision === null ||
+        (request.configurationRevision !== undefined &&
+          request.configurationRevision !== candidateConfigurationRevision) ||
+        !candidate.isOnline ||
+        candidate.eligible !== true ||
+        candidate.rejectionReasons.length > 0 ||
+        candidate.missingInputs.length > 0 ||
+        !isExplicitCalibrationEligibilityComplete(candidate)
+      ) {
+        throw Object.assign(
+          new Error(
+            'Select one eligible printer from the current preliminary candidate list before loading its context.',
+          ),
+          { code: 'CALIBRATION_PRINTER_SELECTION_REQUIRED' },
+        );
+      }
       const signal = AbortSignal.timeout(10_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
       const context = await calibrationHttp.getPrinterContext(
@@ -2356,7 +2286,27 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         request.printerId,
         signal,
+        candidateConfigurationRevision,
       );
+      if (
+        context.printerId !== request.printerId ||
+        context.configurationRevision !== candidateConfigurationRevision ||
+        selectedCandidate === null ||
+        calibrationStateEpoch !== entryEpoch ||
+        !selectionCache.rememberSelectedContext(
+          selectedId,
+          entryEpoch,
+          selectedCandidate.generation,
+          context,
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            'The selected printer or its configuration changed while its context was loading.',
+          ),
+          { code: 'CALIBRATION_PRINTER_SELECTION_CHANGED' },
+        );
+      }
       return ipcSchemas[IpcChannel.CalibrationGetPrinterContext].response.parse(
         projectCalibrationPrinterContext(context),
       );
@@ -2835,6 +2785,7 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      const syncEpoch = calibrationStateEpoch;
       // Sync applies the local outbox to the server. It mutates, so it is gated
       // before any controller is created or any request is sent.
       const permission = gateCalibrationPermission('sync', selectedId);
@@ -2850,6 +2801,100 @@ export function registerIpcHandlers(
           error:
             permission.message ??
             'Calibration synchronization is not permitted.',
+        });
+      }
+      // A sync can push a locally queued mutation, so each included workspace is
+      // re-bound to one exact authoritative context before the sidecar is allowed
+      // to dispatch anything. Old/offline drafts remain editable, but cannot sync
+      // until they carry the exact machine/process/filament profile triple.
+      const rawStates =
+        request.projectId === undefined
+          ? await sidecar.listCalibrationWorkspaceStates(selectedId)
+          : [
+              await sidecar.getCalibrationWorkspaceState(
+                selectedId,
+                request.projectId,
+              ),
+            ];
+      const states = rawStates
+        .map((rawState) =>
+          ipcSchemas[
+            IpcChannel.CalibrationGetWorkspaceState
+          ].response.safeParse(rawState),
+        )
+        .map((parsed) => (parsed.success ? parsed.data : null));
+      if (
+        states.some((state) => state === null) ||
+        (request.projectId !== undefined && states.length !== 1)
+      ) {
+        return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+          phase: 'failed',
+          profileId: selectedId,
+          projectId: request.projectId ?? null,
+          pushedOperations: 0,
+          pulledChanges: 0,
+          conflictCount: 0,
+          cursor: null,
+          error:
+            'Calibration synchronization requires a valid local workspace state.',
+        });
+      }
+      const profileContext = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        for (const state of states) {
+          if (state === null) continue;
+          const binding = state.workspaceState.domainState.binding;
+          const currentContext = await calibrationHttp.getPrinterContext(
+            selectedId,
+            profileContext.profile.baseUrl,
+            binding.printer.backendPrinterId,
+            AbortSignal.timeout(15_000),
+            binding.printer.printerConfigurationRevision,
+          );
+          if (
+            !doesCalibrationWorkspacePayloadMatchContext(
+              state.workspaceState,
+              currentContext,
+            )
+          ) {
+            return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+              phase: 'failed',
+              profileId: selectedId,
+              projectId: request.projectId ?? null,
+              pushedOperations: 0,
+              pulledChanges: 0,
+              conflictCount: 0,
+              cursor: null,
+              error:
+                'Calibration synchronization was refused because the authoritative printer or profile binding changed.',
+            });
+          }
+        }
+      } catch (error) {
+        await noteCalibrationAccessFailure(selectedId, error);
+        return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+          phase: 'failed',
+          profileId: selectedId,
+          projectId: request.projectId ?? null,
+          pushedOperations: 0,
+          pulledChanges: 0,
+          conflictCount: 0,
+          cursor: null,
+          error:
+            'Calibration synchronization could not verify the authoritative printer context.',
+        });
+      }
+      if (!calibrationStateUnchanged(syncEpoch, selectedId, 'sync')) {
+        return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+          phase: 'failed',
+          profileId: selectedId,
+          projectId: request.projectId ?? null,
+          pushedOperations: 0,
+          pulledChanges: 0,
+          conflictCount: 0,
+          cursor: null,
+          error:
+            'Calibration synchronization was cancelled because its authorization state changed during verification.',
         });
       }
       // Cancel any existing sync for this profile.
@@ -2870,6 +2915,7 @@ export function registerIpcHandlers(
           selectedId,
           request.projectId ?? null,
           controller.signal,
+          () => calibrationStateUnchanged(syncEpoch, selectedId, 'sync'),
         );
         const result = outcome.status;
         // The outbox operation is not replayed. Correcting the evidence is a
@@ -3382,7 +3428,9 @@ export function registerIpcHandlers(
             jobId: remote.id,
             jobKind: remote.jobKind,
             rowVersion: remote.rowVersion,
+            jobRevision: remote.revision,
             dispatchStateRowVersion: remote.dispatchStateRowVersion,
+            dispatchStateRevision: remote.dispatchStateRevision,
             status: remote.status,
             dispatchAttemptOutcome: remote.dispatchResult?.outcome ?? null,
             bedClearState: remote.bedClearState,
@@ -3390,7 +3438,11 @@ export function registerIpcHandlers(
             assignedPrinterId: remote.assignedPrinterId,
             calibrationProjectId: remote.calibrationProjectId,
             calibrationAttemptId: remote.calibrationAttemptId,
+            calibrationOrchestrationId: remote.calibrationOrchestrationId,
             pinnedPrinterConfigRevision: remote.pinnedPrinterConfigRevision,
+            bedClearCommandId: remote.bedClearCommandId,
+            bedClearIdempotencyKeySha256: remote.bedClearIdempotencyKeySha256,
+            bedClearExpiresAtUtc: remote.bedClearExpiresAtUtc,
             priority: remote.priority,
             queuePosition: remote.queuePosition,
             updatedAt: remote.updatedAt,
@@ -3481,23 +3533,10 @@ export function registerIpcHandlers(
         });
       }
 
-      // The operator's confirmation is established here rather than taken from
-      // the renderer. Main asks the server for the job and mints a single-use,
-      // short-lived ledger record only if the server itself reports a job this
-      // dispatch may legitimately release. A renderer cannot manufacture that
-      // observation, which is precisely why the earlier
-      // `operatorAcknowledgedBedClear: true` flag was worthless: the party being
-      // gated was asserting its own precondition.
-      const acknowledgementBinding = {
-        profileId: selectedId,
-        printerId: request.printerId,
-        configurationRevision: request.expectedPrinterConfigRevision ?? null,
-        jobId: request.jobId,
-        projectId: null,
-        attemptId: null,
-        operationId: request.operationId,
-      };
       const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const expectedIdempotencyKeySha256 = createHash('sha256')
+        .update(request.operationId, 'utf8')
+        .digest('hex');
       let observedJob: Awaited<
         ReturnType<typeof calibrationHttp.getQueueJob>
       > | null = null;
@@ -3545,40 +3584,70 @@ export function registerIpcHandlers(
           error: { ...gateRefusalToApiError(jobReadFailure), reference: null },
         });
       }
-      // Every condition is explicit, and an omitted field is a refusal.
-      //
-      // `bedClearState` used to be accepted as `null`, which is what the current
-      // `GET /api/job-queue/{id}` returns because the read model omits the
-      // member entirely (PrintFarmer#1465). Treating that silence as `None`
-      // meant *any* job assigned to the printer could mint the ledger, so the
-      // fail-closed preflight this module advertises was not real: the server's
-      // own refusal was still the only thing protecting dispatch. An absent
-      // state is now a refusal, which is the honest reading of "the server did
-      // not say".
-      //
-      // `Acknowledged` is likewise no longer accepted. Honouring it needs the
-      // command identity that would prove a replay is the *same* acknowledgement
-      // rather than a second one, and that identity does not exist on the wire
-      // until #1465 lands. Once it does, this should require FilamentCalibration
-      // kind, the exact printer, calibration lineage and pinned configuration
-      // revision, a dispatchable status, and either an explicit `None` or an
-      // `Acknowledged` whose command ID matches.
-      const serverSaysAwaitingBedClear =
-        observedJob !== null &&
-        observedJob.assignedPrinterId === request.printerId &&
-        // A queue holds more than calibration work; only a calibration job may
-        // be released through a calibration acknowledgement.
-        observedJob.jobKind === 'FilamentCalibration' &&
-        observedJob.bedClearState === 'None';
-      if (serverSaysAwaitingBedClear) {
-        bedClearLedger.record(acknowledgementBinding);
+      type ExactQueueJob = NonNullable<typeof observedJob>;
+      const matchesExactJob = (job: ExactQueueJob): boolean => {
+        const matchesLineage =
+          job.id === request.jobId &&
+          job.jobKind === 'FilamentCalibration' &&
+          job.gcodeFileId !== null &&
+          job.assignedPrinterId === request.printerId &&
+          job.calibrationProjectId === request.projectId &&
+          job.calibrationAttemptId === request.calibrationAttemptId &&
+          job.calibrationOrchestrationId ===
+            request.calibrationOrchestrationId &&
+          job.pinnedPrinterConfigRevision ===
+            request.expectedPrinterConfigRevision;
+        const pristine =
+          job.bedClearState === 'None' &&
+          job.bedClearCommandId === null &&
+          job.bedClearIdempotencyKeySha256 === null &&
+          job.bedClearExpiresAtUtc === null &&
+          job.rowVersion === request.rowVersion &&
+          job.revision === request.jobRevision &&
+          job.dispatchStateRowVersion === request.dispatchStateRowVersion &&
+          job.dispatchStateRevision === request.dispatchStateRevision &&
+          (job.status === 'Queued' || job.status === 'Assigned');
+        const exactReplay =
+          job.bedClearState === 'Acknowledged' &&
+          job.bedClearCommandId !== null &&
+          job.bedClearIdempotencyKeySha256 === expectedIdempotencyKeySha256 &&
+          job.bedClearExpiresAtUtc !== null &&
+          Date.parse(job.bedClearExpiresAtUtc) > Date.now();
+        return matchesLineage && (pristine || exactReplay);
+      };
+      if (observedJob === null || !matchesExactJob(observedJob)) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'jobNotDispatchable',
+            message:
+              'The exact calibration job, lineage, revisions, or bed-clear acknowledgement no longer matches.',
+            retryable: false,
+            retryAfterSeconds: null,
+            reference: null,
+          },
+        });
       }
+      // The renderer's confirmation is not authority. Main mints the local
+      // single-use ledger only from the exact persisted job above.
+      const acknowledgementBinding = {
+        profileId: selectedId,
+        printerId: request.printerId,
+        configurationRevision: request.expectedPrinterConfigRevision,
+        jobId: request.jobId,
+        projectId: request.projectId,
+        attemptId: request.calibrationAttemptId,
+        operationId: request.operationId,
+      };
+      bedClearLedger.record(acknowledgementBinding);
       const gate = await gateCalibrationAction(
         'acknowledgeBedClear',
         selectedId,
         {
           printerId: request.printerId,
-          configurationRevision: request.expectedPrinterConfigRevision ?? null,
+          configurationRevision: request.expectedPrinterConfigRevision,
           snapshotId: null,
           toolId: null,
         },
@@ -3621,6 +3690,48 @@ export function registerIpcHandlers(
         });
       }
       try {
+        // Re-read after all local gates and immediately before the combined
+        // acknowledge-and-start mutation. A queue reorder, lineage change, ETag
+        // advance, consumed command, expiry, or different idempotency hash
+        // between the two observations therefore fails closed.
+        const confirmedJob = await calibrationHttp.getQueueJob(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.jobId,
+          signal,
+        );
+        if (confirmedJob === null || !matchesExactJob(confirmedJob)) {
+          return ipcSchemas[
+            IpcChannel.CalibrationAcknowledgeBedClear
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'jobNotDispatchable',
+              message:
+                'The exact calibration job changed before dispatch; refresh its queue state.',
+              retryable: false,
+              retryAfterSeconds: null,
+              reference: null,
+            },
+          });
+        }
+        if (
+          !calibrationStateUnchanged(
+            actionEpoch,
+            selectedId,
+            'acknowledgeBedClear',
+          )
+        ) {
+          return ipcSchemas[
+            IpcChannel.CalibrationAcknowledgeBedClear
+          ].response.parse({
+            status: 'error',
+            error: {
+              ...gateRefusalToApiError(SELECTION_CHANGED_DURING_VERIFICATION),
+              reference: null,
+            },
+          });
+        }
         const result = await calibrationHttp.acknowledgeBedClearAndStart(
           selectedId,
           ctx.profile.baseUrl,
@@ -4133,8 +4244,7 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
-      const profileContext = await profiles.getAuthenticatedContext(selectedId);
-      const signal = AbortSignal.timeout(15_000);
+      const entryEpoch = calibrationStateEpoch;
       const printerId = request.printerId;
 
       /**
@@ -4162,9 +4272,9 @@ export function registerIpcHandlers(
             kind: 'ok',
             message: 'Local OrcaSlicer profile scan completed.',
           },
-           printersUnreadable: 0,
-           printersTruncated: false,
-           ...overrides,
+          printersUnreadable: 0,
+          printersTruncated: false,
+          ...overrides,
         });
 
       /**
@@ -4235,57 +4345,29 @@ export function registerIpcHandlers(
         return { localProfiles: scan.profiles, localDiscovery };
       };
 
-      // Resolution is scoped to the one printer the operator selected. Earlier
-      // builds listed every candidate and then fetched a context *and* ran a
-      // full local OrcaSlicer scan per printer, so the cost grew with farm size
-      // and snapshots were pulled for printers nobody asked about. The candidate
-      // list is still fetched — exactly once — because eligibility is the
-      // server's to decide and must never be inferred from a model name.
-      let candidates: Awaited<ReturnType<typeof calibrationHttp.getPrinters>>;
-      try {
-        candidates = await calibrationHttp.getPrinters(
-          selectedId,
-          profileContext.profile.baseUrl,
-          signal,
-        );
-      } catch (error) {
-        // Discovery is usually where a revoked permission is noticed first, so
-        // the cached snapshot is re-read here too — without retrying the
-        // listing, which the operator can repeat themselves.
-        const classified = classifyDiscoveryFailure(error);
-        const accessFailure = await noteCalibrationAccessFailure(
-          selectedId,
-          error,
-        );
-        const accessGuidance = accessFailureGuidance(accessFailure);
-        return answer({
-          discovery:
-            accessGuidance !== ''
-              ? {
-                  ...classified,
-                  message: `${classified.message} ${accessGuidance}`,
-                }
-              : classified,
-          ...(await diagnoseLocalInstallWithoutContext()),
-        });
-      }
-
-      const candidate = candidates.printers.find(
+      // Candidate and context reads already happened on the two preceding wizard
+      // steps. Reusing their epoch-bound evidence prevents this profile lookup
+      // from re-listing the farm or running the exact-triple resolver twice.
+      const evidence = selectionCache.evidence(selectedId, entryEpoch);
+      const context = selectionCache.selectedContext(
+        selectedId,
+        printerId,
+        entryEpoch,
+        request.configurationRevision,
+      );
+      const candidate = evidence?.candidates.find(
         (entry) => entry.printerId === printerId,
       );
-      if (candidate === undefined) {
+      const printersUnreadable = evidence?.unreadable ?? 0;
+      const printersTruncated = evidence?.truncated ?? false;
+      if (evidence === null || candidate === undefined) {
         return answer({
-          printersUnreadable: candidates.unreadable,
-          printersTruncated: candidates.truncated,
+          printersUnreadable,
+          printersTruncated,
           discovery: {
-            kind:
-              candidates.printers.length === 0
-                ? 'noEligiblePrinters'
-                : 'selectedPrinterNotACandidate',
+            kind: 'selectedPrinterNotACandidate',
             message:
-              candidates.printers.length === 0
-                ? 'The server returned no calibration candidate printers for this account.'
-                : 'PrintFarmer no longer lists the selected printer as a calibration candidate. Choose a printer again.',
+              'The selected printer is not present in the current epoch-bound candidate evidence. Choose it again.',
             serverCode: null,
           },
           ...(await diagnoseLocalInstallWithoutContext()),
@@ -4308,8 +4390,8 @@ export function registerIpcHandlers(
         // defence in depth rather than the primary gate. Refusing here keeps a
         // context request off the wire for a printer the server already refused.
         return answer({
-          printersUnreadable: candidates.unreadable,
-          printersTruncated: candidates.truncated,
+          printersUnreadable,
+          printersTruncated,
           discovery: {
             kind: 'noProfilesForSelectedPrinter',
             message:
@@ -4319,43 +4401,26 @@ export function registerIpcHandlers(
         });
       }
 
-      let context: Awaited<
-        ReturnType<typeof calibrationHttp.getPrinterContext>
-      >;
-      try {
-        context = await calibrationHttp.getPrinterContext(
-          selectedId,
-          profileContext.profile.baseUrl,
-          printerId,
-          signal,
-          request.configurationRevision,
-        );
-      } catch (error) {
-        const classified = classifyDiscoveryFailure(error);
-        // Converted, so the wrapper never sees it. A refusal on the selected
-        // printer's context is still a refusal, and a rejected token is still a
-        // rejected token; both invalidate accordingly.
-        await noteCalibrationAccessFailure(selectedId, error);
-        // A context failure describes one printer. It must never be reported in
-        // a way the renderer could render as "there are no printers": the list
-        // the operator selected from is still valid and still on screen.
+      if (context === null) {
         return answer({
-          printersUnreadable: candidates.unreadable,
-          printersTruncated: candidates.truncated,
-          discovery:
-            classified.kind === 'profileResolverUnavailable'
-              ? classified
-              : {
-                  kind: 'selectedPrinterContextUnavailable',
-                  message: classified.message,
-                  serverCode: classified.serverCode,
-                },
+          printersUnreadable,
+          printersTruncated,
+          discovery: {
+            kind: 'selectedPrinterContextUnavailable',
+            message:
+              'The selected printer context is no longer available under the current action epoch. Select the printer again.',
+            serverCode: null,
+          },
           ...(await diagnoseLocalInstallWithoutContext()),
         });
       }
 
       const configurationRevision = context.configurationRevision;
-      const pfEntry = projectPrintFarmerOrcaProfile(candidate, context);
+      const pfProjection = projectPrintFarmerOrcaProfileResult(
+        candidate,
+        context,
+      );
+      const pfEntry = pfProjection.kind === 'entry' ? pfProjection.entry : null;
       // Bound to this printer's exact profile name, nozzle and content hash.
       // The server's GUID identifies the profile; only the name can be matched
       // against a file in the local OrcaSlicer installation, and the two are
@@ -4419,13 +4484,42 @@ export function registerIpcHandlers(
                       'OrcaSlicer is installed and its profiles were read, but none matches the profile name and nozzle the selected printer reports.',
                   };
 
-      return answer({
-        profiles: resolved,
-        configurationRevision,
-        printersUnreadable: candidates.unreadable,
-        printersTruncated: candidates.truncated,
-        discovery:
-          pfEntry === null
+      const currentEvidence = selectionCache.evidence(selectedId, entryEpoch);
+      if (
+        currentEvidence?.generation !== evidence.generation ||
+        selectionCache.selectedContext(
+          selectedId,
+          printerId,
+          entryEpoch,
+          request.configurationRevision,
+        ) === null
+      ) {
+        return answer({
+          printersUnreadable: currentEvidence?.unreadable ?? 0,
+          printersTruncated: currentEvidence?.truncated ?? false,
+          discovery: {
+            kind: 'selectedPrinterContextUnavailable',
+            message:
+              'The selected printer changed while its local profile was being resolved. Select the printer again.',
+            serverCode: null,
+          },
+          localDiscovery: {
+            kind: 'ok',
+            message:
+              'The local OrcaSlicer scan completed, but its stale selected-printer binding was discarded.',
+          },
+        });
+      }
+
+      const profileDiscovery: CalibrationProfileDiscoveryDiagnostic =
+        pfProjection.kind === 'refused'
+          ? {
+              kind: 'partiallyUnreadable',
+              message:
+                'PrintFarmer returned a calibration profile for the selected printer, but it did not match the desktop profile contract and was refused.',
+              serverCode: null,
+            }
+          : pfEntry === null
             ? {
                 kind: 'noProfilesForSelectedPrinter',
                 message:
@@ -4436,7 +4530,41 @@ export function registerIpcHandlers(
                 kind: 'ok',
                 message: 'Server profile discovery completed.',
                 serverCode: null,
-              },
+              };
+      const candidateLosses = [
+        ...(printersUnreadable > 0
+          ? [
+              `${printersUnreadable} calibration ${
+                printersUnreadable === 1 ? 'candidate was' : 'candidates were'
+              } unreadable`,
+            ]
+          : []),
+        ...(printersTruncated
+          ? ['the preliminary printer list was truncated']
+          : []),
+      ];
+      const qualifiedProfileDiscovery =
+        candidateLosses.length === 0
+          ? profileDiscovery
+          : {
+              ...profileDiscovery,
+              kind:
+                profileDiscovery.kind === 'ok'
+                  ? printersUnreadable > 0
+                    ? ('partiallyUnreadable' as const)
+                    : ('farmTruncated' as const)
+                  : profileDiscovery.kind,
+              message: `${profileDiscovery.message} ${candidateLosses.join(
+                ' and ',
+              )}, so candidate evidence for this result is partial.`,
+            };
+
+      return answer({
+        profiles: resolved,
+        configurationRevision,
+        printersUnreadable,
+        printersTruncated,
+        discovery: qualifiedProfileDiscovery,
         // A few names for orientation, never the whole install. The exemplars
         // come from the traversal that already ran.
         localProfiles: local.diagnostic.exemplars.map((name) => ({
@@ -4464,28 +4592,33 @@ export function registerIpcHandlers(
    */
   const verifyGeneratedProfileBinding = async (
     cached: CachedProfile,
-    expected: { projectId?: string },
-  ): Promise<{ code: string; message: string; retryable: boolean } | null> => {
+    expected: {
+      profileId: string;
+      projectId: string;
+      snapshotId: string;
+    },
+  ): Promise<OrcaProfileOperationError | null> => {
+    if (
+      cached.profileId !== expected.profileId ||
+      cached.projectId !== expected.projectId ||
+      cached.snapshotId !== expected.snapshotId
+    ) {
+      return {
+        code: 'workspaceNotReady',
+        message:
+          'This profile was generated for a different PrintFarmer profile, calibration project, or printer snapshot. Generate it again from the open project.',
+        retryable: false,
+      };
+    }
     const listed = await profiles.list();
     if (
       listed.selectedProfileId === null ||
-      cached.profileId !== listed.selectedProfileId
+      expected.profileId !== listed.selectedProfileId
     ) {
       return {
         code: 'workspaceNotReady',
         message:
           'This profile was generated for a different PrintFarmer profile than the one now selected. Generate it again for the selected profile.',
-        retryable: false,
-      };
-    }
-    if (
-      expected.projectId !== undefined &&
-      cached.projectId !== expected.projectId
-    ) {
-      return {
-        code: 'workspaceNotReady',
-        message:
-          'This profile was generated for a different calibration project. Generate it again from the project you are installing into.',
         retryable: false,
       };
     }
@@ -4497,19 +4630,99 @@ export function registerIpcHandlers(
         retryable: false,
       };
     }
+
+    const verifyWorkspaceBinding =
+      async (): Promise<OrcaProfileOperationError | null> => {
+        let workspaceStateRaw: unknown;
+        try {
+          workspaceStateRaw = await sidecar.getCalibrationWorkspaceState(
+            cached.profileId,
+            cached.projectId,
+          );
+        } catch {
+          return {
+            code: 'workspaceNotReady',
+            message:
+              'The calibration project could not be re-read before writing the generated profile.',
+            retryable: true,
+          };
+        }
+        const workspaceState =
+          ipcSchemas[
+            IpcChannel.CalibrationGetWorkspaceState
+          ].response.safeParse(workspaceStateRaw);
+        if (
+          !workspaceState.success ||
+          workspaceState.data === null ||
+          workspaceState.data.profileId !== cached.profileId ||
+          workspaceState.data.projectId !== cached.projectId
+        ) {
+          return {
+            code: 'workspaceNotReady',
+            message:
+              'The calibration project binding could not be verified before writing the generated profile.',
+            retryable: false,
+          };
+        }
+        const payload = workspaceState.data.workspaceState;
+        if (
+          payload.domainState.binding.snapshot.snapshotId !==
+            cached.snapshotId ||
+          resolveOrcaBaseProfileLookupName(payload.selectedBaseProfile) !==
+            cached.baseProfileName ||
+          payload.selectedBaseProfile.contentHash !== cached.baseContentHash
+        ) {
+          return {
+            code: 'workspaceNotReady',
+            message:
+              'The calibration project or printer snapshot changed after this profile was generated. Generate it again from the current project.',
+            retryable: false,
+          };
+        }
+        return null;
+      };
+    const workspaceError = await verifyWorkspaceBinding();
+    if (workspaceError !== null) return workspaceError;
+
     // The base file is re-read rather than trusted, because the window between
     // generating and writing is exactly when OrcaSlicer rewrites a profile.
-    const currentBase = await findLocalOrcaProfileRaw(cached.displayName).catch(
-      () => null,
-    );
-    if (
-      currentBase !== null &&
-      currentBase.contentHash !== cached.baseContentHash
-    ) {
+    let currentBase: Awaited<ReturnType<typeof findLocalOrcaProfileRaw>>;
+    try {
+      currentBase = await findLocalOrcaProfileRaw(cached.baseProfileName);
+    } catch {
+      return {
+        code: 'internalError',
+        message:
+          'The OrcaSlicer base profile could not be re-read before writing the generated profile.',
+        retryable: true,
+      };
+    }
+    if (currentBase === null) {
+      return {
+        code: 'baseProfileMissing',
+        message:
+          'The OrcaSlicer base profile no longer exists, so the generated profile was not written. Restore the base or generate again from another profile.',
+        retryable: false,
+      };
+    }
+    if (currentBase.contentHash !== cached.baseContentHash) {
       return {
         code: 'baseProfileChanged',
         message:
           'The OrcaSlicer base profile changed after this profile was generated, so it was not written. Generate it again from the current base.',
+        retryable: false,
+      };
+    }
+    // The base lookup above awaited filesystem I/O. Re-read the authoritative
+    // workspace after it so a rebase that landed during that window cannot be
+    // hidden by the still-current process-wide action epoch.
+    const changedWorkspace = await verifyWorkspaceBinding();
+    if (changedWorkspace !== null) return changedWorkspace;
+    if (cached.epoch !== calibrationStateEpoch) {
+      return {
+        code: 'workspaceNotReady',
+        message:
+          'The calibration session changed during final profile verification, so no generated bytes were written.',
         retryable: false,
       };
     }
@@ -4537,6 +4750,19 @@ export function registerIpcHandlers(
             code: 'workspaceNotReady',
             message:
               'No generated profile found for this operation. Generate the profile first.',
+            retryable: false,
+          },
+        });
+      }
+      if (request.orcaProfileId !== cached.displayName) {
+        return ipcSchemas[
+          IpcChannel.CalibrationExportOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message:
+              'The requested OrcaSlicer profile does not match the generated operation.',
             retryable: false,
           },
         });
@@ -4573,7 +4799,15 @@ export function registerIpcHandlers(
         try {
           // After the dialog, immediately before the write. The operator may
           // have sat on that dialog while the selection changed underneath.
-          const stale = await verifyGeneratedProfileBinding(cached, {});
+          const expectedBinding = {
+            profileId: request.profileId,
+            projectId: request.projectId,
+            snapshotId: request.snapshotId,
+          };
+          const stale = await verifyGeneratedProfileBinding(
+            cached,
+            expectedBinding,
+          );
           if (stale !== null) {
             return ipcSchemas[
               IpcChannel.CalibrationExportOrcaProfile
@@ -4582,9 +4816,23 @@ export function registerIpcHandlers(
           const canonicalDest = await canonicalizeSaveTarget(
             saveResult.filePath,
           );
+          const changedBeforeWrite = await verifyGeneratedProfileBinding(
+            cached,
+            expectedBinding,
+          );
+          if (changedBeforeWrite !== null) {
+            return ipcSchemas[
+              IpcChannel.CalibrationExportOrcaProfile
+            ].response.parse({
+              status: 'error',
+              error: changedBeforeWrite,
+            });
+          }
           // Write exact bytes.
-          const { writeFile } = await import('node:fs/promises');
-          await writeFile(canonicalDest, cached.generatedJson, 'utf8');
+          await writeExportedProfileNoFollow(
+            canonicalDest,
+            cached.generatedJson,
+          );
           // Verify exact bytes.
           const exportedHash = await verifyExportedProfile(
             canonicalDest,
@@ -4840,6 +5088,7 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
+      const generationEpoch = calibrationStateEpoch;
 
       // Read workspace state from sidecar.
       let workspaceStateRaw: unknown;
@@ -5034,6 +5283,20 @@ export function registerIpcHandlers(
         snapshotId,
       );
 
+      if (calibrationStateEpoch !== generationEpoch) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message:
+              'The calibration session changed while the profile was being generated. Generate it again from the current project state.',
+            retryable: false,
+          },
+        });
+      }
+
       // Cache the result by operationId, bound to everything it was derived
       // from. Export and install verify that binding before writing, so bytes
       // generated for one farm, project and base cannot be written to disk
@@ -5048,7 +5311,8 @@ export function registerIpcHandlers(
         projectId: request.projectId,
         snapshotId,
         baseContentHash: recordedBaseHash,
-        epoch: calibrationStateEpoch,
+        baseProfileName: orcaProfileLookupName,
+        epoch: generationEpoch,
       });
 
       return ipcSchemas[
@@ -5128,17 +5392,39 @@ export function registerIpcHandlers(
         // hash check above proves the renderer is talking about the same bytes;
         // it proves nothing about whether those bytes still belong to the farm,
         // project and base the operator is now looking at.
-        const stale = await verifyGeneratedProfileBinding(cached, {});
+        const expectedBinding = {
+          profileId: request.profileId,
+          projectId: request.projectId,
+          snapshotId: request.snapshotId,
+        };
+        const stale = await verifyGeneratedProfileBinding(
+          cached,
+          expectedBinding,
+        );
         if (stale !== null) {
           return ipcSchemas[
             IpcChannel.CalibrationInstallOrcaProfile
           ].response.parse({ status: 'error', error: stale });
         }
+        const revalidateBeforeWrite = async (): Promise<void> => {
+          const changed = await verifyGeneratedProfileBinding(
+            cached,
+            expectedBinding,
+          );
+          if (changed !== null) {
+            throw new OrcaInstallError(
+              changed.code,
+              changed.message,
+              changed.retryable,
+            );
+          }
+        };
         const installResult = await installOrcaProfileWindows(
           cached.generatedJson,
           cached.profileJsonHash,
           cached.safeFilename,
           request.operationId,
+          revalidateBeforeWrite,
         );
         return ipcSchemas[
           IpcChannel.CalibrationInstallOrcaProfile

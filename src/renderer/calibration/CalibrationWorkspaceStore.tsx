@@ -239,6 +239,19 @@ export function CalibrationWorkspaceStoreProvider({
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [generatedProfile, setGeneratedProfile] =
     useState<GeneratedProfileState | null>(null);
+  const activeProjectId = activeProject?.record.projectId ?? null;
+  const activeSnapshotId =
+    activeProject?.domainState.binding.snapshot.snapshotId ?? null;
+  useEffect(() => {
+    setGeneratedProfile((current) =>
+      current === null ||
+      (current.profileId === selectedProfileId &&
+        current.projectId === activeProjectId &&
+        current.snapshotId === activeSnapshotId)
+        ? current
+        : null,
+    );
+  }, [activeProjectId, activeSnapshotId, selectedProfileId]);
 
   const requestEpochRef = useRef(0);
   const creationRequestEpochRef = useRef(0);
@@ -928,7 +941,9 @@ export function CalibrationWorkspaceStoreProvider({
         // be verified later.
         if (
           context.configurationRevision === null ||
-          context.snapshotId === null
+          context.snapshotId === null ||
+          context.evaluationScope !== 'full' ||
+          !context.isCurrent
         ) {
           setCreation((current) =>
             current.selectedPrinterId === printerId
@@ -936,7 +951,7 @@ export function CalibrationWorkspaceStoreProvider({
                   ...current,
                   contextLoading: false,
                   error:
-                    'PrintFarmer did not report a configuration revision and snapshot for this printer, so a calibration project cannot be bound to it. Refresh the printer in PrintFarmer and try again.',
+                    'PrintFarmer did not return a current, fully evaluated configuration revision and snapshot for this printer, so a calibration project cannot be bound to it. Refresh the printer in PrintFarmer and try again.',
                 }
               : current,
           );
@@ -1002,9 +1017,9 @@ export function CalibrationWorkspaceStoreProvider({
    *
    * The profile-patch view needs them, and before printer-first they arrived
    * incidentally from a farm-wide load that ran on mount. That load is gone, so
-   * this replaces it with the scoped equivalent: the project already knows which
-   * printer and configuration revision it is bound to, so no context fetch is
-   * needed to ask the right question.
+   * this replaces it with the scoped equivalent. The preliminary list and exact
+   * context are refreshed once so main can bind profile resolution to the same
+   * epoch without re-reading either.
    */
   const loadProjectProfiles = useCallback(async (): Promise<void> => {
     const project = activeProjectRef.current;
@@ -1016,6 +1031,37 @@ export function CalibrationWorkspaceStoreProvider({
       project.domainState.binding.printer.printerConfigurationRevision;
     const epoch = ++contextRequestEpochRef.current;
     try {
+      const candidates = await calibrationApi().listCalibrationPrinters({
+        profileId,
+      });
+      if (
+        unmountedRef.current ||
+        profileIdRef.current !== profileId ||
+        contextRequestEpochRef.current !== epoch ||
+        activeProjectRef.current?.record.projectId !== projectId ||
+        !candidates.printers.some(
+          (candidate) => candidate.printerId === printerId,
+        )
+      ) {
+        return;
+      }
+      const context = await calibrationApi().getCalibrationPrinterContext({
+        profileId,
+        printerId,
+        configurationRevision,
+      });
+      if (
+        unmountedRef.current ||
+        profileIdRef.current !== profileId ||
+        contextRequestEpochRef.current !== epoch ||
+        activeProjectRef.current?.record.projectId !== projectId ||
+        context.printerId !== printerId ||
+        context.configurationRevision !== configurationRevision ||
+        context.evaluationScope !== 'full' ||
+        !context.isCurrent
+      ) {
+        return;
+      }
       const response = await calibrationApi().listOrcaProfiles({
         profileId,
         printerId,
@@ -1356,6 +1402,28 @@ export function CalibrationWorkspaceStoreProvider({
         'Refreshing the authoritative printer configuration snapshot.',
       );
       try {
+        const candidates = await calibrationApi().listCalibrationPrinters({
+          profileId,
+        });
+        if (
+          profileIdRef.current !== profileId ||
+          contextRequestEpochRef.current !== epoch ||
+          activeProjectRef.current?.record.projectId !== projectId
+        ) {
+          return null;
+        }
+        if (
+          !candidates.printers.some(
+            (candidate) =>
+              candidate.printerId === project.record.printerId &&
+              candidate.evaluationScope === 'preliminary',
+          )
+        ) {
+          reportError(
+            'PrintFarmer no longer lists this project printer as a preliminary calibration candidate.',
+          );
+          return null;
+        }
         // Sequential, not parallel: the profile request is pinned to the
         // revision this context actually reports, so it cannot be issued until
         // the context is known. Resolving both at once meant the profile call
@@ -1466,13 +1534,24 @@ export function CalibrationWorkspaceStoreProvider({
         projectId: project.record.projectId,
         operationId,
       });
-      if (profileIdRef.current !== profileId) return;
+      const currentProject = activeProjectRef.current;
+      if (
+        profileIdRef.current !== profileId ||
+        currentProject?.record.projectId !== project.record.projectId ||
+        currentProject.domainState.binding.snapshot.snapshotId !==
+          project.domainState.binding.snapshot.snapshotId
+      ) {
+        return;
+      }
       if (result.status === 'error') {
         reportError(`Profile generation failed: ${result.error.message}`);
         return;
       }
       setGeneratedProfile({
         operationId,
+        profileId,
+        projectId: project.record.projectId,
+        snapshotId: project.domainState.binding.snapshot.snapshotId,
         displayName: result.displayName,
         safeFilename: result.safeFilename,
         profileJsonHash: result.profileJsonHash,
@@ -1510,6 +1589,9 @@ export function CalibrationWorkspaceStoreProvider({
     setAlertMessage(null);
     try {
       const result = await calibrationApi().exportOrcaProfile({
+        profileId,
+        projectId: project.record.projectId,
+        snapshotId: project.domainState.binding.snapshot.snapshotId,
         orcaProfileId: generatedProfile.displayName,
         operationId: generatedProfile.operationId,
       });
@@ -1550,6 +1632,8 @@ export function CalibrationWorkspaceStoreProvider({
     try {
       const result = await calibrationApi().installOrcaProfile({
         profileId,
+        projectId: project.record.projectId,
+        snapshotId: project.domainState.binding.snapshot.snapshotId,
         operationId: generatedProfile.operationId,
         confirmedProfileJsonHash: generatedProfile.profileJsonHash,
       });

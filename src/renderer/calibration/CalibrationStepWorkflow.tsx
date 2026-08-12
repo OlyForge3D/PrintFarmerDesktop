@@ -296,6 +296,10 @@ export function CalibrationStepWorkflow({
     null,
   );
   const bedClearTriggerRef = useRef<HTMLButtonElement>(null);
+  const bedClearOperationRef = useRef<{
+    readonly jobId: string;
+    readonly operationId: string;
+  } | null>(null);
 
   const [handoffProvenance, setHandoffProvenance] =
     useState<CalibrationJobProvenance | null>(null);
@@ -502,6 +506,7 @@ export function CalibrationStepWorkflow({
     setQueueJobId(null);
     setQueueJob(null);
     setHandoffProvenance(null);
+    bedClearOperationRef.current = null;
     void reason; // Acknowledged
   }, []);
 
@@ -510,15 +515,46 @@ export function CalibrationStepWorkflow({
     setBedClearSubmitting(true);
     setBedClearError(null);
     try {
-      const printerId = queueJob.assignedPrinterId ?? '';
+      const printerId = queueJob.assignedPrinterId;
+      const attemptId = queueJob.calibrationAttemptId;
+      const orchestrationId = queueJob.calibrationOrchestrationId;
+      const rowVersion = queueJob.rowVersion;
+      const dispatchStateRowVersion = queueJob.dispatchStateRowVersion;
+      const dispatchStateRevision = queueJob.dispatchStateRevision;
+      const configurationRevision = queueJob.pinnedPrinterConfigRevision;
+      if (
+        printerId === null ||
+        attemptId === null ||
+        orchestrationId === null ||
+        rowVersion === null ||
+        dispatchStateRowVersion === null ||
+        dispatchStateRevision === null ||
+        configurationRevision === null
+      ) {
+        setBedClearError(
+          'The authoritative calibration job is missing exact lineage, revision, printer, or configuration evidence.',
+        );
+        return;
+      }
+      const existingOperation = bedClearOperationRef.current;
+      const operationId =
+        existingOperation?.jobId === queueJob.jobId
+          ? existingOperation.operationId
+          : store.environment.createId();
+      bedClearOperationRef.current = { jobId: queueJob.jobId, operationId };
       const res = await calibrationApi().acknowledgeCalibrationBedClear({
         profileId: store.profileId,
+        projectId: state.projectId,
+        calibrationAttemptId: attemptId,
+        calibrationOrchestrationId: orchestrationId,
         jobId: queueJob.jobId,
         printerId,
-        operationId: store.environment.createId(),
-        rowVersion: queueJob.rowVersion ?? '',
-        dispatchStateRowVersion: queueJob.dispatchStateRowVersion ?? '',
-        expectedPrinterConfigRevision: null,
+        operationId,
+        rowVersion,
+        jobRevision: queueJob.jobRevision,
+        dispatchStateRowVersion,
+        dispatchStateRevision,
+        expectedPrinterConfigRevision: configurationRevision,
       });
       if (res.status === 'ok') {
         setBedClearOpen(false);
@@ -526,19 +562,26 @@ export function CalibrationStepWorkflow({
           prev ? { ...prev, bedClearState: 'Acknowledged' } : null,
         );
       } else if (res.status === 'revisionConflict') {
-        // Server returned 412: update our ETags so the next attempt uses the
-        // authoritative versions, then close the dialog.
-        setQueueJob((prev) =>
-          prev
-            ? {
-                ...prev,
-                rowVersion: res.jobRowVersion ?? prev.rowVersion,
-                dispatchStateRowVersion:
-                  res.dispatchStateRowVersion ?? prev.dispatchStateRowVersion,
-              }
-            : null,
-        );
-        setBedClearOpen(false);
+        // ETags alone are not enough: the exact-job interlock also binds both
+        // logical revisions, lineage, bed-clear state, command hash and expiry.
+        // Re-read the complete job while retaining this operation ID so a lost
+        // successful response can be replayed only against the exact hash.
+        const refreshed = await calibrationApi().getCalibrationQueueState({
+          profileId: store.profileId,
+          projectId: state.projectId,
+          jobId: queueJob.jobId,
+        });
+        if (refreshed.status === 'ok') {
+          setQueueJobId(refreshed.job.jobId);
+          setQueueJob(refreshed.job);
+          setBedClearOpen(false);
+        } else {
+          setBedClearError(
+            refreshed.status === 'error'
+              ? calibrationErrorText(refreshed.error)
+              : 'The authoritative queue job could not be refreshed after its revision changed.',
+          );
+        }
       } else {
         setBedClearError(
           res.status === 'error'
@@ -551,7 +594,7 @@ export function CalibrationStepWorkflow({
     } finally {
       setBedClearSubmitting(false);
     }
-  }, [store.profileId, store.environment, queueJob]);
+  }, [store.profileId, store.environment, queueJob, state.projectId]);
 
   const handleAddObservation = useCallback(
     (

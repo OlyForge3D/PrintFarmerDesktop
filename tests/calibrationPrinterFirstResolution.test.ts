@@ -32,6 +32,10 @@ type Handler = (event: unknown, request: unknown) => unknown;
 const electronState = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
 }));
+const localDiscoveryRace = vi.hoisted(() => ({
+  gate: null as Promise<void> | null,
+  started: null as (() => void) | null,
+}));
 
 vi.mock('electron', () => ({
   app: {
@@ -53,6 +57,25 @@ vi.mock('electron', () => ({
   },
   shell: {},
 }));
+
+vi.mock('../src/main/orcaProfileDiscovery.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../src/main/orcaProfileDiscovery.js')
+  >('../src/main/orcaProfileDiscovery.js');
+  return {
+    ...actual,
+    discoverLocalOrcaFilamentProfiles: async (
+      context: Parameters<typeof actual.discoverLocalOrcaFilamentProfiles>[0],
+    ) => {
+      const result = await actual.discoverLocalOrcaFilamentProfiles(context);
+      localDiscoveryRace.started?.();
+      if (localDiscoveryRace.gate !== null) {
+        await localDiscoveryRace.gate;
+      }
+      return result;
+    },
+  };
+});
 
 const { registerIpcHandlers } = await import('../src/main/ipc.js');
 
@@ -112,7 +135,7 @@ function handlers(): Map<string, Handler> {
 }
 
 function invoke(channel: string, request: unknown): Promise<unknown> {
-  const handler = handlers().get(channel);
+  const handler = electronState.handlers.get(channel);
   if (!handler) throw new Error(`handler not registered: ${channel}`);
   return Promise.resolve(handler(undefined, request));
 }
@@ -139,6 +162,44 @@ function farmOf(size: number): Record<string, unknown>[] {
   ];
 }
 
+function exactProfileTriple(filamentName: string): Record<string, unknown> {
+  return {
+    machine: {
+      id: CALIBRATION_FIXTURE_IDS.machineProfileId,
+      kind: 'machine',
+      name: 'Voron 2.4 0.4 nozzle',
+      slicerType: 'OrcaSlicer',
+      slicerDistribution: 'upstream',
+      slicerVersion: '2.4.2',
+      profileFormat: 'orca-json',
+      profileRevision: 'machine-r7',
+      sha256: 'b'.repeat(64),
+    },
+    process: {
+      id: CALIBRATION_FIXTURE_IDS.processProfileId,
+      kind: 'process',
+      name: '0.20 mm Standard',
+      slicerType: 'OrcaSlicer',
+      slicerDistribution: 'upstream',
+      slicerVersion: '2.4.2',
+      profileFormat: 'orca-json',
+      profileRevision: 'process-r7',
+      sha256: 'c'.repeat(64),
+    },
+    filament: {
+      id: CALIBRATION_FIXTURE_IDS.filamentProfileId,
+      kind: 'filament',
+      name: filamentName,
+      slicerType: 'OrcaSlicer',
+      slicerDistribution: 'upstream',
+      slicerVersion: '2.4.2',
+      profileFormat: 'orca-json',
+      profileRevision: 'profile-r7',
+      sha256: 'd'.repeat(64),
+    },
+  };
+}
+
 /** Routes by URL and records every request the client actually made. */
 function server(
   options: {
@@ -146,6 +207,7 @@ function server(
     candidateStatus?: number;
     context?: unknown;
     contextStatus?: number;
+    contextResponse?: () => Promise<Response>;
   } = {},
 ): { calls: string[] } {
   const calls: string[] = [];
@@ -166,6 +228,7 @@ function server(
         );
       }
       if (href.includes('calibration-context')) {
+        if (options.contextResponse) return options.contextResponse();
         return Promise.resolve(
           new Response(
             JSON.stringify(options.context ?? calibrationContextDto()),
@@ -179,11 +242,33 @@ function server(
       return Promise.resolve(new Response('{}', { status: 404 }));
     }),
   );
+  // CalibrationHttpClient captures fetch at handler construction. Register only
+  // after the stub is installed so 401/403 cases exercise the typed HTTP path
+  // rather than an accidental transport failure.
+  handlers();
   return { calls };
 }
 
 const countOf = (calls: readonly string[], fragment: string): number =>
   calls.filter((href) => href.includes(fragment)).length;
+
+async function resolveSelectedPrinter(
+  configurationRevision?: number,
+): Promise<ProfilesResponse> {
+  await invoke(IpcChannel.CalibrationListPrinters, {
+    profileId: PROFILE_ID,
+  });
+  await invoke(IpcChannel.CalibrationGetPrinterContext, {
+    profileId: PROFILE_ID,
+    printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    ...(configurationRevision === undefined ? {} : { configurationRevision }),
+  });
+  return (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+    profileId: PROFILE_ID,
+    printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    ...(configurationRevision === undefined ? {} : { configurationRevision }),
+  })) as ProfilesResponse;
+}
 
 let sandbox: string;
 const savedEnv = new Map<string, string | undefined>();
@@ -218,6 +303,8 @@ function redirectOrcaUserRoot(): string {
 }
 
 beforeEach(async () => {
+  localDiscoveryRace.gate = null;
+  localDiscoveryRace.started = null;
   sandbox = await mkdtemp(path.join(os.tmpdir(), 'pfd-printer-first-'));
   const dir = path.join(redirectOrcaUserRoot(), 'filament');
   await mkdir(dir, { recursive: true });
@@ -243,13 +330,26 @@ afterEach(async () => {
 });
 
 describe('profile resolution is scoped to the selected printer', () => {
+  it('lists candidates without reading any printer context or profile resolver', async () => {
+    const { calls } = server({ candidates: farmOf(25) });
+
+    const response = (await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    })) as { printers: unknown[] };
+
+    expect(response.printers).toHaveLength(25);
+    expect(countOf(calls, 'calibration-candidates')).toBe(1);
+    expect(countOf(calls, 'calibration-context')).toBe(0);
+  });
+
   it('reads exactly one context regardless of how large the farm is', async () => {
     const { calls } = server({ candidates: farmOf(25) });
 
-    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+    const response = await resolveSelectedPrinter();
+    await invoke(IpcChannel.CalibrationListOrcaProfiles, {
       profileId: PROFILE_ID,
       printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    })) as ProfilesResponse;
+    });
 
     // The claim. Twenty-five candidates, one context read — the previous
     // handler would have issued twenty-five here, plus a full local OrcaSlicer
@@ -263,32 +363,48 @@ describe('profile resolution is scoped to the selected printer', () => {
     expect(response.printerId).toBe(CALIBRATION_FIXTURE_IDS.printerId);
   });
 
+  it('keeps malformed-candidate evidence on the same cached epoch', async () => {
+    const { calls } = server({
+      candidates: [
+        calibrationCandidateDto(),
+        { ...calibrationCandidateDto(), id: 'not-a-guid' },
+      ],
+    });
+
+    const listed = (await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    })) as { printersUnreadable: number };
+    await invoke(IpcChannel.CalibrationGetPrinterContext, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    });
+    const resolved = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    })) as ProfilesResponse & { printersUnreadable: number };
+
+    expect(listed.printersUnreadable).toBe(1);
+    expect(resolved.printersUnreadable).toBe(1);
+    expect(countOf(calls, 'calibration-candidates')).toBe(1);
+    expect(countOf(calls, 'calibration-context')).toBe(1);
+  });
+
   it('does not grow its work as the farm grows', async () => {
     // A count that happened to be 1 for a one-printer farm would prove nothing.
     // Two farm sizes, same cost.
     const small = server({ candidates: farmOf(2) });
-    await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    });
+    await resolveSelectedPrinter();
     const smallReads = countOf(small.calls, 'calibration-context');
     vi.unstubAllGlobals();
 
     const large = server({ candidates: farmOf(50) });
-    await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    });
+    await resolveSelectedPrinter();
     expect(countOf(large.calls, 'calibration-context')).toBe(smallReads);
   });
 
   it('pins the context request to the configuration revision it was given', async () => {
     const { calls } = server();
-    await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-      configurationRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
-    });
+    await resolveSelectedPrinter(CALIBRATION_FIXTURE_IDS.configurationRevision);
     const contextCall = calls.find((href) =>
       href.includes('calibration-context'),
     );
@@ -299,12 +415,28 @@ describe('profile resolution is scoped to the selected printer', () => {
     expect(contextCall).toContain('slicerType=OrcaSlicer');
   });
 
+  it('refuses a renderer-supplied revision that differs from the selected candidate', async () => {
+    const { calls } = server();
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+
+    await expect(
+      invoke(IpcChannel.CalibrationGetPrinterContext, {
+        profileId: PROFILE_ID,
+        printerId: CALIBRATION_FIXTURE_IDS.printerId,
+        configurationRevision:
+          CALIBRATION_FIXTURE_IDS.configurationRevision + 1,
+      }),
+    ).rejects.toMatchObject({
+      code: 'CALIBRATION_PRINTER_SELECTION_REQUIRED',
+    });
+    expect(countOf(calls, 'calibration-context')).toBe(0);
+  });
+
   it('echoes the printer and revision the answer is about', async () => {
     server();
-    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    })) as ProfilesResponse;
+    const response = await resolveSelectedPrinter();
     // The renderer fences on both. Without the echo a late reply for printer A
     // is indistinguishable from a reply for printer B.
     expect(response.printerId).toBe(CALIBRATION_FIXTURE_IDS.printerId);
@@ -312,15 +444,99 @@ describe('profile resolution is scoped to the selected printer', () => {
       CALIBRATION_FIXTURE_IDS.configurationRevision,
     );
   });
+
+  it('rejects an in-flight context when a newer candidate observation lands', async () => {
+    let releaseContext: ((response: Response) => void) | undefined;
+    let markContextStarted: (() => void) | undefined;
+    const contextStarted = new Promise<void>((resolve) => {
+      markContextStarted = resolve;
+    });
+    const deferredContext = new Promise<Response>((resolve) => {
+      releaseContext = resolve;
+    });
+    const { calls } = server({
+      contextResponse: () => {
+        markContextStarted?.();
+        return deferredContext;
+      },
+    });
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+    const pendingContext = invoke(IpcChannel.CalibrationGetPrinterContext, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+      configurationRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
+    });
+    await contextStarted;
+
+    // A refresh creates a new candidate-list generation while the old context
+    // request is still on the wire.
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+    releaseContext?.(
+      new Response(JSON.stringify(calibrationContextDto()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(pendingContext).rejects.toMatchObject({
+      code: 'CALIBRATION_PRINTER_SELECTION_CHANGED',
+    });
+    const profiles = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+      configurationRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
+    })) as ProfilesResponse;
+    expect(profiles.discovery.kind).toBe('selectedPrinterContextUnavailable');
+    expect(countOf(calls, 'calibration-candidates')).toBe(2);
+    expect(countOf(calls, 'calibration-context')).toBe(1);
+  });
+
+  it('discards profile resolution when candidates refresh during the local scan', async () => {
+    const { calls } = server();
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+    await invoke(IpcChannel.CalibrationGetPrinterContext, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+      configurationRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
+    });
+
+    let releaseScan: (() => void) | undefined;
+    localDiscoveryRace.gate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const scanStarted = new Promise<void>((resolve) => {
+      localDiscoveryRace.started = resolve;
+    });
+    const pendingProfiles = invoke(IpcChannel.CalibrationListOrcaProfiles, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+      configurationRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
+    });
+    await scanStarted;
+
+    await invoke(IpcChannel.CalibrationListPrinters, {
+      profileId: PROFILE_ID,
+    });
+    releaseScan?.();
+    const response = (await pendingProfiles) as ProfilesResponse;
+
+    expect(response.profiles).toEqual([]);
+    expect(response.discovery.kind).toBe('selectedPrinterContextUnavailable');
+    expect(countOf(calls, 'calibration-candidates')).toBe(2);
+    expect(countOf(calls, 'calibration-context')).toBe(1);
+  });
 });
 
 describe('backend profile GUIDs and OrcaSlicer names stay distinct', () => {
   it('matches the local file on the profile name, never on the server GUID', async () => {
     server();
-    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    })) as ProfilesResponse;
+    const response = await resolveSelectedPrinter();
 
     const fromServer = response.profiles.find(
       (entry) => entry.source === 'printFarmer',
@@ -340,28 +556,11 @@ describe('backend profile GUIDs and OrcaSlicer names stay distinct', () => {
     server({
       context: calibrationContextDto({
         snapshot: {
-          profiles: {
-            machine: null,
-            process: null,
-            filament: {
-              id: CALIBRATION_FIXTURE_IDS.filamentProfileId,
-              kind: 'filament',
-              name: TARGET_PROFILE,
-              slicerType: 'OrcaSlicer',
-              slicerDistribution: 'upstream',
-              slicerVersion: '2.4.2',
-              profileFormat: 'orca-json',
-              profileRevision: 'profile-r7',
-              sha256: null,
-            },
-          },
+          profiles: exactProfileTriple(TARGET_PROFILE),
         },
       }),
     });
-    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    })) as ProfilesResponse;
+    const response = await resolveSelectedPrinter();
 
     const local = response.profiles.find(
       (entry) => entry.source !== 'printFarmer',
@@ -378,28 +577,11 @@ describe('backend profile GUIDs and OrcaSlicer names stay distinct', () => {
     server({
       context: calibrationContextDto({
         snapshot: {
-          profiles: {
-            machine: null,
-            process: null,
-            filament: {
-              id: CALIBRATION_FIXTURE_IDS.filamentProfileId,
-              kind: 'filament',
-              name: 'A profile that is not installed here',
-              slicerType: 'OrcaSlicer',
-              slicerDistribution: 'upstream',
-              slicerVersion: '2.4.2',
-              profileFormat: 'orca-json',
-              profileRevision: 'profile-r7',
-              sha256: null,
-            },
-          },
+          profiles: exactProfileTriple('A profile that is not installed here'),
         },
       }),
     });
-    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    })) as ProfilesResponse;
+    const response = await resolveSelectedPrinter();
 
     expect(
       response.profiles.some((entry) => entry.source !== 'printFarmer'),
@@ -410,83 +592,52 @@ describe('backend profile GUIDs and OrcaSlicer names stay distinct', () => {
   });
 });
 
-describe('each failure names its own remedy', () => {
-  const cases: ReadonlyArray<{
-    label: string;
-    options: Parameters<typeof server>[0];
-    expected: string;
-  }> = [
-    {
-      label: 'an unauthenticated session',
-      options: { candidateStatus: 401, candidates: {} },
-      expected: 'unauthenticated',
-    },
-    {
-      label: 'a session without the calibration permission',
-      options: { candidateStatus: 403, candidates: {} },
-      expected: 'forbidden',
-    },
-    {
-      label: 'a server build without the route',
-      options: { candidateStatus: 404, candidates: {} },
-      expected: 'routeUnavailable',
-    },
-    {
-      label: 'a farm with no candidates at all',
-      options: { candidates: [] },
-      expected: 'noEligiblePrinters',
-    },
-    {
-      label: 'a selected printer the server no longer lists',
-      options: {
-        candidates: [
-          calibrationCandidateDto({
-            id: CALIBRATION_FIXTURE_IDS.otherPrinterId,
-          }),
-        ],
-      },
-      expected: 'selectedPrinterNotACandidate',
-    },
-    {
-      label: 'a printer the server refuses',
-      options: {
-        candidates: [
-          calibrationCandidateDto({
-            eligible: false,
-            rejectionReasons: [{ code: 'printer_offline', message: 'offline' }],
-          }),
-        ],
-      },
-      expected: 'noProfilesForSelectedPrinter',
-    },
-    {
-      label: 'a context read that fails',
-      options: { contextStatus: 500, context: {} },
-      expected: 'selectedPrinterContextUnavailable',
-    },
-    {
-      label: 'a profile resolver outage',
-      options: {
-        contextStatus: 503,
-        context: { status: 503, code: 'profile_service_unavailable' },
-      },
-      expected: 'profileResolverUnavailable',
-    },
-  ];
-
-  for (const { label, options, expected } of cases) {
-    it(`reports ${expected} for ${label}`, async () => {
-      server(options);
-      const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-        profileId: PROFILE_ID,
-        printerId: CALIBRATION_FIXTURE_IDS.printerId,
-      })) as ProfilesResponse;
-      expect(response.discovery.kind).toBe(expected);
-      // Whatever went wrong, the answer still says which printer it is about,
-      // so the renderer can discard it if the operator has moved on.
-      expect(response.printerId).toBe(CALIBRATION_FIXTURE_IDS.printerId);
+describe('each failure remains scoped to its production step', () => {
+  for (const [status, expected, expectedReads] of [
+    [401, /authenticat/i, 2],
+    [403, /forbidden|authoriz|denied/i, 1],
+  ] as const) {
+    it(`executes the typed ${status} candidate response path`, async () => {
+      const { calls } = server({ candidateStatus: status, candidates: {} });
+      await expect(
+        invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID }),
+      ).rejects.toThrow(expected);
+      expect(countOf(calls, 'calibration-candidates')).toBe(expectedReads);
+      expect(countOf(calls, 'calibration-context')).toBe(0);
     });
   }
+
+  it('reports a selected printer absent from cached candidate evidence', async () => {
+    server({
+      candidates: [
+        calibrationCandidateDto({
+          id: CALIBRATION_FIXTURE_IDS.otherPrinterId,
+        }),
+      ],
+    });
+    await invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID });
+    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    })) as ProfilesResponse;
+    expect(response.discovery.kind).toBe('selectedPrinterNotACandidate');
+  });
+
+  it('does not reinterpret a failed exact-context read as an empty farm', async () => {
+    server({ contextStatus: 500, context: {} });
+    await invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID });
+    await expect(
+      invoke(IpcChannel.CalibrationGetPrinterContext, {
+        profileId: PROFILE_ID,
+        printerId: CALIBRATION_FIXTURE_IDS.printerId,
+      }),
+    ).rejects.toThrow();
+    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
+      profileId: PROFILE_ID,
+      printerId: CALIBRATION_FIXTURE_IDS.printerId,
+    })) as ProfilesResponse;
+    expect(response.discovery.kind).toBe('selectedPrinterContextUnavailable');
+  });
 
   it('does not read a context for a printer the server already refused', async () => {
     const { calls } = server({
@@ -497,6 +648,7 @@ describe('each failure names its own remedy', () => {
         }),
       ],
     });
+    await invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID });
     await invoke(IpcChannel.CalibrationListOrcaProfiles, {
       profileId: PROFILE_ID,
       printerId: CALIBRATION_FIXTURE_IDS.printerId,
@@ -508,6 +660,9 @@ describe('each failure names its own remedy', () => {
     // A server refusal says nothing about the profiles on this machine, and
     // collapsing the two hid a healthy install behind a server outage.
     server({ candidateStatus: 401, candidates: {} });
+    await expect(
+      invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID }),
+    ).rejects.toThrow(/authenticat/i);
     const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
       profileId: PROFILE_ID,
       printerId: CALIBRATION_FIXTURE_IDS.printerId,
@@ -520,6 +675,9 @@ describe('each failure names its own remedy', () => {
 
   it('never puts a filesystem path in the response', async () => {
     server({ candidateStatus: 401, candidates: {} });
+    await expect(
+      invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID }),
+    ).rejects.toThrow(/authenticat/i);
     const response = await invoke(IpcChannel.CalibrationListOrcaProfiles, {
       profileId: PROFILE_ID,
       printerId: CALIBRATION_FIXTURE_IDS.printerId,
@@ -542,6 +700,9 @@ describe('each failure names its own remedy', () => {
       );
     }
     server({ candidateStatus: 401, candidates: {} });
+    await expect(
+      invoke(IpcChannel.CalibrationListPrinters, { profileId: PROFILE_ID }),
+    ).rejects.toThrow(/authenticat/i);
     const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
       profileId: PROFILE_ID,
       printerId: CALIBRATION_FIXTURE_IDS.printerId,
@@ -550,16 +711,19 @@ describe('each failure names its own remedy', () => {
   });
 });
 
-describe('candidate evaluation scope is additive and never inferred from silence', () => {
-  it('reports preliminary when the server omits profilesEvaluated', async () => {
+describe('candidate listing requires the exact preliminary contract', () => {
+  it('isolates a candidate when the server omits profilesEvaluated', async () => {
     // Older PrintFarmer builds do not send the field. Silence means the server
     // said nothing, and reading nothing as "profiles were evaluated" would let
     // the cheap candidate screen stand in for the authoritative context.
-    server();
+    const candidate = calibrationCandidateDto();
+    delete candidate.profilesEvaluated;
+    server({ candidates: [candidate] });
     const response = (await invoke(IpcChannel.CalibrationListPrinters, {
       profileId: PROFILE_ID,
-    })) as { printers: Array<{ evaluationScope: string }> };
-    expect(response.printers[0]?.evaluationScope).toBe('preliminary');
+    })) as { printers: unknown[]; printersUnreadable: number };
+    expect(response.printers).toEqual([]);
+    expect(response.printersUnreadable).toBe(1);
   });
 
   it('reports preliminary when the server explicitly says profiles were not evaluated', async () => {
@@ -573,14 +737,15 @@ describe('candidate evaluation scope is additive and never inferred from silence
     expect(response.printers[0]?.evaluationScope).toBe('preliminary');
   });
 
-  it('reports full only when the server explicitly says so', async () => {
+  it('isolates a candidate that incorrectly reports full evaluation', async () => {
     server({
       candidates: [calibrationCandidateDto({ profilesEvaluated: true })],
     });
     const response = (await invoke(IpcChannel.CalibrationListPrinters, {
       profileId: PROFILE_ID,
-    })) as { printers: Array<{ evaluationScope: string }> };
-    expect(response.printers[0]?.evaluationScope).toBe('full');
+    })) as { printers: unknown[]; printersUnreadable: number };
+    expect(response.printers).toEqual([]);
+    expect(response.printersUnreadable).toBe(1);
   });
 
   it('still lists a printer whose eligibility is preliminary', async () => {
@@ -639,10 +804,7 @@ describe('a scan that could not look is not a scan that found nothing', () => {
     await writeFile(userRoot, 'not a directory');
 
     server();
-    const response = (await invoke(IpcChannel.CalibrationListOrcaProfiles, {
-      profileId: PROFILE_ID,
-      printerId: CALIBRATION_FIXTURE_IDS.printerId,
-    })) as ProfilesResponse;
+    const response = await resolveSelectedPrinter();
 
     expect(response.localDiscovery.kind).toBe('scanFailed');
     expect(response.localDiscovery.message).not.toContain(userRoot);

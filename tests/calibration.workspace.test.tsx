@@ -42,6 +42,9 @@ const projectId = '22222222-2222-4222-8222-222222222222';
 const attemptId = '33333333-3333-4333-8333-333333333333';
 const observationId = '44444444-4444-4444-8444-444444444444';
 const now = '2026-07-26T15:00:00.000Z';
+const machineProfileId = 'aaaaaaaa-2222-4222-8222-333333333333';
+const processProfileId = 'aaaaaaaa-3333-4333-8333-444444444444';
+const filamentProfileId = 'aaaaaaaa-4444-4444-8444-555555555555';
 
 function domainState(mode: 'coach' | 'expert' = 'expert'): CalibrationState {
   return createCalibrationState({
@@ -105,6 +108,26 @@ function domainState(mode: 'coach' | 'expert' = 'expert'): CalibrationState {
       selectedToolId: 'tool-a',
       selectedToolheadId: 'head-a',
       selectedNozzleId: 'nozzle-a',
+      profileIdentities: {
+        machine: {
+          backendProfileId: machineProfileId,
+          orcaProfileName: 'Machine 400 0.4 nozzle',
+          profileRevision: 'machine-revision-7',
+          contentHash: 'b'.repeat(64),
+        },
+        process: {
+          backendProfileId: processProfileId,
+          orcaProfileName: '0.20 mm Standard',
+          profileRevision: 'process-revision-7',
+          contentHash: 'c'.repeat(64),
+        },
+        filament: {
+          backendProfileId: filamentProfileId,
+          orcaProfileName: 'Explicit upstream PLA',
+          profileRevision: 'profile-revision-7',
+          contentHash: 'a'.repeat(64),
+        },
+      },
       filament: {
         filamentProjectId: '55555555-5555-4555-8555-555555555555',
         provider: 'Material Co',
@@ -207,7 +230,8 @@ function record(
         confirmedAt: now,
       },
       selectedBaseProfile: {
-        orcaProfileId: 'orca-base',
+        orcaProfileId: filamentProfileId,
+        orcaProfileName: 'Explicit upstream PLA',
         displayName: 'Explicit upstream PLA',
         source: 'printFarmer',
         upstreamVerified: true,
@@ -222,7 +246,7 @@ function record(
         contentHash:
           'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       },
-      selectedBaseProfileId: 'orca-base',
+      selectedBaseProfileId: filamentProfileId,
       autosaveRevision: 4,
     }),
     ...overrides,
@@ -299,8 +323,8 @@ const context: CalibrationPrinterContext = {
     firmwareVersion: 'v1',
     klipperConfigHash: 'hash',
   },
-  orcaProfileId: 'bound-orca',
-  orcaProfileDisplayName: 'Bound upstream profile',
+  orcaProfileId: filamentProfileId,
+  orcaProfileDisplayName: 'Explicit upstream PLA',
   profileRevision: 'profile-revision-7',
   contentHash:
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -317,6 +341,26 @@ const context: CalibrationPrinterContext = {
   snapshotRevision: 7,
   slicerIdentity: 'OrcaSlicer',
   slicerDistribution: 'upstream',
+  profileIdentities: {
+    machine: {
+      backendProfileId: machineProfileId,
+      orcaProfileName: 'Machine 400 0.4 nozzle',
+      profileRevision: 'machine-revision-7',
+      contentHash: 'b'.repeat(64),
+    },
+    process: {
+      backendProfileId: processProfileId,
+      orcaProfileName: '0.20 mm Standard',
+      profileRevision: 'process-revision-7',
+      contentHash: 'c'.repeat(64),
+    },
+    filament: {
+      backendProfileId: filamentProfileId,
+      orcaProfileName: 'Explicit upstream PLA',
+      profileRevision: 'profile-revision-7',
+      contentHash: 'a'.repeat(64),
+    },
+  },
   toolheads: [
     {
       toolId: 'tool-a',
@@ -417,7 +461,8 @@ function makeApi(savedRecord = record()) {
       CalibrationListOrcaProfilesResponse.parse({
         profiles: [
           {
-            orcaProfileId: 'orca-base',
+            orcaProfileId: filamentProfileId,
+            orcaProfileName: 'Explicit upstream PLA',
             displayName: 'Explicit upstream PLA',
             vendor: 'Vendor',
             material: 'PLA',
@@ -437,6 +482,7 @@ function makeApi(savedRecord = record()) {
           },
           {
             orcaProfileId: 'orca-tool-b',
+            orcaProfileName: 'Explicit upstream PLA 0.6',
             displayName: 'Explicit upstream PLA 0.6',
             vendor: 'Vendor',
             material: 'PLA',
@@ -771,9 +817,7 @@ describe('CalibrationWorkspace', () => {
     expect(screen.queryByText(/could not be read/)).toBeNull();
     expect(
       screen.getByText(
-        new RegExp(
-          `${candidates.length} PrintFarmer printer candidates loaded`,
-        ),
+        new RegExp(`${candidates.length} PrintFarmer printers available`),
       ),
     ).toBeInTheDocument();
   });
@@ -955,7 +999,7 @@ describe('CalibrationWorkspace', () => {
       await screen.findByText(/500 printer records could not be read/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/PrintFarmer offered more printers than/),
+      screen.getByText(/more were offered than it can show/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/No other printers were returned/)).toBeNull();
     expect(screen.queryByText(/rest of the list is unaffected/)).toBeNull();
@@ -982,7 +1026,9 @@ describe('CalibrationWorkspace', () => {
     );
 
     expect(
-      await screen.findByText('No printer candidates were returned.'),
+      await screen.findByText(
+        /PrintFarmer returned no enabled printers for this account/,
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/could not be read/)).toBeNull();
   });
@@ -1534,7 +1580,7 @@ describe('CalibrationWorkspace', () => {
           description: 'Exact saved workspace',
         },
         stepDrafts: { temperature: { prerequisites: 'Clean plate' } },
-        selectedBaseProfileId: 'orca-base',
+        selectedBaseProfileId: filamentProfileId,
         physicalMatch: { snapshotId: 'snapshot-7' },
         autosaveRevision: 5,
       },
@@ -1560,7 +1606,8 @@ describe('CalibrationWorkspace', () => {
       configurationRevision: 8,
       profiles: [
         {
-          orcaProfileId: 'orca-base',
+          orcaProfileId: filamentProfileId,
+          orcaProfileName: 'Explicit upstream PLA',
           displayName: 'Explicit upstream PLA',
           vendor: 'Vendor',
           material: 'PLA',
@@ -1695,20 +1742,181 @@ describe('CalibrationWorkspace', () => {
 
     expect(screen.getByText('Not synchronized')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Profile patch' }));
+    fireEvent.click(
+      within(
+        screen.getByRole('navigation', { name: 'Calibration views' }),
+      ).getByRole('button', { name: 'Profile patch' }),
+    );
     expect(
       await screen.findByRole('heading', {
         name: 'OrcaSlicer profile patch preview',
       }),
     ).toBeInTheDocument();
     expect(screen.getByText('Explicit upstream PLA')).toBeInTheDocument();
-    expect(screen.getByText('orca-base')).toBeInTheDocument();
+    expect(screen.getByText(filamentProfileId)).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Generate OrcaSlicer profile' }),
     ).toBeDisabled();
     expect(
       screen.getByText(/Resolve blockers before generating a profile/),
     ).toBeInTheDocument();
+  });
+
+  it('does not resurrect a late generated profile after switching projects', async () => {
+    const secondProjectId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const completed = withCompletedAttempt();
+    const finalAttemptId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const finalObservationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const generationReady = {
+      ...completed,
+      stages: {
+        ...completed.stages,
+        finalVerification: {
+          ...completed.stages.finalVerification,
+          status: 'completed' as const,
+          attemptIds: [finalAttemptId],
+          selectedAttemptId: finalAttemptId,
+        },
+      },
+      attempts: [
+        ...completed.attempts,
+        {
+          attemptId: finalAttemptId,
+          stageId: 'finalVerification' as const,
+          method: 'verificationPrint' as const,
+          scope: completed.attempts[0]!.scope,
+          ordinal: 1,
+          status: 'completed' as const,
+          startedAt: now,
+          completedAt: now,
+          observations: [
+            {
+              observationId: finalObservationId,
+              attemptId: finalAttemptId,
+              observedAt: now,
+              notes: 'Clean final verification.',
+              stageId: 'finalVerification' as const,
+              passed: true,
+              defectCount: 0,
+            },
+          ],
+          selectedObservationId: finalObservationId,
+          confidence: 'high' as const,
+          recommendation: {
+            summary: 'Verification passed.',
+            rationale: 'No defects were recorded.',
+            values: [
+              {
+                key: 'verification_passed',
+                value: true,
+                unit: 'boolean' as const,
+              },
+            ],
+          },
+          diagnostics: [],
+        },
+      ],
+    };
+    const first = record(generationReady, { isSynced: true });
+    const secondState = {
+      ...generationReady,
+      projectId: secondProjectId,
+    };
+    const secondRecord = record(secondState, {
+      projectId: secondProjectId,
+      isSynced: true,
+    });
+    const second = CalibrationWorkspaceStateRecordSchema.parse({
+      ...secondRecord,
+      displayName: 'PETG production calibration',
+      workspaceState: {
+        ...secondRecord.workspaceState,
+        metadata: {
+          ...secondRecord.workspaceState.metadata,
+          displayName: 'PETG production calibration',
+        },
+      },
+    });
+    const api = makeApi(first);
+    const save = api.saveCalibrationWorkspaceState.getMockImplementation();
+    api.saveCalibrationWorkspaceState.mockImplementation(async (request) => {
+      const response = await save!(request);
+      return {
+        ...response,
+        state: { ...response.state, isSynced: true },
+      };
+    });
+    api.listCalibrationWorkspaceStates.mockResolvedValue({
+      states: [first, second],
+      unhydratedProjects: [],
+    });
+    api.getCalibrationWorkspaceState.mockImplementation(
+      (
+        request: Parameters<CalibrationApi['getCalibrationWorkspaceState']>[0],
+      ) =>
+        Promise.resolve(request.projectId === secondProjectId ? second : first),
+    );
+    const generation =
+      deferred<Awaited<ReturnType<CalibrationApi['generateOrcaProfile']>>>();
+    api.generateOrcaProfile.mockReturnValue(generation.promise);
+    renderWorkspace(api);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /PLA production calibration/ }),
+    );
+    await screen.findByRole('heading', {
+      name: 'PLA production calibration',
+    });
+    fireEvent.click(
+      within(
+        screen.getByRole('navigation', { name: 'Calibration views' }),
+      ).getByRole('button', { name: 'Profile patch' }),
+    );
+    const generate = await screen.findByRole('button', {
+      name: 'Generate OrcaSlicer profile',
+    });
+    expect(generate).toBeEnabled();
+    fireEvent.click(generate);
+    await waitFor(() =>
+      expect(api.generateOrcaProfile).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /PETG production calibration/,
+      }),
+    );
+    await screen.findByRole('heading', {
+      name: 'PETG production calibration',
+    });
+    fireEvent.click(
+      within(
+        screen.getByRole('navigation', { name: 'Calibration views' }),
+      ).getByRole('button', { name: 'Profile patch' }),
+    );
+    await screen.findByRole('heading', {
+      name: 'OrcaSlicer profile patch preview',
+    });
+
+    await act(async () => {
+      generation.resolve({
+        status: 'ok',
+        displayName: 'Generated for first project',
+        safeFilename: 'generated-first.json',
+        profileJsonHash: 'e'.repeat(64),
+        patchedFieldCount: 1,
+        warnings: [],
+      });
+      await generation.promise;
+    });
+
+    expect(
+      screen.getByRole('button', { name: 'Generate OrcaSlicer profile' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Regenerate' }),
+    ).not.toBeInTheDocument();
   });
 
   it('keeps an empty metadata draft out of reducer saves and persists a trimmed retype', async () => {
@@ -2149,6 +2357,10 @@ describe('CalibrationWorkspace', () => {
       machineProfileSha256?: string | null;
       /** Criterion 7: distinct attempt ID to trigger reorder detection. */
       calibrationAttemptId?: string;
+      rowVersion?: string;
+      jobRevision?: number;
+      dispatchStateRowVersion?: string;
+      dispatchStateRevision?: number;
     } = {},
   ) {
     return {
@@ -2156,8 +2368,10 @@ describe('CalibrationWorkspace', () => {
       job: {
         jobId: HANDOFF_QUEUE_JOB_ID,
         jobKind: 'FilamentCalibration',
-        rowVersion: 'AAAA==',
-        dispatchStateRowVersion: 'BBBB==',
+        rowVersion: overrides.rowVersion ?? 'AAAA==',
+        jobRevision: overrides.jobRevision ?? 1,
+        dispatchStateRowVersion: overrides.dispatchStateRowVersion ?? 'BBBB==',
+        dispatchStateRevision: overrides.dispatchStateRevision ?? 1,
         status: overrides.status ?? 'Queued',
         dispatchAttemptOutcome: overrides.dispatchAttemptOutcome ?? null,
         bedClearState: overrides.bedClearState ?? 'None',
@@ -2173,10 +2387,14 @@ describe('CalibrationWorkspace', () => {
           overrides.calibrationAttemptId !== undefined
             ? overrides.calibrationAttemptId
             : attemptId,
+        calibrationOrchestrationId: HANDOFF_ORCH_ID,
         pinnedPrinterConfigRevision:
           overrides.pinnedPrinterConfigRevision !== undefined
             ? overrides.pinnedPrinterConfigRevision
             : 7,
+        bedClearCommandId: null,
+        bedClearIdempotencyKeySha256: null,
+        bedClearExpiresAtUtc: null,
         priority: 1,
         queuePosition: 1,
         updatedAt: now,
@@ -3168,10 +3386,7 @@ describe('CalibrationWorkspace', () => {
       expect(within(dialog).getByText('0.4 mm brass')).toBeInTheDocument();
     });
 
-    it('revisionConflict (412) closes dialog and updates ETags for the next attempt (criterion 6)', async () => {
-      // Mutation test: remove ETag update from revisionConflict branch →
-      // second call still uses 'AAAA==' rowVersion → expect(...).toBe('CONFLICT_JOB==')
-      // fails.
+    it('revisionConflict (412) re-reads every exact revision for the next attempt (criterion 6)', async () => {
       const api = makeApi(record(domainState()));
       api.getCalibrationQueueState.mockResolvedValue(
         queueJobFixture({ bedClearState: 'None' }),
@@ -3196,6 +3411,15 @@ describe('CalibrationWorkspace', () => {
       const confirmBedClearBtn = screen.getByRole('button', {
         name: 'Confirm Bed Clear',
       });
+      api.getCalibrationQueueState.mockResolvedValue(
+        queueJobFixture({
+          bedClearState: 'None',
+          rowVersion: 'REFRESHED_JOB==',
+          jobRevision: 2,
+          dispatchStateRowVersion: 'REFRESHED_DISP==',
+          dispatchStateRevision: 3,
+        }),
+      );
       fireEvent.click(confirmBedClearBtn);
 
       // Dialog should close (revisionConflict path closes without showing error)
@@ -3203,7 +3427,7 @@ describe('CalibrationWorkspace', () => {
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       });
 
-      // Re-open dialog (ETags should now be updated)
+      // Re-open dialog (the complete authoritative job should now be updated).
       const triggerBtn = await screen.findByRole('button', {
         name: 'Confirm bed clear',
       });
@@ -3219,13 +3443,19 @@ describe('CalibrationWorkspace', () => {
       });
       fireEvent.click(confirmBedClearBtn2);
 
-      // The second ack call must carry the 412-supplied ETags.
+      // The second ack carries the full re-read evidence, not an unsafe mix of
+      // response ETags and stale logical revisions. The operation id is retained
+      // so an acknowledgement whose first response was lost can replay by hash.
       await waitFor(() => {
         const calls = api.acknowledgeCalibrationBedClear.mock.calls;
         expect(calls.length).toBeGreaterThanOrEqual(2);
+        const firstArgs = calls[0]?.[0];
         const secondArgs = calls[1]?.[0];
-        expect(secondArgs?.rowVersion).toBe('CONFLICT_JOB==');
-        expect(secondArgs?.dispatchStateRowVersion).toBe('CONFLICT_DISP==');
+        expect(secondArgs?.rowVersion).toBe('REFRESHED_JOB==');
+        expect(secondArgs?.jobRevision).toBe(2);
+        expect(secondArgs?.dispatchStateRowVersion).toBe('REFRESHED_DISP==');
+        expect(secondArgs?.dispatchStateRevision).toBe(3);
+        expect(secondArgs?.operationId).toBe(firstArgs?.operationId);
       });
     });
   });
