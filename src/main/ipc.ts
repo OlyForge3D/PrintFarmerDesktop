@@ -436,6 +436,22 @@ export function explainIneligibility(
 type CalibrationProfileFault = 'contextUnreadable' | 'profileRefused' | null;
 
 /**
+ * Joins fault clauses into one sentence fragment with ordinary English
+ * grammar: `a`, `a and b`, `a, b, and c`.
+ *
+ * Spelled out because the counts and the causes are variable and the previous
+ * fixed phrasing produced "1 printer context could not be read, so those
+ * printers' profiles are missing" — plural possessive against a singular
+ * count. A sentence an operator has to squint at is a sentence they stop
+ * trusting.
+ */
+function joinClauses(clauses: string[]): string {
+  if (clauses.length <= 1) return clauses[0] ?? '';
+  if (clauses.length === 2) return `${clauses[0]} and ${clauses[1]}`;
+  return `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}`;
+}
+
+/**
  * Register all IPC handlers. Incoming payloads are validated against their Zod
  * request schemas before handlers run. Responses are validated at their trust
  * boundaries before being returned to the renderer; scene-cache hits are
@@ -2996,6 +3012,11 @@ export function registerIpcHandlers(
       // stopping at the cap would describe a farm this handler never saw the
       // whole of.
       let printersTruncated = false;
+      // Set only by a transport-level failure, which is terminal: there is no
+      // candidate list to describe, so it replaces the composed diagnosis
+      // rather than contributing a clause to it.
+      let transportDiagnostic: CalibrationProfileDiscoveryDiagnostic | null =
+        null;
       let discovery: CalibrationProfileDiscoveryDiagnostic = {
         kind: 'ok',
         message: 'Server profile discovery completed.',
@@ -3013,43 +3034,11 @@ export function registerIpcHandlers(
         // lower it.
         printersUnreadable = candidateList.unreadable;
         printersTruncated = candidateList.truncated;
-        // Discarding this turned two different failures into the same
-        // reassuring sentence: a farm whose every record was malformed
-        // reported "the server returned no candidate printers for this
-        // account", which is a statement about the account and is false — the
-        // printers are there, this client could not parse them. The operator
-        // would go looking for an enrolment problem that does not exist.
-        if (candidates.length === 0 && printersUnreadable > 0) {
-          discovery = {
-            kind: 'malformedResponse',
-            message: `The server returned ${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'}, but none matched the calibration contract, so none could be read.`,
-            serverCode: null,
-          };
-        } else if (printersUnreadable > 0) {
-          discovery = {
-            kind: 'partiallyUnreadable',
-            // A count, never the offending values: the whole point of parsing
-            // candidates separately is that unreadable server content stops
-            // here rather than travelling on.
-            message: `${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'} did not match the calibration contract and could not be read. The printers listed are the ones that could.`,
-            serverCode: null,
-          };
-        } else if (printersTruncated) {
-          discovery = {
-            kind: 'farmTruncated',
-            message: `The server offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} calibration candidates. Only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered, so this list is partial.`,
-            serverCode: null,
-          };
-        } else if (candidates.length === 0) {
-          discovery = {
-            kind: 'noEligiblePrinters',
-            message:
-              'The server returned no calibration candidate printers for this account.',
-            serverCode: null,
-          };
-        }
       } catch (error) {
-        discovery = classifyDiscoveryFailure(error);
+        // A transport-level failure is terminal for the server half: there are
+        // no candidates to describe, so it replaces the composition below
+        // rather than joining it.
+        transportDiagnostic = classifyDiscoveryFailure(error);
       }
       // Scanned unconditionally, outside the candidate loop. Bound discovery
       // below can only run once the server has named a printer, so gating this
@@ -3163,22 +3152,35 @@ export function registerIpcHandlers(
         }),
       );
       const profilesByScope = new Map<string, OrcaProfileEntry>();
-      // Printers whose profile is missing because something failed rather than
-      // because they have none. The two causes are counted and phrased
-      // separately: one points at the server, the other at this client, and
-      // naming the wrong one sends an operator to investigate a problem that
-      // does not exist.
       const unreadableContexts = discovered.filter(
         (entry) => entry.fault === 'contextUnreadable',
       ).length;
       const refusedProfiles = discovered.filter(
         (entry) => entry.fault === 'profileRefused',
       ).length;
-      if (
-        unreadableContexts + refusedProfiles > 0 &&
-        (discovery.kind === 'ok' || discovery.kind === 'farmTruncated')
-      ) {
+
+      /**
+       * One diagnosis composed from every layer that lost something, rather
+       * than the last layer to speak overwriting the others.
+       *
+       * The previous shape gated the context/profile clauses on
+       * `kind === 'ok' || 'farmTruncated'`, so a single malformed candidate —
+       * which already set `partiallyUnreadable` — silently discarded the
+       * context and profile counts entirely. The surviving sentence then ended
+       * "The printers listed are the ones that could", which the profiles
+       * handler is in no position to claim and which was false precisely when
+       * it mattered. Losses at different layers are independent facts about
+       * the same answer, and an operator needs all of them.
+       */
+      if (transportDiagnostic !== null) {
+        discovery = transportDiagnostic;
+      } else {
         const clauses: string[] = [];
+        if (printersUnreadable > 0) {
+          clauses.push(
+            `${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'} did not match the calibration contract`,
+          );
+        }
         if (unreadableContexts > 0) {
           clauses.push(
             `${unreadableContexts} printer context${unreadableContexts === 1 ? '' : 's'} could not be read`,
@@ -3189,17 +3191,43 @@ export function registerIpcHandlers(
             `${refusedProfiles} calibration profile${refusedProfiles === 1 ? '' : 's'} could not be read by this app`,
           );
         }
-        discovery = {
-          kind: 'partiallyUnreadable',
-          // Truncation, when it also happened, is preserved rather than
-          // overwritten: it is a separate fact about the same answer.
-          message: `${clauses.join(', and ')}, so those printers' profiles are missing from this list.${
-            printersTruncated
-              ? ` The server also offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} candidates, so the list is partial for that reason too.`
-              : ''
-          }`,
-          serverCode: null,
-        };
+        if (printersTruncated) {
+          clauses.push(
+            `the server offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} candidates and only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered`,
+          );
+        }
+
+        const lostEverything =
+          candidates.length === 0 && printersUnreadable > 0;
+        const lostSomething =
+          printersUnreadable + unreadableContexts + refusedProfiles > 0;
+
+        if (lostEverything) {
+          discovery = {
+            kind: 'malformedResponse',
+            message: `The server returned ${printersUnreadable} calibration candidate${printersUnreadable === 1 ? '' : 's'}, but none matched the calibration contract, so none could be read.`,
+            serverCode: null,
+          };
+        } else if (lostSomething) {
+          discovery = {
+            kind: 'partiallyUnreadable',
+            message: `${joinClauses(clauses)}, so this list is missing printers.`,
+            serverCode: null,
+          };
+        } else if (printersTruncated) {
+          discovery = {
+            kind: 'farmTruncated',
+            message: `The server offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} calibration candidates. Only the first ${CALIBRATION_MAX_PRINTER_CANDIDATES} were considered, so this list is partial.`,
+            serverCode: null,
+          };
+        } else if (candidates.length === 0) {
+          discovery = {
+            kind: 'noEligiblePrinters',
+            message:
+              'The server returned no calibration candidate printers for this account.',
+            serverCode: null,
+          };
+        }
       }
       for (const { pfEntries, localEntries } of discovered) {
         for (const profile of pfEntries) {

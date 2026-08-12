@@ -337,6 +337,12 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     expect(response.discovery.kind).toBe('partiallyUnreadable');
     expect(response.printersUnreadable).toBe(1);
     expect(response.discovery.message).toContain('1 calibration candidate');
+    // The healthy candidate's context request is served the candidate array by
+    // this single-route stub, so its context is unreadable too. That second
+    // loss must survive alongside the first: an earlier shape gated the
+    // context clause on the diagnosis still being `ok`, so one malformed
+    // candidate silently erased it.
+    expect(response.discovery.message).toContain('1 printer context');
   });
 
   it('reports zero unreadable for a genuinely empty farm', async () => {
@@ -623,5 +629,212 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     )) as OrcaProfilesResponse;
 
     expect(JSON.stringify(response)).not.toContain(sandbox);
+  });
+});
+
+describe('every layer that lost something is named, none overwritten', () => {
+  // The defect this suite exists to prevent: the composition used to be gated
+  // on the diagnosis still being `ok` or `farmTruncated`, so a single
+  // malformed candidate — which already set `partiallyUnreadable` — discarded
+  // the context and profile counts entirely, and the surviving sentence
+  // claimed "the printers listed are the ones that could". Losses at
+  // different layers are independent facts about one answer.
+
+  const CTX_FAIL = 'bbbbbbbb-1111-4111-8111-222222222222';
+  const REFUSED = 'cccccccc-1111-4111-8111-222222222222';
+
+  /** A context that parses cleanly but carries a profile this app refuses. */
+  function refusedContextFor(printerId: string) {
+    return {
+      ...candidateDto({ id: printerId }),
+      schemaVersion: '1.0',
+      snapshotSha256: 'a'.repeat(64),
+      capturedAtUtc: '2026-08-11T12:00:00Z',
+      capturedBySubject: 'subject-1',
+      configurationRevision: 7,
+      snapshot: {
+        printerId,
+        configurationRevision: 7,
+        snapshotSha256: 'a'.repeat(64),
+        toolheads: [
+          {
+            id: 'dddddddd-1111-4111-8111-222222222222',
+            index: 0,
+            nozzleDiameter: 0.4,
+          },
+        ],
+        profiles: {
+          filament: {
+            id: 'eeeeeeee-1111-4111-8111-222222222222',
+            name: 'Generic PLA @0.4 nozzle',
+            profileRevision: '',
+          },
+        },
+      },
+    };
+  }
+
+  /** Routes the candidate list and each printer's context independently. */
+  function routeFetch(candidates: unknown[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (url.includes('calibration-candidates')) {
+          return Promise.resolve(
+            new Response(JSON.stringify(candidates), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
+        if (url.includes(CTX_FAIL)) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ title: 'boom' }), {
+              status: 500,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
+        if (url.includes(REFUSED)) {
+          return Promise.resolve(
+            new Response(JSON.stringify(refusedContextFor(REFUSED)), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+  }
+
+  async function discover() {
+    return (await listOrcaProfilesHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as OrcaProfilesResponse;
+  }
+
+  it('names all three causes at once, with the wire diagnosis retained', async () => {
+    routeFetch([
+      { id: 'not-a-guid', name: '' },
+      candidateDto({ id: CTX_FAIL }),
+      candidateDto({ id: REFUSED }),
+    ]);
+
+    const response = await discover();
+
+    expect(response.discovery.kind).toBe('partiallyUnreadable');
+    expect(response.discovery.message).toContain('1 calibration candidate');
+    expect(response.discovery.message).toContain('1 printer context');
+    expect(response.discovery.message).toContain('1 calibration profile');
+    // Three clauses: serial comma, single "and" before the last.
+    expect(response.discovery.message).toMatch(
+      /^1 calibration candidate .*, 1 printer context .*, and 1 calibration profile .*, so this list is missing printers\.$/,
+    );
+    // The wire-level count is still structured evidence, not just prose.
+    expect(response.printersUnreadable).toBe(1);
+    // And the claim that survived before — that the rest of the list is
+    // complete — is gone, because this handler cannot know it.
+    expect(response.discovery.message).not.toContain('the ones that could');
+  });
+
+  it('adds truncation as a fourth clause without displacing the others', async () => {
+    const farm: unknown[] = [
+      { id: 'not-a-guid', name: '' },
+      candidateDto({ id: CTX_FAIL }),
+      candidateDto({ id: REFUSED }),
+    ];
+    while (farm.length < CALIBRATION_MAX_PRINTER_CANDIDATES + 3) {
+      farm.push(
+        candidateDto({
+          id: `${farm.length.toString(16).padStart(8, '0')}-1111-4111-8111-999999999999`,
+          reachability: 'offline',
+        }),
+      );
+    }
+    routeFetch(farm);
+
+    const response = await discover();
+
+    expect(response.printersTruncated).toBe(true);
+    expect(response.discovery.message).toContain('1 calibration candidate');
+    expect(response.discovery.message).toContain('1 printer context');
+    expect(response.discovery.message).toContain('1 calibration profile');
+    expect(response.discovery.message).toContain('only the first');
+  });
+
+  it('uses two-clause grammar without a serial comma', async () => {
+    routeFetch([candidateDto({ id: CTX_FAIL }), candidateDto({ id: REFUSED })]);
+
+    const response = await discover();
+
+    expect(response.discovery.message).toMatch(
+      /^1 printer context could not be read and 1 calibration profile could not be read by this app, so this list is missing printers\.$/,
+    );
+  });
+
+  it('uses one-clause grammar with no conjunction at all', async () => {
+    routeFetch([candidateDto({ id: REFUSED })]);
+
+    const response = await discover();
+
+    expect(response.discovery.message).toMatch(
+      /^1 calibration profile could not be read by this app, so this list is missing printers\.$/,
+    );
+    expect(response.discovery.message).not.toContain(' and ');
+  });
+
+  it('agrees in number when a cause counts more than one', async () => {
+    routeFetch([
+      { id: 'not-a-guid', name: '' },
+      { id: 'also-not-a-guid', name: '' },
+      candidateDto({ id: REFUSED }),
+    ]);
+
+    const response = await discover();
+
+    expect(response.discovery.message).toContain('2 calibration candidates');
+    expect(response.discovery.message).not.toContain(
+      '2 calibration candidate ',
+    );
+  });
+
+  it('names nothing when nothing was lost (absence control)', async () => {
+    // Offline printers request no context, so there is no fault of any kind.
+    routeFetch([
+      candidateDto({
+        id: 'ffffffff-1111-4111-8111-222222222222',
+        reachability: 'offline',
+      }),
+    ]);
+
+    const response = await discover();
+
+    expect(response.discovery.kind).toBe('ok');
+    expect(response.discovery.message).not.toContain('could not be read');
+    expect(response.printersUnreadable).toBe(0);
+    expect(response.printersTruncated).toBe(false);
+  });
+
+  it('does not double-count a printer that failed once', async () => {
+    routeFetch([candidateDto({ id: CTX_FAIL })]);
+
+    const response = await discover();
+
+    expect(response.discovery.message).toContain('1 printer context');
+    expect(response.discovery.message).not.toContain('2 printer');
+    expect(response.discovery.message).not.toContain('calibration profile');
   });
 });
