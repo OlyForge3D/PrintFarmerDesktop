@@ -851,6 +851,29 @@ describe('per-PR declaration files (#622)', () => {
     expect(resolved).toBe(`${PR_CLOSES_DIR}/dev-jpapiez-squad-622.md`);
   });
 
+  it('keeps the printer-first integration declaration empty without legacy #457 fallback', () => {
+    const options = {
+      run: vi.fn(),
+      environment: {
+        GITHUB_HEAD_REF: 'dev/jpapiez/integrate-printer-first-calibration',
+      },
+    };
+
+    expect(resolveDeclarationPath('719', options)).toBe(
+      `${PR_CLOSES_DIR}/dev-jpapiez-integrate-printer-first-calibration.md`,
+    );
+    expect(
+      parseDeclaredClosures(readDeclarationForPullRequest('719', options)),
+    ).toEqual({
+      hasBlock: true,
+      declared: [],
+    });
+    expect(parseDeclaredClosures(readDeclarationFile())).toEqual({
+      hasBlock: true,
+      declared: [457],
+    });
+  });
+
   describe('readDeclarationForPullRequest', () => {
     let directory: string;
     let originalCwd: string;
