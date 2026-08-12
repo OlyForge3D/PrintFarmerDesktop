@@ -1179,9 +1179,12 @@ export function projectPrintFarmerOrcaProfileResult(
 }
 
 /**
- * The {@link projectPrintFarmerOrcaProfileResult} shape callers want when they
- * only need the entry, and a refusal is indistinguishable from an absence to
- * them.
+ * The entry-or-nothing view of {@link projectPrintFarmerOrcaProfileResult}.
+ *
+ * Retained for the tests that assert projection in isolation, where a refusal
+ * and an absence really are the same outcome. Production code uses the
+ * discriminated form: it has to tell an operator *why* a profile is missing,
+ * and this shape cannot.
  */
 export function projectPrintFarmerOrcaProfile(
   candidate: RemoteCalibrationPrinterCandidate,

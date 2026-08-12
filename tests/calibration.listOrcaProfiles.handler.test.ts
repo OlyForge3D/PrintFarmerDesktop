@@ -554,7 +554,15 @@ describe('CalibrationListOrcaProfiles handler — local scanning is not gated on
     expect(response.discovery.kind).not.toBe('ok');
     // ...and exactly one printer must be named, not zero and not the whole
     // farm, so a reverted fold fails loudly rather than quietly.
-    expect(response.discovery.message).toContain('1 printer context');
+    // Named as a profile this app could not read — NOT as a context read
+    // failure. The context arrived and parsed; the refusal was local. Saying
+    // otherwise sends the operator after a server problem that is not there,
+    // and this assertion is also what distinguishes the `refused` path from
+    // the generic `invalidResponse` catch, whose message names the context.
+    expect(response.discovery.message).toContain(
+      '1 calibration profile could not be read by this app',
+    );
+    expect(response.discovery.message).not.toContain('printer context');
     // The refused profile is genuinely absent, which is what makes the
     // qualification necessary rather than decorative.
     expect(response.profiles).toEqual([]);

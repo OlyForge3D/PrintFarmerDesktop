@@ -416,6 +416,26 @@ export function explainIneligibility(
 }
 
 /**
+ * Why a printer contributed no calibration profile, when the reason was a
+ * fault rather than an ordinary absence.
+ *
+ * The two are told apart because they point an operator in opposite
+ * directions. `contextUnreadable` is the server or the network: the context
+ * could not be fetched or did not match the contract. `profileRefused` is this
+ * client: the context arrived intact and was read, and the profile inside it
+ * was one this build will not render.
+ *
+ * Merging them under a single "printer contexts could not be read" sentence
+ * would repeat, one branch over, the exact falsehood this handler removed when
+ * it stopped calling an unreadable farm an empty one — an operator sent to
+ * investigate a context-read problem that does not exist. It matters in
+ * practice: a build that serialises an unversioned filament profile as `""`
+ * rather than `null` would report every healthy printer in the farm as a
+ * server fault.
+ */
+type CalibrationProfileFault = 'contextUnreadable' | 'profileRefused' | null;
+
+/**
  * Register all IPC handlers. Incoming payloads are validated against their Zod
  * request schemas before handlers run. Responses are validated at their trust
  * boundaries before being returned to the renderer; scene-cache hits are
@@ -3074,7 +3094,7 @@ export function registerIpcHandlers(
               localEntries: [] as Awaited<
                 ReturnType<typeof discoverLocalOrcaFilamentProfiles>
               >,
-              failed: false,
+              fault: null as CalibrationProfileFault,
             };
           }
           try {
@@ -3100,7 +3120,9 @@ export function registerIpcHandlers(
               // A profile this client refused is a real profile missing from
               // the list, not a printer that has none — counted so the answer
               // is reported as partial rather than as complete.
-              failed: projection.kind === 'refused',
+              fault: (projection.kind === 'refused'
+                ? 'profileRefused'
+                : null) as CalibrationProfileFault,
             };
           } catch (error) {
             // 404 means this printer simply has no calibration context — a
@@ -3111,7 +3133,11 @@ export function registerIpcHandlers(
               error instanceof CalibrationHttpError &&
               error.code === 'notFound'
             ) {
-              return { pfEntries: [], localEntries: [], failed: false };
+              return {
+                pfEntries: [],
+                localEntries: [],
+                fault: null as CalibrationProfileFault,
+              };
             }
             // One printer's context failing must not take the others — or the
             // local OrcaSlicer scan — with it. This runs inside `Promise.all`,
@@ -3128,25 +3154,50 @@ export function registerIpcHandlers(
             // itself, which is the failure this contract exists to remove
             // rather than an acceptable outcome. Budget exhaustion is a fault
             // like any other: counted, reported, and survivable.
-            return { pfEntries: [], localEntries: [], failed: true };
+            return {
+              pfEntries: [],
+              localEntries: [],
+              fault: 'contextUnreadable' as CalibrationProfileFault,
+            };
           }
         }),
       );
       const profilesByScope = new Map<string, OrcaProfileEntry>();
       // Printers whose profile is missing because something failed rather than
-      // because they have none: a context that could not be read, or a profile
-      // this client refused. Reporting an unqualified `ok` would describe a
-      // complete answer that is not one.
+      // because they have none. The two causes are counted and phrased
+      // separately: one points at the server, the other at this client, and
+      // naming the wrong one sends an operator to investigate a problem that
+      // does not exist.
       const unreadableContexts = discovered.filter(
-        (entry) => entry.failed,
+        (entry) => entry.fault === 'contextUnreadable',
+      ).length;
+      const refusedProfiles = discovered.filter(
+        (entry) => entry.fault === 'profileRefused',
       ).length;
       if (
-        unreadableContexts > 0 &&
+        unreadableContexts + refusedProfiles > 0 &&
         (discovery.kind === 'ok' || discovery.kind === 'farmTruncated')
       ) {
+        const clauses: string[] = [];
+        if (unreadableContexts > 0) {
+          clauses.push(
+            `${unreadableContexts} printer context${unreadableContexts === 1 ? '' : 's'} could not be read`,
+          );
+        }
+        if (refusedProfiles > 0) {
+          clauses.push(
+            `${refusedProfiles} calibration profile${refusedProfiles === 1 ? '' : 's'} could not be read by this app`,
+          );
+        }
         discovery = {
           kind: 'partiallyUnreadable',
-          message: `${unreadableContexts} printer context${unreadableContexts === 1 ? '' : 's'} could not be read, so profiles for ${unreadableContexts === 1 ? 'that printer' : 'those printers'} are missing from this list.`,
+          // Truncation, when it also happened, is preserved rather than
+          // overwritten: it is a separate fact about the same answer.
+          message: `${clauses.join(', and ')}, so those printers' profiles are missing from this list.${
+            printersTruncated
+              ? ` The server also offered more than ${CALIBRATION_MAX_PRINTER_CANDIDATES} candidates, so the list is partial for that reason too.`
+              : ''
+          }`,
           serverCode: null,
         };
       }
