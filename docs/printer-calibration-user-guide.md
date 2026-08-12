@@ -71,6 +71,11 @@ If a printer's configuration or profiles fail to load, only that printer is
 affected: the list stays on screen and the other printers remain selectable. A
 problem with one machine is never reported as "you have no printers".
 
+If the search of your own machine cannot be completed — a profile folder that
+cannot be read, for instance — the workspace says the scan failed. That is
+deliberately not the same message as "OrcaSlicer is not installed", which would
+send you to reinstall software that is already there.
+
 ## Which printers are eligible
 
 Eligibility is decided by PrintFarmer and is checked against explicit canonical
@@ -359,6 +364,15 @@ On every platform, generation requires explicit confirmation before any write,
 and the proposed patch can be previewed before you accept it. Regenerating is
 always available.
 
+**The base profile must still be the one you chose.** A generated profile is a
+named base plus your measured changes, so the app verifies before patching that
+the OrcaSlicer profile on disk is byte-for-byte the one this project was bound
+to. If OrcaSlicer rewrote it, or you replaced it, generation stops and says the
+base profile changed rather than quietly patching a different starting point.
+Re-select the base profile, or restore the original, and generate again. A
+project that recorded no fingerprint for its base is reported the same way,
+because there is nothing to check the file against.
+
 ## Importing a legacy calibration backup (v4)
 
 If you have a v4 calibration backup, the workspace can import it.
@@ -389,6 +403,7 @@ condition and what to do about it.
 | What you see               | What it means                                                                                        | What to do                                                                                                    |
 | -------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Offline**                | PrintFarmer is unreachable. Saved projects stay editable.                                            | Reconnect. Hardware and profile actions return; drafts you made offline are kept.                             |
+| **Session expired**        | Your sign-in expired or was revoked. Distinct from a permission problem: the account may be fine.    | The app re-establishes the session by itself and tells you if it cannot. Reconnect the profile, then retry.   |
 | **Permission denied**      | Your account lacks printer read, calibration write, generation or print start.                       | The message names the missing permission. An administrator grants it in PrintFarmer.                          |
 | **Capability unavailable** | PrintFarmer did not confirm Klipper firmware, Klipper G-code, OrcaSlicer, and upstream distribution. | This printer is not eligible. The workspace names which capability was not confirmed.                         |
 | **Stale printer context**  | The printer's configuration or snapshot revision moved after you bound the project.                  | Rebase to the fresh snapshot and explicitly retest the affected stages. Values are not carried over silently. |
@@ -408,3 +423,10 @@ measured against a different configuration is not evidence about the current one
 **A blocked action always names its blocker.** If more than one condition
 applies — offline _and_ unsynced _and_ stale — all of them are listed. You are
 never left with a disabled control and no explanation.
+
+**Nothing is retried on your behalf after an authorisation problem.** When the
+server refuses an action, or your session expires mid-flow, the app corrects
+what it knows — it re-reads your permissions, and re-establishes an expired
+session — but it never re-sends the generate, queue or print you asked for. That
+decision stays yours, because the account the retry would run as is not
+guaranteed to be the one you started with.

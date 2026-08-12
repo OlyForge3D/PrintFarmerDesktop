@@ -144,6 +144,36 @@ on the operator's behalf, whereas a create, generate, queue or dispatch is not.
 Repeated refusals are absorbed by a short cooldown so a permission problem
 cannot become a request storm.
 
+### 3.1.1 Expired and revoked sessions (401), which are not refusals (403)
+
+The desktop app authenticates by exchanging its configured API key for a
+short-lived JWT — **fifteen minutes** by default. Two ordinary events therefore
+produce a 401 that says nothing about the operator's rights: the token ages out
+while a workspace sits open, and an administrator forces a revocation, which
+fails JWT validation the same way.
+
+PFD handles the two differently, and deliberately:
+
+| Server says | What PFD discards                                                                 | What PFD does next                                            |
+| ----------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **401**     | Capabilities, remembered contexts, the bed-clear acknowledgement, in-flight syncs | Re-exchanges the API key **once**, then re-reads capabilities |
+| **403**     | The same evidence                                                                 | Re-reads capabilities **once**; never re-exchanges the key    |
+
+Capabilities are re-read against the _new_ token, because an API key can be
+reassigned and the renewed session is not guaranteed to resolve to the same
+principal. For that same reason a mutation that met a 401 is **never re-sent** —
+re-issuing a generate, queue or dispatch under a freshly minted identity is not
+a retry. Read requests may be re-issued once with the renewed token.
+
+Recovery is bounded: one attempt runs at a time per profile, concurrent
+rejections join it rather than starting their own, a second 401 from the
+capability read taken immediately after a successful exchange ends recovery
+instead of restarting it, and a cooldown keeps a revoked key from producing an
+exchange per failing request. If the session cannot be re-established,
+availability reports `sessionExpired` — distinct from `missingScopes`, which
+means the identity was accepted and the rights were absent, and from
+`legacyServer`, which earlier builds wrongly reported for any non-404 failure.
+
 Earlier PFD builds asserted a PascalCase JWT-scope vocabulary
 (`CalibrationRead`, `CalibrationWrite`, `CalibrationGenerate`). No PrintFarmer
 build has ever emitted those strings, so every check against them silently
@@ -183,15 +213,12 @@ that the resource is absent.
 > are what this build emits; treat #157 as the authority for the full matrix once
 > it lands.
 
-> **Two reasons the contract defines but this build never produces.**
-> `missingScopes` and `operatorDisabled` are members of the unavailable-reason
-> union and the renderer has copy for both, but no main-process code path
-> produces either: availability failures resolve to `noProfile`,
-> `unsupportedFirmware`, `unsupportedSlicer`, `missingCapabilityFlags`,
-> `serverVersionTooLow` or `legacyServer`. A scope problem therefore reaches the
-> operator as a `forbidden` or `authorization` error on the failing operation,
-> not as an availability reason. This is recorded as an observation, not fixed
-> here.
+> **`operatorDisabled` is defined but not produced.** It is a member of the
+> unavailable-reason union and the renderer has copy for it, but no main-process
+> path emits it: a deployment that has switched calibration off is reported
+> through the capability flags instead. `missingScopes` and `sessionExpired`
+> **are** produced — the first when the capability negotiation is refused, the
+> second when the session's token is rejected outright.
 
 ---
 
