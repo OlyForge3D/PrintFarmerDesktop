@@ -1,7 +1,7 @@
 {
   "name": "printfarmer-desktop",
   "productName": "PrintFarmer Desktop",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "Local-first desktop 3D model library integrated with PrintFarmer",
   "author": "OlyForge3D",
   "license": "AGPL-3.0-only",
