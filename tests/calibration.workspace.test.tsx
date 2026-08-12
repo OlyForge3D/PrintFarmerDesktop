@@ -695,6 +695,115 @@ describe('CalibrationWorkspace', () => {
     });
   });
 
+  it('tells the operator when the printer list is partial, and stays quiet when it is not', async () => {
+    // Drives the real store and the real picker, not a copy of their logic:
+    // the response the production IPC contract would return goes in, and what
+    // an operator would see and hear comes out.
+    const partial = makeApi();
+    partial.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: candidates,
+        printersTruncated: true,
+        printersUnreadable: 3,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(partial);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    // Announced, with both causes named and the exact count.
+    const live = await screen.findByText(
+      /The list is partial: the server offered more than this view can show, and 3 records could not be read\./,
+    );
+    expect(live).toBeInTheDocument();
+
+    // And visible in the picker, not only announced.
+    expect(
+      await screen.findByText(/PrintFarmer offered more printers than/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/3 printer records could not be read/),
+    ).toBeInTheDocument();
+  });
+
+  it('says nothing about truncation or unreadable records when there are none', async () => {
+    // The control. Without it the notices above could be permanently mounted
+    // and every assertion would still pass.
+    renderWorkspace();
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+    await screen.findByRole('radio', { name: /Unbranded cell 7/ });
+
+    expect(screen.queryByText(/The list is partial/)).toBeNull();
+    expect(
+      screen.queryByText(/PrintFarmer offered more printers than/),
+    ).toBeNull();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+    expect(
+      screen.getByText(
+        new RegExp(
+          `${candidates.length} PrintFarmer printer candidates loaded`,
+        ),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('names only the cause that actually occurred', async () => {
+    // Truncated but nothing unreadable: the unreadable clause and notice must
+    // be absent, or the combined phrasing above would be untestable.
+    const truncatedOnly = makeApi();
+    truncatedOnly.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: candidates,
+        printersTruncated: true,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(truncatedOnly);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /The list is partial: the server offered more than this view can show\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/records could not be read/)).toBeNull();
+  });
+
+  it('reports unreadable records alone, in the singular, when only one was lost', async () => {
+    const unreadableOnly = makeApi();
+    unreadableOnly.listCalibrationPrinters = vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: candidates,
+        printersTruncated: false,
+        printersUnreadable: 1,
+        fetchedAt: now,
+      }),
+    );
+    renderWorkspace(unreadableOnly);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'New calibration project' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /The list is partial: 1 record could not be read\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/1 printer record could not be read/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/PrintFarmer offered more printers than/),
+    ).toBeNull();
+  });
+
   it('uses explicit candidate eligibility independent of printer names', async () => {
     const { api } = renderWorkspace();
     fireEvent.click(

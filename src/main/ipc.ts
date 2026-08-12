@@ -3109,19 +3109,20 @@ export function registerIpcHandlers(
               return { pfEntries: [], localEntries: [], failed: false };
             }
             // One printer's context failing must not take the others — or the
-            // local OrcaSlicer scan — with it. This ran inside `Promise.all`,
-            // so a rethrow rejected the whole handler and discarded a scan the
+            // local OrcaSlicer scan — with it. This runs inside `Promise.all`,
+            // so a rethrow rejects the whole handler and discards a scan the
             // handler performs outside the server path precisely so a server
             // fault cannot hide the profiles installed on this machine.
-            // Cancellation is the exception: it means the caller stopped
-            // waiting, and pretending the printer merely had no profiles would
-            // report a result for a request that was abandoned.
-            if (
-              error instanceof CalibrationHttpError &&
-              error.code === 'cancelled'
-            ) {
-              throw error;
-            }
+            //
+            // That includes `cancelled`. An earlier revision rethrew it, on the
+            // reasoning that cancellation means the caller stopped waiting —
+            // which is inverted here: the only signal on this path is the
+            // handler's own `AbortSignal.timeout(15_000)`, so `cancelled` means
+            // *this* budget expired, never that anyone abandoned the request.
+            // A farm large enough to exhaust it would therefore have emptied
+            // itself, which is the failure this contract exists to remove
+            // rather than an acceptable outcome. Budget exhaustion is a fault
+            // like any other: counted, reported, and survivable.
             return { pfEntries: [], localEntries: [], failed: true };
           }
         }),

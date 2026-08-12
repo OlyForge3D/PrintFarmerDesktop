@@ -1301,6 +1301,81 @@ describe('a large farm is not a reason to show an empty one', () => {
     expect(response.printersTruncated).toBe(false);
   });
 
+  it('pins the exact slicing boundary at cap and cap+1', async () => {
+    // MAX+5 leaves the off-by-one unpinned: a `>=` where `>` belongs, or a
+    // slice of `MAX - 1`, still produces a truncated-looking answer at +5.
+    // These two are the only cases that can tell those apart.
+    function farmOf(size: number) {
+      return Array.from({ length: size }, (_unused, index) =>
+        candidateDto({
+          id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+        }),
+      );
+    }
+
+    const atCap = await listPrintersResponse(
+      farmOf(CALIBRATION_MAX_PRINTER_CANDIDATES),
+    );
+    expect(atCap.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+    expect(atCap.printersTruncated).toBe(false);
+    expect(atCap.printersUnreadable).toBe(0);
+
+    const onePast = await listPrintersResponse(
+      farmOf(CALIBRATION_MAX_PRINTER_CANDIDATES + 1),
+    );
+    // Exactly one more offered: exactly MAX survive, and the cut is declared.
+    expect(onePast.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+    expect(onePast.printersTruncated).toBe(true);
+    // The record beyond the cap was never examined, so it is not "unreadable".
+    expect(onePast.printersUnreadable).toBe(0);
+  });
+
+  it('derives truncation from the raw length even when the server denies it', async () => {
+    // The adversarial shape: more than MAX raw candidates AND a payload
+    // asserting it was not truncated. If the flag were ever read from the
+    // envelope, the party whose response triggered the warning could switch it
+    // off. Asserted through the registered handler, not the wire schema alone.
+    const farm = Array.from(
+      { length: CALIBRATION_MAX_PRINTER_CANDIDATES + 25 },
+      (_unused, index) =>
+        candidateDto({
+          id: `${index.toString(16).padStart(8, '0')}-1111-4111-8111-222222222222`,
+        }),
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              printers: farm,
+              // Every spelling the client uses internally, offered back by the
+              // server as a lie.
+              printersTruncated: false,
+              truncated: false,
+              printersUnreadable: 0,
+              unreadable: 0,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      ),
+    );
+
+    const response = (await listPrintersHandler()(
+      {},
+      { profileId: PROFILE_ID },
+    )) as {
+      printers: ProjectedCandidate[];
+      printersTruncated: boolean;
+      printersUnreadable: number;
+    };
+
+    expect(response.printersTruncated).toBe(true);
+    expect(response.printers).toHaveLength(CALIBRATION_MAX_PRINTER_CANDIDATES);
+  });
+
   it('does not claim truncation for an ordinary farm', async () => {
     const response = await listPrintersResponse([candidateDto()]);
 
