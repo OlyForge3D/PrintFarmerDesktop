@@ -82,6 +82,7 @@ const QUEUE_JOB_FIXTURE = {
   jobKind: 'FilamentCalibration',
   calibrationProjectId: PROJECT_ID,
   calibrationAttemptId: ATTEMPT_ID,
+  calibrationOrchestrationId: ORCHESTRATION_ID,
   pinnedPrinterConfigRevision: 42,
   gcodeFileId: null,
   gcodeFileName: 'test.gcode',
@@ -89,6 +90,9 @@ const QUEUE_JOB_FIXTURE = {
   assignedPrinterName: 'Printer A',
   status: 'Queued',
   bedClearState: 'None',
+  bedClearCommandId: null,
+  bedClearIdempotencyKeySha256: null,
+  bedClearExpiresAtUtc: null,
   priority: 0,
   queuePosition: 0,
   copies: 1,
@@ -862,10 +866,15 @@ describe('getQueueJob — GET /api/job-queue/{id}', () => {
     expect(result).toBeNull();
   });
 
-  it('returns bedClearState from the job DTO', async () => {
+  it('returns the exact persisted bed-clear command projection', async () => {
+    const idempotencyHash = 'a'.repeat(64);
+    const expiresAt = '2025-01-01T00:05:00.000Z';
     const jobWithBedClear = {
       ...QUEUE_JOB_FIXTURE,
       bedClearState: 'Acknowledged',
+      bedClearCommandId: OPERATION_ID,
+      bedClearIdempotencyKeySha256: idempotencyHash,
+      bedClearExpiresAtUtc: expiresAt,
     };
     const fetchMock = vi.fn().mockResolvedValue(json(jobWithBedClear));
     const client = makeClient(fetchMock);
@@ -879,6 +888,12 @@ describe('getQueueJob — GET /api/job-queue/{id}', () => {
     );
     expect(result).not.toBeNull();
     expect(result?.bedClearState).toBe('Acknowledged');
+    expect(result?.calibrationOrchestrationId).toBe(ORCHESTRATION_ID);
+    expect(result?.bedClearCommandId).toBe(OPERATION_ID);
+    expect(result?.bedClearIdempotencyKeySha256).toBe(idempotencyHash);
+    expect(result?.bedClearExpiresAtUtc).toBe(expiresAt);
+    expect(result?.revision).toBe(1);
+    expect(result?.dispatchStateRevision).toBe(1);
   });
 
   it('returns opaque rowVersion strings without modification', async () => {

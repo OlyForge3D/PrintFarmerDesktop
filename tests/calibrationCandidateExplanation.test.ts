@@ -157,6 +157,7 @@ function candidateDto(overrides: Record<string, unknown> = {}) {
       profileFormat: 'orca-json',
     },
     eligible: true,
+    profilesEvaluated: false,
     missingInputs: [],
     rejectionReasons: [],
     ...overrides,
@@ -1642,6 +1643,7 @@ describe('the unreadable count is bounded and required at the schema itself', ()
     updatedAt: '2026-08-11T12:00:00.000Z',
     rejectionReasonCodes: ['printer_offline'],
     missingInputs: [],
+    evaluationScope: 'preliminary',
     eligibility: null,
   };
 
@@ -1725,6 +1727,8 @@ describe('the unreadable count is bounded and required at the schema itself', ()
   it('applies the same bound and requirement to the profiles response', () => {
     const base = {
       profiles: [],
+      printerId: PRINTER_GUID,
+      configurationRevision: 4,
       discovery: {
         kind: 'ok' as const,
         message: 'Server profile discovery completed.',

@@ -110,7 +110,21 @@ export interface CalibrationBinding {
   readonly selectedToolId: string;
   readonly selectedToolheadId: string;
   readonly selectedNozzleId: string;
+  readonly profileIdentities?:
+    | {
+        readonly machine: CalibrationProfileIdentity;
+        readonly process: CalibrationProfileIdentity;
+        readonly filament: CalibrationProfileIdentity;
+      }
+    | undefined;
   readonly filament: FilamentIdentity;
+}
+
+export interface CalibrationProfileIdentity {
+  readonly backendProfileId: string;
+  readonly orcaProfileName: string;
+  readonly profileRevision: string;
+  readonly contentHash: string;
 }
 
 export interface BaselineProfile {

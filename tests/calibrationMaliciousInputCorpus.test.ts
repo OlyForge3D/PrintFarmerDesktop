@@ -28,7 +28,7 @@
  *     structurally valid but internally bad;
  *   - `installOrcaProfileWindows` / `computeInstallPath` /
  *     `canonicalizeSaveTarget` throw `OrcaInstallError` with a typed `code`;
- *   - `discoverLocalOrcaFilamentProfiles` **returns `[]` and skips bad
+ *   - `discoverLocalOrcaFilamentProfilesEntries` **returns `[]` and skips bad
  *     profiles**, so its correct assertion is exclusion from results plus no
  *     writes plus bounded time — not a thrown code;
  *   - `CalibrationAssetManifestService.validateFile` returns
@@ -111,7 +111,7 @@ import {
 } from '../src/main/calibrationImportV4.js';
 import {
   MAX_FILE_BYTES,
-  discoverLocalOrcaFilamentProfiles,
+  discoverLocalOrcaFilamentProfilesEntries,
   listLocalOrcaFilamentProfiles,
   orcaUserDataRoots,
 } from '../src/main/orcaProfileDiscovery.js';
@@ -274,7 +274,7 @@ type EntryPoint = (typeof ENTRY_POINTS)[number];
 
 /**
  * The four shapes a rejection takes across these entry points. Collapsing these
- * into one assertion is trap 2: `discoverLocalOrcaFilamentProfiles` never
+ * into one assertion is trap 2: `discoverLocalOrcaFilamentProfilesEntries` never
  * throws, so a shared "expect it to throw a typed code" helper would pass
  * vacuously there.
  */
@@ -645,7 +645,7 @@ async function seedOrcaRoot(
 }
 
 async function discoverNames(): Promise<string[]> {
-  const entries = await discoverLocalOrcaFilamentProfiles(
+  const entries = await discoverLocalOrcaFilamentProfilesEntries(
     corpusPrinterContext(),
   );
   return entries.map((entry) => entry.orcaProfileId);
@@ -1219,7 +1219,7 @@ const CELLS: Cell[] = [
         'profile.json': fixture('orca-traversal-inherits.json'),
       });
       await ctx.armTreeGuard();
-      const entries = await discoverLocalOrcaFilamentProfiles(
+      const entries = await discoverLocalOrcaFilamentProfilesEntries(
         corpusPrinterContext(),
       );
       expect(entries).toHaveLength(1);
@@ -2869,7 +2869,7 @@ describe('hostile content that is carried but never acted on', () => {
         });
 
         const started = Date.now();
-        const entries = await discoverLocalOrcaFilamentProfiles(
+        const entries = await discoverLocalOrcaFilamentProfilesEntries(
           corpusPrinterContext(),
         );
         const elapsed = Date.now() - started;

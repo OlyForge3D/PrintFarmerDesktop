@@ -400,6 +400,7 @@ async function enumerateJsonFiles(
   depth: number,
   budget: { value: number },
   found: string[],
+  failures: { value: number } = { value: 0 },
 ): Promise<void> {
   if (depth > MAX_TRAVERSAL_DEPTH) return;
   if (budget.value >= MAX_ENUMERATED_ENTRIES_PER_ROOT) return;
@@ -408,6 +409,11 @@ async function enumerateJsonFiles(
   try {
     entries = await readdir(dirPath, { withFileTypes: true, encoding: 'utf8' });
   } catch {
+    // Counted, not just swallowed. "We could not read this directory" and "we
+    // read it and it held nothing" lead to different advice, and reporting the
+    // first as the second sent operators looking for missing profiles instead
+    // of at the permissions on the folder.
+    failures.value += 1;
     return;
   }
 
@@ -430,7 +436,7 @@ async function enumerateJsonFiles(
       }
       if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) continue;
 
-      await enumerateJsonFiles(entryPath, depth + 1, budget, found);
+      await enumerateJsonFiles(entryPath, depth + 1, budget, found, failures);
     } else if (entry.isFile() && entry.name.endsWith('.json')) {
       found.push(entryPath);
     }
@@ -484,9 +490,16 @@ async function collectProfilesFromRoot(
   source: 'systemInstall' | 'userImported',
   targetNames: ReadonlySet<string>,
   profiles: ParsedProfile[],
-): Promise<void> {
+  failures: { value: number } = { value: 0 },
+): Promise<number> {
   const candidatePaths: string[] = [];
-  await enumerateJsonFiles(canonicalRoot, 0, { value: 0 }, candidatePaths);
+  await enumerateJsonFiles(
+    canonicalRoot,
+    0,
+    { value: 0 },
+    candidatePaths,
+    failures,
+  );
 
   const ordered = prioritiseCandidatePaths(candidatePaths, targetNames);
   let parsed = 0;
@@ -511,6 +524,7 @@ async function collectProfilesFromRoot(
       profiles.push(profile);
     }
   }
+  return candidatePaths.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +644,12 @@ export async function listLocalOrcaFilamentProfiles(
 ): Promise<{
   /** Whether any canonical OrcaSlicer root actually exists on this machine. */
   installFound: boolean;
+  /**
+   * How many directories existed but could not be read. Non-zero means the
+   * answer below is incomplete for a reason the operator can act on, which is
+   * not the same as "there is nothing here".
+   */
+  readFailureCount: number;
   profiles: Array<{
     name: string;
     source: 'systemInstall' | 'userImported';
@@ -642,6 +662,7 @@ export async function listLocalOrcaFilamentProfiles(
 
   let installFound = false;
   const parsed: ParsedProfile[] = [];
+  const failures = { value: 0 };
 
   for (const [roots, source] of [
     [userRoots, 'userImported'],
@@ -662,6 +683,7 @@ export async function listLocalOrcaFilamentProfiles(
         source,
         new Set<string>(),
         parsed,
+        failures,
       );
     }
   }
@@ -693,6 +715,7 @@ export async function listLocalOrcaFilamentProfiles(
 
   return {
     installFound,
+    readFailureCount: failures.value,
     profiles: [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
@@ -705,6 +728,37 @@ export async function listLocalOrcaFilamentProfiles(
  * Returns an empty array if no OrcaSlicer installation is found or if no
  * profiles match. Never throws.
  */
+/**
+ * What one bound lookup saw while walking this machine's OrcaSlicer roots.
+ *
+ * Reported from the *same* traversal that looked for the target profile so a
+ * miss can be explained without a second full scan. Previously the caller ran an
+ * unbounded re-enumeration to answer "why did that find nothing", which walked
+ * the whole install a second time on exactly the path that was already slow.
+ *
+ * `exemplars` is a handful of names, not an inventory: the operator needs to see
+ * that profiles were read and roughly what they look like, and shipping up to
+ * two thousand names across the IPC boundary to prove it was never necessary.
+ */
+export interface LocalOrcaLookupDiagnostic {
+  /** Whether any canonical OrcaSlicer root exists on this machine. */
+  readonly installFound: boolean;
+  /** How many candidate profile files the traversal saw. */
+  readonly enumeratedFileCount: number;
+  /** How many were actually read within the parse budget. */
+  readonly parsedFileCount: number;
+  /** A few profile names that were read, for orientation only. */
+  readonly exemplars: readonly string[];
+  /**
+   * How many directories existed but could not be read. Distinguishes a scan
+   * that found nothing from a scan that could not look.
+   */
+  readonly readFailureCount: number;
+}
+
+/** How many profile names a diagnostic carries. */
+const DIAGNOSTIC_EXEMPLAR_LIMIT = 5;
+
 export async function discoverLocalOrcaFilamentProfiles(
   context: RemoteCalibrationPrinterContext,
   options: {
@@ -714,26 +768,44 @@ export async function discoverLocalOrcaFilamentProfiles(
       readonly systemRoots: readonly string[];
     };
   } = {},
-): Promise<z.infer<typeof OrcaProfileEntry>[]> {
+): Promise<{
+  entries: z.infer<typeof OrcaProfileEntry>[];
+  diagnostic: LocalOrcaLookupDiagnostic;
+}> {
   // Local discovery matches on the OrcaSlicer *profile name*, never on the
   // server's profile GUID: OrcaSlicer files declare a `name`, so comparing a
   // GUID against them can never match. `orcaProfileId` remains the immutable
   // server identity and is still what revisions and hashes bind to.
   const targetName = context.orcaProfileName;
+  const emptyDiagnostic: LocalOrcaLookupDiagnostic = {
+    installFound: false,
+    enumeratedFileCount: 0,
+    parsedFileCount: 0,
+    exemplars: [],
+    readFailureCount: 0,
+  };
   if (
     !targetName ||
     context.configurationRevision === null ||
     !context.snapshotId ||
     context.toolheads.length === 0
   ) {
-    return [];
+    return { entries: [], diagnostic: emptyDiagnostic };
   }
 
   const allProfiles: ParsedProfile[] = [];
+  // The target name is pushed into the traversal so the file that matters is
+  // reached and read regardless of where it sorts, and the parse budget is
+  // spent on it rather than on whichever vendor directory happens to come first
+  // alphabetically. Inheritance parents are reached through the same pass.
   const targetNames = new Set<string>([targetName]);
 
   const userRoots = options.roots?.userRoots ?? orcaUserDataRoots();
   const systemRoots = options.roots?.systemRoots ?? orcaSystemProfileRoots();
+
+  let installFound = false;
+  let enumeratedFileCount = 0;
+  const failures = { value: 0 };
 
   for (const [roots, source] of [
     [userRoots, 'userImported'],
@@ -746,16 +818,28 @@ export async function discoverLocalOrcaFilamentProfiles(
       } catch {
         continue; // root does not exist
       }
-      await collectProfilesFromRoot(
+      installFound = true;
+      enumeratedFileCount += await collectProfilesFromRoot(
         canonicalRoot,
         source,
         targetNames,
         allProfiles,
+        failures,
       );
     }
   }
 
-  if (allProfiles.length === 0) return [];
+  const diagnostic: LocalOrcaLookupDiagnostic = {
+    installFound,
+    enumeratedFileCount,
+    parsedFileCount: allProfiles.length,
+    exemplars: allProfiles
+      .slice(0, DIAGNOSTIC_EXEMPLAR_LIMIT)
+      .map((profile) => profile.name),
+    readFailureCount: failures.value,
+  };
+
+  if (allProfiles.length === 0) return { entries: [], diagnostic };
 
   // Build lookup by profile name for inheritance resolution.
   const profilesByName = new Map<string, ParsedProfile>();
@@ -837,7 +921,26 @@ export async function discoverLocalOrcaFilamentProfiles(
     }
   }
 
-  return results;
+  return { entries: results, diagnostic };
+}
+
+/**
+ * The bound lookup's entries only.
+ *
+ * A convenience for callers that want the profiles and not the traversal
+ * diagnostic. Exported for tests, which assert on matching behaviour rather
+ * than on why a miss happened.
+ */
+export async function discoverLocalOrcaFilamentProfilesEntries(
+  context: RemoteCalibrationPrinterContext,
+  options: {
+    readonly roots?: {
+      readonly userRoots: readonly string[];
+      readonly systemRoots: readonly string[];
+    };
+  } = {},
+): Promise<z.infer<typeof OrcaProfileEntry>[]> {
+  return (await discoverLocalOrcaFilamentProfiles(context, options)).entries;
 }
 
 // ---------------------------------------------------------------------------

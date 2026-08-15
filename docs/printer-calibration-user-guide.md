@@ -14,6 +14,7 @@ covers what the application does, what it refuses to do, and why.
 
 ## Contents
 
+- [Starting a project: choose the printer first](#starting-a-project-choose-the-printer-first)
 - [Which printers are eligible](#which-printers-are-eligible)
 - [What a calibration project is bound to](#what-a-calibration-project-is-bound-to)
 - [Stages](#stages)
@@ -25,6 +26,55 @@ covers what the application does, what it refuses to do, and why.
 - [Installing or exporting the profile](#installing-or-exporting-the-profile)
 - [Importing a legacy calibration backup (v4)](#importing-a-legacy-calibration-backup-v4)
 - [When something goes wrong](#when-something-goes-wrong)
+
+## Starting a project: choose the printer first
+
+Calibration settings belong to one printer. A flow ratio measured on one machine
+says nothing about another, so the wizard asks which printer you are calibrating
+before it fetches anything about any printer.
+
+The sequence is:
+
+1. **The printer list loads.** This is the only thing fetched at this point. No
+   printer configuration, no profile catalogue and no scan of your local
+   OrcaSlicer installation happens yet, because none of them can be scoped to a
+   printer you have not named.
+2. **You choose a printer.** Moving through the list with the arrow keys or the
+   mouse only highlights; nothing is loaded until you select **Continue with
+   this printer**. No printer is chosen for you.
+3. **That printer's configuration and profiles load.** Exactly one
+   configuration snapshot is read, and profiles are resolved for that printer
+   and that configuration revision only. Your local OrcaSlicer install is
+   searched for the one profile name the printer reports, not for everything it
+   contains. This is the point at which PrintFarmer actually evaluates the
+   printer's profiles; the list in step 1 is a basic screen that does not.
+4. **The rest of the wizard unlocks.** Naming the project, choosing the tool and
+   nozzle, picking a base profile and entering baselines all come after, because
+   each depends on the printer.
+
+A project can only be created against a printer PrintFarmer has **fully
+evaluated** — profiles resolved, printer declared eligible, with no missing
+inputs and no rejection reasons. A printer that merely passed the basic screen
+is listed and can be selected, but it is never enough on its own, and a server
+too old to say whether it evaluated profiles is treated as not having done so.
+
+Changing your mind is safe at any point. Selecting a different printer cancels
+whatever was still loading for the previous one and clears its results, so a
+slow answer for the printer you moved away from can never appear next to the one
+you are now looking at. You can switch while a printer is still loading.
+
+Printers PrintFarmer will not calibrate stay in the list and can be selected, so
+you can read exactly why. **Continue** stays disabled for them, so looking at a
+refusal never risks acting on it.
+
+If a printer's configuration or profiles fail to load, only that printer is
+affected: the list stays on screen and the other printers remain selectable. A
+problem with one machine is never reported as "you have no printers".
+
+If the search of your own machine cannot be completed — a profile folder that
+cannot be read, for instance — the workspace says the scan failed. That is
+deliberately not the same message as "OrcaSlicer is not installed", which would
+send you to reinstall software that is already there.
 
 ## Which printers are eligible
 
@@ -43,20 +93,32 @@ These are exact literal values, not ranges or families of values. Anything
 incomplete, or carrying a different literal, is reported as ineligible rather
 than interpreted.
 
-Eligibility also requires complete hardware and safety metadata: positive build volume in
-all three axes, a maximum nozzle temperature, a maximum bed temperature, a
-maximum volumetric rate, and three explicit confirmations — emergency stop
-available, thermal protection confirmed, ventilation assessed. Any of these
-missing or non-positive blocks calibration with `INCOMPLETE_SAFETY_CONTEXT`.
+Eligibility also requires complete hardware metadata: positive build volume in
+all three axes, a maximum nozzle temperature, a maximum bed temperature and a
+maximum volumetric rate. These are the machine limits PrintFarmer publishes for
+the printer, and your baseline values are range-checked against them.
 
-You also need four permissions on the printer — printer read, calibration write,
-calibration generation, and print start. Missing any one blocks the workspace
-with `INSUFFICIENT_CALIBRATION_PERMISSIONS`; the workspace names which one.
+Permissions are checked separately, against the permissions your PrintFarmer
+account actually grants:
+
+| You want to                       | You need               |
+| --------------------------------- | ---------------------- |
+| List printers and open the wizard | `calibration:read`     |
+| Create a calibration project      | `calibration:create`   |
+| Record results and queue a print  | `calibration:update`   |
+| Generate a profile                | `calibration:generate` |
+
+Only `calibration:read` is needed to open the workspace and look, so an account
+with read-only access to the farm can inspect printers and profiles without
+being refused at the door. Each of the other actions is checked on its own when
+you attempt it, and the refusal names the exact permission that was missing.
+A permission problem is reported as a permission problem — never as an empty
+printer list.
 
 **Manufacturer, model, alias and transport backend never establish
 eligibility.** A printer named "Klipper" or connected over a Klipper-shaped
 transport is not eligible on that basis. Neither is a printer whose
-configuration merely looks compatible. If PrintFarmer does not supply the four
+configuration merely looks compatible. If PrintFarmer does not supply the
 canonical values above, the workspace reports that eligibility is missing and
 refuses to start, rather than inferring it. The same applies in reverse: an
 eligible printer that is currently offline cannot have its context verified, so
@@ -83,6 +145,15 @@ Before any action that moves hardware or writes a profile, the app asks you to
 confirm that the physical toolhead and nozzle in the machine match the bound
 snapshot. That confirmation is checked field by field, including nozzle
 diameter, and a mismatch blocks with `PHYSICAL_TOOLHEAD_NOZZLE_MISMATCH`.
+
+Releasing a queued job for printing needs one more thing: a current confirmation
+that the bed is clear. The app records that confirmation itself, and only after
+PrintFarmer has told it that the job really is waiting for one. It is good for
+that one job on that one printer at that configuration revision, is spent the
+moment it is used, and expires after two minutes — because it is a statement
+about the bed _now_, and the longer it is honoured the more likely it is to have
+stopped being true. If it has expired or was already used, you are asked again
+rather than the app assuming the bed stayed clear.
 
 ## Stages
 
@@ -293,6 +364,15 @@ On every platform, generation requires explicit confirmation before any write,
 and the proposed patch can be previewed before you accept it. Regenerating is
 always available.
 
+**The base profile must still be the one you chose.** A generated profile is a
+named base plus your measured changes, so the app verifies before patching that
+the OrcaSlicer profile on disk is byte-for-byte the one this project was bound
+to. If OrcaSlicer rewrote it, or you replaced it, generation stops and says the
+base profile changed rather than quietly patching a different starting point.
+Re-select the base profile, or restore the original, and generate again. A
+project that recorded no fingerprint for its base is reported the same way,
+because there is nothing to check the file against.
+
 ## Importing a legacy calibration backup (v4)
 
 If you have a v4 calibration backup, the workspace can import it.
@@ -323,6 +403,7 @@ condition and what to do about it.
 | What you see               | What it means                                                                                        | What to do                                                                                                    |
 | -------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Offline**                | PrintFarmer is unreachable. Saved projects stay editable.                                            | Reconnect. Hardware and profile actions return; drafts you made offline are kept.                             |
+| **Session expired**        | Your sign-in expired or was revoked. Distinct from a permission problem: the account may be fine.    | The app re-establishes the session by itself and tells you if it cannot. Reconnect the profile, then retry.   |
 | **Permission denied**      | Your account lacks printer read, calibration write, generation or print start.                       | The message names the missing permission. An administrator grants it in PrintFarmer.                          |
 | **Capability unavailable** | PrintFarmer did not confirm Klipper firmware, Klipper G-code, OrcaSlicer, and upstream distribution. | This printer is not eligible. The workspace names which capability was not confirmed.                         |
 | **Stale printer context**  | The printer's configuration or snapshot revision moved after you bound the project.                  | Rebase to the fresh snapshot and explicitly retest the affected stages. Values are not carried over silently. |
@@ -342,3 +423,10 @@ measured against a different configuration is not evidence about the current one
 **A blocked action always names its blocker.** If more than one condition
 applies — offline _and_ unsynced _and_ stale — all of them are listed. You are
 never left with a disabled control and no explanation.
+
+**Nothing is retried on your behalf after an authorisation problem.** When the
+server refuses an action, or your session expires mid-flow, the app corrects
+what it knows — it re-reads your permissions, and re-establishes an expired
+session — but it never re-sends the generate, queue or print you asked for. That
+decision stays yours, because the account the retry would run as is not
+guaranteed to be the one you started with.
