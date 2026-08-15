@@ -71,6 +71,9 @@ function contextFor(
     printerId,
     displayName,
     printerModel: 'Voron 2.4',
+    // Authoritative and eligible, so the server raised nothing against it.
+    rejectionReasonCodes: [],
+    missingInputs: [],
     firmware: {
       firmware: 'Klipper',
       gcodeDialect: 'Klipper',

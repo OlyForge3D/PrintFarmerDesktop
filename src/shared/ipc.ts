@@ -1560,6 +1560,17 @@ const CalibrationRejectionReasonCode = z.enum([
 ]);
 
 /**
+ * Every code the renderer may be handed for a refused printer.
+ *
+ * Exported so the renderer's operator-facing wording can be keyed exhaustively
+ * off it: a code added to the catalogue without a sentence to read out fails to
+ * compile rather than reaching an operator as a bare identifier.
+ */
+export type CalibrationRejectionReasonCode = z.infer<
+  typeof CalibrationRejectionReasonCode
+>;
+
+/**
  * A missing-input field path such as `firmware.family`,
  * `profiles.filament.material` or `profiles.machine.exactJson.gcode_flavor`.
  *
@@ -1975,6 +1986,31 @@ export const CalibrationPrinterContext = z
       .nullable()
       .optional()
       .default(null),
+    /**
+     * Why PrintFarmer refused this printer, in the same codes the candidate
+     * list carries.
+     *
+     * The context DTO extends the candidate DTO, so the server's reasons are
+     * present on every context too — and they are the *interesting* ones, since
+     * only the context resolves slicer profiles. Dropping them left the one
+     * refusal an operator reaches after selecting a printer explained solely by
+     * this client's own structural checks, which can say a profile identity is
+     * missing but never that the machine profile was scoped to another printer.
+     *
+     * Empty on an authoritative context: eligibility and refusal are mutually
+     * exclusive on the server, which derives `Eligible` from `reasons.Count`.
+     */
+    rejectionReasonCodes: z
+      .array(CalibrationRejectionReasonCode)
+      .max(CALIBRATION_MAX_REJECTION_REASON_CODES)
+      .optional()
+      .default([]),
+    /** Field paths PrintFarmer still needs populated for this printer. */
+    missingInputs: z
+      .array(CalibrationMissingInputField)
+      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
+      .optional()
+      .default([]),
   })
   .strict();
 export type CalibrationPrinterContext = z.infer<
