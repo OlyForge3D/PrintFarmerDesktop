@@ -232,7 +232,14 @@ describe('a version the manifest never gave', () => {
 });
 
 describe('the half a tag cannot answer', () => {
-  const tagged = { verdict: VERDICT_TAGGED };
+  // A real reading rather than a hand-rolled shape, so this suite cannot drift
+  // from what classifyTagPresence actually returns.
+  const tagged = classifyTagPresence({
+    version: '0.1.0-beta.4',
+    tagExists: true,
+    knownTagCount: 4,
+    tagAncestry: onBranch,
+  });
 
   it('reports a tag whose release never published', () => {
     const publication = classifyPublication({
