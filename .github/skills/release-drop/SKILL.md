@@ -11,8 +11,22 @@ description: Drop a PrintFarmer Desktop beta prerelease or GA release. Use when 
 **Merging the version-bump PR publishes nothing.** The bump and the tag are two
 separate acts, and the tag is the one that builds. A release that stops after the
 merge leaves `package.json` claiming a version that was never shipped. This has
-already happened once: `0.1.0-beta.3` landed on `development` in #713 and sat
-unreleased until the tag was pushed by hand a day later.
+now happened twice: `0.1.0-beta.3` landed on `development` in #713 and sat
+unreleased until the tag was pushed by hand a day later, and `0.1.0-beta.4`
+landed in #727 and sat for three days — the second time with this warning
+already written above it.
+
+Since the second occurrence, `.github/workflows/release-tagged.yml` reports the
+gap on a schedule rather than waiting for someone to notice: it fails when
+`development` has claimed a version for longer than a grace window with no tag
+naming it. Run it against your own checkout at any point:
+
+```sh
+npm run check:release-tagged
+```
+
+That guard is a backstop, not a substitute for step 4 — it tells you the release
+did not happen; it cannot push the tag for you.
 
 Do not consider the job done until [Verify the release published](#5-verify-the-release-published)
 passes.
@@ -90,7 +104,19 @@ git fetch origin
 git log --oneline -3 origin/development
 ```
 
-Take the SHA of the `chore(release): set version to <version>` commit.
+Take the SHA of the release commit. Title it
+`chore(release): set version to <version>` — #713 used that wording and #727
+used `chore(release): prepare v<version>`, so a step that says "find the commit
+titled X" has already failed once for someone reading it. The title is a
+convenience; the fact that decides the SHA is the version in the tree, so
+confirm rather than recognise:
+
+```sh
+git show <sha>:package.json | grep '"version"'
+```
+
+That must print the exact version you are about to tag. The tag build enforces
+the same equality and fails on a mismatch, but it does so forty minutes later.
 
 ## 4. Push the tag
 
@@ -157,4 +183,6 @@ _before_ opening the bump PR rather than discovering it after a 40-minute build.
 
 - `docs/RELEASES.md` — signing architecture, secret inventory, update-trust model
 - `.github/workflows/release.yml` — the workflow itself
+- `.github/workflows/release-tagged.yml` — the scheduled guard that reports a
+  bump which never became a release (`npm run check:release-tagged`)
 - `.github/pr-closes/README.md` — closing-reference declaration format

@@ -1,0 +1,64 @@
+name: Release tagged
+
+# merge-queue: publication
+#
+# This workflow never runs on `pull_request`, and that is the finding rather
+# than an omission. The subject is the state of `development` BETWEEN two
+# events — the version bump merging and the tag being pushed — and at the
+# moment the bump PR merges there is legitimately no tag. A pull_request run
+# would therefore be green and correct and useless, exactly as in #391's
+# merge-landed.yml.
+#
+# THE UNIT OF ASSERTION IS THE BRANCH AS IT STANDS NOW, NOT A PULL REQUEST.
+# Its context must never be added to a ruleset's required list — a required
+# context that no pull request emits blocks every pull request immediately.
+#
+# What it exists for: `0.1.0-beta.3` (#713) and `0.1.0-beta.4` (#727) both
+# landed on development and then sat unreleased, for a day and three days
+# respectively, with every check green the whole time. Both were found by a
+# person asking where the beta had gone.
+
+on:
+  # Every four hours. The tag legitimately trails the merge by however long it
+  # takes someone to push it, so the check carries a grace window and the
+  # cadence only has to be short enough that the report is fresh once that
+  # window closes. Daily would let a stranded bump sit most of a day past the
+  # deadline it already missed.
+  schedule:
+    - cron: '43 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      grace_hours:
+        description: Hours a bump may sit untagged before it is reported
+        required: false
+        default: '2'
+
+permissions:
+  contents: read
+
+jobs:
+  release-tagged:
+    name: Release tagged
+    runs-on: ubuntu-latest
+    steps:
+      # Tags are the entire subject, and a checkout without them reports the
+      # tag universe as empty. The check refuses to read an absence in that
+      # state and exits unverifiable rather than crying wolf — but a run that
+      # is unverifiable for a fixable reason is a run that teaches people to
+      # ignore it, so fetch them.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: development
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the check imports nothing outside node: builtins.
+      - name: Assert the declared version has actually shipped
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GRACE_HOURS: ${{ inputs.grace_hours || '2' }}
+        run: npm run check:release-tagged -- --target HEAD --grace-hours "$GRACE_HOURS"
