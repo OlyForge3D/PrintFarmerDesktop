@@ -1,4 +1,5 @@
 name: Squad Heartbeat (Ralph)
+# merge-queue: advisory
 # ⚠️ SYNC: This workflow is maintained in 4 locations. Changes must be applied to all:
 #   - templates/workflows/squad-heartbeat.yml (source template)
 #   - packages/squad-cli/templates/workflows/squad-heartbeat.yml (CLI package)
@@ -23,6 +24,7 @@ permissions:
 
 jobs:
   heartbeat:
+    name: Squad heartbeat
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 #v4
@@ -57,13 +59,13 @@ jobs:
               core.info('No triage results — board is clear');
               return;
             }
-            
+
             const results = JSON.parse(fs.readFileSync(path, 'utf8'));
             if (results.length === 0) {
               core.info('📋 Board is clear — Ralph found no untriaged issues');
               return;
             }
-            
+
             for (const decision of results) {
               try {
                 await github.rest.issues.addLabels({
@@ -94,7 +96,7 @@ jobs:
                 core.warning(`Failed to triage #${decision.issueNumber}: ${e.message}`);
               }
             }
-            
+
             core.info(`🔄 Ralph triaged ${results.length} issue(s)`);
 
       # Copilot auto-assign step (uses PAT if available)

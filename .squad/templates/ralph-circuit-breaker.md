@@ -12,13 +12,13 @@ Under usage-based billing, all models incur cost — there are no "free" or unli
 Lightweight-category models have lower per-token cost and are therefore preferred for fallback,
 but they are still billed:
 
-| Model | Category | Cost profile |
-|-------|----------|--------------|
-| `claude-sonnet-5` | versatile | Moderate — standard-tier default |
-| `claude-opus-4.8` | powerful | Higher — reserve for premium work |
-| `gpt-5.4` | powerful | Higher — standard-tier specialist |
-| `gpt-5.4-mini` | lightweight | Lower-cost — preferred fallback |
-| `gpt-5-mini` | lightweight | Lowest-cost — final fallback |
+| Model             | Category    | Cost profile                      |
+| ----------------- | ----------- | --------------------------------- |
+| `claude-sonnet-5` | versatile   | Moderate — standard-tier default  |
+| `claude-opus-4.8` | powerful    | Higher — reserve for premium work |
+| `gpt-5.4`         | powerful    | Higher — standard-tier specialist |
+| `gpt-5.4-mini`    | lightweight | Lower-cost — preferred fallback   |
+| `gpt-5-mini`      | lightweight | Lowest-cost — final fallback      |
 
 ## Circuit Breaker States
 
@@ -37,11 +37,13 @@ but they are still billed:
 ```
 
 ### CLOSED (normal operation)
+
 - Use preferred model from config
 - Every successful response confirms circuit stays closed
 - On rate limit error → transition to OPEN
 
 ### OPEN (rate limited — fallback active)
+
 - Fall back through the lightweight-category model chain:
   1. `gpt-5.4-mini`
   2. `gpt-5-mini`
@@ -49,6 +51,7 @@ but they are still billed:
 - When cooldown expires → transition to HALF-OPEN
 
 ### HALF-OPEN (testing recovery)
+
 - Try preferred model again
 - If 2 consecutive successes → transition to CLOSED
 - If rate limit error → back to OPEN, reset cooldown
@@ -292,11 +295,11 @@ while ($true) {
 
 Override defaults by editing `.squad/ralph-circuit-breaker.json`:
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `preferredModel` | `claude-sonnet-5` | Model to use when circuit is closed |
-| `fallbackChain` | `["gpt-5.4-mini", "gpt-5-mini"]` | Ordered fallback models (lightweight-category — lowest cost, still billed) |
-| `cooldownMinutes` | `10` | How long to wait before testing recovery |
+| Field             | Default                          | Description                                                                |
+| ----------------- | -------------------------------- | -------------------------------------------------------------------------- |
+| `preferredModel`  | `claude-sonnet-5`                | Model to use when circuit is closed                                        |
+| `fallbackChain`   | `["gpt-5.4-mini", "gpt-5-mini"]` | Ordered fallback models (lightweight-category — lowest cost, still billed) |
+| `cooldownMinutes` | `10`                             | How long to wait before testing recovery                                   |
 
 ## Metrics
 
@@ -308,6 +311,7 @@ The state file tracks operational metrics:
 - **lastRecoveryAt** — ISO timestamp of last successful recovery
 
 Query metrics with:
+
 ```powershell
 $cb = Get-Content .squad/ralph-circuit-breaker.json | ConvertFrom-Json
 Write-Host "Fallbacks: $($cb.metrics.totalFallbacks) | Recoveries: $($cb.metrics.totalRecoveries)"

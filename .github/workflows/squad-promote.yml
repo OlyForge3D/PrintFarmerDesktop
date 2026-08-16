@@ -1,5 +1,7 @@
 name: Squad Promote
 
+# merge-queue: publication
+
 on:
   workflow_dispatch:
     inputs:

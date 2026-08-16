@@ -48,21 +48,35 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-  console.log('Usage: node .squad/templates/ralph-triage.js --squad-dir .squad --output triage-results.json');
+  console.log(
+    'Usage: node .squad/templates/ralph-triage.js --squad-dir .squad --output triage-results.json',
+  );
 }
 
 function normalizeEol(content) {
   return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
-function slugify(text) { return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+function slugify(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
 
 function parseRoutingRules(routingMd) {
-  const table = parseTableSection(routingMd, /^##\s*work\s*type\s*(?:→|->)\s*agent\b/i);
+  const table = parseTableSection(
+    routingMd,
+    /^##\s*work\s*type\s*(?:→|->)\s*agent\b/i,
+  );
   if (!table) return [];
 
   const workTypeIndex = findColumnIndex(table.headers, ['work type', 'type']);
-  const agentIndex = findColumnIndex(table.headers, ['agent', 'route to', 'route']);
+  const agentIndex = findColumnIndex(table.headers, [
+    'agent',
+    'route to',
+    'route',
+  ]);
   const examplesIndex = findColumnIndex(table.headers, ['examples', 'example']);
 
   if (workTypeIndex < 0 || agentIndex < 0) return [];
@@ -71,7 +85,9 @@ function parseRoutingRules(routingMd) {
   for (const row of table.rows) {
     const workType = cleanCell(row[workTypeIndex] || '');
     const agentName = cleanCell(row[agentIndex] || '');
-    const keywords = splitKeywords(examplesIndex >= 0 ? row[examplesIndex] : '');
+    const keywords = splitKeywords(
+      examplesIndex >= 0 ? row[examplesIndex] : '',
+    );
     if (!workType || !agentName) continue;
     rules.push({ workType, agentName, keywords });
   }
@@ -93,7 +109,9 @@ function parseModuleOwnership(routingMd) {
   for (const row of table.rows) {
     const modulePath = normalizeModulePath(row[moduleIndex] || '');
     const primary = cleanCell(row[primaryIndex] || '');
-    const secondaryRaw = cleanCell(secondaryIndex >= 0 ? row[secondaryIndex] || '' : '');
+    const secondaryRaw = cleanCell(
+      secondaryIndex >= 0 ? row[secondaryIndex] || '' : '',
+    );
     const secondary = normalizeOptionalOwner(secondaryRaw);
 
     if (!modulePath || !primary) continue;
@@ -190,7 +208,8 @@ function triageIssue(issue, rules, modules, roster) {
 
   return {
     agent: lead,
-    reason: 'No module, routing, or role keyword match — routed to Lead/Architect',
+    reason:
+      'No module, routing, or role keyword match — routed to Lead/Architect',
     source: 'lead-fallback',
     confidence: 'low',
   };
@@ -242,9 +261,13 @@ function parseTableLine(line) {
 }
 
 function findColumnIndex(headers, candidates) {
-  const normalizedHeaders = headers.map((header) => cleanCell(header).toLowerCase());
+  const normalizedHeaders = headers.map((header) =>
+    cleanCell(header).toLowerCase(),
+  );
   for (const candidate of candidates) {
-    const index = normalizedHeaders.findIndex((header) => header.includes(candidate));
+    const index = normalizedHeaders.findIndex((header) =>
+      header.includes(candidate),
+    );
     if (index >= 0) return index;
   }
   return -1;
@@ -301,14 +324,20 @@ function findMember(target, roster) {
 
   for (const member of roster) {
     const memberName = normalizeName(member.name);
-    if (normalizedTarget.includes(memberName) || memberName.includes(normalizedTarget)) {
+    if (
+      normalizedTarget.includes(memberName) ||
+      memberName.includes(normalizedTarget)
+    ) {
       return member;
     }
   }
 
   for (const member of roster) {
     const memberRole = normalizeName(member.role);
-    if (normalizedTarget.includes(memberRole) || memberRole.includes(normalizedTarget)) {
+    if (
+      normalizedTarget.includes(memberRole) ||
+      memberRole.includes(normalizedTarget)
+    ) {
       return member;
     }
   }
@@ -346,7 +375,8 @@ function findBestRuleMatch(issueText, rules) {
     if (matchedKeywords.length === 0) continue;
 
     const score =
-      matchedKeywords.length * 100 + matchedKeywords.reduce((sum, keyword) => sum + keyword.length, 0);
+      matchedKeywords.length * 100 +
+      matchedKeywords.reduce((sum, keyword) => sum + keyword.length, 0);
     if (score > bestScore) {
       best = { rule, matchedKeywords };
       bestScore = score;
@@ -362,21 +392,29 @@ function findRoleKeywordMatch(issueText, roster) {
 
     if (
       (role.includes('frontend') || role.includes('ui')) &&
-      (issueText.includes('ui') || issueText.includes('frontend') || issueText.includes('css'))
+      (issueText.includes('ui') ||
+        issueText.includes('frontend') ||
+        issueText.includes('css'))
     ) {
       return { agent: member, reason: 'Matched frontend/UI role keywords' };
     }
 
     if (
-      (role.includes('backend') || role.includes('api') || role.includes('server')) &&
-      (issueText.includes('api') || issueText.includes('backend') || issueText.includes('database'))
+      (role.includes('backend') ||
+        role.includes('api') ||
+        role.includes('server')) &&
+      (issueText.includes('api') ||
+        issueText.includes('backend') ||
+        issueText.includes('database'))
     ) {
       return { agent: member, reason: 'Matched backend/API role keywords' };
     }
 
     if (
       (role.includes('test') || role.includes('qa')) &&
-      (issueText.includes('test') || issueText.includes('bug') || issueText.includes('fix'))
+      (issueText.includes('test') ||
+        issueText.includes('bug') ||
+        issueText.includes('fix'))
     ) {
       return { agent: member, reason: 'Matched testing/QA role keywords' };
     }
@@ -398,9 +436,16 @@ function parseOwnerRepoFromRemote(remoteUrl) {
   const sshMatch = remoteUrl.match(/^git@[^:]+:([^/]+)\/(.+?)(?:\.git)?$/);
   if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
 
-  if (remoteUrl.startsWith('http://') || remoteUrl.startsWith('https://') || remoteUrl.startsWith('ssh://')) {
+  if (
+    remoteUrl.startsWith('http://') ||
+    remoteUrl.startsWith('https://') ||
+    remoteUrl.startsWith('ssh://')
+  ) {
     const parsed = new URL(remoteUrl);
-    const parts = parsed.pathname.replace(/^\/+/, '').replace(/\.git$/, '').split('/');
+    const parts = parsed.pathname
+      .replace(/^\/+/, '')
+      .replace(/\.git$/, '')
+      .split('/');
     if (parts.length >= 2) {
       return { owner: parts[0], repo: parts[1] };
     }
@@ -410,7 +455,9 @@ function parseOwnerRepoFromRemote(remoteUrl) {
 }
 
 function getOwnerRepoFromGit() {
-  const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
+  const remoteUrl = execSync('git remote get-url origin', {
+    encoding: 'utf8',
+  }).trim();
   return parseOwnerRepoFromRemote(remoteUrl);
 }
 
@@ -460,7 +507,9 @@ function githubRequestJson(pathname, token) {
           try {
             resolve(JSON.parse(body));
           } catch (error) {
-            reject(new Error(`Failed to parse GitHub response: ${error.message}`));
+            reject(
+              new Error(`Failed to parse GitHub response: ${error.message}`),
+            );
           }
         });
       },
@@ -482,7 +531,10 @@ async function fetchSquadIssues(owner, repo, token) {
       per_page: String(perPage),
       page: String(page),
     });
-    const issues = await githubRequestJson(`/repos/${owner}/${repo}/issues?${query.toString()}`, token);
+    const issues = await githubRequestJson(
+      `/repos/${owner}/${repo}/issues?${query.toString()}`,
+      token,
+    );
     if (!Array.isArray(issues) || issues.length === 0) break;
     all.push(...issues);
     if (issues.length < perPage) break;
@@ -526,7 +578,9 @@ async function main() {
   const openSquadIssues = await fetchSquadIssues(owner, repo, token);
 
   const memberLabels = roster.map((member) => member.label);
-  const untriaged = openSquadIssues.filter((issue) => isUntriagedIssue(issue, memberLabels));
+  const untriaged = openSquadIssues.filter((issue) =>
+    isUntriagedIssue(issue, memberLabels),
+  );
 
   const results = [];
   for (const issue of untriaged) {

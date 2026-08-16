@@ -1,5 +1,7 @@
 name: Squad Insider Release
 
+# merge-queue: publication
+
 on:
   push:
     branches: [insider]
@@ -9,6 +11,7 @@ permissions:
 
 jobs:
   release:
+    name: Release Squad Insider
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

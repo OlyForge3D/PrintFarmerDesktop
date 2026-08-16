@@ -1,5 +1,7 @@
 name: Sync Squad Labels
 
+# merge-queue: publication
+
 on:
   push:
     paths:
@@ -17,6 +19,7 @@ permissions:
 
 jobs:
   sync-labels:
+    name: Sync Squad labels
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7

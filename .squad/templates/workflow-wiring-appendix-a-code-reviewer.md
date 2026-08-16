@@ -5,6 +5,7 @@
 ## The Problem This Solves
 
 Adding a reviewer to `team.md` gives them an identity. It does NOT:
+
 - Tell the coordinator to route PRs to them
 - Prevent PRs from being merged without their approval
 - Prevent issues from being closed before review happens
@@ -15,10 +16,10 @@ Because the routing table says WHO handles what — it's for incoming requests (
 
 **The fix has three layers:**
 
-| Layer | What it does | Where it lives |
-|-------|-------------|----------------|
-| Identity | Reviewer exists and knows how to review | `team.md` roster + `charter.md` |
-| Routing | User can explicitly request "review this" | `routing.md` routing table |
+| Layer           | What it does                                             | Where it lives                                                    |
+| --------------- | -------------------------------------------------------- | ----------------------------------------------------------------- |
+| Identity        | Reviewer exists and knows how to review                  | `team.md` roster + `charter.md`                                   |
+| Routing         | User can explicitly request "review this"                | `routing.md` routing table                                        |
 | **Enforcement** | Coordinator MUST route every PR to reviewer before merge | `routing.md` Rules section + `issue-lifecycle.md` post-work steps |
 
 Most squads get layers 1 and 2 right. Layer 3 — enforcement — is what's usually missing.
@@ -33,17 +34,20 @@ Create `.squad/agents/{name}/charter.md`:
 # {Name} — Code Reviewer
 
 ## Identity
+
 - **Name:** {Name}
 - **Role:** Code Reviewer
 - **Expertise:** Code quality, correctness, test coverage, security, patterns
 - **Style:** Thorough, fair, specific. Provides actionable feedback.
 
 ## What I Own
+
 - Reviewing PRs for code quality, correctness, and test coverage
 - Identifying bugs, security issues, and design problems
 - Providing specific, actionable feedback (not vague suggestions)
 
 ## How I Review
+
 1. Read the PR diff completely
 2. Check: does it do what the issue asked for?
 3. Check: are there tests? Do they cover the important cases?
@@ -52,10 +56,12 @@ Create `.squad/agents/{name}/charter.md`:
 6. Verdict: APPROVE or REJECT with specific feedback
 
 ## Boundaries
+
 **I handle:** Code review, PR review, quality gates
 **I don't handle:** Implementation, design, research, documentation
 
 ## On REJECT
+
 I provide specific feedback: what's wrong, why, and what to do instead.
 The original author fixes their work. I re-review after fixes.
 ```
@@ -84,10 +90,10 @@ In `routing.md` → `## Rules` section, add a numbered rule:
 
 ```markdown
 N. **{Name} PR Gate** — every PR created by any agent MUST be reviewed by {Name}
-   before merge. The coordinator spawns {Name} (sync) with the PR diff after
-   the author pushes and creates the PR. On REJECT, the original author addresses
-   feedback. On APPROVE, the coordinator merges via `gh pr merge`. No PR merges
-   without {Name}'s approval.
+before merge. The coordinator spawns {Name} (sync) with the PR diff after
+the author pushes and creates the PR. On REJECT, the original author addresses
+feedback. On APPROVE, the coordinator merges via `gh pr merge`. No PR merges
+without {Name}'s approval.
 ```
 
 **Why this works when the routing table alone didn't:** The routing table is for matching incoming work to agents. Rules are behavioral constraints the coordinator must follow AFTER work completes. The rule says "after a PR exists, you MUST do X before proceeding." The routing table says "if someone asks for a review, route to X."
@@ -119,13 +125,13 @@ If any answer is wrong, you have a gap.
 
 ## What Each File Controls (Summary)
 
-| File | What it contributes to the reviewer gate |
-|------|----------------------------------------|
-| `charter.md` | WHO the reviewer is and HOW they review |
-| `team.md` | That the reviewer EXISTS on the team |
-| `routing.md` routing table | That explicit review requests go to this reviewer |
+| File                       | What it contributes to the reviewer gate                                |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `charter.md`               | WHO the reviewer is and HOW they review                                 |
+| `team.md`                  | That the reviewer EXISTS on the team                                    |
+| `routing.md` routing table | That explicit review requests go to this reviewer                       |
 | `routing.md` Rules section | That the coordinator MUST route EVERY PR to this reviewer (enforcement) |
-| `issue-lifecycle.md` | The step-by-step procedure for the post-work review flow |
-| `casting/registry.json` | Persistent name tracking |
+| `issue-lifecycle.md`       | The step-by-step procedure for the post-work review flow                |
+| `casting/registry.json`    | Persistent name tracking                                                |
 
 **Remove any one of these and the gate has a hole.** The most commonly missed piece is the Rules section entry (Step 4).

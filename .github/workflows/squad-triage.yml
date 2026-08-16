@@ -1,5 +1,7 @@
 name: Squad Triage
 
+# merge-queue: publication
+
 on:
   issues:
     types: [labeled]
@@ -10,6 +12,7 @@ permissions:
 
 jobs:
   triage:
+    name: Triage Squad work
     if: github.event.label.name == 'squad'
     runs-on: ubuntu-latest
     steps:

@@ -1,8 +1,8 @@
 ---
-name: "error-recovery"
+name: 'error-recovery'
 description: "Standard recovery patterns for all squad agents. When something fails, adapt — don't just report the failure."
-domain: "reliability, agent-coordination"
-confidence: "high"
+domain: 'reliability, agent-coordination'
+confidence: 'high'
 license: MIT
 ---
 
@@ -17,6 +17,7 @@ Standard recovery patterns for all squad agents. When something fails, **adapt**
 **When:** Transient failures — API timeouts, rate limits, network errors, temporary service unavailability.
 
 **Pattern:**
+
 1. Wait briefly, then retry (start at 2s, double each attempt)
 2. Maximum 3 retries before escalating
 3. Log each attempt with the error received
@@ -30,6 +31,7 @@ Standard recovery patterns for all squad agents. When something fails, **adapt**
 **When:** Primary tool or approach fails and an alternative exists.
 
 **Pattern:**
+
 1. Attempt primary approach
 2. On failure, identify alternative tool/method
 3. Try the alternative with the same intent
@@ -44,6 +46,7 @@ Standard recovery patterns for all squad agents. When something fails, **adapt**
 **When:** Build failures, test failures, linting errors — structured errors with actionable output.
 
 **Pattern:**
+
 1. Read the full error output carefully
 2. Identify the root cause from error messages
 3. Attempt a targeted fix
@@ -59,6 +62,7 @@ Standard recovery patterns for all squad agents. When something fails, **adapt**
 **When:** Recovery attempts have been exhausted, or the failure requires human judgment.
 
 **Pattern:**
+
 1. Summarize what was attempted and what failed
 2. Include the exact error messages
 3. State what you believe the root cause is
@@ -74,6 +78,7 @@ Standard recovery patterns for all squad agents. When something fails, **adapt**
 **When:** A non-critical step fails but the overall task can still deliver value.
 
 **Pattern:**
+
 1. Determine if the failed step is critical to the task outcome
 2. If non-critical, log the failure and continue
 3. Deliver partial results with a clear note of what was skipped
@@ -89,11 +94,11 @@ Each agent should reference these patterns in their charter's `## Error Recovery
 
 **Selection guide:**
 
-| Failure Type | Primary Pattern | Fallback Pattern |
-|---|---|---|
-| Network/API transient | Retry with Backoff | Escalate with Context |
-| Tool/dependency missing | Fallback Alternatives | Escalate with Context |
-| Build/test error | Diagnose-and-Fix | Escalate with Context |
-| Auth/permissions | Retry with Backoff | Escalate with Context |
-| Non-critical data missing | Graceful Degradation | — |
-| Unknown/novel error | Escalate with Context | — |
+| Failure Type              | Primary Pattern       | Fallback Pattern      |
+| ------------------------- | --------------------- | --------------------- |
+| Network/API transient     | Retry with Backoff    | Escalate with Context |
+| Tool/dependency missing   | Fallback Alternatives | Escalate with Context |
+| Build/test error          | Diagnose-and-Fix      | Escalate with Context |
+| Auth/permissions          | Retry with Backoff    | Escalate with Context |
+| Non-critical data missing | Graceful Degradation  | —                     |
+| Unknown/novel error       | Escalate with Context | —                     |

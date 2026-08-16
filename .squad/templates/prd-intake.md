@@ -4,12 +4,12 @@ On-demand reference for ingesting a PRD, decomposing it into work items, and man
 
 ## Triggers
 
-| User says | Action |
-|-----------|--------|
-| "here's the PRD" / "work from this spec" | Expect file path or pasted content |
-| "read the PRD at {path}" | Read the file at that path |
-| "the PRD changed" / "updated the spec" | Re-read and diff against previous decomposition |
-| (pastes requirements text) | Treat as inline PRD |
+| User says                                | Action                                          |
+| ---------------------------------------- | ----------------------------------------------- |
+| "here's the PRD" / "work from this spec" | Expect file path or pasted content              |
+| "read the PRD at {path}"                 | Read the file at that path                      |
+| "the PRD changed" / "updated the spec"   | Re-read and diff against previous decomposition |
+| (pastes requirements text)               | Treat as inline PRD                             |
 
 ## Intake Flow
 
@@ -100,6 +100,7 @@ When the user says the PRD changed:
 ## State Tracking
 
 Active PRD state lives in team.md:
+
 - `## PRD Source` section (path, date, hash)
 - Work items tracked as issues (GitHub) or in `.squad/backlog.md` (offline mode)
 - Completion percentage displayed in status checks

@@ -9,36 +9,37 @@ Ceremonies are declared in `.squad/ceremonies.md`. Each ceremony is a section wi
 ```markdown
 ## {CeremonyName}
 
-| Field | Value |
-|-------|-------|
-| **Trigger** | auto \| manual |
-| **When** | before \| after |
-| **Condition** | {when auto-triggered: natural language condition} |
-| **Facilitator** | lead \| {specific-agent} |
+| Field            | Value                                                   |
+| ---------------- | ------------------------------------------------------- |
+| **Trigger**      | auto \| manual                                          |
+| **When**         | before \| after                                         |
+| **Condition**    | {when auto-triggered: natural language condition}       |
+| **Facilitator**  | lead \| {specific-agent}                                |
 | **Participants** | all-relevant \| all-involved \| {comma-separated names} |
-| **Time budget** | focused \| extended |
-| **Enabled** | ✅ yes \| ❌ no |
+| **Time budget**  | focused \| extended                                     |
+| **Enabled**      | ✅ yes \| ❌ no                                         |
 
 **Agenda:**
+
 1. {Step 1}
 2. {Step 2}
-...
+   ...
 ```
 
 ### Field Definitions
 
-| Field | Values | Meaning |
-|-------|--------|---------|
-| Trigger | `auto` | Fires automatically when Condition matches |
-| Trigger | `manual` | Only when user says "run {ceremony}" |
-| When | `before` | Runs before work batch spawns |
-| When | `after` | Runs after work batch completes |
-| Condition | free text | Evaluated against current task context |
-| Facilitator | agent name | Who runs the meeting |
-| Participants | selector | Who attends |
-| Time budget | `focused` | Keep it short — key decisions only |
-| Time budget | `extended` | Thorough discussion — all angles |
-| Enabled | boolean | Skip disabled ceremonies entirely |
+| Field        | Values     | Meaning                                    |
+| ------------ | ---------- | ------------------------------------------ |
+| Trigger      | `auto`     | Fires automatically when Condition matches |
+| Trigger      | `manual`   | Only when user says "run {ceremony}"       |
+| When         | `before`   | Runs before work batch spawns              |
+| When         | `after`    | Runs after work batch completes            |
+| Condition    | free text  | Evaluated against current task context     |
+| Facilitator  | agent name | Who runs the meeting                       |
+| Participants | selector   | Who attends                                |
+| Time budget  | `focused`  | Keep it short — key decisions only         |
+| Time budget  | `extended` | Thorough discussion — all angles           |
+| Enabled      | boolean    | Skip disabled ceremonies entirely          |
 
 ## Facilitator Spawn Template
 

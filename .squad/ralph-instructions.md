@@ -1,4 +1,5 @@
 # Ralph Instructions
+
 <!-- User-owned: customize this file to override Ralph's autonomous-execution behavior.
      squad init creates this file on first install; squad upgrade never overwrites it. -->
 
@@ -44,7 +45,7 @@
 
 ## Ralph, Go!
 
-Read this file for your full instructions.  Follow ALL sections.
+Read this file for your full instructions. Follow ALL sections.
 MAXIMIZE PARALLELISM — spawn agents for ALL actionable issues simultaneously.
 
 ### Issue Selection
@@ -64,4 +65,4 @@ After completing work on each issue:
 ### Escalation
 
 If you are blocked on an issue, comment on it explaining why, add a `status:blocked`
-label, and move to the next actionable item.  Do not halt the loop.
+label, and move to the next actionable item. Do not halt the loop.

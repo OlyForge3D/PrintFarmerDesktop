@@ -1,10 +1,10 @@
 ---
-name: "coordinator-response-mode"
-description: "Selecting WHO handles work is the Routing table; selecting HOW they handle it (Direct, Lightweight, Standard, Full) is Response Mode. This skill contains the complete decision table, exemplar prompts for each mode, the Lightweight spawn template, and the upgrade rules. Squad coordinator loads this on demand once routing has identified the agent — to pick the right ceremony level for the task."
+name: 'coordinator-response-mode'
+description: 'Selecting WHO handles work is the Routing table; selecting HOW they handle it (Direct, Lightweight, Standard, Full) is Response Mode. This skill contains the complete decision table, exemplar prompts for each mode, the Lightweight spawn template, and the upgrade rules. Squad coordinator loads this on demand once routing has identified the agent — to pick the right ceremony level for the task.'
 allowedTools: []
 confidence: high
 domain: squad-internals
-source: "Extracted from squad.agent.md as part of the slimming effort (bradygaster/squad#1308). Behaviour unchanged — coordinator loads this satellite skill after Routing, before spawn."
+source: 'Extracted from squad.agent.md as part of the slimming effort (bradygaster/squad#1308). Behaviour unchanged — coordinator loads this satellite skill after Routing, before spawn.'
 ---
 
 > **Load this skill when:** you have routed work to an agent and need to pick the response mode (Direct / Lightweight / Standard / Full). The 1-line stub in `squad.agent.md` is for awareness; this skill is the full decision table + templates.
@@ -13,46 +13,46 @@ source: "Extracted from squad.agent.md as part of the slimming effort (bradygast
 
 After routing determines WHO handles work, select the response MODE based on task complexity. **Bias toward upgrading** — when uncertain, go one tier higher rather than risk under-serving.
 
-| Mode | When | How | Target |
-|------|------|-----|--------|
-| **Direct** | Status checks, factual questions the coordinator already knows, simple answers from context | Coordinator answers directly — NO agent spawn | ~2-3s |
-| **Lightweight** | Single-file edits, small fixes, follow-ups, simple scoped read-only queries | Spawn ONE agent with minimal prompt (see Lightweight Spawn Template below). Use `agent_type: "explore"` for read-only queries | ~8-12s |
-| **Standard** | Normal tasks, single-agent work requiring full context | Spawn one agent with full ceremony — charter inline, history read, decisions read. This is the current default | ~25-35s |
-| **Full** | Multi-agent work, complex tasks touching 3+ concerns, "Team" requests | Parallel fan-out, full ceremony, Scribe included | ~40-60s |
+| Mode            | When                                                                                        | How                                                                                                                           | Target  |
+| --------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------- |
+| **Direct**      | Status checks, factual questions the coordinator already knows, simple answers from context | Coordinator answers directly — NO agent spawn                                                                                 | ~2-3s   |
+| **Lightweight** | Single-file edits, small fixes, follow-ups, simple scoped read-only queries                 | Spawn ONE agent with minimal prompt (see Lightweight Spawn Template below). Use `agent_type: "explore"` for read-only queries | ~8-12s  |
+| **Standard**    | Normal tasks, single-agent work requiring full context                                      | Spawn one agent with full ceremony — charter inline, history read, decisions read. This is the current default                | ~25-35s |
+| **Full**        | Multi-agent work, complex tasks touching 3+ concerns, "Team" requests                       | Parallel fan-out, full ceremony, Scribe included                                                                              | ~40-60s |
 
 ## Direct Mode exemplars
 
 Coordinator answers instantly, no spawn:
 
-- *"Where are we?"* → Summarize current state from context: branch, recent work, what the team's been doing. A user favorite — make it instant.
-- *"How many tests do we have?"* → Run a quick command, answer directly.
-- *"What branch are we on?"* → `git branch --show-current`, answer directly.
-- *"Who's on the team?"* → Answer from `team.md` already in context.
-- *"What did we decide about X?"* → Answer from `decisions.md` already in context.
+- _"Where are we?"_ → Summarize current state from context: branch, recent work, what the team's been doing. A user favorite — make it instant.
+- _"How many tests do we have?"_ → Run a quick command, answer directly.
+- _"What branch are we on?"_ → `git branch --show-current`, answer directly.
+- _"Who's on the team?"_ → Answer from `team.md` already in context.
+- _"What did we decide about X?"_ → Answer from `decisions.md` already in context.
 
 ## Lightweight Mode exemplars
 
 One agent, minimal prompt:
 
-- *"Fix the typo in README"* → Spawn one agent, no charter, no history read.
-- *"Add a comment to line 42"* → Small scoped edit, minimal context needed.
-- *"What does this function do?"* → `agent_type: "explore"` (Haiku model, fast).
+- _"Fix the typo in README"_ → Spawn one agent, no charter, no history read.
+- _"Add a comment to line 42"_ → Small scoped edit, minimal context needed.
+- _"What does this function do?"_ → `agent_type: "explore"` (Haiku model, fast).
 - Follow-up edits after a Standard/Full response — context is fresh, skip ceremony.
 
 ## Standard Mode exemplars
 
 One agent, full ceremony:
 
-- *"{AgentName}, add error handling to the export function"*
-- *"{AgentName}, review the prompt structure"*
+- _"{AgentName}, add error handling to the export function"_
+- _"{AgentName}, review the prompt structure"_
 - Any task requiring architectural judgment or multi-file awareness.
 
 ## Full Mode exemplars
 
 Multi-agent, parallel fan-out:
 
-- *"Team, build the login page"*
-- *"Add OAuth support"*
+- _"Team, build the login page"_
+- _"Add OAuth support"_
 - Any request that touches 3+ agent domains.
 
 ## Mode upgrade rules
@@ -79,7 +79,7 @@ prompt: |
   WORKTREE_PATH: {worktree_path}
   WORKTREE_MODE: {true|false}
   **Requested by:** {current user name}
-  
+
   {% if WORKTREE_MODE %}
   **WORKTREE:** Working in `{WORKTREE_PATH}`. All operations relative to this path. Do NOT switch branches.
   {% endif %}

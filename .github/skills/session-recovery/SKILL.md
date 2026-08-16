@@ -1,13 +1,13 @@
 ---
-name: "session-recovery"
-description: "Find and resume interrupted Copilot CLI sessions using session_store queries"
-domain: "workflow-recovery"
-confidence: "high"
-source: "earned"
+name: 'session-recovery'
+description: 'Find and resume interrupted Copilot CLI sessions using session_store queries'
+domain: 'workflow-recovery'
+confidence: 'high'
+source: 'earned'
 tools:
-  - name: "sql"
-    description: "Query session_store database for past session history"
-    when: "Always — session_store is the source of truth for session history"
+  - name: 'sql'
+    description: 'Query session_store database for past session history'
+    when: 'Always — session_store is the source of truth for session history'
 ---
 
 ## Context
@@ -134,12 +134,14 @@ copilot --resume SESSION_ID
 ## Examples
 
 **Recovering from a crash during PR creation:**
+
 1. Query recent sessions filtered by branch name
 2. Find the session that was working on the PR
 3. Check its last checkpoint — was the code committed? Was the PR created?
 4. Resume or manually complete the remaining steps
 
 **Finding yesterday's work on a feature:**
+
 1. Use FTS5 search with feature keywords
 2. Filter to the relevant working directory
 3. Review checkpoint progress to see how far the session got

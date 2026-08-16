@@ -1,9 +1,9 @@
 ---
-name: "reviewer-protocol"
-description: "Reviewer rejection workflow and strict lockout semantics"
-domain: "orchestration"
-confidence: "high"
-source: "extracted"
+name: 'reviewer-protocol'
+description: 'Reviewer rejection workflow and strict lockout semantics'
+domain: 'orchestration'
+confidence: 'high'
+source: 'extracted'
 ---
 
 ## Context
@@ -18,8 +18,8 @@ When a team member has a **Reviewer** role:
 
 - Reviewers may **approve** or **reject** work from other agents.
 - On **rejection**, the Reviewer may choose ONE of:
-  1. **Reassign:** Require a *different* agent to do the revision (not the original author).
-  2. **Escalate:** Require a *new* agent be spawned with specific expertise.
+  1. **Reassign:** Require a _different_ agent to do the revision (not the original author).
+  2. **Escalate:** Require a _new_ agent be spawned with specific expertise.
 - The Coordinator MUST enforce this. If the Reviewer says "someone else should fix this," the original agent does NOT get to self-revise.
 - If the Reviewer approves, work proceeds normally.
 
@@ -38,6 +38,7 @@ When an artifact is **rejected** by a Reviewer:
 ## Examples
 
 **Example 1: Reassign after rejection**
+
 1. Fenster writes authentication module
 2. Hockney (Tester) reviews → rejects: "Error handling is missing. Verbal should fix this."
 3. Coordinator: Fenster is now locked out of this artifact
@@ -47,6 +48,7 @@ When an artifact is **rejected** by a Reviewer:
 7. Lockout clears for next artifact
 
 **Example 2: Escalate for expertise**
+
 1. Edie writes TypeScript config
 2. Keaton (Lead) reviews → rejects: "Need someone with deeper TS knowledge. Escalate."
 3. Coordinator: Edie is now locked out
@@ -55,6 +57,7 @@ When an artifact is **rejected** by a Reviewer:
 6. Keaton reviews v2
 
 **Example 3: Deadlock handling**
+
 1. Fenster writes module → rejected
 2. Verbal revises → rejected
 3. Hockney revises → rejected
@@ -62,6 +65,7 @@ When an artifact is **rejected** by a Reviewer:
 5. Coordinator: "All eligible agents have been locked out. Escalating to user: [artifact details]"
 
 **Example 4: Reviewer accidentally names original author**
+
 1. Fenster writes module → rejected
 2. Hockney says: "Fenster should fix the error handling"
 3. Coordinator: "Fenster is locked out as the original author. Please name a different agent."

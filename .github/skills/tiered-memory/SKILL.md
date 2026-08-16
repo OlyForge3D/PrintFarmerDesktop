@@ -19,6 +19,7 @@ Squad agents today load their full context history on every spawn, which grows u
 ## Memory Tiers
 
 ### 🔥 Hot Tier — Current Session Context
+
 - **Size target:** keep small (~2–4KB typical)
 - **Load policy:** Always loaded. Every spawn includes hot memory by default.
 - **Contents:** Current task description, active decisions made this session, immediate blockers, last 3–5 actions taken, who you are talking to right now.
@@ -26,6 +27,7 @@ Squad agents today load their full context history on every spawn, which grows u
 - **Purpose:** Provide immediate task context without any latency or load decision.
 
 ### ❄️ Cold Tier — Summarized Cross-Session History
+
 - **Size target:** larger summary, not full transcript (~8–12KB typical)
 - **Load policy:** Load on demand. Include only when the task explicitly needs history.
 - **Contents:** Summarized past sessions (compressed by Scribe), cross-session decisions, recurring patterns, unresolved issues from prior work.
@@ -34,6 +36,7 @@ Squad agents today load their full context history on every spawn, which grows u
 - **How to include:** Pass `--include-cold` in spawn template or add `## Cold Memory` section.
 
 ### 📚 Wiki Tier — Durable Structured Knowledge
+
 - **Size target:** variable, structured reference docs
 - **Load policy:** Async write, selective read. Load only when task requires domain knowledge.
 - **Contents:** Architecture decisions (ADRs), agent charters, routing rules, stable conventions, external API contracts, known platform constraints.
@@ -45,14 +48,14 @@ Squad agents today load their full context history on every spawn, which grows u
 
 ## When to Load Each Tier
 
-| Situation | Hot | Cold | Wiki |
-|-----------|-----|------|------|
-| New task, no prior context needed | ✅ | ❌ | ❌ |
-| Resuming interrupted work | ✅ | ✅ | ❌ |
-| Debugging a recurring issue | ✅ | ✅ | ❌ |
-| Implementing against a spec/ADR | ✅ | ❌ | ✅ |
-| Onboarding to unfamiliar subsystem | ✅ | ❌ | ✅ |
-| Post-incident review | ✅ | ✅ | ✅ |
+| Situation                          | Hot | Cold | Wiki |
+| ---------------------------------- | --- | ---- | ---- |
+| New task, no prior context needed  | ✅  | ❌   | ❌   |
+| Resuming interrupted work          | ✅  | ✅   | ❌   |
+| Debugging a recurring issue        | ✅  | ✅   | ❌   |
+| Implementing against a spec/ADR    | ✅  | ❌   | ✅   |
+| Onboarding to unfamiliar subsystem | ✅  | ❌   | ✅   |
+| Post-incident review               | ✅  | ✅   | ✅   |
 
 ---
 
@@ -68,6 +71,7 @@ The default spawn prompt should include **Hot tier only**:
 ```
 
 Add `--include-cold` when the task needs history:
+
 ```
 ## Memory Context
 
@@ -79,6 +83,7 @@ See: .squad/memory/cold/{agent-name}.md
 ```
 
 Add `--include-wiki` when the task needs domain knowledge:
+
 ```
 ## Memory Context
 
@@ -169,6 +174,7 @@ Summarized cross-session history is at:
 `.squad/memory/cold/{agent-name}.md`
 
 Include when:
+
 - Resuming interrupted work
 - Debugging a recurring issue
 - "What have we tried before?"
@@ -189,6 +195,7 @@ Include when:
 Wiki entries are at: `.squad/memory/wiki/`
 
 Include when:
+
 - Implementing against an ADR or spec
 - Onboarding to unfamiliar subsystem
 - Need stable conventions or API contracts
@@ -205,6 +212,7 @@ Include when:
 ## Escalation
 
 If blocked or uncertain:
+
 - Architecture questions → @picard
 - Security concerns → @worf
 - Infrastructure/deployment → @belanna
@@ -218,4 +226,3 @@ If blocked or uncertain:
 - Cold adds a summary; only include when history is relevant
 - Wiki adds variable size; only include specific relevant docs
 - Runtime backing is tracked in [bradygaster/squad#1264](https://github.com/bradygaster/squad/issues/1264) — until those changes land, this skill is design-only and agents continue to load full history.md + decisions.md on every spawn
-

@@ -32,14 +32,14 @@ When in VS Code mode, the coordinator changes behavior in these ways:
 
 #### Feature Degradation Table
 
-| Feature | CLI | VS Code | Degradation |
-|---------|-----|---------|-------------|
-| Parallel fan-out | `mode: "background"` + `read_agent` | Multiple subagents in one turn | None — equivalent concurrency |
-| Model selection | Per-spawn `model` param (4-layer hierarchy) | Session model only (Phase 1) | Accept session model, log intent |
-| Scribe fire-and-forget | Background, never read | Sync, must wait | Batch with last parallel group |
-| Launch table UX | Show table → results later | Skip table → results with response | UX only — results are correct |
-| SQL tool | Available | Not available | Avoid SQL in cross-platform code paths |
-| Response order bug | Critical workaround | Possibly necessary (unverified) | Keep the block — harmless if unnecessary |
+| Feature                | CLI                                         | VS Code                            | Degradation                              |
+| ---------------------- | ------------------------------------------- | ---------------------------------- | ---------------------------------------- |
+| Parallel fan-out       | `mode: "background"` + `read_agent`         | Multiple subagents in one turn     | None — equivalent concurrency            |
+| Model selection        | Per-spawn `model` param (4-layer hierarchy) | Session model only (Phase 1)       | Accept session model, log intent         |
+| Scribe fire-and-forget | Background, never read                      | Sync, must wait                    | Batch with last parallel group           |
+| Launch table UX        | Show table → results later                  | Skip table → results with response | UX only — results are correct            |
+| SQL tool               | Available                                   | Not available                      | Avoid SQL in cross-platform code paths   |
+| Response order bug     | Critical workaround                         | Possibly necessary (unverified)    | Keep the block — harmless if unnecessary |
 
 #### SQL Tool Caveat
 

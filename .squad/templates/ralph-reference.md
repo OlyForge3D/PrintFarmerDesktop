@@ -16,15 +16,15 @@ Ralph always appears in `team.md`: `| Ralph | Work Monitor | — | 🔄 Monitor 
 
 ### Triggers
 
-| User says | Action |
-|-----------|--------|
-| "Ralph, go" / "Ralph, start monitoring" / "keep working" | Activate work-check loop |
+| User says                                                       | Action                                               |
+| --------------------------------------------------------------- | ---------------------------------------------------- |
+| "Ralph, go" / "Ralph, start monitoring" / "keep working"        | Activate work-check loop                             |
 | "Ralph, status" / "What's on the board?" / "How's the backlog?" | Run one work-check cycle, report results, don't loop |
-| "Ralph, check every N minutes" | Set idle-watch polling interval |
-| "Ralph, idle" / "Take a break" / "Stop monitoring" | Fully deactivate (stop loop + idle-watch) |
-| "Ralph, scope: just issues" / "Ralph, skip CI" | Adjust what Ralph monitors this session |
-| References PR feedback or changes requested | Spawn agent to address PR review feedback |
-| "merge PR #N" / "merge it" (recent context) | Merge via `gh pr merge` |
+| "Ralph, check every N minutes"                                  | Set idle-watch polling interval                      |
+| "Ralph, idle" / "Take a break" / "Stop monitoring"              | Fully deactivate (stop loop + idle-watch)            |
+| "Ralph, scope: just issues" / "Ralph, skip CI"                  | Adjust what Ralph monitors this session              |
+| References PR feedback or changes requested                     | Spawn agent to address PR review feedback            |
+| "merge PR #N" / "merge it" (recent context)                     | Merge via `gh pr merge`                              |
 
 These are intent signals, not exact strings — match meaning, not words.
 
@@ -48,17 +48,18 @@ gh pr list --state open --draft --json number,title,author,labels,checks --limit
 
 **Step 2 — Categorize findings:**
 
-| Category | Signal | Action |
-|----------|--------|--------|
-| **Untriaged issues** | `squad` label, no `squad:{member}` label | Lead triages: reads issue, assigns `squad:{member}` label |
-| **Assigned but unstarted** | `squad:{member}` label, no assignee or no PR | Spawn the assigned agent to pick it up |
-| **Draft PRs** | PR in draft from squad member | Check if agent needs to continue; if stalled, nudge |
-| **Review feedback** | PR has `CHANGES_REQUESTED` review | Route feedback to PR author agent to address |
-| **CI failures** | PR checks failing | Notify assigned agent to fix, or create a fix issue |
-| **Approved PRs** | PR approved, CI green, ready to merge | Merge and close related issue |
-| **No work found** | All clear | Report: "📋 Board is clear. Ralph is idling." Suggest `npx @bradygaster/squad-cli watch` for persistent polling. |
+| Category                   | Signal                                       | Action                                                                                                           |
+| -------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Untriaged issues**       | `squad` label, no `squad:{member}` label     | Lead triages: reads issue, assigns `squad:{member}` label                                                        |
+| **Assigned but unstarted** | `squad:{member}` label, no assignee or no PR | Spawn the assigned agent to pick it up                                                                           |
+| **Draft PRs**              | PR in draft from squad member                | Check if agent needs to continue; if stalled, nudge                                                              |
+| **Review feedback**        | PR has `CHANGES_REQUESTED` review            | Route feedback to PR author agent to address                                                                     |
+| **CI failures**            | PR checks failing                            | Notify assigned agent to fix, or create a fix issue                                                              |
+| **Approved PRs**           | PR approved, CI green, ready to merge        | Merge and close related issue                                                                                    |
+| **No work found**          | All clear                                    | Report: "📋 Board is clear. Ralph is idling." Suggest `npx @bradygaster/squad-cli watch` for persistent polling. |
 
 **Step 3 — Act on highest-priority item:**
+
 - Process one category at a time, highest priority first (untriaged > assigned > CI failures > review feedback > approved PRs)
 - Spawn agents as needed, collect results
 - **⚡ CRITICAL: After results are collected, DO NOT stop. DO NOT wait for user input. IMMEDIATELY go back to Step 1 and scan again.** This is a loop — Ralph keeps cycling until the board is clear or the user says "idle". Each cycle is one "round".
@@ -88,6 +89,7 @@ npx @bradygaster/squad-cli watch --interval 30      # polls every 30 minutes
 ```
 
 This runs as a standalone local process (not inside Copilot) that:
+
 - Checks GitHub every N minutes for untriaged squad work
 - Auto-triages issues based on team roles and keywords
 - Assigns @copilot to `squad:copilot` issues (if auto-assign is enabled)
@@ -95,15 +97,16 @@ This runs as a standalone local process (not inside Copilot) that:
 
 **Three layers of Ralph:**
 
-| Layer | When | How |
-|-------|------|-----|
-| **In-session** | You're at the keyboard | "Ralph, go" — active loop while work exists |
-| **Local watchdog** | You're away but machine is on | `npx @bradygaster/squad-cli watch --interval 10` |
-| **Cloud heartbeat** | Fully unattended | `squad-heartbeat.yml` — event-based only (cron disabled) |
+| Layer               | When                          | How                                                      |
+| ------------------- | ----------------------------- | -------------------------------------------------------- |
+| **In-session**      | You're at the keyboard        | "Ralph, go" — active loop while work exists              |
+| **Local watchdog**  | You're away but machine is on | `npx @bradygaster/squad-cli watch --interval 10`         |
+| **Cloud heartbeat** | Fully unattended              | `squad-heartbeat.yml` — event-based only (cron disabled) |
 
 ### Ralph State
 
 Ralph's state is session-scoped (not persisted to disk):
+
 - **Active/idle** — whether the loop is running
 - **Round count** — how many check cycles completed
 - **Scope** — what categories to monitor (default: all)

@@ -5,6 +5,7 @@ MCP (Model Context Protocol) servers extend Squad with tools for external servic
 ## Config File Locations
 
 Users configure MCP servers at these locations (checked in priority order):
+
 1. **Repository-level:** `.copilot/mcp-config.json` (team-shared, committed to repo)
 2. **Workspace-level:** `.vscode/mcp.json` (VS Code workspaces)
 3. **User-level:** `~/.copilot/mcp-config.json` (personal)

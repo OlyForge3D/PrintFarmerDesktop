@@ -26,15 +26,15 @@ permanent state after a PR merges.
 
 Each agent writes to its own namespace to prevent conflicts:
 
-| Namespace | Owner | Purpose |
-|-----------|-------|---------|
-| `refs/notes/squad/data` | Data | Architecture decisions, implementation choices |
-| `refs/notes/squad/worf` | Worf | Security reviews, vulnerability assessments |
-| `refs/notes/squad/seven` | Seven | Documentation quality, API contract decisions |
-| `refs/notes/squad/ralph` | Ralph | Work-round progress, task-state annotations |
-| `refs/notes/squad/q` | Q | Devil's advocate findings, risk assessments |
+| Namespace                   | Owner     | Purpose                                            |
+| --------------------------- | --------- | -------------------------------------------------- |
+| `refs/notes/squad/data`     | Data      | Architecture decisions, implementation choices     |
+| `refs/notes/squad/worf`     | Worf      | Security reviews, vulnerability assessments        |
+| `refs/notes/squad/seven`    | Seven     | Documentation quality, API contract decisions      |
+| `refs/notes/squad/ralph`    | Ralph     | Work-round progress, task-state annotations        |
+| `refs/notes/squad/q`        | Q         | Devil's advocate findings, risk assessments        |
 | `refs/notes/squad/research` | Any agent | Research notes that should survive branch deletion |
-| `refs/notes/squad/review` | Any agent | Code review context (mirrors Gerrit's pattern) |
+| `refs/notes/squad/review`   | Any agent | Code review context (mirrors Gerrit's pattern)     |
 
 **Rule**: Only write to your own namespace. The shared namespaces
 (`research`, `review`) use `append` — never `add`.
@@ -152,6 +152,7 @@ Or use the helper:
 
 2. **Same agent, two machines:** First push wins. Losing machine should fetch
    and append:
+
    ```bash
    git fetch origin 'refs/notes/*:refs/notes/*'
    git notes --ref=squad/{agent} append -m '{...}' HEAD
@@ -172,13 +173,13 @@ Or use the helper:
 
 ## When to Use Notes vs State Backend
 
-| Use git notes | Use state backend |
-|---------------|-------------------|
-| Why THIS choice on THIS commit | Universal routing rules, conventions |
-| Decisions scoped to a feature | Long-lived decisions for all future work |
-| Research for a specific investigation | Research archives (promoted from notes) |
-| Security sign-offs per commit | Agent history persisting across features |
-| Agent-to-agent context for current feature | Team agreements and policies |
+| Use git notes                              | Use state backend                        |
+| ------------------------------------------ | ---------------------------------------- |
+| Why THIS choice on THIS commit             | Universal routing rules, conventions     |
+| Decisions scoped to a feature              | Long-lived decisions for all future work |
+| Research for a specific investigation      | Research archives (promoted from notes)  |
+| Security sign-offs per commit              | Agent history persisting across features |
+| Agent-to-agent context for current feature | Team agreements and policies             |
 
 When in doubt: **notes first, promote to permanent state later.** Ralph handles
 the promotion automatically when `promote_to_permanent` is set.

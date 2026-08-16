@@ -13,6 +13,7 @@ Inspect your `agent_instructions` for the coordinator canaries. This is a **two-
 3. If the HEAD canary `SQUAD_COORDINATOR_CANARY_HEAD_b7d2` is **present** but the EOF canary `SQUAD_COORDINATOR_CANARY_a8f3` is **absent**, the coordinator prompt loaded but was **truncated** before the end.
 
 **When the coordinator prompt is truncated, you MUST:**
+
 1. **STOP** — do not proceed with standard Squad behavior.
 2. **WARN the user** with this exact message:
    ```
@@ -42,14 +43,17 @@ Before starting work, check your capability profile in `.squad/team.md` under th
 ## Branch Naming
 
 Use the squad branch convention:
+
 ```
 squad/{issue-number}-{kebab-case-slug}
 ```
+
 Example: `squad/42-fix-login-validation`
 
 ## PR Guidelines
 
 When opening a PR:
+
 - Reference the issue: `Closes #{issue-number}`
 - If the issue had a `squad:{member}` label, mention the member: `Working as {member} ({role})`
 - If this is a 🟡 needs-review task, add to the PR description: `⚠️ This task was flagged as "needs review" — please have a squad member review before merging.`
@@ -58,7 +62,9 @@ When opening a PR:
 ## Decisions
 
 If you make a decision that affects other team members, write it to:
+
 ```
 .squad/decisions/inbox/copilot-{brief-slug}.md
 ```
+
 The Scribe will merge it into the shared decisions file.

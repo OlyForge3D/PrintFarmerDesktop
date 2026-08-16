@@ -1,9 +1,9 @@
 ---
-name: "cross-squad-communication"
-description: "Protocol for sending queries, delegating tasks, and sharing context between independent Squad instances across different repositories"
-domain: "multi-repo coordination"
-confidence: "medium"
-source: "Ported from tamirdresher/squad-skills (plugins/cross-squad-communication). Companion to the registry-aware cross-squad skill — this one teaches the actual communication protocols once a peer is discovered. Pattern 0 (synchronous CLI) is the only end-to-end-validated pattern; Patterns 1, 2, 3 are documented from design but require live validation against your own setup before relying on them in production. See the Validation Status section at the bottom of this skill."
+name: 'cross-squad-communication'
+description: 'Protocol for sending queries, delegating tasks, and sharing context between independent Squad instances across different repositories'
+domain: 'multi-repo coordination'
+confidence: 'medium'
+source: 'Ported from tamirdresher/squad-skills (plugins/cross-squad-communication). Companion to the registry-aware cross-squad skill — this one teaches the actual communication protocols once a peer is discovered. Pattern 0 (synchronous CLI) is the only end-to-end-validated pattern; Patterns 1, 2, 3 are documented from design but require live validation against your own setup before relying on them in production. See the Validation Status section at the bottom of this skill.'
 ---
 
 ## Context
@@ -13,6 +13,7 @@ When multiple repositories each have their own Squad (AI team), they need to exc
 > **Companion skill — read first:** `cross-squad/SKILL.md` covers **discovery** of peer squads via `squad registry add/list/remove`. This skill picks up after a peer is known and covers the **communication protocols** themselves — the four numbered patterns below: Pattern 0 (synchronous CLI), Pattern 1 (read-only knowledge query), Pattern 2 (git-based async), and Pattern 3 (GitHub-issue-based delegation). A separate non-numbered appendix (Cross-Repo Dependency Scan) is provided as a related analysis tool, not a communication pattern. The two skills are designed to be used together.
 
 **When this skill applies:**
+
 - A squad agent needs information from another squad-enabled repo
 - A task needs to be delegated to another squad
 - Cross-repo dependency analysis is needed
@@ -58,11 +59,13 @@ For quick knowledge queries, decision lookups, or short analyses — spawn a Cop
 This is the same technique used by `ralph-watch.ps1`: write the prompt to a temp file, then invoke the CLI with that file as input. The key insight is that setting the working directory to the target repo gives the CLI session access to that squad's `.squad/` metadata, codebase, and conventions.
 
 **Protocol:**
+
 1. Write prompt to a temp file (avoids argument-splitting issues, as learned in `ralph-watch.ps1`)
 2. Read the file into a string and invoke `copilot -p <text>` with `-C <directory>` set to the target repo (`-p` takes prompt text, NOT a file path) AND `--agent squad` so the spawned session uses the peer squad's coordinator (without `--agent` you get a generic Copilot CLI session that doesn't load the peer's `team.md`, MCP tools, or skills)
 3. Receive response in the same session
 
 **Invocation:**
+
 ```powershell
 # Spawn a Copilot CLI session targeting another squad's repo
 $targetRepo = "C:\repos\platform-squad-repo"
@@ -92,22 +95,24 @@ Start-Process pwsh -ArgumentList "-NoProfile -Command `"copilot -C '$targetRepo'
 
 **When to use synchronous vs async:**
 
-| Scenario | Pattern | Why |
-|----------|---------|-----|
-| Quick knowledge query | Synchronous CLI (Pattern 0) | Fast answer, no overhead |
-| "What did you decide about X?" | Synchronous CLI (Pattern 0) | Read decisions.md via the target squad's context |
-| PR review request | Either (Pattern 0 or 2/3) | Sync for quick feedback, async for thorough review |
-| Task delegation (do work in their repo) | Async (Pattern 2 or 3) | Work needs to persist beyond the session |
-| Long-running analysis | Async (Pattern 2) | May take multiple cycles |
-| Target repo not locally cloned | Async (Pattern 3) | Can't set working directory to a remote repo |
+| Scenario                                | Pattern                     | Why                                                |
+| --------------------------------------- | --------------------------- | -------------------------------------------------- |
+| Quick knowledge query                   | Synchronous CLI (Pattern 0) | Fast answer, no overhead                           |
+| "What did you decide about X?"          | Synchronous CLI (Pattern 0) | Read decisions.md via the target squad's context   |
+| PR review request                       | Either (Pattern 0 or 2/3)   | Sync for quick feedback, async for thorough review |
+| Task delegation (do work in their repo) | Async (Pattern 2 or 3)      | Work needs to persist beyond the session           |
+| Long-running analysis                   | Async (Pattern 2)           | May take multiple cycles                           |
+| Target repo not locally cloned          | Async (Pattern 3)           | Can't set working directory to a remote repo       |
 
 **The coordinator decides which pattern to use based on:**
+
 1. Is the target repo cloned locally? → If yes, sync CLI is available
 2. Is this a quick query or a long task? → Quick = sync, long = async
 3. Does the work need to persist? → If yes, use async (creates artifacts)
 4. Is the target squad's Ralph running? → Needed for async processing
 
 **Requirements:**
+
 - Target repo must be cloned locally (for `copilot -C <directory>`)
 - Target repo must be Squad-initialised (`.squad/config.json` + `.github/agents/squad.agent.md` present), so `--agent squad` resolves to the peer's coordinator
 - Prompt file avoids argument-splitting bugs (see `ralph-watch.ps1` lines 2166-2184)
@@ -139,7 +144,7 @@ $stallCount = 0
 while ($proc -and -not $proc.HasExited) {
     Start-Sleep -Seconds 15
     $currentSize = (Get-ChildItem $logDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
-    
+
     if ($currentSize -eq $lastSize) {
         $stallCount++
         if ($stallCount -ge 4) { # 60s with no progress
@@ -185,6 +190,7 @@ while ($proc -and -not $proc.HasExited) {
 For questions about another squad's architecture, decisions, or current state — read their `.squad/` metadata directly.
 
 **Protocol:**
+
 1. Read target repo's `.squad/team.md` → get stack, members, issue source
 2. Read `.squad/decisions.md` → get architectural decisions
 3. Read `.squad/routing.md` → understand who handles what
@@ -192,10 +198,12 @@ For questions about another squad's architecture, decisions, or current state �
 5. Scan code structure if needed (csproj files, directory layout)
 
 **Requirements:**
+
 - Target repo must be cloned locally or accessible via git
 - No authentication needed beyond git read access
 
 **Example:**
+
 ```powershell
 # Query another squad's architecture
 $targetRepo = "C:\repos\platform-squad-repo"
@@ -213,6 +221,7 @@ Get-Content "$targetRepo\.squad\identity\now.md"
 For work that needs the target squad to execute (PR reviews, issue analysis, code changes).
 
 **Protocol:**
+
 1. Create request file in YOUR repo: `.squad/cross-squad/requests/{timestamp}-{target}-{id}.yaml`
 2. Commit and push
 3. Target squad's Ralph detects on next cycle
@@ -220,6 +229,7 @@ For work that needs the target squad to execute (PR reviews, issue analysis, cod
 5. Your Ralph picks up the response
 
 **Request File Format:**
+
 ```yaml
 id: req-2026-06-13-001
 source_squad: research-squad
@@ -229,12 +239,13 @@ target_repo: your-org/platform-squad-repo
 request_type: knowledge_query | pr_review | task_delegation | dependency_check
 priority: high | normal | low
 created_at: 2026-06-13T10:00:00Z
-query: "What is the current architecture of the platform?"
-routing_hint: "lead"  # optional — which agent should handle this
+query: 'What is the current architecture of the platform?'
+routing_hint: 'lead' # optional — which agent should handle this
 status: pending
 ```
 
 **Response File Format:**
+
 ```yaml
 id: req-2026-06-13-001
 responding_squad: platform-squad
@@ -243,7 +254,7 @@ responded_at: 2026-06-13T10:15:00Z
 status: completed | partial | rejected
 response: |
   The platform architecture consists of...
-artifacts: []  # optional file paths
+artifacts: [] # optional file paths
 ```
 
 ---
@@ -253,6 +264,7 @@ artifacts: []  # optional file paths
 For repos on GitHub, use issues with labels as the message bus.
 
 **Protocol:**
+
 1. Create issue in target repo with label `squad:cross-squad`
 2. Include source squad identifier and routing hint in issue body
 3. Target squad's Ralph picks up and routes to appropriate agent
@@ -260,6 +272,7 @@ For repos on GitHub, use issues with labels as the message bus.
 5. Issue closed when complete
 
 **Example:**
+
 ```bash
 gh issue create \
   --repo your-org/platform-squad-repo \
@@ -279,6 +292,7 @@ gh issue create \
 For discovering how two repos relate to each other.
 
 **Protocol:**
+
 1. Search both repos for mutual references:
    ```powershell
    Select-String -Path (Get-ChildItem $repoA -Recurse -Include "*.md","*.cs","*.json","*.csproj") `
@@ -311,14 +325,14 @@ If `.squad/team.md` doesn't exist, the repo is not squad-enabled. Fall back to s
 
 ## Platform Compatibility Matrix
 
-| Source Issue Tracker | Target Issue Tracker | Mechanism |
-|---------------------|---------------------|-----------|
-| GitHub Issues | GitHub Issues | Issue-based (Pattern 3) |
-| GitHub Issues | ADO Work Items | Git-based (Pattern 2) |
-| GitHub Issues | Planner | Git-based (Pattern 2) |
-| ADO Work Items | GitHub Issues | Issue-based (Pattern 3) via `gh` CLI |
-| ADO Work Items | ADO Work Items | ADO cross-project work items |
-| Any | Any | Git-based (Pattern 2) — universal fallback |
+| Source Issue Tracker | Target Issue Tracker | Mechanism                                  |
+| -------------------- | -------------------- | ------------------------------------------ |
+| GitHub Issues        | GitHub Issues        | Issue-based (Pattern 3)                    |
+| GitHub Issues        | ADO Work Items       | Git-based (Pattern 2)                      |
+| GitHub Issues        | Planner              | Git-based (Pattern 2)                      |
+| ADO Work Items       | GitHub Issues        | Issue-based (Pattern 3) via `gh` CLI       |
+| ADO Work Items       | ADO Work Items       | ADO cross-project work items               |
+| Any                  | Any                  | Git-based (Pattern 2) — universal fallback |
 
 ---
 
@@ -348,8 +362,8 @@ source_squad: research-squad
 target_squad: platform-squad
 request_type: pr_review
 priority: normal
-query: "Review PR #54 — package version fix. Check for correctness."
-routing_hint: "lead"
+query: 'Review PR #54 — package version fix. Check for correctness.'
+routing_hint: 'lead'
 status: pending
 ```
 
@@ -358,6 +372,7 @@ status: pending
 ## Anti-Patterns
 
 ### ⚠️ Know when synchronous CLI is NOT the right choice
+
 ```powershell
 # WRONG — don't use sync CLI for long-running tasks that need artifacts
 copilot -C $targetRepo --agent squad -p (Get-Content $promptFile -Raw) --allow-all-tools
@@ -367,18 +382,23 @@ copilot -C $targetRepo --agent squad -p (Get-Content $promptFile -Raw) --allow-a
 copilot -C "C:\not\cloned\yet" --agent squad --allow-all-tools
 # If the repo isn't available locally → use issue-based delegation (Pattern 3)
 ```
+
 Synchronous CLI sessions (Pattern 0) are valid for quick queries and knowledge lookups. Use async patterns for work that needs to persist or where the target repo isn't available locally.
 
 ### ❌ Don't assume shared MCP tools
+
 Each squad has its own MCP server instances. You cannot invoke another squad's ADO tools or GitHub tools from your session.
 
 ### ❌ Don't skip the discovery step
+
 Always read `team.md` first. The target squad may use a different issue tracker, have different agents, or be in a different state than expected.
 
 ### ❌ Don't send requests to squads without Ralph
+
 If the target squad doesn't have Ralph (Work Monitor) running, async requests will never be processed. Check for recent Ralph activity first.
 
 ### ❌ Don't mix up repo platforms
+
 Different repos may use GitHub Issues vs Azure DevOps Work Items vs Jira. Check `team.md` / repository metadata for the right tooling before sending requests.
 
 ---
@@ -387,13 +407,13 @@ Different repos may use GitHub Issues vs Azure DevOps Work Items vs Jira. Check 
 
 This skill was originally drafted against two prototype squad setups (a GitHub-hosted platform squad with ~10 agents and an Azure DevOps-hosted automation squad with ~4 agents). The protocols are platform-agnostic; the examples in this document use generic names so you can substitute your own repos. Patterns 0 and 1 have been exercised end-to-end in those prototypes; Patterns 2 and 3 are documented from design but have not been end-to-end-validated against a live target repo.
 
-| Scenario | Result |
-|----------|--------|
-| Knowledge query (read-only) | ✅ Works via Pattern 1 |
-| Step handler discovery | ✅ Works via file scan |
-| PR review (basic) | ⚠️ Partial — git log only, no API |
-| Backlog enumeration | ⚠️ Partial — depends on issue platform |
-| Dependency analysis | ✅ Works via cross-reference scan |
+| Scenario                                  | Result                                                                           |
+| ----------------------------------------- | -------------------------------------------------------------------------------- |
+| Knowledge query (read-only)               | ✅ Works via Pattern 1                                                           |
+| Step handler discovery                    | ✅ Works via file scan                                                           |
+| PR review (basic)                         | ⚠️ Partial — git log only, no API                                                |
+| Backlog enumeration                       | ⚠️ Partial — depends on issue platform                                           |
+| Dependency analysis                       | ✅ Works via cross-reference scan                                                |
 | CLI invocation (sync) + Liveness Protocol | ✅ Works — session launches successfully; log monitoring prevents false timeouts |
 
 **Confidence: MEDIUM** — Synchronous CLI pattern (Pattern 0) validated end-to-end. Liveness protocol provides operational robustness against slow MCP initialization. Git-based async (Pattern 2) and issue-based (Pattern 3) untested end-to-end. Production readiness requires Ralph integration on both sides.

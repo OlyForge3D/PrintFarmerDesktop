@@ -15,6 +15,7 @@ Spawned agents have read access to the entire repository, including `.env` files
 ### Prohibited File Reads
 
 **NEVER read these files:**
+
 - `.env` (production secrets)
 - `.env.local` (local dev secrets)
 - `.env.production` (production environment)
@@ -24,11 +25,13 @@ Spawned agents have read access to the entire repository, including `.env` files
 - Any file matching `.env.*` UNLESS explicitly allowed (see below)
 
 **Allowed alternatives:**
+
 - `.env.example` (safe — contains placeholder values, no real secrets)
 - `.env.sample` (safe — documentation template)
 - `.env.template` (safe — schema/structure reference)
 
 **If you need config info:**
+
 1. **Ask the user directly** — "What's the database connection string?"
 2. **Read `.env.example`** — shows structure without exposing secrets
 3. **Read documentation** — check `README.md`, `docs/`, config guides
@@ -39,17 +42,18 @@ Spawned agents have read access to the entire repository, including `.env` files
 
 **NEVER write these to `.squad/` files:**
 
-| Pattern Type | Examples | Regex Pattern (for scanning) |
-|--------------|----------|-------------------------------|
-| API Keys | `OPENAI_API_KEY=sk-proj-...`, `GITHUB_TOKEN=ghp_...` | `[A-Z_]+(?:KEY|TOKEN|SECRET)=[^\s]+` |
-| Passwords | `DB_PASSWORD=super_secret_123`, `password: "..."` | `(?:PASSWORD|PASS|PWD)[:=]\s*["']?[^\s"']+` |
-| Connection Strings | `postgres://user:pass@host:5432/db`, `Server=...;Password=...` | `(?:postgres|mysql|mongodb)://[^@]+@|(?:Server|Host)=.*(?:Password|Pwd)=` |
-| JWT Tokens | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` | `eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+` |
-| Private Keys | `-----BEGIN PRIVATE KEY-----`, `-----BEGIN RSA PRIVATE KEY-----` | `-----BEGIN [A-Z ]+PRIVATE KEY-----` |
-| AWS Credentials | `AKIA...`, `aws_secret_access_key=...` | `AKIA[0-9A-Z]{16}|aws_secret_access_key=[^\s]+` |
-| Email Addresses | `user@example.com` (PII violation per team decision) | `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` |
+| Pattern Type       | Examples                                                         | Regex Pattern (for scanning)                           |
+| ------------------ | ---------------------------------------------------------------- | ------------------------------------------------------ |
+| API Keys           | `OPENAI_API_KEY=sk-proj-...`, `GITHUB_TOKEN=ghp_...`             | `[A-Z_]+(?:KEY                                         | TOKEN                         | SECRET)=[^\s]+`           |
+| Passwords          | `DB_PASSWORD=super_secret_123`, `password: "..."`                | `(?:PASSWORD                                           | PASS                          | PWD)[:=]\s*["']?[^\s"']+` |
+| Connection Strings | `postgres://user:pass@host:5432/db`, `Server=...;Password=...`   | `(?:postgres                                           | mysql                         | mongodb)://[^@]+@         | (?:Server | Host)=.*(?:Password | Pwd)=` |
+| JWT Tokens         | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...`                        | `eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+` |
+| Private Keys       | `-----BEGIN PRIVATE KEY-----`, `-----BEGIN RSA PRIVATE KEY-----` | `-----BEGIN [A-Z ]+PRIVATE KEY-----`                   |
+| AWS Credentials    | `AKIA...`, `aws_secret_access_key=...`                           | `AKIA[0-9A-Z]{16}                                      | aws_secret_access_key=[^\s]+` |
+| Email Addresses    | `user@example.com` (PII violation per team decision)             | `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`       |
 
 **What to write instead:**
+
 - Placeholder values: `DATABASE_URL=<set in .env>`
 - Redacted references: `API key configured (see .env.example)`
 - Architecture notes: "App uses JWT auth — token stored in session"
@@ -67,10 +71,10 @@ Spawned agents have read access to the entire repository, including `.env` files
    - Report to user:
      ```
      🚨 SECRET DETECTED — commit blocked
-     
+
      File: .squad/decisions/inbox/river-db-config.md
      Pattern: DATABASE_URL=postgres://user:password@localhost:5432/prod
-     
+
      This file contains credentials and MUST NOT be committed.
      Please remove the secret, replace with placeholder, and try again.
      ```
@@ -80,6 +84,7 @@ Spawned agents have read access to the entire repository, including `.env` files
    - Proceed with commit as normal
 
 **Implementation note for Scribe:**
+
 - Run validation AFTER staging files, BEFORE calling `git commit`
 - Use PowerShell `Select-String` or `git diff --cached` to scan staged content
 - Fail loud — secret leaks are unacceptable, blocking the commit is correct behavior
@@ -92,17 +97,17 @@ Spawned agents have read access to the entire repository, including `.env` files
 2. **Alert the user:**
    ```
    🚨 CREDENTIAL LEAK DETECTED
-   
+
    A secret was found in git history:
    Commit: abc1234
    File: .squad/decisions/inbox/agent-config.md
    Pattern: API_KEY=sk-proj-...
-   
+
    This requires immediate remediation:
    1. Revoke the exposed credential (regenerate API key, rotate password)
    2. Remove from git history (git filter-repo or BFG)
    3. Force-push the cleaned history
-   
+
    Do NOT proceed with new work until this is resolved.
    ```
 3. **Do NOT attempt to fix it yourself** — secret removal requires specialized tools
@@ -139,11 +144,12 @@ Agent: (reads .env)
 
 → Writes to .squad/decisions/inbox/river-db-schema.md:
     "Database connection: postgres://admin:super_secret_pw@prod.example.com:5432/appdb"
-    
+
 🚨 VIOLATION: Live credential written to committed file
 ```
 
 **Correct approach:**
+
 ```
 Agent: (reads .env.example OR asks user)
 User: "It's a Postgres database, schema is in migrations/"

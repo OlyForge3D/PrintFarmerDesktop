@@ -4,23 +4,23 @@ On-demand reference for Squad's casting system. Loaded during Init Mode or when 
 
 ## Universe Table
 
-| Universe | Capacity | Shape Tags | Resonance Signals |
-|---|---|---|---|
-| The Usual Suspects | 6 | small, noir, ensemble | crime, heist, mystery, deception |
-| Reservoir Dogs | 8 | small, noir, ensemble | crime, heist, tension, loyalty |
-| Alien | 8 | small, sci-fi, survival | space, isolation, threat, engineering |
-| Ocean's Eleven | 14 | medium, heist, ensemble | planning, coordination, roles, charm |
-| Arrested Development | 15 | medium, comedy, ensemble | dysfunction, business, family, satire |
-| Star Wars | 12 | medium, sci-fi, epic | conflict, mentorship, legacy, rebellion |
-| The Matrix | 10 | medium, sci-fi, cyberpunk | systems, reality, hacking, philosophy |
-| Firefly | 10 | medium, sci-fi, western | frontier, crew, independence, smuggling |
-| The Goonies | 8 | small, adventure, ensemble | exploration, treasure, kids, teamwork |
-| The Simpsons | 20 | large, comedy, ensemble | satire, community, family, absurdity |
-| Breaking Bad | 12 | medium, drama, tension | chemistry, transformation, consequence, power |
-| Lost | 18 | large, mystery, ensemble | survival, mystery, groups, leadership |
-| Marvel Cinematic Universe | 25 | large, action, ensemble | heroism, teamwork, powers, scale |
-| DC Universe | 18 | large, action, ensemble | justice, duality, powers, mythology |
-| Futurama | 12 | medium, sci-fi, comedy | future, robots, space, absurdity |
+| Universe                  | Capacity | Shape Tags                 | Resonance Signals                             |
+| ------------------------- | -------- | -------------------------- | --------------------------------------------- |
+| The Usual Suspects        | 6        | small, noir, ensemble      | crime, heist, mystery, deception              |
+| Reservoir Dogs            | 8        | small, noir, ensemble      | crime, heist, tension, loyalty                |
+| Alien                     | 8        | small, sci-fi, survival    | space, isolation, threat, engineering         |
+| Ocean's Eleven            | 14       | medium, heist, ensemble    | planning, coordination, roles, charm          |
+| Arrested Development      | 15       | medium, comedy, ensemble   | dysfunction, business, family, satire         |
+| Star Wars                 | 12       | medium, sci-fi, epic       | conflict, mentorship, legacy, rebellion       |
+| The Matrix                | 10       | medium, sci-fi, cyberpunk  | systems, reality, hacking, philosophy         |
+| Firefly                   | 10       | medium, sci-fi, western    | frontier, crew, independence, smuggling       |
+| The Goonies               | 8        | small, adventure, ensemble | exploration, treasure, kids, teamwork         |
+| The Simpsons              | 20       | large, comedy, ensemble    | satire, community, family, absurdity          |
+| Breaking Bad              | 12       | medium, drama, tension     | chemistry, transformation, consequence, power |
+| Lost                      | 18       | large, mystery, ensemble   | survival, mystery, groups, leadership         |
+| Marvel Cinematic Universe | 25       | large, action, ensemble    | heroism, teamwork, powers, scale              |
+| DC Universe               | 18       | large, action, ensemble    | justice, duality, powers, mythology           |
+| Futurama                  | 12       | medium, sci-fi, comedy     | future, robots, space, absurdity              |
 
 **Total: 15 built-in universes** — capacity range 6–25.
 
@@ -28,18 +28,19 @@ On-demand reference for Squad's casting system. Loaded during Init Mode or when 
 
 When the user does not request a themed universe, use **descriptive role-based names** instead of character names. Descriptive names are the default naming convention.
 
-| Role | Descriptive Name |
-|---|---|
-| Lead | Lead |
-| Frontend Dev | Frontend |
-| Backend Dev | Backend |
-| Tester / QA | Tester |
-| Security | Security |
-| DevRel / Docs | Docs |
-| Reviewer | Reviewer |
-| DevOps / Infra | Infra |
+| Role           | Descriptive Name |
+| -------------- | ---------------- |
+| Lead           | Lead             |
+| Frontend Dev   | Frontend         |
+| Backend Dev    | Backend          |
+| Tester / QA    | Tester           |
+| Security       | Security         |
+| DevRel / Docs  | Docs             |
+| Reviewer       | Reviewer         |
+| DevOps / Infra | Infra            |
 
 Rules for descriptive naming:
+
 - Use short, functional names that describe the agent's role.
 - Agent folder names are the descriptive name in lowercase (e.g., `.squad/agents/lead/`).
 - Set `"universe": "descriptive"` in `registry.json`.
@@ -73,12 +74,12 @@ When auto-selecting, score each built-in universe and pick the highest:
 score = size_fit + shape_fit + resonance_fit + LRU
 ```
 
-| Factor | Description |
-|---|---|
-| `size_fit` | How well the universe capacity matches the team size. Prefer universes where capacity ≥ agent_count with minimal waste. |
-| `shape_fit` | Match universe shape tags against the assignment shape derived from the project description. |
-| `resonance_fit` | Match universe resonance signals against session and repo context signals. |
-| `LRU` | Least-recently-used bonus — prefer universes not used in recent assignments (from `history.json`). |
+| Factor          | Description                                                                                                             |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `size_fit`      | How well the universe capacity matches the team size. Prefer universes where capacity ≥ agent_count with minimal waste. |
+| `shape_fit`     | Match universe shape tags against the assignment shape derived from the project description.                            |
+| `resonance_fit` | Match universe resonance signals against session and repo context signals.                                              |
+| `LRU`           | Least-recently-used bonus — prefer universes not used in recent assignments (from `history.json`).                      |
 
 Same inputs → same choice (unless LRU changes between assignments).
 
@@ -94,7 +95,8 @@ How to avoid it:
 - When unsure, pick a safer character from the same universe.
 - Keep existing name mappings stable — do not rename already-allocated agents or switch universes to dodge a spoiler. Only the next/new allocation should pick a different spoiler-safe character.
 
-> **Motivating example.** A user setting up a squad requested the *Malazan Book of the Fallen* universe (Steven Erikson) and was only four books into the series. The casting allocated two spoiler-bearing names:
+> **Motivating example.** A user setting up a squad requested the _Malazan Book of the Fallen_ universe (Steven Erikson) and was only four books into the series. The casting allocated two spoiler-bearing names:
+>
 > - One name bundled a **title/epithet the character only earns after a major mid-series development** — encoding a role they do not yet hold at the reader's current point in the story.
 > - The other referenced a **state/transformation that has not yet occurred** at the reader's position — revealing what later becomes of that character.
 >

@@ -1,5 +1,5 @@
 ---
-name: "squad-help"
+name: 'squad-help'
 description: "How to actually use Squad — Squad is a custom Copilot agent (invoked via the task tool with agent_type='Squad'), not a skill. This file explains the right invocation paths for setting up a team, listing squad commands, and initializing Squad in a new project."
 allowedTools: []
 confidence: high
@@ -14,17 +14,17 @@ domain: squad-onboarding
 
 ## Squad is a custom agent, not a skill
 
-The Squad framework registers a **custom Copilot CLI agent** at `.github/agents/squad.agent.md`. The agent is named **`Squad`** and its description is *"Your AI team. Describe what you're building, get a team of specialists that live in your repo."*
+The Squad framework registers a **custom Copilot CLI agent** at `.github/agents/squad.agent.md`. The agent is named **`Squad`** and its description is _"Your AI team. Describe what you're building, get a team of specialists that live in your repo."_
 
 Copilot CLI agents and skills are different things:
 
-| Thing | How to invoke | Example |
-|---|---|---|
-| **Skill** | `skill(name)` tool call or natural-language match | `skill(squad-commands)` |
-| **Agent** | `task` tool with `agent_type=<name>` | `task(name="...", agent_type="Squad", prompt="...")` |
-| **Slash command** | Built-in CLI keyword | `/agent`, `/skills`, `/mcp` |
+| Thing             | How to invoke                                     | Example                                              |
+| ----------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| **Skill**         | `skill(name)` tool call or natural-language match | `skill(squad-commands)`                              |
+| **Agent**         | `task` tool with `agent_type=<name>`              | `task(name="...", agent_type="Squad", prompt="...")` |
+| **Slash command** | Built-in CLI keyword                              | `/agent`, `/skills`, `/mcp`                          |
 
-Calling `skill(Squad)` will fail with *"Skill not found: Squad"* because Squad is the agent, not a skill. (`/squad` as a slash command also does not exist — only built-in CLI keywords like `/agent`, `/skills`, `/mcp` are slash commands. There's no way to map a skill name to a slash command without a Copilot CLI feature change.)
+Calling `skill(Squad)` will fail with _"Skill not found: Squad"_ because Squad is the agent, not a skill. (`/squad` as a slash command also does not exist — only built-in CLI keywords like `/agent`, `/skills`, `/mcp` are slash commands. There's no way to map a skill name to a slash command without a Copilot CLI feature change.)
 
 ---
 
@@ -45,10 +45,11 @@ task(
 ```
 
 Use this when the user says things like:
-- *"Use Squad to build X"*
-- *"Set up an AI team for this project"*
-- *"Have the Squad coordinator design Y"*
-- *"Spawn Squad"* / *"Squad, help me with ..."*
+
+- _"Use Squad to build X"_
+- _"Set up an AI team for this project"_
+- _"Have the Squad coordinator design Y"_
+- _"Spawn Squad"_ / _"Squad, help me with ..."_
 
 ### B) See what Squad commands exist
 
@@ -57,9 +58,10 @@ The `squad-commands` skill is a categorized catalog of common Squad operations. 
 Trigger by natural-language match: `"squad commands"`, `"what can squad do"`, `"show me squad options"`, `"slash commands"`, `"what commands are available"`.
 
 Use this when the user says things like:
-- *"What can Squad do?"*
-- *"Show me the squad commands"*
-- *"squad help"*
+
+- _"What can Squad do?"_
+- _"Show me the squad commands"_
+- _"squad help"_
 
 ### C) Initialize Squad in a fresh project
 

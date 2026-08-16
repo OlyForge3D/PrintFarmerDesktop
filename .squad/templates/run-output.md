@@ -10,10 +10,10 @@
 
 <!-- Track all active constraints inline. Remove this section if no constraints are active. -->
 
-| Constraint | Used | Max | Status |
-|------------|------|-----|--------|
+| Constraint           | Used   | Max   | Status               |
+| -------------------- | ------ | ----- | -------------------- |
 | Clarifying questions | 📊 {n} | {max} | {Active / Exhausted} |
-| Revision cycles | 📊 {n} | {max} | {Active / Exhausted} |
+| Revision cycles      | 📊 {n} | {max} | {Active / Exhausted} |
 
 ## Result
 
@@ -27,13 +27,13 @@
 
 ### Review by {Name} ({Role})
 
-| Field | Value |
-|-------|-------|
-| **Verdict** | {Approved / Rejected} |
-| **What's wrong** | {Specific issue — not vague} |
-| **Why it matters** | {Impact if not fixed} |
-| **Who fixes it** | {Name of agent assigned to revise — MUST NOT be the original author} |
-| **Revision budget** | 📊 {used} / {max} revision cycles remaining |
+| Field               | Value                                                                |
+| ------------------- | -------------------------------------------------------------------- |
+| **Verdict**         | {Approved / Rejected}                                                |
+| **What's wrong**    | {Specific issue — not vague}                                         |
+| **Why it matters**  | {Impact if not fixed}                                                |
+| **Who fixes it**    | {Name of agent assigned to revise — MUST NOT be the original author} |
+| **Revision budget** | 📊 {used} / {max} revision cycles remaining                          |
 
 ---
 

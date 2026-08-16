@@ -13,32 +13,33 @@ When the user says "add copilot", "add the coding agent", or "use @copilot for i
 2. **Add capability profile** (below the roster table):
    ```markdown
    <!-- copilot-auto-assign: true -->
+
    ### @copilot — Capability Profile
 
-   | Capability | Level | Notes |
-   |-----------|-------|-------|
-   | Bug fixes (well-scoped) | 🟢 | Best for isolated, test-covered fixes |
-   | Feature implementation | 🟡 | Works well with clear specs; may need review |
-   | Refactoring | 🟡 | Handles mechanical refactors; verify scope |
-   | Architecture decisions | 🔴 | Cannot make cross-cutting design choices |
-   | Multi-repo coordination | 🔴 | Limited to single-repo context |
-   | Test writing | 🟢 | Strong at adding tests for existing code |
-   | Documentation | 🟢 | Generates docs from code effectively |
+   | Capability              | Level | Notes                                        |
+   | ----------------------- | ----- | -------------------------------------------- |
+   | Bug fixes (well-scoped) | 🟢    | Best for isolated, test-covered fixes        |
+   | Feature implementation  | 🟡    | Works well with clear specs; may need review |
+   | Refactoring             | 🟡    | Handles mechanical refactors; verify scope   |
+   | Architecture decisions  | 🔴    | Cannot make cross-cutting design choices     |
+   | Multi-repo coordination | 🔴    | Limited to single-repo context               |
+   | Test writing            | 🟢    | Strong at adding tests for existing code     |
+   | Documentation           | 🟢    | Generates docs from code effectively         |
    ```
 3. **Add routing entries** to routing.md for appropriate work types.
 4. **Do not create** `charter.md` — @copilot uses `copilot-instructions.md` instead.
 
 ## Comparison: Spawned Agent vs. @copilot
 
-| | Spawned Agent | @copilot |
-|---|--------------|----------|
-| Execution model | Sync sub-task within session | Async — picks up assigned issues |
-| Branch convention | `squad/{issue}-{slug}` | `copilot/{slug}` |
-| Trigger | Coordinator spawns directly | Issue assignment |
-| Charter source | `.squad/agents/{name}/charter.md` | `.github/copilot-instructions.md` |
-| Context window | Inherits full session context | Fresh context per issue |
-| Reviewer gating | ✅ Enforced by coordinator | ✅ Via PR review process |
-| Speed | Immediate (in-session) | Minutes (async queue) |
+|                   | Spawned Agent                     | @copilot                          |
+| ----------------- | --------------------------------- | --------------------------------- |
+| Execution model   | Sync sub-task within session      | Async — picks up assigned issues  |
+| Branch convention | `squad/{issue}-{slug}`            | `copilot/{slug}`                  |
+| Trigger           | Coordinator spawns directly       | Issue assignment                  |
+| Charter source    | `.squad/agents/{name}/charter.md` | `.github/copilot-instructions.md` |
+| Context window    | Inherits full session context     | Fresh context per issue           |
+| Reviewer gating   | ✅ Enforced by coordinator        | ✅ Via PR review process          |
+| Speed             | Immediate (in-session)            | Minutes (async queue)             |
 
 ## Roster Format
 
@@ -60,10 +61,10 @@ Controlled by the HTML comment in team.md:
 <!-- copilot-auto-assign: true -->
 ```
 
-| Setting | Behavior |
-|---------|----------|
-| `true` | Lead assigns routed issues to @copilot automatically via `gh issue edit --add-assignee @copilot` |
-| `false` | Lead presents recommendation; user confirms before assignment |
+| Setting | Behavior                                                                                         |
+| ------- | ------------------------------------------------------------------------------------------------ |
+| `true`  | Lead assigns routed issues to @copilot automatically via `gh issue edit --add-assignee @copilot` |
+| `false` | Lead presents recommendation; user confirms before assignment                                    |
 
 ## Lead Triage Integration
 
@@ -84,6 +85,7 @@ Add to `routing.md`:
 ```
 
 Work that routes to @copilot:
+
 - Creates/assigns the GitHub issue (if not already)
 - Does NOT spawn a sub-agent — @copilot works asynchronously
 - Coordinator reports: "🤖 Assigned #{number} to @copilot — will open a PR when ready."
@@ -92,5 +94,6 @@ Work that routes to @copilot:
 ## Monitoring @copilot Work
 
 On each watch cycle (or when user asks "status"):
+
 - Check for open PRs from `copilot/*` branches.
 - Report: "🤖 @copilot: {N} PRs open ({list}). {M} issues assigned, pending."

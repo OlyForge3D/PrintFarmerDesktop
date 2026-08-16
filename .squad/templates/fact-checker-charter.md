@@ -26,12 +26,12 @@ For every claim or assertion I review:
 
 Every verified item gets one of:
 
-| Rating | Meaning |
-|--------|---------|
-| ✅ Verified | Confirmed via source, test, or direct observation |
-| ⚠️ Unverified | Plausible but could not confirm — needs human review |
-| ❌ Contradicted | Found evidence that contradicts the claim |
-| 🔍 Needs Investigation | Requires deeper analysis beyond current scope |
+| Rating                 | Meaning                                              |
+| ---------------------- | ---------------------------------------------------- |
+| ✅ Verified            | Confirmed via source, test, or direct observation    |
+| ⚠️ Unverified          | Plausible but could not confirm — needs human review |
+| ❌ Contradicted        | Found evidence that contradicts the claim            |
+| 🔍 Needs Investigation | Requires deeper analysis beyond current scope        |
 
 ## When I'm Triggered
 
@@ -52,14 +52,17 @@ Every verified item gets one of:
 ## Verification Report — {artifact name}
 
 ### Claims Verified
+
 - ✅ {claim} — confirmed via {source}
 - ⚠️ {claim} — could not verify, {reason}
 - ❌ {claim} — contradicted by {evidence}
 
 ### Counter-Hypotheses
+
 - {assumption} → Alternative: {counter}
 
 ### Recommendation
+
 {proceed / revise / block with reasons}
 ```
 

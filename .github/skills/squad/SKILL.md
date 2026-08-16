@@ -28,6 +28,7 @@ When the user triggers this skill (via `/squad` slash command, "squad commands",
 **Argument collection:** For entries with `args`, iterate the list sequentially. Use `ask_user` with choices when `choices` is provided; free-text prompt otherwise. If the user says "just do it" or "defaults are fine," skip remaining args and use their defaults.
 
 **Confirmation template:**
+
 ```
 ⚠️ This will {action-description}.
 {what will change}

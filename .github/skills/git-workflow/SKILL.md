@@ -1,32 +1,34 @@
 ---
-name: "git-workflow"
-description: "Squad branching model: dev-first workflow with insiders preview channel"
-domain: "version-control"
-confidence: "high"
-source: "team-decision"
+name: 'git-workflow'
+description: 'Squad branching model: dev-first workflow with insiders preview channel'
+domain: 'version-control'
+confidence: 'high'
+source: 'team-decision'
 ---
 
 ## Context
 
 Squad uses a three-branch model. **All feature work starts from `dev`, not `main`.**
 
-| Branch | Purpose | Publishes |
-|--------|---------|-----------|
-| `main` | Released, tagged, in-npm code only | `npm publish` on tag |
-| `dev` | Integration branch — all feature work lands here | `npm publish --tag preview` on merge |
-| `insiders` | Early-access channel — synced from dev | `npm publish --tag insiders` on sync |
+| Branch     | Purpose                                          | Publishes                            |
+| ---------- | ------------------------------------------------ | ------------------------------------ |
+| `main`     | Released, tagged, in-npm code only               | `npm publish` on tag                 |
+| `dev`      | Integration branch — all feature work lands here | `npm publish --tag preview` on merge |
+| `insiders` | Early-access channel — synced from dev           | `npm publish --tag insiders` on sync |
 
 ## Branch Naming Convention
 
 Issue branches MUST use: `squad/{issue-number}-{kebab-case-slug}`
 
 Examples:
+
 - `squad/195-fix-version-stamp-bug`
 - `squad/42-add-profile-api`
 
 ## Workflow for Issue Work
 
 1. **Branch from dev:**
+
    ```bash
    git checkout dev
    git pull origin dev
@@ -34,11 +36,13 @@ Examples:
    ```
 
 2. **Mark issue in-progress:**
+
    ```bash
    gh issue edit {number} --add-label "status:in-progress"
    ```
 
 3. **Create draft PR targeting dev:**
+
    ```bash
    gh pr create --base dev --title "{description}" --body "Closes #{issue-number}" --draft
    ```
@@ -46,6 +50,7 @@ Examples:
 4. **Do the work.** Make changes, write tests, commit with issue reference.
 
 5. **Push and mark ready:**
+
    ```bash
    git push -u origin squad/{issue-number}-{slug}
    gh pr ready
@@ -65,11 +70,11 @@ When the coordinator routes multiple issues simultaneously (e.g., "fix bugs X, Y
 
 ### When to Use Worktrees vs Sequential
 
-| Scenario | Strategy |
-|----------|----------|
-| Single issue | Standard workflow above — no worktree needed |
-| 2+ simultaneous issues in same repo | Worktrees — one per issue |
-| Work spanning multiple repos | Separate clones as siblings (see Multi-Repo below) |
+| Scenario                            | Strategy                                           |
+| ----------------------------------- | -------------------------------------------------- |
+| Single issue                        | Standard workflow above — no worktree needed       |
+| 2+ simultaneous issues in same repo | Worktrees — one per issue                          |
+| Work spanning multiple repos        | Separate clones as siblings (see Multi-Repo below) |
 
 ### Setup
 
@@ -87,6 +92,7 @@ git worktree add ../squad-193 -b squad/193-refactor-loader origin/dev
 **Naming convention:** `../{repo-name}-{issue-number}` (e.g., `../squad-195`, `../squad-pr-42`).
 
 Each worktree:
+
 - Has its own working directory and index
 - Is on its own `squad/{issue-number}-{slug}` branch from dev
 - Shares the same `.git` object store (disk-efficient)
@@ -111,6 +117,7 @@ All PRs target `dev` independently. Agents never interfere with each other's fil
 ### .squad/ State in Worktrees
 
 The `.squad/` directory exists in each worktree as a copy. This is safe because:
+
 - `.gitattributes` declares `merge=union` on append-only files (history.md, decisions.md, logs)
 - Each agent appends to its own section; union merge reconciles on PR merge to dev
 - **Rule:** Never rewrite or reorder `.squad/` files in a worktree — append only
@@ -181,6 +188,7 @@ cd ../squad-sdk && pip install -e .
 ### Worktrees + Multi-Repo
 
 These compose naturally. You can have:
+
 - Multiple worktrees in the main repo (parallel issues)
 - Separate clones for downstream repos
 - Each combination operates independently

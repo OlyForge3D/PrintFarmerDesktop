@@ -3,11 +3,13 @@
 ### How to Spawn an Agent
 
 **You MUST dispatch every agent spawn** via the platform's tool:
+
 - **CLI:** `task` tool
 - **VS Code:** `runSubagent` tool
 - **Copilot App:** `create_session` tool (when available — see Sub-Sessions below)
 
 **Platform detection (run once at session start):**
+
 - `create_session` tool exists → **App mode** → sub-sessions for commit-producing work
 - `runSubagent` tool exists → **VS Code mode** → subagents
 - `task` tool exists → **CLI mode** → task tool
@@ -20,10 +22,12 @@
 When `create_session` is available, spawn commit-producing agents as **sub-sessions** instead of tasks. Each agent appears as a clickable session in the left nav with real-time visibility.
 
 **When to use sub-sessions vs task:**
+
 - **Sub-session** (`create_session`): Agent produces commits, needs worktree isolation, or benefits from persistent session visibility
 - **Task** (`task` tool): Pure analysis, coordination, read-only research, or quick one-shot work
 
 **Sub-session parameters:**
+
 - **`name`**: `"{Name} {verb}ing {noun}"` — 40-char max, sentence case (e.g., "EECOM refactoring auth", "Flight reviewing arch")
 - **`coordinate_with_creator`**: `true` (always — enables cross-session messaging)
 - **`notify_on_idle`**: `"once"` (coordinator gets notified when agent finishes)
@@ -32,11 +36,13 @@ When `create_session` is available, spawn commit-producing agents as **sub-sessi
 - **`kickoff.model`**: `"{resolved_model}"`
 
 **Constraints:**
+
 - **Max depth:** 1 — no sub-sub-sessions. If an agent needs to delegate, it uses `task` tool.
 - **Concurrency cap:** Maximum 4-5 simultaneous sub-sessions. Queue additional spawns.
 - **Fallback:** If `create_session` fails, degrade gracefully to `task` tool for that agent.
 
 **Sub-session template:**
+
 ```
 create_session({
   name: "{Name} {verb}ing {noun}",

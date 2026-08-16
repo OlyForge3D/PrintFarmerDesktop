@@ -16,28 +16,29 @@ Before spawning an agent, determine which model to use. Check these layers in or
 
 **Layer 3 — Task-Aware Auto-Selection:** Use the governing principle: **cost first, unless code is being written.** Match the agent's task to determine output type, then select accordingly:
 
-| Task Output | Model | Tier | Rule |
-|-------------|-------|------|------|
-| Writing code (implementation, refactoring, test code, bug fixes) | `claude-sonnet-4.6` | Standard | Quality and accuracy matter for code. Use standard tier. |
-| Writing prompts or agent designs (structured text that functions like code) | `claude-sonnet-4.6` | Standard | Prompts are executable — treat like code. |
-| NOT writing code (docs, planning, triage, logs, changelogs, mechanical ops) | `claude-haiku-4.5` | Fast | Cost first. Haiku handles non-code tasks. |
-| Visual/design work requiring image analysis | `claude-opus-4.8` | Premium | Vision capability required. Overrides cost rule. |
+| Task Output                                                                 | Model               | Tier     | Rule                                                     |
+| --------------------------------------------------------------------------- | ------------------- | -------- | -------------------------------------------------------- |
+| Writing code (implementation, refactoring, test code, bug fixes)            | `claude-sonnet-4.6` | Standard | Quality and accuracy matter for code. Use standard tier. |
+| Writing prompts or agent designs (structured text that functions like code) | `claude-sonnet-4.6` | Standard | Prompts are executable — treat like code.                |
+| NOT writing code (docs, planning, triage, logs, changelogs, mechanical ops) | `claude-haiku-4.5`  | Fast     | Cost first. Haiku handles non-code tasks.                |
+| Visual/design work requiring image analysis                                 | `claude-opus-4.8`   | Premium  | Vision capability required. Overrides cost rule.         |
 
 **Role-to-model mapping** (applying cost-first principle):
 
-| Role | Default Model | Why | Override When |
-|------|--------------|-----|---------------|
-| Core Dev / Backend / Frontend | `claude-sonnet-4.6` | Writes code — quality first | Heavy code gen → `gpt-5.3-codex` |
-| Tester / QA | `claude-sonnet-4.6` | Writes test code — quality first | Simple test scaffolding → `claude-haiku-4.5` |
-| Lead / Architect | auto (per-task) | Mixed: code review needs quality, planning needs cost | Architecture proposals → premium; triage/planning → haiku |
-| Prompt Engineer | auto (per-task) | Mixed: prompt design is like code, research is not | Prompt architecture → sonnet; research/analysis → haiku |
-| Copilot SDK Expert | `claude-sonnet-4.6` | Technical analysis that often touches code | Pure research → `claude-haiku-4.5` |
-| Designer / Visual | `claude-opus-4.8` | Vision-capable model required | — (never downgrade — vision is non-negotiable) |
-| DevRel / Writer | `claude-haiku-4.5` | Docs and writing — not code | — |
-| Scribe / Logger | `claude-haiku-4.5` | Mechanical file ops — cheapest possible | — (never bump Scribe) |
-| Git / Release | `claude-haiku-4.5` | Mechanical ops — changelogs, tags, version bumps | — (never bump mechanical ops) |
+| Role                          | Default Model       | Why                                                   | Override When                                             |
+| ----------------------------- | ------------------- | ----------------------------------------------------- | --------------------------------------------------------- |
+| Core Dev / Backend / Frontend | `claude-sonnet-4.6` | Writes code — quality first                           | Heavy code gen → `gpt-5.3-codex`                          |
+| Tester / QA                   | `claude-sonnet-4.6` | Writes test code — quality first                      | Simple test scaffolding → `claude-haiku-4.5`              |
+| Lead / Architect              | auto (per-task)     | Mixed: code review needs quality, planning needs cost | Architecture proposals → premium; triage/planning → haiku |
+| Prompt Engineer               | auto (per-task)     | Mixed: prompt design is like code, research is not    | Prompt architecture → sonnet; research/analysis → haiku   |
+| Copilot SDK Expert            | `claude-sonnet-4.6` | Technical analysis that often touches code            | Pure research → `claude-haiku-4.5`                        |
+| Designer / Visual             | `claude-opus-4.8`   | Vision-capable model required                         | — (never downgrade — vision is non-negotiable)            |
+| DevRel / Writer               | `claude-haiku-4.5`  | Docs and writing — not code                           | —                                                         |
+| Scribe / Logger               | `claude-haiku-4.5`  | Mechanical file ops — cheapest possible               | — (never bump Scribe)                                     |
+| Git / Release                 | `claude-haiku-4.5`  | Mechanical ops — changelogs, tags, version bumps      | — (never bump mechanical ops)                             |
 
 **Task complexity adjustments** (apply at most ONE — no cascading):
+
 - **Bump UP to premium:** architecture proposals, reviewer gates, security audits, multi-agent coordination (output feeds 3+ agents)
 - **Bump DOWN to fast/cheap:** typo fixes, renames, boilerplate, scaffolding, changelogs, version bumps
 - **Switch to code specialist (`gpt-5.3-codex`):** large multi-file refactors, complex implementation from spec, heavy code generation (500+ lines)
@@ -58,6 +59,7 @@ Fast:     claude-haiku-4.5 → gpt-5.4-mini → gpt-5-mini → (omit model param
 `(omit model param)` = call the `task` tool WITHOUT the `model` parameter. The platform uses its built-in default. This is the nuclear fallback — it always works.
 
 **Fallback rules:**
+
 - If the user specified a provider ("use Claude"), fall back within that provider only before hitting nuclear
 - Never fall back UP in tier — a fast/cheap task should not land on a premium model
 - Log fallbacks to the orchestration log for debugging, but never surface to the user unless asked

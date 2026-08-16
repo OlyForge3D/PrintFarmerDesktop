@@ -1,5 +1,7 @@
 name: Squad Preview Validation
 
+# merge-queue: publication
+
 on:
   push:
     branches: [preview]
@@ -9,6 +11,7 @@ permissions:
 
 jobs:
   validate:
+    name: Validate Squad preview
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 #v4

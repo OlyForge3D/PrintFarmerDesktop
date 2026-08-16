@@ -1,8 +1,8 @@
 ---
-name: "iterative-retrieval"
-description: "Max-3-cycle protocol for agent sub-tasks with WHY context and coordinator validation. Use when spawning sub-agents to complete scoped work."
-domain: "agent-coordination"
-confidence: "high"
+name: 'iterative-retrieval'
+description: 'Max-3-cycle protocol for agent sub-tasks with WHY context and coordinator validation. Use when spawning sub-agents to complete scoped work.'
+domain: 'agent-coordination'
+confidence: 'high'
 license: MIT
 ---
 
@@ -45,11 +45,11 @@ Example:
 
 ## 3-Cycle Protocol
 
-| Cycle | Description | Exit condition |
-|-------|-------------|----------------|
-| **1** | Initial attempt | Done → coordinator validates. Incomplete → surface delta. |
-| **2** | Targeted retry with specific corrections | Done → coordinator validates. Incomplete → one more. |
-| **3** | Final attempt with all context from cycles 1–2 | Done or escalate — no cycle 4. |
+| Cycle | Description                                    | Exit condition                                            |
+| ----- | ---------------------------------------------- | --------------------------------------------------------- |
+| **1** | Initial attempt                                | Done → coordinator validates. Incomplete → surface delta. |
+| **2** | Targeted retry with specific corrections       | Done → coordinator validates. Incomplete → one more.      |
+| **3** | Final attempt with all context from cycles 1–2 | Done or escalate — no cycle 4.                            |
 
 ### Rules
 
@@ -79,11 +79,13 @@ If any item fails → do **not** accept. Spawn cycle N+1 (up to cycle 3) with sp
 ## When to Escalate vs Retry
 
 **Retry (cycle N+1)** when:
+
 - Output is structurally correct but missing specific items
 - Agent misunderstood scope (provide more context and re-run)
 - Partial success — clearly identified remaining delta
 
 **Escalate** when:
+
 - Requirements are fundamentally unclear (decision needed)
 - 3 cycles complete without convergence
 - Agent returned conflicting results across cycles
@@ -138,6 +140,7 @@ If no action is warranted, the agent must explicitly state why and get coordinat
 ## Examples
 
 ### Good spawn prompt
+
 ```
 ## Task
 Add an "Iterative Retrieval Protocol" section to `.squad/agents/coordinator/charter.md` explaining
@@ -160,6 +163,7 @@ If uncertain about content, stop and surface to coordinator.
 ```
 
 ### Bad spawn prompt (don't do this)
+
 ```
 Update the coordinator charter with the iterative retrieval stuff.
 ```

@@ -24,7 +24,7 @@ top of `squad.agent.md` (or from the `- **Version:** X` identity line as
 fallback). Classify the channel:
 
 | Stamped version contains | Channel   |
-|--------------------------|-----------|
+| ------------------------ | --------- |
 | `-insider`               | `insider` |
 | `-preview`               | `preview` |
 | (neither)                | `latest`  |
@@ -43,11 +43,13 @@ on startup and writes it to an OS-specific path with a 24h TTL. Read that
 cache instead of making a new npm call.
 
 **One-liner to read the upstream cache:**
+
 ```
 node -e "const p=require('path'),o=require('os');const b=process.env.APPDATA||(process.platform==='darwin'?p.join(o.homedir(),'Library','Application Support'):p.join(o.homedir(),'.config'));const f=p.join(b,'squad-cli','update-check.json');try{const d=JSON.parse(require('fs').readFileSync(f,'utf8'));const age=Date.now()-d.checkedAt;if(age<86400000)console.log(JSON.stringify(d));else console.log('STALE')}catch{console.log('MISS')}"
 ```
 
 Output semantics:
+
 - Valid JSON `{"latestVersion":"X.Y.Z","checkedAt":N}` → cache hit; use `latestVersion`
 - `STALE` → cache expired (older than 24h); treat as no data
 - `MISS` → cache missing or corrupt; treat as no data
@@ -57,6 +59,7 @@ independent npm call for `latest`-channel users — the upstream CLI will refres
 the cache on its next run.
 
 **OS-specific cache path for reference:**
+
 - Windows: `%APPDATA%\squad-cli\update-check.json`
 - Linux: `~/.config/squad-cli/update-check.json`
 - macOS: `~/Library/Application Support/squad-cli/update-check.json`
@@ -73,6 +76,7 @@ Read `.squad/.cache/version-check.json`. If the file exists, is not older than
 it. Skip the npm probe.
 
 **Repo-local cache schema:**
+
 ```json
 {
   "checkedAt": "2026-05-26T14:13:28.492Z",
@@ -108,13 +112,14 @@ e.g., `0.9.5-insider.1 < 0.9.5`).
 ### 1.5 Greeting Append
 
 When an update is available, append to the normal greeting (on the same line,
-separated by ` · `):
+separated by `·`):
 
 ```
  · 🆕 v{latestVersionForChannel} available — say "upgrade squad"
 ```
 
 Example complete greeting line:
+
 ```
 Squad v0.9.4-insider.1 · 🆕 v0.9.7-insider.1 available — say "upgrade squad"
 ```
@@ -124,24 +129,28 @@ Do not mention the update check, the cache, or the mechanism. Just the notice.
 ### 1.6 Upgrade Flow
 
 **Trigger phrases** (case-insensitive, match anywhere in user message):
+
 - "upgrade squad"
 - "update squad"
-- "what's new" *(when a version notice has been shown in this session)*
+- "what's new" _(when a version notice has been shown in this session)_
 - "install the update"
 - "yes upgrade"
 
 **Flow:**
 
 1. **Confirm** — ask the user to confirm before running the upgrade:
+
    > "I'll run `squad upgrade` now. This overwrites `squad.agent.md` and
    > casting files but preserves `config.json`, `team.md`, `decisions.md`,
    > and all agent history. Ready?"
-   Wait for affirmative response before proceeding.
+   > Wait for affirmative response before proceeding.
 
 2. **Run upgrade:**
+
    ```
    squad upgrade
    ```
+
    Capture output. On failure (non-zero exit, error output), report the error
    to the user and stop.
 
@@ -178,18 +187,18 @@ Do not mention the update check, the cache, or the mechanism. Just the notice.
 Every failure path ends at "show normal greeting." The update check never
 interrupts or delays the session.
 
-| Failure | Behavior |
-|---------|----------|
-| `node` not on PATH | `MISS` → normal greeting |
-| Upstream cache missing / corrupt | `MISS` → normal greeting |
-| Upstream cache stale (`latest` channel) | Normal greeting (no npm call) |
-| npm probe timeout (5s) | Normal greeting |
-| npm probe network error | Normal greeting |
-| npm probe parse error | Normal greeting |
-| `.squad/.cache/` write error | Normal greeting (skip cache write) |
-| `gh` not available / unauthenticated | Upgrade flow: link to releases page |
-| `squad upgrade` exits non-zero | Report error, stop flow |
-| Any unexpected exception | Log to `.squad/orchestration-log/`, normal greeting |
+| Failure                                 | Behavior                                            |
+| --------------------------------------- | --------------------------------------------------- |
+| `node` not on PATH                      | `MISS` → normal greeting                            |
+| Upstream cache missing / corrupt        | `MISS` → normal greeting                            |
+| Upstream cache stale (`latest` channel) | Normal greeting (no npm call)                       |
+| npm probe timeout (5s)                  | Normal greeting                                     |
+| npm probe network error                 | Normal greeting                                     |
+| npm probe parse error                   | Normal greeting                                     |
+| `.squad/.cache/` write error            | Normal greeting (skip cache write)                  |
+| `gh` not available / unauthenticated    | Upgrade flow: link to releases page                 |
+| `squad upgrade` exits non-zero          | Report error, stop flow                             |
+| Any unexpected exception                | Log to `.squad/orchestration-log/`, normal greeting |
 
 ---
 

@@ -1,10 +1,10 @@
 ---
-name: "coordinator-init-mode"
-description: "The complete two-phase Init Mode protocol the Squad coordinator runs when no team exists yet in the current repo. Phase 1 = propose the team (no files created, wait for user confirm). Phase 2 = create .squad/ scaffolding, casting state, .gitattributes for merge drivers, and the always-on built-ins (Scribe, Ralph, Rai, Fact Checker). Loaded on demand when the coordinator detects no .squad/team.md exists."
+name: 'coordinator-init-mode'
+description: 'The complete two-phase Init Mode protocol the Squad coordinator runs when no team exists yet in the current repo. Phase 1 = propose the team (no files created, wait for user confirm). Phase 2 = create .squad/ scaffolding, casting state, .gitattributes for merge drivers, and the always-on built-ins (Scribe, Ralph, Rai, Fact Checker). Loaded on demand when the coordinator detects no .squad/team.md exists.'
 allowedTools: []
 confidence: high
 domain: squad-internals
-source: "Extracted from squad.agent.md as part of the slimming effort (bradygaster/squad#1308). Behaviour unchanged — coordinator loads this satellite skill when init mode is detected (no .squad/team.md present)."
+source: 'Extracted from squad.agent.md as part of the slimming effort (bradygaster/squad#1308). Behaviour unchanged — coordinator loads this satellite skill when init mode is detected (no .squad/team.md present).'
 ---
 
 > **Load this skill when:** you detect that no `.squad/team.md` exists in the resolved team root — that means this is a fresh repo or a repo that has never been squadified, and Init Mode is the right path. The short stub in `squad.agent.md` tells you to load this skill; the full two-phase protocol lives here.
@@ -15,8 +15,8 @@ source: "Extracted from squad.agent.md as part of the slimming effort (bradygast
 
 No team exists yet. **Propose one — but DO NOT create any files until the user confirms.**
 
-1. **Identify the user.** Run `git config user.name` to learn who you're working with. Use their name in conversation (e.g., *"Hey {user}, what are you building?"*). Store their name (NOT email) in `team.md` under Project Context. **Never read or store `git config user.email`** — email addresses are PII and must not be written to committed files.
-2. Ask: *"What are you building? (language, stack, what it does)"*
+1. **Identify the user.** Run `git config user.name` to learn who you're working with. Use their name in conversation (e.g., _"Hey {user}, what are you building?"_). Store their name (NOT email) in `team.md` under Project Context. **Never read or store `git config user.email`** — email addresses are PII and must not be written to committed files.
+2. Ask: _"What are you building? (language, stack, what it does)"_
 3. **Cast the team.** Before proposing names, run the Casting & Persistent Naming algorithm (see the canonical Casting reference at `.squad/templates/casting-reference.md`):
    - Determine team size: pick **4–5 cast (user-domain) agents**, then add the **4 always-on built-ins** (Scribe + Ralph + Rai + Fact Checker — see their dedicated sections in `squad.agent.md`). A typical fresh squad has **8–9 total roster entries**, not 4–5.
    - Determine assignment shape from the user's project description.
@@ -89,11 +89,11 @@ No team exists yet. **Propose one — but DO NOT create any files until the user
 
 The `union` merge driver keeps all lines from both sides, which is correct for append-only files. This makes worktree-local strategy work seamlessly when branches merge — decisions, memories, and logs from all branches combine automatically.
 
-7. Say: *"✅ Team hired. Try: '{FirstCastName}, set up the project structure'"*
+7. Say: _"✅ Team hired. Try: '{FirstCastName}, set up the project structure'"_
 
 8. **Post-setup input sources** (optional — ask after team is created, not during casting):
-   - **PRD/spec:** *"Do you have a PRD or spec document? (file path, paste it, or skip)"* → If provided, follow PRD Mode flow.
-   - **GitHub issues:** *"Is there a GitHub repo with issues I should pull from? (owner/repo, or skip)"* → If provided, follow GitHub Issues Mode flow.
-   - **Human members:** *"Are any humans joining the team? (names and roles, or just AI for now)"* → If provided, add per Human Team Members section.
-   - **Copilot agent:** *"Want to include @copilot? It can pick up issues autonomously. (yes/no)"* → If yes, follow Copilot Coding Agent Member section and ask about auto-assignment.
+   - **PRD/spec:** _"Do you have a PRD or spec document? (file path, paste it, or skip)"_ → If provided, follow PRD Mode flow.
+   - **GitHub issues:** _"Is there a GitHub repo with issues I should pull from? (owner/repo, or skip)"_ → If provided, follow GitHub Issues Mode flow.
+   - **Human members:** _"Are any humans joining the team? (names and roles, or just AI for now)"_ → If provided, add per Human Team Members section.
+   - **Copilot agent:** _"Want to include @copilot? It can pick up issues autonomously. (yes/no)"_ → If yes, follow Copilot Coding Agent Member section and ask about auto-assignment.
    - These are additive. **Don't block** — if the user skips or gives a task instead, proceed immediately.

@@ -1,38 +1,39 @@
 ---
-name: "cross-squad"
+name: 'cross-squad'
 description: "Coordinating work across multiple Squad instances — discovery, delegation, and disambiguation when the user says 'squad' (the product) vs casual English 'group of agents'."
-domain: "orchestration"
-confidence: "medium"
-source: "manual"
+domain: 'orchestration'
+confidence: 'medium'
+source: 'manual'
 triggers:
-  - "spawn N squads"
-  - "spawn a squad"
-  - "another squad"
-  - "two squads of"
-  - "second squad"
-  - "fan out to squads"
-  - "delegate to a squad"
-  - "set up squads for"
-  - "create a squad to review"
-  - "ask the other squad"
+  - 'spawn N squads'
+  - 'spawn a squad'
+  - 'another squad'
+  - 'two squads of'
+  - 'second squad'
+  - 'fan out to squads'
+  - 'delegate to a squad'
+  - 'set up squads for'
+  - 'create a squad to review'
+  - 'ask the other squad'
 tools:
-  - name: "squad-discover"
-    description: "List known squads and their capabilities"
-    when: "When you need to find which squad can handle a task"
-  - name: "squad-delegate"
+  - name: 'squad-discover'
+    description: 'List known squads and their capabilities'
+    when: 'When you need to find which squad can handle a task'
+  - name: 'squad-delegate'
     description: "Create work in another squad's repository"
     when: "When a task belongs to another squad's domain"
 ---
 
 ## Context
 
-> **Read this FIRST any time the user says "squad" as a thing to spawn, delegate to, address, or fan out to** — e.g., *"spawn two squads of designers and devs"*, *"ask the other squad"*, *"delegate to a squad"*. In Squad-PRODUCT vocabulary, "squad" is a **peer** (an independent installation with its own `.squad/`, `team.md`, MCP server, and agents) — NOT a generic English synonym for "team" or "group". Do not fan out raw `task` agents inside your own coordinator context when the user means "another squad". Use the discovery and communication patterns below (and the companion `cross-squad-communication` skill for the actual protocols).
+> **Read this FIRST any time the user says "squad" as a thing to spawn, delegate to, address, or fan out to** — e.g., _"spawn two squads of designers and devs"_, _"ask the other squad"_, _"delegate to a squad"_. In Squad-PRODUCT vocabulary, "squad" is a **peer** (an independent installation with its own `.squad/`, `team.md`, MCP server, and agents) — NOT a generic English synonym for "team" or "group". Do not fan out raw `task` agents inside your own coordinator context when the user means "another squad". Use the discovery and communication patterns below (and the companion `cross-squad-communication` skill for the actual protocols).
 
 When an organization runs multiple Squad instances (e.g., platform-squad, frontend-squad, data-squad), those squads need to discover each other, share context, and hand off work across repository boundaries. This skill teaches agents how to coordinate across squads without creating tight coupling.
 
 > **Companion skill — for protocol details:** `cross-squad-communication/SKILL.md` covers the four communication patterns (synchronous CLI, read-only knowledge query, git-based async, and GitHub-issue-based delegation) once a peer squad is discovered via the registry below. This skill answers "who?" — the companion answers "how?".
 
 Cross-squad orchestration applies when:
+
 - A task requires capabilities owned by another squad
 - An architectural decision affects multiple squads
 - A feature spans multiple repositories with different squads
@@ -44,11 +45,11 @@ When the user uses the word **"squad" / "squads"** or asks to **"spawn a team"**
 
 ### Default behaviour (apply unless explicitly told otherwise)
 
-| User says | Coordinator does |
-|---|---|
-| *"spawn two squads of X and Y"* / *"set up squads for X, Y, Z"* | Bootstrap N **real** Squad installs — separate folder + `git init` + `squad init` per squad — then use the cross-squad patterns below (`.squad/manifest.json`, `squad registry add`, `squad delegate`) and the protocols in the `cross-squad-communication` skill |
-| *"ask the other squad about X"* / *"delegate to the data squad"* | Discover the peer via `squad registry list` (or by reading a known `.squad/manifest.json`), then use `cross-squad-communication` Pattern 0 / 1 / 2 / 3 — never re-implement the protocol with `task` |
-| *"spawn a few agents to do X"* / *"have some agents review X"* / *"in parallel, get sub-agents to..."* | Ad-hoc `task` fan-out is fine — no `.squad/` bootstrap needed. This is the only path where raw `task` is appropriate when the user mentioned a multi-agent activity |
+| User says                                                                                              | Coordinator does                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _"spawn two squads of X and Y"_ / _"set up squads for X, Y, Z"_                                        | Bootstrap N **real** Squad installs — separate folder + `git init` + `squad init` per squad — then use the cross-squad patterns below (`.squad/manifest.json`, `squad registry add`, `squad delegate`) and the protocols in the `cross-squad-communication` skill |
+| _"ask the other squad about X"_ / _"delegate to the data squad"_                                       | Discover the peer via `squad registry list` (or by reading a known `.squad/manifest.json`), then use `cross-squad-communication` Pattern 0 / 1 / 2 / 3 — never re-implement the protocol with `task`                                                              |
+| _"spawn a few agents to do X"_ / _"have some agents review X"_ / _"in parallel, get sub-agents to..."_ | Ad-hoc `task` fan-out is fine — no `.squad/` bootstrap needed. This is the only path where raw `task` is appropriate when the user mentioned a multi-agent activity                                                                                               |
 
 ### Ambiguous? `ask_user`, never silently downgrade
 
@@ -73,6 +74,7 @@ The cost of asking is one `ask_user`. The cost of getting it wrong is the user h
 ## Patterns
 
 ### Discovery via Manifest
+
 Each squad publishes a `.squad/manifest.json` declaring its name, capabilities, and contact information. Squads discover each other through two mechanisms:
 
 1. **`.squad/squad-registry.json`** — **discovery-only.** Peer squads are findable via `squad discover` and addressable via `squad delegate`, but their skills/decisions/wisdom are NOT loaded into your coordinator. Manage with `squad registry add/list/remove`.
@@ -96,17 +98,21 @@ Both forms read the peer's manifest via the same code path. The `path` field is 
 ```
 
 ### Context Sharing
+
 When delegating work, share only what the target squad needs:
+
 - **Capability list**: What this squad can do (from manifest)
 - **Relevant decisions**: Only decisions that affect the target squad
 - **Handoff context**: A concise description of why this work is being delegated
 
 Do NOT share:
+
 - Internal team state (casting history, session logs)
 - Full decision archives (send only relevant excerpts)
 - Authentication credentials or secrets
 
 ### Work Handoff Protocol
+
 1. **Check manifest**: Verify the target squad accepts the work type (issues, PRs)
 2. **Create issue**: Use `gh issue create` in the target repo with:
    - Title: `[cross-squad] <description>`
@@ -116,7 +122,9 @@ Do NOT share:
 4. **Poll**: Periodically check if the delegated issue is closed/completed
 
 ### Feedback Loop
+
 Track delegated work completion:
+
 - Poll target issue status via `gh issue view`
 - Update originating issue with status changes
 - Close the feedback loop when delegated work merges
@@ -124,6 +132,7 @@ Track delegated work completion:
 ## Examples
 
 ### Registering a peer squad (no inheritance)
+
 ```bash
 # Friend's repo is checked out at ../friend-platform/
 squad registry add platform-squad ../friend-platform
@@ -134,6 +143,7 @@ squad discover
 ```
 
 ### Discovering squads
+
 ```bash
 # List all squads discoverable from registry + upstreams
 squad discover
@@ -145,6 +155,7 @@ squad discover
 ```
 
 ### Delegating work
+
 ```bash
 # Delegate a task to the platform squad
 squad delegate platform-squad "Add Prometheus metrics endpoint for the auth service"
@@ -153,6 +164,7 @@ squad delegate platform-squad "Add Prometheus metrics endpoint for the auth serv
 ```
 
 ### Manifest in squad.config.ts
+
 ```typescript
 export default defineSquad({
   manifest: {
@@ -166,6 +178,7 @@ export default defineSquad({
 ```
 
 ## Anti-Patterns
+
 - **Direct file writes across repos** — Never modify another squad's `.squad/` directory. Use issues and PRs as the communication protocol.
 - **Tight coupling** — Don't depend on another squad's internal structure. Use the manifest as the public API contract.
 - **Unbounded delegation** — Always include acceptance criteria and a timeout. Don't create open-ended requests.

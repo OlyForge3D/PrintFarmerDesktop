@@ -6,7 +6,14 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['.vite/**', 'dist/**', 'out/**', 'node_modules/**', 'native/**'],
+    ignores: [
+      '.vite/**',
+      'dist/**',
+      'out/**',
+      'node_modules/**',
+      'native/**',
+      '.squad/templates/ralph-triage.js',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

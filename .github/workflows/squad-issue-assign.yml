@@ -1,5 +1,7 @@
 name: Squad Issue Assign
 
+# merge-queue: publication
+
 on:
   issues:
     types: [labeled]
@@ -10,6 +12,7 @@ permissions:
 
 jobs:
   assign-work:
+    name: Assign Squad work
     # Only trigger on squad:{member} labels (not the base "squad" label)
     if: startsWith(github.event.label.name, 'squad:')
     runs-on: ubuntu-latest

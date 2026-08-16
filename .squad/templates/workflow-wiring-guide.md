@@ -26,14 +26,14 @@ The Squad framework already has concepts for routing tables, reviewer roles, and
 
 The coordinator reads these files to decide how to behave. If your workflow isn't encoded in one of these, it doesn't exist.
 
-| File | What It Controls | Read When |
-|------|-----------------|-----------|
-| `routing.md` | WHO handles what, behavioral RULES, reviewer GATES | Every session start, before every routing decision |
-| `ceremonies.md` | Auto-triggered ceremonies (before/after work batches) | Before spawning work batches, after completion |
-| `templates/issue-lifecycle.md` | Git workflow: push, PR, review, merge, issue closure | When spawning agents for issue-linked work |
-| Agent `charter.md` | Per-agent identity, boundaries, behavior | Inlined into every spawn prompt |
-| `team.md` | Roster, member capabilities | Session start |
-| `decisions.md` | Captured decisions and directives | Read by agents at spawn time |
+| File                           | What It Controls                                      | Read When                                          |
+| ------------------------------ | ----------------------------------------------------- | -------------------------------------------------- |
+| `routing.md`                   | WHO handles what, behavioral RULES, reviewer GATES    | Every session start, before every routing decision |
+| `ceremonies.md`                | Auto-triggered ceremonies (before/after work batches) | Before spawning work batches, after completion     |
+| `templates/issue-lifecycle.md` | Git workflow: push, PR, review, merge, issue closure  | When spawning agents for issue-linked work         |
+| Agent `charter.md`             | Per-agent identity, boundaries, behavior              | Inlined into every spawn prompt                    |
+| `team.md`                      | Roster, member capabilities                           | Session start                                      |
+| `decisions.md`                 | Captured decisions and directives                     | Read by agents at spawn time                       |
 
 ### How They Interact
 
@@ -66,6 +66,7 @@ User request arrives
 ### Step 2: Add to roster (`team.md`)
 
 Add a row to the `## Members` table:
+
 ```
 | {emoji} {Name} | {Role} | `.squad/agents/{name}/charter.md` | ✅ Active |
 ```
@@ -73,6 +74,7 @@ Add a row to the `## Members` table:
 ### Step 3: Add routing entry (`routing.md`)
 
 Add a row to the routing table:
+
 ```
 | {Work Type} | {emoji} {Name} | {Output Location} | {Examples} |
 ```
@@ -80,6 +82,7 @@ Add a row to the routing table:
 ### Step 4: Add issue routing (if applicable)
 
 Add to the Issue Routing table in `routing.md`:
+
 ```
 | squad:{name} | {Description of work} | {emoji} {Name} |
 ```
@@ -107,11 +110,13 @@ N. **{GateName} Gate** — Every {output type} from {Author} MUST be reviewed by
 ```
 
 **Example — reviewer for all PRs:**
+
 ```markdown
 9. **{ReviewerName} PR Gate** — Every PR created by any agent MUST be reviewed by {ReviewerName} before merge. The coordinator spawns {ReviewerName} (sync) with the PR diff, collects APPROVE/REJECT verdict. On rejection, the original author addresses feedback.
 ```
 
 **Example — design review gate:**
+
 ```markdown
 10. **{DesignReviewer} Design Gate** — Every design doc produced by the architect MUST be reviewed by {DesignReviewer} before implementation begins. {DesignReviewer} always rejects the first draft on concept/approach. Implementation is BLOCKED until {DesignReviewer} approves.
 ```
@@ -125,17 +130,18 @@ Add to `ceremonies.md` using the Markdown table format the file uses:
 ```markdown
 ## Design Review
 
-| Field | Value |
-|-------|-------|
-| **Trigger** | auto |
-| **When** | before |
-| **Condition** | task involves implementing a design doc |
-| **Facilitator** | {DesignReviewer} |
-| **Participants** | Architect, {DesignReviewer} |
-| **Time budget** | focused |
-| **Enabled** | ✅ yes |
+| Field            | Value                                   |
+| ---------------- | --------------------------------------- |
+| **Trigger**      | auto                                    |
+| **When**         | before                                  |
+| **Condition**    | task involves implementing a design doc |
+| **Facilitator**  | {DesignReviewer}                        |
+| **Participants** | Architect, {DesignReviewer}             |
+| **Time budget**  | focused                                 |
+| **Enabled**      | ✅ yes                                  |
 
 **Agenda:**
+
 1. Read the design doc
 2. Challenge the premise and approach
 3. Demand alternatives and evidence
@@ -146,13 +152,13 @@ Add to `ceremonies.md` using the Markdown table format the file uses:
 
 ### Option A vs Option B
 
-| Use Case | Use Routing Rule | Use Ceremony |
-|----------|-----------------|--------------|
-| Simple 1-on-1 review (reviewer → author) | ✅ | Overkill |
-| Multi-participant alignment (3+ agents) | Too simple | ✅ |
-| Needs structured facilitation | No | ✅ |
-| Must run automatically before specific work | Either works | ✅ |
-| One-line behavioral constraint | ✅ | Overkill |
+| Use Case                                    | Use Routing Rule | Use Ceremony |
+| ------------------------------------------- | ---------------- | ------------ |
+| Simple 1-on-1 review (reviewer → author)    | ✅               | Overkill     |
+| Multi-participant alignment (3+ agents)     | Too simple       | ✅           |
+| Needs structured facilitation               | No               | ✅           |
+| Must run automatically before specific work | Either works     | ✅           |
+| One-line behavioral constraint              | ✅               | Overkill     |
 
 ---
 
@@ -178,25 +184,25 @@ Create `.squad/templates/issue-lifecycle.md` with your project's git workflow. A
 Add numbered rules to the `## Rules` section that reference the lifecycle:
 
 ```markdown
-N.  **Issue lifecycle enforcement** — all issue-linked work follows the lifecycle
-    in `.squad/templates/issue-lifecycle.md`. The coordinator adds the ISSUE CONTEXT
-    block to spawn prompts and follows the post-work steps (verify push → verify PR
-    → route to reviewer → merge on approval). Read `issue-lifecycle.md` before
-    spawning any agent for issue work.
+N. **Issue lifecycle enforcement** — all issue-linked work follows the lifecycle
+in `.squad/templates/issue-lifecycle.md`. The coordinator adds the ISSUE CONTEXT
+block to spawn prompts and follows the post-work steps (verify push → verify PR
+→ route to reviewer → merge on approval). Read `issue-lifecycle.md` before
+spawning any agent for issue work.
 
 N+1. **{ReviewerName} PR Gate** — every PR created by any agent MUST be reviewed
-    by {ReviewerName} before merge. The coordinator spawns {ReviewerName} (sync)
-    with the PR diff. On REJECT, the original author addresses feedback. On APPROVE,
-    the coordinator merges. No PR merges without {ReviewerName}'s approval.
+by {ReviewerName} before merge. The coordinator spawns {ReviewerName} (sync)
+with the PR diff. On REJECT, the original author addresses feedback. On APPROVE,
+the coordinator merges. No PR merges without {ReviewerName}'s approval.
 
 N+2. **Issue closure restriction** — issues that produced files (code, docs, scripts,
-    designs, tests) close ONLY via PR merge auto-close ("Closes #N" in PR body).
-    Never use `gh issue close` for file-producing work. Exception: tracking/strategic
-    issues and superseded issues may be closed with a comment.
+designs, tests) close ONLY via PR merge auto-close ("Closes #N" in PR body).
+Never use `gh issue close` for file-producing work. Exception: tracking/strategic
+issues and superseded issues may be closed with a comment.
 
 N+3. **Worktree for all file-producing work** — every task that creates or modifies
-    files (including documentation) requires a worktree. Exceptions: read-only queries,
-    Scribe (.squad/ state), pure analysis producing no files.
+files (including documentation) requires a worktree. Exceptions: read-only queries,
+Scribe (.squad/ state), pure analysis producing no files.
 ```
 
 ### Step 3: Verify your wiring
@@ -210,18 +216,23 @@ After creating both files, run the verification checklist (below) to confirm a c
 If you need something that isn't a reviewer gate or issue lifecycle — for example, "always run tests before pushing" or "docs must be reviewed by the author before merge" — here's where to put it:
 
 ### If it's a behavioral rule the coordinator should always follow:
+
 → Add to `routing.md` → `## Rules` section
 
 ### If it should trigger automatically before/after specific work:
+
 → Add to `ceremonies.md` as a `before` or `after` ceremony
 
 ### If it's something agents should do as part of their work:
+
 → Add to the agent's `charter.md` under a new section
 
 ### If it's something that applies only to issue-linked work:
+
 → Add to `templates/issue-lifecycle.md`
 
 ### If it's a team-wide constraint that should be visible to all agents:
+
 → Capture as a decision in `decisions.md` (via directive or decision inbox)
 
 ---
