@@ -317,6 +317,9 @@ const context: CalibrationPrinterContext = {
   printerId: 'printer-safe',
   displayName: 'Unbranded cell 7',
   printerModel: 'Machine 400',
+  // An authoritative context, so the server had nothing to refuse it for.
+  rejectionReasonCodes: [],
+  missingInputs: [],
   firmware: {
     firmware: 'Klipper',
     gcodeDialect: 'Klipper',
@@ -1045,10 +1048,18 @@ describe('CalibrationWorkspace', () => {
     expect(
       screen.getByRole('button', { name: 'Continue with this printer' }),
     ).toBeDisabled();
+    // The server named `firmware_family_not_klipper`, so that is what the
+    // operator must be told. Asserting the old generic sentence is absent is
+    // the load-bearing half: it passed for every refusal alike, so a test that
+    // only looked for *some* refusal text could not tell an explanation from a
+    // shrug.
     expect(
-      screen.getAllByText(/canonical Klipper, OrcaSlicer, upstream eligibility/)
+      screen.getAllByText(/Calibration currently requires Klipper firmware/)
         .length,
     ).toBeGreaterThan(0);
+    expect(
+      screen.queryByText(/canonical Klipper, OrcaSlicer, upstream eligibility/),
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole('radio', { name: /Unbranded cell 7/ }));
     const load = screen.getByRole('button', {

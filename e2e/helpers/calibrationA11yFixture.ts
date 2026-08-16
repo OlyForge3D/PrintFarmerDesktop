@@ -606,6 +606,8 @@ export async function applyCalibrationScenario(
       printerId: ids.printerId,
       displayName: 'A11y Fixture Printer',
       printerModel: null,
+      rejectionReasonCodes: [],
+      missingInputs: [],
       firmware: {
         firmware: 'Klipper',
         gcodeDialect: 'Klipper',

@@ -5,22 +5,59 @@ import type {
   OrcaProfileEntry,
 } from '@shared/ipc';
 import type { CalibrationBinding } from './domain';
+import {
+  describeMissingInputs,
+  describeRejectionReasonCode,
+} from './refusalMessages';
 
+/**
+ * Why this printer cannot be calibrated, in the server's own terms.
+ *
+ * PrintFarmer refuses a printer by naming every unmet precondition, and those
+ * codes reach the renderer intact. They used to stop here: an ineligible
+ * candidate produced one sentence saying canonical eligibility was incomplete,
+ * which is equally true of a printer that is merely offline, one whose firmware
+ * was never identified and one whose slicer engine was never set. The operator
+ * saw a refusal with no field to go and populate, and support saw a report with
+ * nothing in it. The codes are read out instead, and the generic sentence is
+ * kept only for the case that produces none — a candidate that was never
+ * selected.
+ */
 export function candidateEligibilityBlockers(
   candidate: CalibrationPrinterCandidate | undefined,
 ): readonly string[] {
   if (candidate === undefined) {
     return ['Select a printer returned by PrintFarmer.'];
   }
-  if (candidate.eligibility === null) {
-    return [
+  if (candidate.eligibility !== null) {
+    // Eligibility and refusal are mutually exclusive by schema, so an eligible
+    // candidate has no reasons to read out. Offline is still checked: the
+    // candidate screen can pass before the printer is reachable.
+    return candidate.isOnline
+      ? []
+      : ['The printer is offline, so current context cannot be verified.'];
+  }
+  const blockers = candidate.rejectionReasonCodes.map(
+    describeRejectionReasonCode,
+  );
+  const missing = describeMissingInputs(candidate.missingInputs);
+  if (missing !== null) blockers.push(missing);
+  if (blockers.length === 0) {
+    // Unreachable through the IPC handler, which guarantees at least one code
+    // for every refused printer. Retained because this function is also given
+    // candidates by tests and by any future caller that builds one by hand, and
+    // an empty blocker list would read as "eligible" — the one meaning it must
+    // never have.
+    blockers.push(
       'PrintFarmer did not provide complete canonical Klipper, OrcaSlicer, upstream eligibility for this printer.',
-    ];
+    );
   }
   if (!candidate.isOnline) {
-    return ['The printer is offline, so current context cannot be verified.'];
+    blockers.push(
+      'The printer is offline, so current context cannot be verified.',
+    );
   }
-  return [];
+  return [...new Set(blockers)];
 }
 
 export function contextEligibilityBlockers(
@@ -35,6 +72,22 @@ export function contextEligibilityBlockers(
     return ['Load current context for this exact printer.'];
   }
   const blockers: string[] = [];
+  // The server's own reasons come first: they name what is actually wrong —
+  // "the machine profile is scoped to a different printer" — where the
+  // structural checks below can only report the shape of what is missing. Both
+  // are shown, because each catches refusals the other cannot see.
+  //
+  // Read through a default despite the schema supplying one. This function runs
+  // inside the wizard's render, so an absent array here is not a missing
+  // sentence but a thrown `TypeError` that blanks the whole step — trading a
+  // printer that cannot explain itself for a wizard that cannot be used at all.
+  // Both members are additive, and a context assembled anywhere other than the
+  // parsed IPC boundary will not carry them.
+  blockers.push(
+    ...(context.rejectionReasonCodes ?? []).map(describeRejectionReasonCode),
+  );
+  const missing = describeMissingInputs(context.missingInputs ?? []);
+  if (missing !== null) blockers.push(missing);
   if (candidate.eligibility === null) {
     blockers.push('Canonical PrintFarmer printer eligibility is missing.');
   }

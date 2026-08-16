@@ -19,12 +19,15 @@ import {
   CalibrationPrinterContext as CalibrationPrinterContextSchema,
   CalibrationPrinterEligibility,
   CalibrationWorkspacePayload,
+  CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   CALIBRATION_MAX_PRINTER_CANDIDATES,
   OrcaProfileEntry,
   UNRECOGNIZED_CALIBRATION_INPUT,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
   deriveCalibrationWorkspaceProjection,
+  normalizeCalibrationMissingInput,
+  normalizeCalibrationReasonCode,
   type CalibrationPrinterContext,
   type CalibrationSaveWorkspaceStateRequest,
 } from '@shared/ipc';
@@ -1446,7 +1449,39 @@ export function projectCalibrationPrinterContext(
             generateCalibration: context.permissions.generateCalibration,
             startPrint: context.permissions.startPrint,
           },
+    // The server's own account of the refusal, carried through so the wizard
+    // can read it out. Only meaningful on a context it refused: an
+    // authoritative one has, by the server's own `Eligible = reasons.Count == 0`
+    // rule, nothing to explain.
+    rejectionReasonCodes: contextRefusalCodes(context),
+    missingInputs: context.missingInputs
+      .slice(0, CALIBRATION_MAX_SERVER_REJECTION_REASONS)
+      .map(normalizeCalibrationMissingInput),
   });
+}
+
+/**
+ * The reason codes to hand the renderer for a context, cut to what it carries.
+ *
+ * Truncation is declared rather than silent, for the reason it is declared on
+ * the candidate list: a printer whose every toolhead is incompletely described
+ * can legitimately exceed the cap, and showing the first sixty-four reasons as
+ * though they were all of them would misrepresent how much is left to do.
+ */
+function contextRefusalCodes(
+  context: RemoteCalibrationPrinterContext,
+): string[] {
+  const codes = context.rejectionReasons
+    .slice(0, CALIBRATION_MAX_SERVER_REJECTION_REASONS)
+    .map((reason) => normalizeCalibrationReasonCode(reason.code));
+  if (
+    context.rejectionReasons.length >
+      CALIBRATION_MAX_SERVER_REJECTION_REASONS ||
+    context.missingInputs.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS
+  ) {
+    codes.push(CALIBRATION_EXPLANATION_TRUNCATED_CODE);
+  }
+  return codes;
 }
 
 export function doesCalibrationWorkspaceMatchContext(
