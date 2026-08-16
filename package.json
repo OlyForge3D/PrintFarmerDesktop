@@ -22,7 +22,7 @@
   "scripts": {
     "prepare": "node scripts/install-git-hooks.mjs",
     "hooks:verify": "node scripts/install-git-hooks.mjs --verify",
-    "start": "electron-forge start",
+    "start": "node scripts/start-local.mjs",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "build:sidecar": "node scripts/stage-sidecar.mjs",

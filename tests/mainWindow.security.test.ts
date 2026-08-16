@@ -17,6 +17,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const bootState = vi.hoisted(() => ({
   windowOptions: [] as Record<string, unknown>[],
+  applicationNames: [] as string[],
+  aboutPanelOptions: [] as Record<string, unknown>[],
   appListeners: new Map<string, (...args: unknown[]) => unknown>(),
   readyResolved: Promise.resolve(),
 }));
@@ -40,21 +42,30 @@ vi.mock('electron', () => {
     loadURL = () => Promise.resolve();
     loadFile = () => Promise.resolve();
   }
-  return {
-    app: {
-      requestSingleInstanceLock: () => true,
-      whenReady: () => bootState.readyResolved,
-      on: (event: string, listener: (...args: unknown[]) => unknown) => {
-        bootState.appListeners.set(event, listener);
-      },
-      getPath: () => '/test/userData',
-      setPath: () => undefined,
-      getAppPath: () => '/test/app',
-      getVersion: () => '0.0.0-test',
-      isPackaged: false,
-      quit: () => undefined,
-      dock: { setIcon: () => undefined },
+  const fakeApp = {
+    name: 'Electron',
+    setName: (name: string) => {
+      fakeApp.name = name;
+      bootState.applicationNames.push(name);
     },
+    setAboutPanelOptions: (options: Record<string, unknown>) => {
+      bootState.aboutPanelOptions.push(options);
+    },
+    requestSingleInstanceLock: () => true,
+    whenReady: () => bootState.readyResolved,
+    on: (event: string, listener: (...args: unknown[]) => unknown) => {
+      bootState.appListeners.set(event, listener);
+    },
+    getPath: () => '/test/userData',
+    setPath: () => undefined,
+    getAppPath: () => '/test/app',
+    getVersion: () => '0.0.0-test',
+    isPackaged: false,
+    quit: () => undefined,
+    dock: { setIcon: () => undefined },
+  };
+  return {
+    app: fakeApp,
     BrowserWindow: FakeBrowserWindow,
     Menu: {
       setApplicationMenu: () => undefined,
@@ -137,6 +148,22 @@ describe('main window webPreferences', () => {
       unknown
     >;
     expect(prefs[flag]).toBe(expected);
+  });
+});
+
+describe('macOS product identity', () => {
+  it('uses packaged product metadata in development mode', () => {
+    expect(bootState.applicationNames).toEqual(['PrintFarmer Desktop']);
+    expect(bootState.aboutPanelOptions).toEqual([
+      {
+        applicationName: 'PrintFarmer Desktop',
+        applicationVersion: '0.0.0-test',
+        version: '0.0.0-test',
+        copyright: 'Copyright (c) 2026 OlyForge3D',
+        website: 'https://github.com/OlyForge3D/PrintFarmerDesktop',
+        iconPath: '/test/app/assets/icon.png',
+      },
+    ]);
   });
 });
 
