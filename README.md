@@ -152,7 +152,7 @@ Prerequisites: Node.js 22+, Rust (stable), and a supported platform toolchain.
 
 ```
 npm install
-npm run dev
+npm start
 ```
 
 ### Optional native `lib3mf` validation
