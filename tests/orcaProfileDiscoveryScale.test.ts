@@ -14,12 +14,20 @@
  * the shape that failed in production.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverLocalOrcaFilamentProfilesEntries } from '../src/main/orcaProfileDiscovery.js';
 import { RemoteCalibrationPrinterContext } from '../src/main/calibrationWire.js';
+
+// Runs in 842ms standalone but has timed out under full-suite parallel
+// scheduling contention (issue #734) -- the slow path there is contention
+// for a worker, not the traversal itself. 15000ms is >17x the standalone
+// runtime, ample headroom for scheduling variance without masking a real
+// regression (option 2 from #734: a targeted per-file override, not a
+// blanket global increase).
+vi.setConfig({ testTimeout: 15000 });
 
 const TARGET_PROFILE_NAME = 'Voron Generic PLA @0.4 nozzle';
 

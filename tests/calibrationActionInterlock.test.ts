@@ -25,6 +25,16 @@ import {
 } from './fixtures/calibrationContract.js';
 import { validWorkspace } from './fixtures/calibrationWorkspacePayload.js';
 
+// Individual cases in this file run 3.65-3.9s locally (78% of vitest's 5000ms
+// default) because they drive real HTTP/schema/retry paths rather than
+// mocking them out. The Windows CI runner measured ~28% slower than a dev
+// laptop (issue #734, PR #733 run 31918975125), which tips these over the
+// global budget on unmodified code. 15000ms gives ~4x local worst-case
+// headroom -- enough to absorb runner variance without masking an actual
+// hang (option 2 from #734: a targeted per-file override, not a blanket
+// global increase).
+vi.setConfig({ testTimeout: 15000 });
+
 type Handler = (event: unknown, request: unknown) => unknown;
 
 const electronState = vi.hoisted(() => ({
