@@ -24,7 +24,7 @@ Renderer/main/preload (run from the repo root):
 
 | Command                                 | Purpose                                         |
 | --------------------------------------- | ----------------------------------------------- |
-| `npm run dev`                           | Launch the app with hot reload                  |
+| `npm start`                             | Launch the app with hot reload                  |
 | `npm run typecheck`                     | Strict TypeScript check (no emit)               |
 | `npm run lint`                          | ESLint (type-aware)                             |
 | `npm run format`                        | Prettier check (`format:write` fixes)           |
