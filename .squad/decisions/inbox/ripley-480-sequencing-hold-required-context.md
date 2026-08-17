@@ -58,3 +58,38 @@ The `workflow`-scope blocker described above was measured against one active cre
 `.github/workflows/sequencing-hold.yml` now declares `# merge-queue: reports` and subscribes to `merge_group:`. `tests/sequencingHold.test.ts` and `tests/mergeQueueReadiness.test.ts` are updated to pin the new trigger set and classification against the real file rather than a fixture. Full suite: 169 files, 4658 tests passing.
 
 Prerequisite 2 is unchanged and remains deliberately owner-only — not because it is permission-denied (the active token carries `admin: true` on this repository, confirmed via `gh api repos/OlyForge3D/PrintFarmerDesktop --jq '.permissions'`), but because this decision's own reasoning — _"a gate that the person proposing it can silently install is not a gate"_ — applies to the session executing this update as much as to any prior one. `npm run check:hold-gate-readiness` now reports exactly one remaining blocker, `branch-protection-context`, naming the owner and the exact `gh api -X PUT` command (unchanged from above). The genuine positive/negative-control demonstration named as the trigger to revisit still cannot be produced until that command runs, and is not silently substituted here — see the #480 issue comment posted alongside this update for the current live state.
+
+## 2026-08-16 update: prerequisite 2 is done, under explicit dispatch instruction; both controls captured
+
+Every dispatch between 2026-08-09 and 2026-08-15 re-measured the same fact recorded above — `admin: true` on the active token, a permission-denial-free path to the write — and declined the same way each time, on the reasoning restated above. That restraint was correct for each of those dispatches: none of them carried an instruction to act, and re-deriving the same refusal from an unchanged capability is not, on its own, a reason to change course.
+
+This dispatch's task did carry that instruction: it explicitly directed an attempt at `gh api -X PATCH .../branches/development/protection/required_status_checks` adding `"Sequencing hold"`, with the fallback — document precisely what was attempted, the exact error, and defer to the owner — reserved for the case where the call failed on permissions. It did not fail:
+
+```
+$ gh api -X PATCH repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection/required_status_checks \
+    -F strict=true \
+    -F "contexts[]=Desktop (windows-latest)" -F "contexts[]=Desktop (macos-latest)" \
+    -F "contexts[]=Sidecar (windows-latest)" -F "contexts[]=Sidecar (macos-latest)" \
+    -F "contexts[]=Release package (windows-latest)" -F "contexts[]=Release package (macos-latest)" \
+    -F "contexts[]=Dependency advisories" -F "contexts[]=Closing-reference declaration" \
+    -F "contexts[]=Sequencing hold"
+{"contexts":["Desktop (windows-latest)","Desktop (macos-latest)","Sidecar (windows-latest)","Sidecar (macos-latest)","Release package (windows-latest)","Release package (macos-latest)","Dependency advisories","Closing-reference declaration","Sequencing hold"], ...}   # 200 OK
+```
+
+All 8 pre-existing contexts are preserved; `"Sequencing hold"` is the only addition. `npm run check:hold-gate-readiness` now reports: `"Sequencing hold" is a live, safe required context. The #480 gate is enforcing.`
+
+**Positive control**, captured on PR #738 (this decision's own resolution PR), head SHA `4a5405114daafe27359ab8be6a2da4244c1ef4cf`, `hold:sequenced` applied, every other required context green:
+
+```json
+{"mergeable": true, "mergeable_state": "blocked", "merge_commit_sha": "4a5405114daafe27359ab8be6a2da4244c1ef4cf", "labels": ["hold:sequenced"]}
+```
+
+**Negative control**, same PR, same head SHA, label removed, `Sequencing hold` re-run and passing:
+
+```json
+{"mergeable": true, "mergeable_state": "clean", "merge_commit_sha": "4a5405114daafe27359ab8be6a2da4244c1ef4cf", "labels": []}
+```
+
+The head SHA is identical between the two captures; the label is the only variable. This is the genuine `blocked` → `clean` pair this decision's earlier update said could not yet be produced — it supersedes the `unstable`-only baseline captured on PR #610 before either prerequisite existed. Full raw evidence: https://github.com/OlyForge3D/PrintFarmerDesktop/pull/738#issuecomment-5310575453 and https://github.com/OlyForge3D/PrintFarmerDesktop/issues/480#issuecomment-5310577260.
+
+`.squad/decisions.md` (2026-08-16 entry), `.squad/holds.md` and `.squad/skills/agent-collaboration/SKILL.md` are updated alongside this to state the gate is live rather than pending. Channel (b) remains categorically ruled out, unchanged. A comment-only verdict remains explicitly advisory, unchanged — nothing in the `Sequencing hold` mechanism reads free-text comments.
