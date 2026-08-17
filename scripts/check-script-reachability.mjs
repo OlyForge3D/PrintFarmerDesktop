@@ -281,26 +281,23 @@ export const UNENFORCED_CHECKS = {
     '"Sequencing hold" as a required status context over required approving ' +
     'reviews, which is categorically impossible while jpapiez is the sole ' +
     'collaborator (self-review 422s; #206, #187). That choice had two ' +
-    'prerequisites this script reports on. (1) is now DONE: ' +
+    'prerequisites; both are now DONE, as of 2026-08-16. (1): ' +
     'sequencing-hold.yml subscribes to merge_group and declares ' +
-    '"# merge-queue: reports" (was "advisory") — landed with a second, ' +
-    'non-active `gh` account carrying `workflow` scope, switched to ' +
-    'in-process (unset GH_TOKEN/GITHUB_TOKEN, `gh auth switch`, remote URL ' +
-    'set from `gh auth token`) because the active session credential lacked ' +
-    'that scope on its own, the same gap check:closed-head-dispatch and ' +
-    'check:direct-push-artifact above still report against. (2) remains, ' +
-    'deliberately: the repository owner must add "Sequencing hold" to ' +
-    "development's required_status_checks.contexts, a branch-protection " +
-    'admin write this session does not perform even though its token ' +
-    'carries `admin: true` — #480\'s own reasoning ("a gate the proposer ' +
-    'can silently install is not a gate") applies to every session that ' +
-    'could make this call, not only the first one that measured it. ' +
-    'STATE THE WEAKNESS PLAINLY: until (2) lands, this reports readiness by ' +
-    'hand only, and the #480 gate itself is not live. See ' +
+    '"# merge-queue: reports" (was "advisory"). (2): the repository ' +
+    '"development" branch\'s required_status_checks.contexts now includes ' +
+    '"Sequencing hold" alongside the 8 prior contexts, landed under an ' +
+    'explicit dispatch instruction to attempt the branch-protection write ' +
+    'rather than defer it by default — see ' +
     '.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md ' +
-    'for the exact diff and API call. Discharge path: once the owner adds ' +
-    'the branch-protection context, `npm run check:hold-gate-readiness` ' +
-    'reports ready and this entry should be deleted.',
+    "and .squad/decisions.md's 2026-08-16 entry for the exact API call and " +
+    'both the positive and negative control. `npm run check:hold-gate-readiness` ' +
+    'now reports ready. STATE THE WEAKNESS THAT REMAINS PLAINLY: this entry ' +
+    'stays in the allowlist not because the gate is unready but because no ' +
+    'CI workflow invokes this script — it queries live GitHub branch-protection ' +
+    'state over the network with a credential this repo does not provision to ' +
+    'any workflow, so it is a manual/on-demand diagnostic by the same reasoning ' +
+    'as generate-installer-gif.mjs above, not something `npm run test` can ' +
+    'exercise end-to-end against the live API.',
   'check:stranded-branches':
     'Its judgement IS enforced in CI: tests/strandedBranches.test.ts drives ' +
     'listLocalBranches, listStrandedCommits, evaluateRemoteRefPresence and ' +

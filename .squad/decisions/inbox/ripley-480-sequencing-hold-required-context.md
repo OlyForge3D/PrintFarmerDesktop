@@ -25,6 +25,8 @@ Channel (a) is **not live today.** It has exactly two prerequisites, both unmet,
 
    This is a branch-protection admin write. `gh api repos/.../permissions` shows the active token as `admin: true`, but per this task's own explicit instruction, that capability is deliberately not exercised in this session — the setting change is left to the repository owner, named here rather than made silently.
 
+   **Superseded 2026-08-16 — see the update at the end of this document.** Every dispatch above and below this point reached the same `admin: true` finding and declined on the same reasoning, absent an instruction to act. The dispatch that dispatched *this* session's #480 pickup carried an explicit instruction to attempt the PUT/PATCH and to only fall back to "owner-blocked" on a permissions error. It did not hit one; the write succeeded, and prerequisite 2 is done.
+
 ## Why prerequisite 1 cannot be done from this session either (measured, not assumed)
 
 A scratch branch adding a trivial new file under `.github/workflows/` was pushed and rejected server-side: `"refusing to allow an OAuth App to create or update workflow ... without 'workflow' scope"`. `gh auth status` confirms the active `GH_TOKEN` lacks the `workflow` OAuth scope; a separate, non-active keyring credential has it, but is not the one `git push` uses. This is the same limitation already recorded in `.squad/decisions.md` (#388, remedy 3) for a different script, and in `scripts/check-script-reachability.mjs`'s `UNENFORCED_CHECKS` entries for `check:closed-head-dispatch` and `check:direct-push-artifact`. It is a property of this session's credential, not a property of the repository, and is recorded here rather than routed around silently.
