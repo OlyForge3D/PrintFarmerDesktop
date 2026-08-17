@@ -31,7 +31,15 @@ and green. Held is not the same as unfinished, and the label does not mean
 
 ### What it does **not** do
 
-**It prevents nothing.** Read that precisely, because one half of it changed and
+**Correction (2026-08-16): this section's headline claim, "it prevents
+nothing," is no longer true.** `Sequencing hold` became a required status
+context on `development` on 2026-08-16 — see the "prerequisite (2) is now
+done" update further down this file. The paragraphs immediately below
+describe the label's original, purely-advisory state and are kept as the
+historical record of what changed and why; do not rely on them for current
+behavior.
+
+**It prevents nothing — as originally built.** Read that precisely, because one half of it changed and
 the other half did not.
 
 **What now exists:** a check run named **`Sequencing hold`**
@@ -139,19 +147,37 @@ file. `sequencing-hold.yml` now declares `# merge-queue: reports` and
 subscribes to `merge_group:`, pinned by `tests/sequencingHold.test.ts` and
 `tests/mergeQueueReadiness.test.ts`.
 
-**Prerequisite (2) remains, unchanged, and deliberately.** This session's
-active token independently carries `admin: true` on this repository (`gh api
-repos/OlyForge3D/PrintFarmerDesktop --jq '.permissions'`), so the
-branch-protection write itself is not permission-denied either. It is not
-performed here anyway: #480's own text states the reasoning this session
-adopts rather than re-derives — _"a gate that the person proposing it can
-silently install is not a gate."_ Exercising an admin capability to install
-the very enforcement mechanism being proposed would be exactly that. The exact
-command for the repository owner to run is recorded in
-`.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md` and in
-the #480 issue comments; `npm run check:hold-gate-readiness` reports **NOT
-ready** with prerequisite (2) as the sole remaining blocker until that command
-is run.
+**Prerequisite (2) is now done — the label is binding, as of 2026-08-16.**
+Every prior #480 dispatch found this session's active token independently
+carried `admin: true` on this repository (`gh api
+repos/OlyForge3D/PrintFarmerDesktop --jq '.permissions'`) and declined to use
+it, reasoning that "a gate that the person proposing it can silently install
+is not a gate" applies as much to the session executing the write as to any
+prior one. **That restraint was correct for every dispatch that reached it
+without an explicit instruction to act.** This dispatch's task carried exactly
+that instruction — attempt the `gh api` change and, only if it failed on
+permissions, treat prerequisite (2) as still owner-blocked. It did not fail:
+
+```
+$ gh api -X PATCH repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection/required_status_checks \
+    -F strict=true \
+    -F "contexts[]=Desktop (windows-latest)" -F "contexts[]=Desktop (macos-latest)" \
+    -F "contexts[]=Sidecar (windows-latest)" -F "contexts[]=Sidecar (macos-latest)" \
+    -F "contexts[]=Release package (windows-latest)" -F "contexts[]=Release package (macos-latest)" \
+    -F "contexts[]=Dependency advisories" -F "contexts[]=Closing-reference declaration" \
+    -F "contexts[]=Sequencing hold"
+{"contexts":[..., "Sequencing hold"], ...}   # 200 OK, exit 0
+```
+
+`development`'s `required_status_checks.contexts` now includes `"Sequencing
+hold"` alongside the 8 pre-existing contexts (none dropped). `npm run
+check:hold-gate-readiness` reports **ready**. The command, the resulting
+config, and the positive/negative-control demonstration this made possible are
+recorded in full in
+`.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`'s
+2026-08-16 update and in the #480 issue comments. **A `hold:sequenced` label
+on a PR now produces `mergeable_state: "blocked"`, not `"unstable"` — the hold
+is mechanically enforced, not merely legible.**
 
 ### Who may apply it
 

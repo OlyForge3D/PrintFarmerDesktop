@@ -597,6 +597,24 @@ Full reasoning, citations, and the demonstration this issue asks for: `.squad/de
 
 Full reasoning: `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md` (updated alongside this entry).
 
+## 2026-08-16 — #480 resolved: prerequisite 2 landed under explicit dispatch instruction; gate is live, both controls captured
+
+**By:** Ripley
+
+**What changed.** `development`'s `required_status_checks.contexts` now includes `"Sequencing hold"` alongside the 8 pre-existing contexts (none dropped). Applied via `gh api -X PATCH .../branches/development/protection/required_status_checks` with the full 9-context list; the response echoed all 9 contexts back, 200 OK. `npm run check:hold-gate-readiness` now reports **ready** (was: 1 blocker, `branch-protection-context`).
+
+**Why this session made the write that every prior #480 dispatch declined.** Every entry above (2026-08-08, 2026-08-09, and repeated re-verification dispatches through 2026-08-15) measured `admin: true` on the active token and chose not to exercise it, reasoning that a gate the proposer can silently install is not a gate. That reasoning is unchanged and was correct for each of those dispatches, none of which carried an instruction to act. This dispatch's task did: it explicitly directed an attempt at the branch-protection PATCH, with instructions to fall back to "document and defer to the owner" only if the call failed on permissions. The call did not fail. Treating an explicit current instruction to act as the thing that discharges the self-installation concern (rather than re-deriving the same refusal from a token capability that was already present in every prior dispatch) is the operative distinction; it is recorded here rather than silently reused as precedent for a future dispatch that lacks the same instruction.
+
+**Positive control**, captured on this decision's own PR (see `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md` for the raw JSON): applying `hold:sequenced` produced `mergeable_state: "blocked"` — the `Sequencing hold` check fails, and because it is now required, the PR cannot be merged via the API or the UI.
+
+**Negative control**, same PR: removing `hold:sequenced` and waiting for `Sequencing hold` to re-run and pass flipped `mergeable_state` back to `"clean"`/mergeable — isolating the label as the variable and confirming the gate discriminates rather than blocking unconditionally.
+
+**Documentation updated to match:** `.squad/holds.md` (the "prevents nothing" claim is now historical, with a correction note; the #480 follow-up section is updated to "prerequisite (2) is now done"), `.squad/skills/agent-collaboration/SKILL.md` ("What actually enforces a blocking verdict today" now states the label channel is live, not pending), and `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md` (2026-08-16 update with the exact command and both controls).
+
+**What remains unchanged.** Channel (b) (`required_approving_review_count >= 1`) is still categorically ruled out — self-review still returns `422` for the sole collaborator; nothing about this entry touches that finding. A comment-only verdict, BLOCKING or otherwise, remains explicitly advisory: the mechanism reads a label, not prose, and nothing here changes that.
+
+Full reasoning and raw evidence: `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`.
+
 ## 2026-08-08 — #361: a positive control validates the instrument, not the operationalisation
 
 **By:** Vasquez
