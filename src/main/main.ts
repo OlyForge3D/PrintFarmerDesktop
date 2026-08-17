@@ -29,6 +29,13 @@ let updateManager: UpdateManager | null = null;
 let shutdownStarted = false;
 let cleanupComplete = false;
 
+const PRODUCT_NAME = 'PrintFarmer Desktop';
+const PRODUCT_WEBSITE = 'https://github.com/OlyForge3D/PrintFarmerDesktop';
+
+// The development executable is Electron, so set the product identity
+// explicitly instead of inheriting metadata from the host binary.
+app.setName(PRODUCT_NAME);
+
 const userDataOverride = process.env.PRINTFARMER_USER_DATA_PATH;
 if (userDataOverride) {
   app.setPath('userData', path.resolve(userDataOverride));
@@ -45,7 +52,7 @@ const createMainWindow = (): void => {
     height: 900,
     minWidth: 1120,
     minHeight: 700,
-    title: 'PrintFarmer Desktop',
+    title: PRODUCT_NAME,
     icon: iconPath,
     backgroundColor: '#0e1116',
     show: false,
@@ -129,6 +136,23 @@ const createMainWindow = (): void => {
 };
 
 function installApplicationMenu(): void {
+  // `setAboutPanelOptions` is a no-op on Windows/Linux Electron builds, so it
+  // is safe (and necessary for the dev-mode identity fix) to call it
+  // unconditionally rather than only inside the macOS-only branch below.
+  const version = app.getVersion();
+  app.setAboutPanelOptions({
+    applicationName: PRODUCT_NAME,
+    applicationVersion: version,
+    version,
+    copyright: 'Copyright (c) 2026 OlyForge3D',
+    website: PRODUCT_WEBSITE,
+    iconPath: resolveAppIconPath(
+      app.getAppPath(),
+      process.resourcesPath,
+      app.isPackaged,
+    ),
+  });
+
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
     return;
