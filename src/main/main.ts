@@ -136,14 +136,9 @@ const createMainWindow = (): void => {
 };
 
 function installApplicationMenu(): void {
-  if (process.platform !== 'darwin') {
-    Menu.setApplicationMenu(null);
-    return;
-  }
-
-  // macOS keeps its menu in the system menu bar rather than inside the window.
-  // Preserve standard application/Edit/Window roles and accelerators while the
-  // BrowserWindow itself uses renderer-owned titlebar chrome.
+  // `setAboutPanelOptions` is a no-op on Windows/Linux Electron builds, so it
+  // is safe (and necessary for the dev-mode identity fix) to call it
+  // unconditionally rather than only inside the macOS-only branch below.
   const version = app.getVersion();
   app.setAboutPanelOptions({
     applicationName: PRODUCT_NAME,
@@ -158,6 +153,14 @@ function installApplicationMenu(): void {
     ),
   });
 
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+
+  // macOS keeps its menu in the system menu bar rather than inside the window.
+  // Preserve standard application/Edit/Window roles and accelerators while the
+  // BrowserWindow itself uses renderer-owned titlebar chrome.
   const template: MenuItemConstructorOptions[] = [
     {
       label: app.name,

@@ -13,6 +13,7 @@
  * so it is asserted here to convert it into something CI notices.
  */
 
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const bootState = vi.hoisted(() => ({
@@ -161,7 +162,10 @@ describe('macOS product identity', () => {
         version: '0.0.0-test',
         copyright: 'Copyright (c) 2026 OlyForge3D',
         website: 'https://github.com/OlyForge3D/PrintFarmerDesktop',
-        iconPath: '/test/app/assets/icon.png',
+        // `resolveAppIconPath` joins with `node:path`, which uses the host's
+        // native separator, so the expectation must too (backslashes on
+        // Windows CI runners, forward slashes elsewhere).
+        iconPath: path.join('/test/app', 'assets', 'icon.png'),
       },
     ]);
   });
