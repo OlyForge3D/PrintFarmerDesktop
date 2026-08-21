@@ -41,6 +41,14 @@ Use the existing Segoe UI Variable/Segoe UI/system sans stack throughout the pro
 
 The shell retains native titlebar and statusbar regions. Top-level workspaces are peers selected from persistent shell navigation. Library keeps its three-pane layout. Printer Calibration uses a workflow-oriented shell with a project rail, main task region, and contextual detail region that collapse structurally at narrow widths without hiding current status.
 
+The shell has exactly three tiers, and each uses one idiom:
+
+1. **Places** — a persistent vertical rail on the left, grouped into workspaces and services. Every place is declared once in `src/renderer/shell/workspaces.ts` with its label, icon, landmark id, skip-link target, and focus target; the shell reads that registry rather than branching on a workspace id. Adding a feature means adding a registry entry and the component that renders its landmark. Below 1120px the rail keeps every destination and drops only its labels, which remain in each item's accessible name.
+2. **Services** — app-level facilities are places in the rail, not dialogs. Durable, monitorable, or revisitable state (transfers, folder access) must be reachable without dismissing anything. Reserve dialogs for decisions that need protected focus. PrintFarmer authority lives in one shell-owned bar above the active place, visible everywhere and never re-implemented inside a workspace.
+3. **Status** — the statusbar reports the system, never the route: current activity, transfers in flight, sources needing attention, connection, and build. The rail already communicates location through `aria-current`.
+
+Each place owns exactly one `<h1>`, at one shared scale, and the shell chrome owns none. Second-level navigation inside a place uses the same left-rail idiom as the first, so one navigation vocabulary covers the whole product.
+
 ## Motion
 
 Transitions communicate state changes in 150-250ms using ease-out curves. No decorative page choreography. Under `prefers-reduced-motion: reduce`, transitions and smooth scrolling become effectively instantaneous.
