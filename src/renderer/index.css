@@ -74,6 +74,7 @@ select:disabled {
   --favorite: #d8b461;
   --viewer: #0b0e12;
   --sidebar-width: 224px;
+  --rail-width: 208px;
   --inspector-width: 320px;
   --grid-min: 168px;
   --grid-gap: 12px;
@@ -87,7 +88,7 @@ select:disabled {
     'Cascadia Mono', 'Segoe UI Mono', Consolas, 'Liberation Mono', monospace;
 
   display: grid;
-  grid-template-rows: 40px minmax(0, 1fr) 24px;
+  grid-template-rows: 40px minmax(0, 1fr) 26px;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -115,12 +116,20 @@ select:disabled {
 
 .product-identity {
   display: flex;
-  flex: 0 0 var(--sidebar-width);
+  flex: none;
   align-items: center;
   gap: 9px;
   height: 100%;
   padding: 0 14px;
   color: #edf1f4;
+}
+
+.product-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
 }
 
 .platform-darwin .product-identity {
@@ -156,12 +165,17 @@ select:disabled {
 /* Fixed three-pane workspace */
 
 .workspace {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace--library {
   display: grid;
   grid-template-columns:
     var(--sidebar-width) minmax(0, 1fr)
     var(--inspector-width);
-  min-width: 0;
-  min-height: 0;
 }
 
 .library-sidebar,
@@ -347,8 +361,7 @@ select:disabled {
   line-height: 14px;
 }
 
-.sidebar-primary-action,
-.sidebar-secondary-action {
+.sidebar-primary-action {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -356,24 +369,13 @@ select:disabled {
   height: 32px;
   margin-top: 5px;
   padding: 0 9px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent);
   border-radius: var(--control-radius);
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.sidebar-primary-action {
-  border-color: var(--accent);
   background: var(--accent);
   color: #071018;
+  cursor: pointer;
   font-weight: 600;
-}
-
-.sidebar-secondary-action:hover {
-  border-color: var(--border-strong);
-  background: var(--surface-hover);
+  text-align: left;
 }
 
 .sidebar-status {
@@ -513,83 +515,6 @@ select:disabled {
   line-height: 15px;
 }
 
-.sidebar-server {
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--border);
-}
-
-.sidebar-server .sidebar-section-label {
-  margin: 0 0 7px;
-}
-
-.server-profile-entry {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 9px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--control-radius);
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.server-profile-entry:hover {
-  border-color: var(--border-strong);
-  background: var(--surface-hover);
-}
-
-.server-profile-entry--cta {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.server-profile-entry--cta:hover {
-  border-color: var(--focus);
-  background: var(--accent-soft);
-}
-
-.server-profile-entry--cta .server-status-dot {
-  background: var(--accent);
-}
-
-.server-cta-label {
-  color: var(--accent);
-  font-weight: 700;
-}
-
-.server-profile-entry > span:nth-child(2) {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.server-profile-entry strong,
-.server-profile-entry small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.server-profile-entry small {
-  color: var(--quiet);
-  font-size: 10.5px;
-}
-
-.server-profile-entry .server-accessible-status.connected {
-  color: var(--success);
-}
-
-.server-profile-entry .server-accessible-status.legacy {
-  color: var(--warning);
-}
-
-.server-profile-entry .server-accessible-status.error {
-  color: var(--danger);
-}
-
 .server-status-dot {
   width: 8px;
   height: 8px;
@@ -608,12 +533,6 @@ select:disabled {
 
 .server-status-dot.error {
   background: var(--danger);
-}
-
-.sidebar-transport-warning {
-  margin: 6px 2px 0;
-  color: var(--warning);
-  font-size: 10.5px;
 }
 
 /* Library pane */
@@ -637,26 +556,23 @@ select:disabled {
 }
 
 .library-commandbar > div:first-child {
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: baseline;
+  display: flex;
   min-width: 0;
-  gap: 0 10px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
 }
 
-.library-commandbar .pane-eyebrow {
-  grid-column: 1 / -1;
-  margin: 0 0 1px;
-}
-
-.library-commandbar h2,
+.library-commandbar h1,
 .inspector-header h2 {
   margin: 0;
   overflow: hidden;
   font-family: var(--heading-font);
-  font-size: 16px;
+  font-size: 19px;
   font-weight: 600;
-  line-height: 22px;
+  letter-spacing: -0.01em;
+  line-height: 26px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -677,6 +593,7 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -1252,67 +1169,20 @@ select:disabled {
   background: rgb(3 5 7 / 78%);
 }
 
-.catalog-sources-backdrop {
-  z-index: 49;
-}
-
-.catalog-sources-dialog {
-  display: flex;
-  width: min(940px, 100%);
-  max-height: 100%;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--sidebar);
-  box-shadow: 0 22px 70px rgb(0 0 0 / 55%);
-  color: var(--text);
-}
-
-.catalog-sources-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 17px 20px 15px;
-  border-bottom: 1px solid var(--border);
-  background: var(--titlebar);
-}
-
-.catalog-sources-header h2,
-.catalog-sources-header p,
-.catalog-source-section-heading h3,
-.catalog-source-section-heading p,
+.catalog-source-section-heading h2,
 .catalog-source-empty h3,
 .catalog-source-empty p,
-.catalog-reset-zone h3,
+.catalog-reset-zone h2,
 .catalog-reset-zone p,
 .catalog-reset-confirmation p {
   margin: 0;
 }
 
-.catalog-sources-header .pane-eyebrow,
-.catalog-reset-zone .pane-eyebrow {
-  margin: 0 0 3px;
-}
-
-.catalog-sources-header h2 {
-  font-family: var(--heading-font);
-  font-size: 19px;
-  font-weight: 650;
-}
-
-.catalog-sources-header p:last-child {
-  margin-top: 4px;
-  color: var(--quiet);
-  font-size: 11px;
-  line-height: 17px;
-}
-
 .catalog-source-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
   background: color-mix(in srgb, var(--surface), transparent 24%);
 }
 
@@ -1348,7 +1218,7 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 12px 20px 0;
+  margin: 0;
   padding: 9px 11px;
   border: 1px solid var(--border);
   border-radius: var(--control-radius);
@@ -1371,7 +1241,7 @@ select:disabled {
 .catalog-sources-progress {
   display: grid;
   gap: 6px;
-  margin: 12px 20px 0;
+  margin: 0;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--accent), var(--border) 58%);
   border-radius: var(--control-radius);
@@ -1403,13 +1273,7 @@ select:disabled {
   accent-color: var(--accent);
 }
 
-.catalog-sources-toolbar {
-  display: flex;
-  gap: 8px;
-  padding: 14px 20px 12px;
-}
-
-.catalog-sources-toolbar button,
+.service-heading-actions button,
 .catalog-reset-trigger,
 .catalog-reset-confirmation button {
   display: inline-flex;
@@ -1426,13 +1290,13 @@ select:disabled {
   font-size: 11px;
 }
 
-.catalog-sources-toolbar button:hover:not(:disabled),
+.service-heading-actions button:hover:not(:disabled),
 .catalog-reset-confirmation button:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--surface-hover);
 }
 
-.catalog-sources-toolbar .catalog-source-primary {
+.service-heading-actions .catalog-source-primary {
   border-color: var(--accent);
   background: var(--accent);
   color: #071018;
@@ -1443,41 +1307,39 @@ select:disabled {
   display: grid;
   min-height: 0;
   gap: 14px;
-  overflow-y: auto;
-  padding: 0 20px 20px;
+  padding: 0;
 }
 
-.catalog-source-list-section,
+.catalog-source-list-section {
+  padding: 0;
+}
+
 .catalog-reset-zone {
   border: 1px solid var(--border);
   border-radius: var(--card-radius);
   background: color-mix(in srgb, var(--surface), transparent 20%);
 }
 
-.catalog-source-list-section {
-  padding: 14px;
-}
-
 .catalog-source-section-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
 }
 
-.catalog-source-section-heading h3,
+.catalog-source-section-heading h2,
 .catalog-source-empty h3,
-.catalog-reset-zone h3 {
-  font-size: 12px;
+.catalog-reset-zone h2 {
+  font-size: 13px;
+  font-weight: 600;
   line-height: 18px;
 }
 
-.catalog-source-section-heading p,
 .catalog-source-empty p,
 .catalog-reset-zone > div:first-child > p:last-child {
   color: var(--quiet);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 16px;
 }
 
@@ -1578,20 +1440,6 @@ select:disabled {
   font-weight: 700;
 }
 
-.upload-queue-dialog {
-  display: flex;
-  width: min(920px, 100%);
-  max-height: 100%;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--border-strong);
-  border-radius: 7px;
-  box-shadow: 0 22px 70px rgb(0 0 0 / 55%);
-  background: var(--sidebar);
-  color: var(--text);
-}
-
-.upload-queue-header,
 .upload-job > header,
 .upload-job > footer {
   display: flex;
@@ -1600,24 +1448,11 @@ select:disabled {
   gap: 12px;
 }
 
-.upload-queue-header {
-  padding: 16px 18px 13px;
-  border-bottom: 1px solid var(--border);
-  background: var(--titlebar);
-}
-
-.upload-queue-header h2,
-.upload-queue-header p,
-.upload-job h3,
+.upload-job h2,
 .upload-job p {
   margin: 0;
 }
 
-.upload-queue-header h2 {
-  font-size: 17px;
-}
-
-.upload-queue-header p:last-child,
 .upload-summary,
 .upload-item-list span {
   color: var(--quiet);
@@ -1627,15 +1462,14 @@ select:disabled {
 .upload-live-status {
   min-height: 18px;
   margin: 0;
-  padding: 6px 18px;
+  padding: 0;
   color: var(--quiet);
   font-size: 11px;
 }
 
 .upload-job-list {
   min-height: 0;
-  overflow-y: auto;
-  padding: 0 18px 18px;
+  padding: 0;
 }
 
 .upload-job {
@@ -1646,10 +1480,15 @@ select:disabled {
   background: var(--surface);
 }
 
-.upload-job h3 {
+.upload-job:first-child {
+  margin-top: 0;
+}
+
+.upload-job h2 {
   display: inline;
   margin-right: 8px;
   font-size: 13px;
+  font-weight: 600;
 }
 
 .upload-mode,
@@ -2901,14 +2740,14 @@ select:disabled {
 .app-statusbar {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
   padding: 0 10px;
   overflow: hidden;
   border-top: 1px solid var(--border);
   background: var(--titlebar);
-  color: #939ca3;
-  font-size: 10px;
+  color: var(--quiet);
+  font-size: 11px;
   white-space: nowrap;
   user-select: none;
 }
@@ -3120,6 +2959,29 @@ select:disabled {
     --sidebar-width: 208px;
     --inspector-width: 288px;
   }
+
+  /* Let the command bar stack rather than ellipsise the view's own name. */
+  .library-commandbar {
+    min-height: 0;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+  }
+
+  .library-commandbar > div:first-child {
+    flex: 1 1 100%;
+  }
+}
+
+/*
+ * Below this width the rail keeps every destination but drops its labels; the
+ * collapsed presentation itself lives with the rest of the rail in shell.css.
+ * The token stays here because that is where it is declared, and a media block
+ * in a later-injected file would otherwise lose to this one on source order.
+ */
+@media (max-width: 1120px) {
+  .app-root {
+    --rail-width: 58px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3203,53 +3065,6 @@ select:disabled {
 
 .skip-link:focus {
   transform: translateY(0);
-}
-
-.workspace-switcher {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid #2a3039;
-  border-radius: 5px;
-  background: #15191f;
-  -webkit-app-region: no-drag;
-}
-
-.workspace-switcher button {
-  min-height: 27px;
-  padding: 3px 11px;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  background: transparent;
-  color: #aeb6c0;
-  cursor: pointer;
-}
-
-.workspace-switcher button:hover:not(:disabled) {
-  background: #202630;
-  color: #edf1f4;
-}
-
-.workspace-switcher button[aria-current='page'] {
-  border-color: #4a5968;
-  background: #173247;
-  color: #edf1f4;
-}
-
-.workspace-switch-explanation {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.workspace.calibration-shell {
-  display: block;
-  overflow: hidden;
 }
 
 [data-library-heading]:focus {

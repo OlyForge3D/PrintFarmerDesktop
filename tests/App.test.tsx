@@ -101,8 +101,10 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
-function findSidebarManageButton(name: string | RegExp): Promise<HTMLElement> {
-  return within(screen.getByLabelText('Library navigation')).findByRole(
+function findAuthorityManageButton(
+  name: string | RegExp,
+): Promise<HTMLElement> {
+  return within(screen.getByLabelText('PrintFarmer server')).findByRole(
     'button',
     { name },
   );
@@ -275,7 +277,7 @@ describe('<App />', () => {
     render(<App />);
 
     const identity = screen
-      .getByRole('heading', { name: 'PrintFarmer Desktop' })
+      .getByText('PrintFarmer Desktop')
       .closest('.product-identity');
     const icon = identity?.querySelector('.product-icon');
 
@@ -283,7 +285,7 @@ describe('<App />', () => {
     expect(icon).toHaveAttribute('src', expect.stringContaining('icon.png'));
     await waitFor(() =>
       expect(screen.getByLabelText('Application status')).toHaveTextContent(
-        'v0.1.0 / win32',
+        'v0.1.0 · win32',
       ),
     );
   });
@@ -303,7 +305,7 @@ describe('<App />', () => {
 
     await waitFor(() =>
       expect(screen.getByLabelText('Application status')).toHaveTextContent(
-        'v0.1.0 / darwin',
+        'v0.1.0 · darwin',
       ),
     );
   });
@@ -393,7 +395,7 @@ describe('<App />', () => {
     });
     const { container } = render(<App />);
 
-    const manage = await findSidebarManageButton(/^Connect to PrintFarmer:/);
+    const manage = await findAuthorityManageButton(/^Connect to PrintFarmer:/);
     expect(manage).toHaveAccessibleName(
       'Connect to PrintFarmer: No server selected yet, Status: Disconnected',
     );
@@ -403,7 +405,7 @@ describe('<App />', () => {
     expect(
       await screen.findByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toBeVisible();
-    const workspace = container.querySelector('.workspace');
+    const workspace = container.querySelector('.app-body');
     expect(workspace).toHaveAttribute('inert');
     let inertWhenFocusReturned: boolean | null = null;
     manage.addEventListener('focus', () => {
@@ -451,7 +453,7 @@ describe('<App />', () => {
 
     render(<App />);
     await screen.findByRole('button', { name: 'Select widget.stl' });
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sources' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
 
     fireEvent.click(
       screen.getByRole('button', {
@@ -536,9 +538,7 @@ describe('<App />', () => {
     expect(
       await screen.findByText('0 available · 1 needs attention'),
     ).toBeVisible();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Manage sources' }),
-    );
+    fireEvent.click(await screen.findByRole('button', { name: /^Sources/ }));
     const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
     fireEvent.click(reconnect);
 
@@ -546,7 +546,10 @@ describe('<App />', () => {
       screen.getByRole('progressbar', { name: 'Scan progress' }),
     ).toBeVisible();
     await waitFor(() =>
-      expect(screen.getAllByText('Reconnecting C:\\models')).toHaveLength(2),
+      expect(screen.getAllByText('Reconnecting C:\\models')).toHaveLength(1),
+    );
+    expect(screen.getByLabelText('Application status')).toHaveTextContent(
+      'Scanning source',
     );
 
     await act(async () => {
@@ -611,9 +614,7 @@ describe('<App />', () => {
     });
 
     render(<App />);
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Manage sources' }),
-    );
+    fireEvent.click(await screen.findByRole('button', { name: /^Sources/ }));
     const rescan = await screen.findByRole('button', { name: 'Scan again' });
 
     fireEvent.click(rescan);
@@ -718,9 +719,9 @@ describe('<App />', () => {
       deleteServerProfile: vi.fn(() => deletion.promise),
     });
     render(<App />);
-    const manage = await findSidebarManageButton(/^Manage connection:/);
+    const manage = await findAuthorityManageButton(/^Manage connection:/);
     expect(manage).toHaveTextContent('Delete me');
-    expect(manage).toHaveTextContent('Status: Legacy fallback');
+    expect(manage).toHaveTextContent('Legacy fallback');
 
     fireEvent.click(manage);
     fireEvent.click(
@@ -732,7 +733,7 @@ describe('<App />', () => {
     deleted = true;
     deletion.resolve({ profiles: [], selectedProfileId: null });
 
-    const disconnected = await findSidebarManageButton(
+    const disconnected = await findAuthorityManageButton(
       /^Connect to PrintFarmer:/,
     );
     fireEvent.click(disconnected);
@@ -778,7 +779,7 @@ describe('<App />', () => {
       selectServerProfile: vi.fn(() => selection.promise),
     });
     render(<App />);
-    const manage = await findSidebarManageButton(/^Manage connection:/);
+    const manage = await findAuthorityManageButton(/^Manage connection:/);
     expect(manage).toHaveTextContent('First farm');
 
     fireEvent.click(manage);
@@ -789,7 +790,8 @@ describe('<App />', () => {
     selectedId = second.id;
     selection.resolve(second);
 
-    const selectedSecond = await findSidebarManageButton(/^Manage connection:/);
+    const selectedSecond =
+      await findAuthorityManageButton(/^Manage connection:/);
     await waitFor(() =>
       expect(selectedSecond).toHaveTextContent('Second farm'),
     );
@@ -848,7 +850,7 @@ describe('<App />', () => {
       listTags: vi.fn().mockResolvedValue([]),
     });
     const { container } = render(<App />);
-    const manage = await findSidebarManageButton(/^Connect to PrintFarmer:/);
+    const manage = await findAuthorityManageButton(/^Connect to PrintFarmer:/);
     await waitFor(() => expect(manage).toBeEnabled());
 
     fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
@@ -932,7 +934,7 @@ describe('<App />', () => {
       loadScene,
     });
     render(<App />);
-    const manage = await findSidebarManageButton(/^Connect to PrintFarmer:/);
+    const manage = await findAuthorityManageButton(/^Connect to PrintFarmer:/);
     const preview = await screen.findByRole('button', {
       name: 'Preview part.stl in 3D',
     });
@@ -1130,7 +1132,7 @@ describe('<App />', () => {
       openFolder,
     });
     render(<App />);
-    const manage = await findSidebarManageButton(/^Connect to PrintFarmer:/);
+    const manage = await findAuthorityManageButton(/^Connect to PrintFarmer:/);
     const addFolder = screen.getByRole('button', { name: 'Add folder' });
     const openFile = screen.getByRole('button', { name: 'Open file' });
     await waitFor(() => expect(openFile).toBeEnabled());
@@ -1796,7 +1798,11 @@ describe('<App />', () => {
       name: 'Printer Calibration',
     });
     await waitFor(() => expect(calibrationHeading).toHaveFocus());
-    expect(await screen.findByText('Farm server')).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText('PrintFarmer server')).getByText(
+        'Farm server',
+      ),
+    ).toBeInTheDocument();
 
     const manageProfiles = screen.getByRole('button', {
       name: 'Manage PrintFarmer profiles',

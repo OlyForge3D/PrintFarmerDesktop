@@ -46,7 +46,6 @@ export function PropertiesInspector(
   return (
     <aside className="properties-inspector" aria-label="Model properties">
       <header className="inspector-header">
-        <p className="pane-eyebrow">Inspector</p>
         <h2>Properties</h2>
       </header>
       {props.model ? (
