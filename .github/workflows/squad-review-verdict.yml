@@ -350,6 +350,12 @@ jobs:
                 permission = typeof data?.permission === 'string'
                   ? data.permission
                   : 'unresolved';
+                // TEMPORARY (#744 root-cause verification, removed before review):
+                // confirm what a *successful* call actually resolves to.
+                core.warning(
+                  `[#744 debug] permission lookup for ${login} succeeded: ` +
+                  `data=${JSON.stringify(data)}`,
+                );
               } catch (error) {
                 // TEMPORARY (#744 root-cause verification, removed before review):
                 // surface the HTTP status so we can confirm this is really a 403
