@@ -86,7 +86,9 @@ name: Record squad review (self-attested)
 #     whoever forged it. Permission is resolved live through the collaborator
 #     permission API (`admin`/`maintain`/`write` only; `read`, which is what a
 #     non-collaborator returns on a public repo, and `triage` are rejected).
-#     `author_association` is a cheap pre-filter, never the authorisation.
+#     `author_association` is recorded for audit only and never gates trust
+#     (#744: it rejected a real admin whose association GitHub reported as
+#     `CONTRIBUTOR` rather than `OWNER`/`MEMBER`/`COLLABORATOR`).
 #     Lookups FAIL CLOSED: an error, rate limit, or unexpected shape rejects the
 #     record. Identity always comes from the API-supplied account, never from
 #     the comment text. No bot identity is allowlisted — that would re-create
@@ -350,20 +352,7 @@ jobs:
                 permission = typeof data?.permission === 'string'
                   ? data.permission
                   : 'unresolved';
-                // TEMPORARY (#744 root-cause verification, removed before review):
-                // confirm what a *successful* call actually resolves to.
-                core.warning(
-                  `[#744 debug] permission lookup for ${login} succeeded: ` +
-                  `data=${JSON.stringify(data)}`,
-                );
               } catch (error) {
-                // TEMPORARY (#744 root-cause verification, removed before review):
-                // surface the HTTP status so we can confirm this is really a 403
-                // from insufficient token permissions rather than something else.
-                core.warning(
-                  `[#744 debug] permission lookup for ${login} failed: ` +
-                  `status=${error.status} message=${error.message}`,
-                );
                 core.warning(
                   `Could not verify repository permission for ${login}: ` +
                   `${error.message}. Failing closed; any record from this ` +
@@ -450,13 +439,6 @@ jobs:
               }
               const login = shape.commenter;
               const comment = { ...raw, squadWriteAccess: await canWrite(login) };
-              // TEMPORARY (#744 root-cause verification, removed before review):
-              core.warning(
-                `[#744 debug] comment by ${login}: association=` +
-                `${comment.author_association} squadWriteAccess=` +
-                `${comment.squadWriteAccess} reviewer=${shape.reviewer} ` +
-                `trusted=${gate.parseVerdictComment(comment)?.trusted}`,
-              );
               if (comment.squadWriteAccess &&
                   shape.reviewer === gate.normalizeMember(login) &&
                   await isAdmin(login)) {

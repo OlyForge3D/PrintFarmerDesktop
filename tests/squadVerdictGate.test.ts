@@ -219,6 +219,62 @@ describe('authenticating the account behind a record', () => {
     expect(collectVerdicts([readOnlyMember], headSha).current.size).toBe(0);
   });
 
+  it('#744 control pair: write access authenticates regardless of author_association, but read access never does', () => {
+    // #744 root cause, measured against a real PR: the live collaborator-
+    // permission lookup correctly resolved a genuine repository admin to
+    // `admin`, but that same account's GitHub-computed `author_association`
+    // was `CONTRIBUTOR` — not `OWNER`/`MEMBER`/`COLLABORATOR` — so the old
+    // allow-list rejected every verdict, including the owner's own. Trust must
+    // key off `squadWriteAccess` (the live, authoritative permission check)
+    // alone; `author_association` is audit metadata, never a gate.
+    //
+    // POSITIVE: an authenticated write-access account is trusted even though
+    // its association is an unrecognised/unexpected value.
+    const genuineAdminWithUnexpectedAssociation = comment(
+      'bishop',
+      'APPROVE',
+      headSha,
+      {
+        author_association: 'CONTRIBUTOR',
+        user: { login: 'jpapiez' },
+        squadWriteAccess: hasWriteAccess('admin'),
+      },
+    );
+    expect(
+      parseVerdictComment(genuineAdminWithUnexpectedAssociation)?.trusted,
+    ).toBe(true);
+    expect(
+      collectVerdicts([genuineAdminWithUnexpectedAssociation], headSha).current
+        .size,
+    ).toBe(1);
+
+    // CONTROL (same predicate, same data shape): a non-collaborator resolves
+    // to `read` on this public repository. Loosening the association
+    // requirement must not also loosen the write-access requirement — this
+    // must still fail, proving the fix does not convert the fail-closed gate
+    // into one that trusts everyone.
+    const strangerWithSameShapedComment = comment(
+      'bishop',
+      'APPROVE',
+      headSha,
+      {
+        author_association: 'CONTRIBUTOR',
+        user: { login: 'drive-by-stranger' },
+        squadWriteAccess: hasWriteAccess('read'),
+      },
+    );
+    expect(parseVerdictComment(strangerWithSameShapedComment)?.trusted).toBe(
+      false,
+    );
+    expect(
+      collectVerdicts([strangerWithSameShapedComment], headSha).current.size,
+    ).toBe(0);
+    expect(
+      collectVerdicts([strangerWithSameShapedComment], headSha).unauthenticated
+        .length,
+    ).toBe(1);
+  });
+
   it('only write or better may record a review, and lookups fail closed', () => {
     // This repository is public: any GitHub user can comment on a PR with no
     // permission at all, and a non-collaborator resolves to `read`.
@@ -1250,6 +1306,13 @@ describe('the workflow wiring the gate depends on', () => {
     expect(workflow).toMatch(/persist-credentials: false/);
     expect(workflow).toMatch(/squad-verdict-gate\.mjs/);
     expect(workflow).toMatch(/getCollaboratorPermissionLevel/);
+    // #744: no `permissions:` grant fixes trust here — the live permission
+    // lookup already succeeds without any extra scope, and #744's actual
+    // defect was the (now-removed) `author_association` allow-list gating
+    // trust in `parseVerdictComment`. The debug logging used to prove that,
+    // in commits leading up to this fix, must never reappear in the shipped
+    // workflow.
+    expect(workflow).not.toMatch(/#744 debug/);
     expect(workflow).toMatch(
       /gate\.hasWriteAccess\(await permissionOf\(login\)\)/,
     );
