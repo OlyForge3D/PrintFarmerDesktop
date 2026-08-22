@@ -86,7 +86,9 @@ name: Record squad review (self-attested)
 #     whoever forged it. Permission is resolved live through the collaborator
 #     permission API (`admin`/`maintain`/`write` only; `read`, which is what a
 #     non-collaborator returns on a public repo, and `triage` are rejected).
-#     `author_association` is a cheap pre-filter, never the authorisation.
+#     `author_association` is recorded for audit only and never gates trust
+#     (#744: it rejected a real admin whose association GitHub reported as
+#     `CONTRIBUTOR` rather than `OWNER`/`MEMBER`/`COLLABORATOR`).
 #     Lookups FAIL CLOSED: an error, rate limit, or unexpected shape rejects the
 #     record. Identity always comes from the API-supplied account, never from
 #     the comment text. No bot identity is allowlisted — that would re-create

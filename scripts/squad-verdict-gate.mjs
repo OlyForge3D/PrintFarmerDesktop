@@ -122,17 +122,6 @@ export function canAutoScope({ authorMembers, roster, isFork } = {}) {
 }
 
 /**
- * Comment `author_association` values accepted as a cheap PRE-FILTER only.
- *
- * ⚠️ This is NOT the authorisation check. This repository is PUBLIC, so ANY
- * GitHub user can comment on a pull request without any permission at all, and
- * `author_association` varies with organisation configuration. The authoritative
- * check is `hasWriteAccess` below, applied to the live collaborator-permission
- * API result. Never accept a record on association alone.
- */
-const trustedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
-
-/**
  * Repository permission levels that may record a review.
  *
  * The authoritative author-authentication check. Ralph merges autonomously
@@ -388,13 +377,22 @@ export function parseVerdictComment(comment) {
     headSha: headShaRaw.toLowerCase(),
     commenter: comment.user?.login ?? '',
     association: comment.author_association ?? '',
-    // Two independent conditions, both required. `author_association` is not a
-    // permission level — GitHub reports MEMBER for any organisation member and
-    // COLLABORATOR for read-only collaborators — so the caller must also
-    // confirm write access through the collaborator permission API.
-    trusted:
-      trustedAssociations.has(comment.author_association ?? '') &&
-      comment.squadWriteAccess === true,
+    // `author_association` is retained above for audit/display only — it is
+    // NOT part of the trust decision. #744: gating trust on it (originally an
+    // allow-list of OWNER/MEMBER/COLLABORATOR, meant as a cheap pre-filter)
+    // rejected every verdict, including from the repository's sole admin —
+    // measured empirically against a real PR: the live collaborator-permission
+    // lookup correctly resolved `admin`, yet GitHub reported that same admin
+    // account's `author_association` as `CONTRIBUTOR`, which was never on the
+    // allow-list. `author_association` is computed by GitHub from unrelated,
+    // looser signals (e.g. "has previously committed") and is not guaranteed
+    // to reflect current collaborator status, so it must never gate trust.
+    // `squadWriteAccess` alone is the authoritative check: the caller sets it
+    // from a live, fail-closed collaborator-permission lookup for every
+    // comment, so this remains fail-closed for a genuine non-collaborator (who
+    // resolves to `read` or an unresolved lookup) without also rejecting a
+    // legitimate account whose `author_association` doesn't happen to match.
+    trusted: comment.squadWriteAccess === true,
     // Set by the caller when the commenting account is a repository
     // administrator naming its own GitHub login as the reviewer. That is the
     // human owner speaking rather than an agent, and it is decisive.
