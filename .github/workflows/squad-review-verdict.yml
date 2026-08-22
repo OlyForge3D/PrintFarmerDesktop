@@ -351,6 +351,13 @@ jobs:
                   ? data.permission
                   : 'unresolved';
               } catch (error) {
+                // TEMPORARY (#744 root-cause verification, removed before review):
+                // surface the HTTP status so we can confirm this is really a 403
+                // from insufficient token permissions rather than something else.
+                core.warning(
+                  `[#744 debug] permission lookup for ${login} failed: ` +
+                  `status=${error.status} message=${error.message}`,
+                );
                 core.warning(
                   `Could not verify repository permission for ${login}: ` +
                   `${error.message}. Failing closed; any record from this ` +
