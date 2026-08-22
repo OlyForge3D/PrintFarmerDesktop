@@ -4304,9 +4304,17 @@ export const CalibrationApiError = z
      * lives on `CalibrationHttpError.serverDetail` in the main process only —
      * the renderer sees a catalogued literal plus the opaque `reference`.
      * `blockedReasonCode` is the ProblemDetails `errorCode` extension (bounded
-     * by `RemoteCalibrationProblemDetails.errorCode` to 64 characters and used
-     * by PrintFarmer as an enum-shaped machine identifier), and its purpose is
-     * exactly to be translated on the receiving side, the same way `code`
+     * to 64 characters and used by PrintFarmer as an enum-shaped machine
+     * identifier). The 64-char bound is enforced where the value is actually
+     * derived — the `RemoteCalibrationProblemDetails` `.transform` in
+     * `calibrationWire.ts`, which clips its coalesced `errorCode` result, and
+     * the separate `readJobErrorEnvelope` clip in `calibrationHttp.ts` for the
+     * bed-clear/job-queue path — not by the raw `errorCode` field's own
+     * `.max(64)` alone, which a server could bypass via the wider (256-char)
+     * `error` fallback the transform also coalesces (issue #743: an
+     * unenforced mismatch here let a 65-256-char server value throw a Zod
+     * validation exception at IPC serialization instead of failing closed).
+     * Its purpose is exactly to be translated on the receiving side, the same way `code`
      * above is translated to a catalogued literal in `toApiError`. Bounded and
      * enum-shaped rather than free-form is what makes the difference; a token
      * is at most as leak-prone as the HTTP status code.

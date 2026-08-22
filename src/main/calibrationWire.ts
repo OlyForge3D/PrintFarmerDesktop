@@ -2433,6 +2433,13 @@ export const RemoteCalibrationProblemDetails = z
      * Live wire capture 2026-08-21: the 428 `precondition_required` and 404
      * `job_not_found` bodies use this key, not `code`/`errorCode`. Missing it
      * silently discarded every acknowledge-bed-clear refusal on the wire.
+     *
+     * Bounded at 256, twice the 64-char bound on `errorCode`/`code` above,
+     * because it doubles as a free-form fallback for servers that have no
+     * machine code at all (see the `readJobErrorEnvelope` counterpart in
+     * `calibrationHttp.ts`). The wider raw bound here is fine on its own —
+     * the 64-char contract is enforced downstream, in the `.transform` below,
+     * not on this field.
      */
     error: z.string().max(256).optional(),
   })
@@ -2441,7 +2448,18 @@ export const RemoteCalibrationProblemDetails = z
     ...value,
     // Prefer the documented extension, fall back through the observed
     // vocabulary so a deployment emitting any of the three is understood.
-    errorCode: value.errorCode ?? value.code ?? value.error,
+    //
+    // Clipped to 64 chars here (issue #743): `errorCode` and `code` are each
+    // already bounded to 64 above, but `error` is bounded to 256, so a server
+    // that omits both and only sends a 65-256-char `error` would otherwise
+    // hand a too-long value to `CalibrationHttpError.serverErrorCode` ->
+    // `CalibrationApiError.blockedReasonCode` (bounded 64 in
+    // `src/shared/ipc.ts`), which throws at IPC serialization rather than
+    // failing closed. This is the one place that 64-char contract is actually
+    // enforced for the coalesced result; see the docblocks on
+    // `serverErrorCode` in `calibrationHttp.ts` and on `blockedReasonCode` in
+    // `src/shared/ipc.ts`, which both point back here.
+    errorCode: (value.errorCode ?? value.code ?? value.error)?.slice(0, 64),
   }));
 export type RemoteCalibrationProblemDetails = z.infer<
   typeof RemoteCalibrationProblemDetails
