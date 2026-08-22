@@ -147,6 +147,9 @@ describe('CalibrationHttpClient capability contract', () => {
 
   it('withholds calibration when a core precondition is disabled', async () => {
     const body = printFarmerCapabilitiesResponse({
+      // `calibrationApiEnabled` reads `calibrationPersistenceEnabled` — see
+      // `CALIBRATION_FLAG_SOURCES`. Turning it off should surface as
+      // `missingCapabilityFlags` naming that internal flag.
       calibrationPersistenceEnabled: false,
     });
     const fetchMock = vi.fn().mockResolvedValue(json(body));

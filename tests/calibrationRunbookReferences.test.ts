@@ -115,7 +115,6 @@ import {
   CalibrationPrinterContext,
   CalibrationPrinterEligibility,
   CalibrationQueueJobState,
-  CalibrationQueueState,
   CalibrationStartPrintRequest,
   CalibrationAssetManifestEntry,
   CalibrationUnavailableReason,
@@ -136,6 +135,7 @@ import {
 import { CalibrationHttpClient } from '../src/main/calibrationHttp.js';
 import { detectQueueChangeFeedGap } from '../src/main/ipc.js';
 import {
+  CALIBRATION_FLAG_SOURCES,
   RemoteCalibrationApplyRequest,
   RemoteCalibrationCapabilities,
   RemoteQueueEventEnvelope,
@@ -306,7 +306,6 @@ const CONTRACT_SCHEMAS: readonly ZodTypeAny[] = [
   CalibrationPrinterContext,
   CalibrationPrinterEligibility,
   CalibrationQueueJobState,
-  CalibrationQueueState,
   CalibrationStartPrintRequest,
   // The asset manifest an operator reads when a gated download is refused:
   // disabledReason, sourceUrl, expectedSha256.
@@ -358,6 +357,16 @@ function knownDottedNames(): Set<string> {
   return new Set<string>([
     ...CALIBRATION_LOG_COMPONENTS,
     ...emittedEventNames(),
+    // Nested capability-flag source paths documented in the calibration
+    // rollout runbook. `operatorFeatures.offlineWriteReplayEnabled` matches
+    // the dotted-identifier shape (it is a nested wire field path), so
+    // without registering it as a known dotted name the reference checker
+    // classifies it as an unknown log component. `CALIBRATION_FLAG_SOURCES`
+    // is the single production truth for the mapping — added here so a
+    // future renamed/added compound path is picked up automatically.
+    ...(Object.values(CALIBRATION_FLAG_SOURCES) as string[]).filter((v) =>
+      v.includes('.'),
+    ),
   ]);
 }
 

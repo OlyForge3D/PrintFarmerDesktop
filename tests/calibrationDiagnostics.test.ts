@@ -27,10 +27,22 @@ function capabilities(): ReturnType<
     apiContractVersion: '1.4',
     calibrationApiVersion: '2026-07-01',
     calibrationSchemaVersion: '7',
+    // Load-bearing for the desktop's gates: `calibrationPersistenceEnabled`
+    // (→ `calibrationApiEnabled`), `calibrationSyncEnabled` (→
+    // `calibrationChangeFeedEnabled` and `calibrationOfflineDraftEnabled`),
+    // `calibrationPhotosEnabled` (→ `calibrationPhotoUploadEnabled`),
+    // `calibrationGenerationEnabled`. See `CALIBRATION_FLAG_SOURCES`.
+    // `calibrationContextEnabled`, `calibrationEventsEnabled`, and
+    // `operatorFeatures.offlineWriteReplayEnabled` are real wire fields
+    // the schema declares for pass-through/diagnostics but are not the
+    // load-bearing bits today; kept true here for schema breadth.
+    calibrationContextEnabled: true,
+    calibrationEventsEnabled: true,
     calibrationPersistenceEnabled: true,
     calibrationSyncEnabled: true,
     calibrationPhotosEnabled: true,
     calibrationGenerationEnabled: true,
+    operatorFeatures: { offlineWriteReplayEnabled: true },
     supportedFirmwareFamilies: ['Klipper'],
     supportedGcodeDialects: ['Klipper'],
     supportedSlicerEngines: [],

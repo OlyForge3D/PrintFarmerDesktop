@@ -46,32 +46,34 @@ production-contract E2E are deployed and healthy.
 
 ## Flag vocabulary: client flags are not server switches
 
-The five flags PFD reasons about are **not** the four switches an operator
+The five flags PFD reasons about are **not** the five switches an operator
 sets. `RemoteCalibrationCapabilities` normalises the wire names into the
 negotiation shape the feature gate consumes, so callers never depend on raw
 wire naming.
 
-| Client flag (`CalibrationCapabilityFlags`) | Server switch (`RemoteCalibrationCapabilities`) | What it gates                                               |
-| ------------------------------------------ | ----------------------------------------------- | ----------------------------------------------------------- |
-| `calibrationApiEnabled`                    | `calibrationPersistenceEnabled`                 | Calibration REST APIs and authoritative project persistence |
-| `calibrationChangeFeedEnabled`             | `calibrationSyncEnabled`                        | Change-feed events, cursors and replay                      |
-| `calibrationOfflineDraftEnabled`           | `calibrationSyncEnabled`                        | Offline draft push through the calibration sync endpoint    |
-| `calibrationPhotoUploadEnabled`            | `calibrationPhotosEnabled`                      | Staged calibration photo upload                             |
-| `calibrationGenerationEnabled`             | `calibrationGenerationEnabled`                  | Generation and G-code promotion                             |
+| Client flag (`CalibrationCapabilityFlags`) | Server switch (`RemoteCalibrationCapabilities`) | What it gates                                                                        |
+| ------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `calibrationApiEnabled`                    | `calibrationPersistenceEnabled`                 | Calibration persistence API — the discovery/read surface every later stage stands on |
+| `calibrationChangeFeedEnabled`             | `calibrationSyncEnabled`                        | Change-feed / sync path — cursors and replay                                         |
+| `calibrationOfflineDraftEnabled`           | `calibrationSyncEnabled`                        | Offline draft replay travels through the same sync/change-feed path                  |
+| `calibrationPhotoUploadEnabled`            | `calibrationPhotosEnabled`                      | Staged calibration photo upload                                                      |
+| `calibrationGenerationEnabled`             | `calibrationGenerationEnabled`                  | Generation and G-code promotion                                                      |
 
 **Two consequences an operator must know before starting.**
 
-1. **`calibrationChangeFeedEnabled` and `calibrationOfflineDraftEnabled` are
-   one switch.** Offline drafts are pushed through the calibration sync
-   endpoint, so they are gated by `calibrationSyncEnabled` together with the
-   change feed. There is no server state in which one is on and the other is
-   off, and an operator asking to enable offline drafts alone must be told
-   that the request is not expressible.
-2. **Because of (1), stage 6 enables no new server switch.** The capability
-   that makes PFD offline support work is turned on at stage 3. Stage 6 is a
-   client-transport and verification stage, not an enablement stage. Treating
-   it as one produces a rollout that appears stalled because there is nothing
-   to flip.
+1. **`calibrationChangeFeedEnabled` and `calibrationOfflineDraftEnabled`
+   share one server switch.** Both are backed by `calibrationSyncEnabled`
+   on the wire. The client-side distinction is a diagnostic and rollout
+   convenience: the change feed and offline draft replay are two ends of
+   the same sync subsystem, and there is no server state where sync is
+   down but offline draft replay is possible.
+2. **`calibrationEventsEnabled` is a distinct future subsystem, NOT the
+   change feed.** It backs an event-streaming path that is not implemented
+   in the current server build (`CalibrationCapabilityService.cs:203-205`
+   hardcodes it `false`, and `PlatformCapabilitiesDto.cs:71-72` documents
+   it as a separate concern from `CalibrationSyncEnabled` at `:47-48`).
+   Do not read a `false` for `calibrationEventsEnabled` as "the change
+   feed is down" — the change feed is `calibrationSyncEnabled`.
 
 ## Deployment topology
 
@@ -134,8 +136,8 @@ next.
   immutable; a cursor gap is reconciled by REST rather than silently skipped.
 - **Rollback:** set `calibrationPersistenceEnabled`, `calibrationSyncEnabled`
   and `calibrationPhotosEnabled` false. Authoritative history and promoted
-  G-code are **not** deleted by this rollback; anything that deletes them is a
-  defect, not a rollback.
+  G-code are **not** deleted by this rollback; anything that deletes them
+  is a defect, not a rollback.
 
 ### Stage 4 — Production upstream-Orca worker path and artifact promotion
 
@@ -165,17 +167,20 @@ next.
 
 ### Stage 6 — PFD transport and offline support
 
-- **Capability flags:** none — see "Flag vocabulary" above. Offline draft push
-  is gated by `calibrationSyncEnabled`, already enabled at stage 3. **This
-  stage flips no switch.**
+- **Capability flags:** `calibrationOfflineDraftEnabled` — see "Flag
+  vocabulary" above. Offline draft replay is gated by the same
+  `calibrationSyncEnabled` switch as the stage-3 change feed; the client
+  distinction exists so a rollout can note independently whether the PFD
+  transport is ready to consume replayed writes.
 - **Precondition:** stages 1–5 healthy. Packaged PFD builds carrying the
   calibration transport are distributed.
 - **Health signal:** offline draft and photo staging survive both a process
   restart and a machine restart; two divergent devices reconnect, receive an
   **explicit** conflict, and converge only after a chosen resolution.
-- **Rollback:** ship or roll back the PFD build. Because no switch is flipped
-  here, a server-side rollback will not undo a bad client; that asymmetry is
-  the reason this stage is listed separately despite enabling nothing.
+- **Rollback:** set `calibrationSyncEnabled` false and ship or roll back
+  the PFD build. Because the client transport is what produces the writes
+  to be replayed, a server-side rollback alone will not undo a bad client;
+  both sides are involved.
 
 ### Stage 7 — Workspace, job workflow, profile workflow and importer
 

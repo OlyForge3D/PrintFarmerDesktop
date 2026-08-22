@@ -98,6 +98,7 @@ describe('CalibrationAvailability schema', () => {
       capabilityFlags: null,
       grantedScopes: null,
       offlineEditingEnabled: false,
+      serverUnavailableReasons: [],
     });
     expect(result.available).toBe(false);
     expect(result.unavailableReason).toBe('noProfile');
@@ -119,6 +120,7 @@ describe('CalibrationAvailability schema', () => {
       },
       grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
       offlineEditingEnabled: true,
+      serverUnavailableReasons: [],
     });
     expect(result.available).toBe(true);
     expect(result.negotiatedApiVersion).toBe('2.0');
@@ -135,6 +137,7 @@ describe('CalibrationAvailability schema', () => {
         capabilityFlags: null,
         grantedScopes: null,
         offlineEditingEnabled: false,
+        serverUnavailableReasons: [],
       }),
     ).toThrow();
   });
@@ -151,9 +154,41 @@ describe('CalibrationAvailability schema', () => {
         capabilityFlags: null,
         grantedScopes: null,
         offlineEditingEnabled: false,
+        serverUnavailableReasons: [],
         rendererInjectedField: true,
       }),
     ).toThrow();
+  });
+
+  it('carries server-reported unavailable reasons verbatim so the renderer can name a refusal', () => {
+    const result = CalibrationAvailability.parse({
+      available: false,
+      unavailableReason: 'missingCapabilityFlags',
+      unavailableDetail: 'calibrationChangeFeedEnabled',
+      negotiatedApiVersion: '1.0',
+      negotiatedSchemaVersion: '1.0',
+      capabilityFlags: {
+        calibrationApiEnabled: true,
+        calibrationChangeFeedEnabled: false,
+        calibrationOfflineDraftEnabled: true,
+        calibrationPhotoUploadEnabled: true,
+        calibrationGenerationEnabled: false,
+      },
+      grantedScopes: ['calibration:read'],
+      offlineEditingEnabled: true,
+      serverUnavailableReasons: [
+        {
+          feature: 'calibrationGeneration',
+          code: 'split_routing_unavailable',
+          message:
+            'Calibration generation requires the deterministic core, authorized model storage, the canonical slice path, an allow-listed attested worker, operational promotion, a durable orchestration store and a healthy recovery loop.',
+        },
+      ],
+    });
+    expect(result.serverUnavailableReasons).toHaveLength(1);
+    expect(result.serverUnavailableReasons[0]!.code).toBe(
+      'split_routing_unavailable',
+    );
   });
 });
 
@@ -763,6 +798,7 @@ describe('ipcSchemas calibration channel registry', () => {
       capabilityFlags: null,
       grantedScopes: ['ModelRead'],
       offlineEditingEnabled: false,
+      serverUnavailableReasons: [],
     });
     expect(result.unavailableReason).toBe('missingScopes');
   });

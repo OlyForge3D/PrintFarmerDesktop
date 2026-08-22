@@ -181,6 +181,13 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
 
   it('names the disabled capability when a core requirement is off', async () => {
     respondWith(
+      // The desktop's `calibrationChangeFeedEnabled` gate reads
+      // `calibrationSyncEnabled` (the sync/change-feed path). Not
+      // `calibrationEventsEnabled` (a distinct future event-streaming
+      // subsystem hardcoded `false` in the server today — see
+      // `CalibrationCapabilityService.cs:203-205` and the DTO XML docs at
+      // `PlatformCapabilitiesDto.cs:47-48` vs `:71-72`). See
+      // `CALIBRATION_FLAG_SOURCES`.
       printFarmerCapabilitiesResponse({ calibrationSyncEnabled: false }),
     );
     const handler = availabilityHandler();

@@ -1633,6 +1633,35 @@ const RemoteSlicerEngineCapability = z
   .passthrough();
 
 /**
+ * Nested `operatorFeatures` block on `PlatformCapabilitiesDto`. Fields the
+ * calibration client cares about are declared explicitly; everything else
+ * passes through so this schema does not reject future features.
+ *
+ * Only `offlineWriteReplayEnabled` is load-bearing for calibration today: it
+ * is the *nested* backing field for the desktop's `calibrationOfflineDraftEnabled`
+ * gate. A flat lookup will miss it. Kept here rather than inlined so the raw
+ * source-of-truth field name stays a single-source constant.
+ */
+const RemoteOperatorFeatureFlags = z
+  .object({
+    offlineWriteReplayEnabled: AdvertisedFlagRaw,
+  })
+  .passthrough();
+
+/**
+ * A raw-side field key on `PlatformCapabilitiesDto`, either flat (a top-level
+ * property) or nested (a dotted path into a nested object). Kept as a string
+ * both for readability in diagnostics and so the split-deployment tests can
+ * use it as their diff key. See `readFlagBackingField` for the resolver.
+ */
+type RemoteCalibrationFlagSourcePath =
+  | 'calibrationPersistenceEnabled'
+  | 'calibrationSyncEnabled'
+  | 'calibrationPhotosEnabled'
+  | 'calibrationGenerationEnabled'
+  | 'operatorFeatures.offlineWriteReplayEnabled';
+
+/**
  * Maps each end-to-end calibration capability flag to the raw
  * `PlatformCapabilitiesDto` field that backs it.
  *
@@ -1641,6 +1670,38 @@ const RemoteSlicerEngineCapability = z
  * the split-deployment test suite read the flag names from here, so a flag
  * added to this map is automatically covered by the test — nothing needs to
  * be hand-copied into `tests/`.
+ *
+ * Semantic mapping (verified against a live PrintFarmer stack, `GET
+ * /api/calibration/capabilities`, `serverVersion` 0.2.3+6cf79dee0e7e, and
+ * the server's `PlatformCapabilitiesDto.cs:47-48` and `:71-72` XML docs):
+ *
+ * - `calibrationApiEnabled`         ← `calibrationPersistenceEnabled`
+ *   ("calibration API persistence is up"). Live value: `true`.
+ *
+ * - `calibrationChangeFeedEnabled`  ← `calibrationSyncEnabled`
+ *   The server's `CalibrationSyncEnabled` field is the change-feed/sync
+ *   path — that is exactly what the DTO XML doc at
+ *   `PlatformCapabilitiesDto.cs:47-48` states. `CalibrationEventsEnabled`
+ *   (`:71-72`) is a distinct future event-streaming subsystem, hardcoded
+ *   `false` in `CalibrationCapabilityService.cs:203-205` and documented
+ *   `false` in `docs/API.md:108-110`; do NOT bind the change-feed flag to
+ *   it. Live value: `true`.
+ *
+ * - `calibrationOfflineDraftEnabled` ← `calibrationSyncEnabled`
+ *   Offline draft replay is the *client side* of the same sync/change-feed
+ *   subsystem: if sync is up the client can push offline drafts through it.
+ *   Both flags therefore share one server switch by design — there is no
+ *   server state where sync is down but offline draft replay is possible.
+ *   `operatorFeatures.offlineWriteReplayEnabled` is a related but separate
+ *   *operator*-facing capability toggle (declared and readable via
+ *   `readFlagBackingField` below), not the sync switch, and it is not
+ *   load-bearing for this gate. Live value: `true`.
+ *
+ * `readFlagBackingField` handles both flat and nested paths so future flags
+ * whose backing wire field lives inside a nested block (e.g. `operatorFeatures`)
+ * can be added without changing the resolver. A flat-only resolver is blind
+ * to nested values in a way that is invisible in tests — see Hicks's
+ * `calibration.capabilityFlagMapping.test.ts` for the proof.
  */
 export const CALIBRATION_FLAG_SOURCES = {
   calibrationApiEnabled: 'calibrationPersistenceEnabled',
@@ -1648,10 +1709,82 @@ export const CALIBRATION_FLAG_SOURCES = {
   calibrationOfflineDraftEnabled: 'calibrationSyncEnabled',
   calibrationPhotoUploadEnabled: 'calibrationPhotosEnabled',
   calibrationGenerationEnabled: 'calibrationGenerationEnabled',
-} as const;
+} as const satisfies Record<string, RemoteCalibrationFlagSourcePath>;
 
 /** Name of one of the negotiated end-to-end calibration capability flags. */
 export type CalibrationFlagName = keyof typeof CALIBRATION_FLAG_SOURCES;
+
+/**
+ * Reads a flag's backing value out of the parsed platform capabilities DTO.
+ * Handles both flat (`calibrationContextEnabled`) and nested
+ * (`operatorFeatures.offlineWriteReplayEnabled`) source paths uniformly, so
+ * callers do not have to special-case the nested one and get it wrong.
+ *
+ * Returns `undefined` when the backing field was absent from the response,
+ * which the caller distinguishes from an explicit `false` for `flagAdvertisement`.
+ */
+function readFlagBackingField(
+  dto: Record<string, unknown>,
+  path: RemoteCalibrationFlagSourcePath,
+): boolean | undefined {
+  const segments = path.split('.');
+  let cursor: unknown = dto;
+  for (const seg of segments) {
+    if (cursor === null || typeof cursor !== 'object') return undefined;
+    cursor = (cursor as Record<string, unknown>)[seg];
+  }
+  return typeof cursor === 'boolean' ? cursor : undefined;
+}
+
+/**
+ * Set (mutate) the backing field for a calibration flag on a raw response
+ * body. Used by tests to simulate a server that turns a specific capability
+ * on or off without needing to know whether the field is flat or nested.
+ *
+ * Exposed here rather than inlined in tests so the flat-vs-nested topology
+ * of the wire is owned by one file — the production consumer — and the
+ * tests cannot silently drift toward writing the wrong shape.
+ */
+export function setCalibrationFlagBackingField(
+  body: Record<string, unknown>,
+  flag: CalibrationFlagName,
+  value: boolean,
+): void {
+  const path = CALIBRATION_FLAG_SOURCES[flag];
+  const segments = path.split('.');
+  const leaf = segments.pop();
+  if (leaf === undefined) return;
+  let cursor: Record<string, unknown> = body;
+  for (const seg of segments) {
+    const next = cursor[seg];
+    if (next === null || typeof next !== 'object') {
+      const nested: Record<string, unknown> = {};
+      cursor[seg] = nested;
+      cursor = nested;
+    } else {
+      cursor = next as Record<string, unknown>;
+    }
+  }
+  cursor[leaf] = value;
+}
+
+/** Remove the backing field so it is absent from the response. */
+export function unsetCalibrationFlagBackingField(
+  body: Record<string, unknown>,
+  flag: CalibrationFlagName,
+): void {
+  const path = CALIBRATION_FLAG_SOURCES[flag];
+  const segments = path.split('.');
+  const leaf = segments.pop();
+  if (leaf === undefined) return;
+  let cursor: Record<string, unknown> = body;
+  for (const seg of segments) {
+    const next = cursor[seg];
+    if (next === null || typeof next !== 'object') return;
+    cursor = next as Record<string, unknown>;
+  }
+  delete cursor[leaf];
+}
 
 /**
  * Whether the server advertised a value for a capability flag's backing
@@ -1693,14 +1826,69 @@ export const RemoteCalibrationCapabilities = z
       .max(64)
       .nullish()
       .transform((value) => value ?? null),
-    /** Calibration project persistence is implemented and enabled. */
+    /**
+     * The calibration context API is up. Declared here for schema-strict
+     * parsing and diagnostics (`calibrationContextEnabled`/`contextImplemented`
+     * are what a rollout runbook reads to plan Stage 2/3). Not the
+     * load-bearing bit for `calibrationApiEnabled` — that binds to
+     * `calibrationPersistenceEnabled` below; see `CALIBRATION_FLAG_SOURCES`.
+     */
+    calibrationContextEnabled: AdvertisedFlagRaw,
+    /**
+     * Calibration project persistence is implemented and enabled. **Load-bearing**
+     * for `calibrationApiEnabled` — see `CALIBRATION_FLAG_SOURCES`.
+     */
     calibrationPersistenceEnabled: AdvertisedFlagRaw,
-    /** Calibration synchronisation (change feed + offline draft push). */
+    /**
+     * Calibration sync / change-feed path. **Load-bearing** for both
+     * `calibrationChangeFeedEnabled` and `calibrationOfflineDraftEnabled`
+     * — see `CALIBRATION_FLAG_SOURCES` for why they share this switch.
+     */
     calibrationSyncEnabled: AdvertisedFlagRaw,
+    /**
+     * A distinct, unimplemented future event-streaming subsystem. The server
+     * hardcodes this `false` today (`CalibrationCapabilityService.cs:203-205`,
+     * documented in `docs/API.md:108-110` and DTO XML at
+     * `PlatformCapabilitiesDto.cs:71-72`); it is **not** the change-feed
+     * switch, which is `calibrationSyncEnabled` above. Declared here so
+     * a truthy value in a future server build is not silently dropped by
+     * `.passthrough()`.
+     */
+    calibrationEventsEnabled: AdvertisedFlagRaw,
     /** Calibration photo capture and upload. */
     calibrationPhotosEnabled: AdvertisedFlagRaw,
     /** Calibration command generation and G-code promotion. */
     calibrationGenerationEnabled: AdvertisedFlagRaw,
+    /**
+     * Nested operator-features block. `offlineWriteReplayEnabled` is a real
+     * capability field the server advertises, readable via
+     * `readFlagBackingField(dto, 'operatorFeatures.offlineWriteReplayEnabled')`.
+     * It is **not** the load-bearing bit for `calibrationOfflineDraftEnabled`
+     * today — that binds to `calibrationSyncEnabled` — but is declared here
+     * so nested-path parsing is exercised on every negotiation and so a
+     * future flag whose backing field lives inside a nested block can be
+     * added without changing the resolver.
+     */
+    operatorFeatures: RemoteOperatorFeatureFlags.optional().default({}),
+    /**
+     * Server-reported diagnostics for capabilities the deployment is
+     * currently unable to offer. Preserved verbatim onto the negotiated
+     * shape so the availability handler can surface them to the operator
+     * rather than flattening the refusal into a single opaque boolean.
+     */
+    unavailableReasons: z
+      .array(
+        z
+          .object({
+            feature: z.string().max(128),
+            code: z.string().max(128),
+            message: z.string().max(1024),
+          })
+          .passthrough(),
+      )
+      .max(64)
+      .optional()
+      .default([]),
     /** Firmware families the calibration contract supports. */
     supportedFirmwareFamilies: z
       .array(z.string().max(64))
@@ -1731,29 +1919,24 @@ export const RemoteCalibrationCapabilities = z
   })
   .passthrough()
   .transform((value) => {
-    /** Raw per-field advertisement, keyed by the DTO field name — before
-     * defaulting absence away, so `undefined` here is still observable. */
-    const rawFields: Record<
-      (typeof CALIBRATION_FLAG_SOURCES)[CalibrationFlagName],
-      boolean | undefined
-    > = {
-      calibrationPersistenceEnabled: value.calibrationPersistenceEnabled,
-      calibrationSyncEnabled: value.calibrationSyncEnabled,
-      calibrationPhotosEnabled: value.calibrationPhotosEnabled,
-      calibrationGenerationEnabled: value.calibrationGenerationEnabled,
-    };
+    /**
+     * Raw DTO passed to `readFlagBackingField` untouched so nested paths
+     * (`operatorFeatures.offlineWriteReplayEnabled`) resolve correctly.
+     * Zod's `.default` fills the operator-features block with `{}` when the
+     * server omits it, which is what the "unknown → false" fail-closed
+     * behaviour needs — a missing nested block reads every leaf as absent,
+     * exactly the same as a top-level absent boolean.
+     */
+    const rawDto = value as unknown as Record<string, unknown>;
     const flags = {} as Record<CalibrationFlagName, boolean>;
     const flagAdvertisement = {} as Record<
       CalibrationFlagName,
       CalibrationFlagAdvertisement
     >;
-    for (const [flagName, sourceField] of Object.entries(
+    for (const [flagName, sourcePath] of Object.entries(
       CALIBRATION_FLAG_SOURCES,
-    ) as [
-      CalibrationFlagName,
-      (typeof CALIBRATION_FLAG_SOURCES)[CalibrationFlagName],
-    ][]) {
-      const raw = rawFields[sourceField];
+    ) as [CalibrationFlagName, RemoteCalibrationFlagSourcePath][]) {
+      const raw = readFlagBackingField(rawDto, sourcePath);
       // Fail-closed: absent or explicit `false` both leave the flag
       // unavailable. Only `flagAdvertisement` distinguishes them (#493 AC4).
       flags[flagName] = raw === true;
@@ -1774,10 +1957,9 @@ export const RemoteCalibrationCapabilities = z
       supportedSlicerEngines: value.supportedSlicerEngines,
       /**
        * End-to-end capability flags the calibration feature gate requires.
-       * Offline drafts are pushed through the calibration sync endpoint, so
-       * they are gated by the same server switch as the change feed. Absent
-       * server fields fail closed to `false` here — see `flagAdvertisement`
-       * for whether that `false` was advertised or merely not observed.
+       * Absent server fields fail closed to `false` here — see
+       * `flagAdvertisement` for whether that `false` was advertised or
+       * merely not observed.
        */
       flags,
       /**
@@ -1787,6 +1969,15 @@ export const RemoteCalibrationCapabilities = z
        * was actually reported by the server rather than defaulted.
        */
       flagAdvertisement,
+      /**
+       * Server-provided diagnostics for capabilities the deployment cannot
+       * currently offer, projected verbatim. Empty when the server did not
+       * name any refusal reason. Surfaced through the IPC availability
+       * response so the renderer can explain a `missingCapabilityFlags` or
+       * a disabled `calibrationGenerationEnabled` in the operator's own
+       * words rather than a bare boolean.
+       */
+      unavailableReasons: value.unavailableReasons,
     };
   });
 export type RemoteCalibrationCapabilities = z.infer<
@@ -2236,13 +2427,21 @@ export const RemoteCalibrationProblemDetails = z
      * one code that explains an empty production printer list.
      */
     code: z.string().max(64).optional(),
+    /**
+     * `{ "error": "code_string", "detail": "…" }` envelope emitted by
+     * `JobQueueController` and other non-Problem-serialising controllers.
+     * Live wire capture 2026-08-21: the 428 `precondition_required` and 404
+     * `job_not_found` bodies use this key, not `code`/`errorCode`. Missing it
+     * silently discarded every acknowledge-bed-clear refusal on the wire.
+     */
+    error: z.string().max(256).optional(),
   })
   .passthrough()
   .transform((value) => ({
     ...value,
-    // Prefer the documented extension, fall back to the legacy name so a
-    // deployment emitting either is understood.
-    errorCode: value.errorCode ?? value.code,
+    // Prefer the documented extension, fall back through the observed
+    // vocabulary so a deployment emitting any of the three is understood.
+    errorCode: value.errorCode ?? value.code ?? value.error,
   }));
 export type RemoteCalibrationProblemDetails = z.infer<
   typeof RemoteCalibrationProblemDetails

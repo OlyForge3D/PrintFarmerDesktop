@@ -589,6 +589,7 @@ export async function applyCalibrationScenario(
             ? ['calibration:read']
             : ['calibration:read', 'calibration:create', 'calibration:update'],
         offlineEditingEnabled: true,
+        serverUnavailableReasons: [],
       };
     });
 

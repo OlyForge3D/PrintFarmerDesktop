@@ -1167,6 +1167,32 @@ export function hasCalibrationPermission(
 }
 
 /**
+ * A capability the server refuses to offer today, with the machine-readable
+ * reason code and human message it reported. Verbatim projection of the
+ * `PlatformCapabilitiesDto.unavailableReasons[]` entries from PrintFarmer.
+ *
+ * Surfaced through {@link CalibrationAvailability} so the renderer can
+ * explain a `missingCapabilityFlags` refusal or a disabled `calibrationGenerationEnabled`
+ * in the operator's own words rather than flattening the refusal into one
+ * opaque boolean. The set of `feature` names is not enumerated here: the
+ * server may report reasons for capabilities the desktop does not gate on,
+ * and the renderer decides which to display.
+ */
+export const CalibrationServerUnavailableReason = z
+  .object({
+    /** Short capability name, e.g. `calibrationGeneration`, `slicing`. */
+    feature: z.string().min(1).max(128),
+    /** Machine-readable code, e.g. `slicer_registry_unavailable`. */
+    code: z.string().min(1).max(128),
+    /** Human-readable explanation, safe to display to the operator. */
+    message: z.string().max(1024),
+  })
+  .strict();
+export type CalibrationServerUnavailableReason = z.infer<
+  typeof CalibrationServerUnavailableReason
+>;
+
+/**
  * Typed reason why calibration is unavailable on a given server profile.
  * Returned as a discriminated union so the renderer can render a meaningful
  * help message without inspecting raw error text.
@@ -1218,6 +1244,17 @@ export const CalibrationAvailability = z
     grantedScopes: z.array(z.string().max(64)).max(32).nullable(),
     /** Whether offline drafts and photo staging are currently enabled. */
     offlineEditingEnabled: z.boolean(),
+    /**
+     * Server-reported diagnostics for capabilities the deployment cannot
+     * currently offer. Always present (empty array when the server did not
+     * report any). This is what turns a `missingCapabilityFlags` or a
+     * `capabilityFlags.calibrationGenerationEnabled: false` into a message
+     * the operator can read — otherwise the refusal collapses to a bare
+     * boolean and neither the renderer nor the operator can tell why.
+     */
+    serverUnavailableReasons: z
+      .array(CalibrationServerUnavailableReason)
+      .max(64),
   })
   .strict();
 export type CalibrationAvailability = z.infer<typeof CalibrationAvailability>;
@@ -4251,6 +4288,37 @@ export const CalibrationApiError = z
      * is the inert-control shape this codebase keeps filing.
      */
     reference: z.string().uuid().nullable(),
+    /**
+     * Machine-readable ProblemDetails `errorCode`/`code` extension when the
+     * refusal came from PrintFarmer's dispatch safety gates
+     * (`DispatchSafetyGates.MapBlockedReason` — e.g.
+     * `firmware_family_mismatch`, `calibration_record_mismatch`,
+     * `capabilities_unsatisfied`). Nullable when the failure was not a gated
+     * refusal, and null-defaulted rather than nullable-required so the fifteen
+     * manually-constructed error paths in `src/main/ipc.ts` do not need to
+     * decide null for every fault of a fault that is never a gated one.
+     *
+     * NOT the same disposition as `serverDetail`. `serverDetail` is unbounded
+     * server-controlled prose that could name a file path, a support ticket, a
+     * GPS pair or an authenticated user, and the #177 disposition is that it
+     * lives on `CalibrationHttpError.serverDetail` in the main process only —
+     * the renderer sees a catalogued literal plus the opaque `reference`.
+     * `blockedReasonCode` is the ProblemDetails `errorCode` extension (bounded
+     * by `RemoteCalibrationProblemDetails.errorCode` to 64 characters and used
+     * by PrintFarmer as an enum-shaped machine identifier), and its purpose is
+     * exactly to be translated on the receiving side, the same way `code`
+     * above is translated to a catalogued literal in `toApiError`. Bounded and
+     * enum-shaped rather than free-form is what makes the difference; a token
+     * is at most as leak-prone as the HTTP status code.
+     *
+     * Read this in the renderer via `describeBlockedReasonCode`, which pins
+     * every known code to a sentence and returns the raw code on an
+     * unrecognised token so a visible unknown remains debuggable. Never
+     * substitute for `message` — the catalogue literal names the HTTP-level
+     * category ("Bed-clear conflict") and this code names the specific gate
+     * that closed. An operator needs both.
+     */
+    blockedReasonCode: z.string().max(64).nullable().optional(),
   })
   .strict();
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
@@ -4488,27 +4556,27 @@ export const CalibrationQueueJobState = z
     requiredFilamentSku: z.string().max(256).nullable().optional(),
     /** Machine profile SHA-256 at job creation time. Used for stale-context detection. */
     machineProfileSha256: z.string().max(256).nullable().optional(),
+    /**
+     * Whether print start is allowed. Emitted by the server on job DTOs when
+     * `dispatchStateRowVersion` is present and the current job/dispatch state
+     * has been evaluated for readiness (sync complete + printer fresh + bed
+     * clear acknowledged where required). Optional/nullable so this schema
+     * still accepts DTOs from server builds that do not yet emit it.
+     */
+    printStartAllowed: z.boolean().nullable().optional(),
+    /**
+     * When `printStartAllowed` is false, the typed reason. This is a
+     * passthrough of `PrintStartBlockedReason` on the server-side job DTO;
+     * see `docs/runbooks/stale-dispatch-lease.md` for the documented
+     * operator surface. Renderer translation is driven from
+     * `CalibrationApiError.blockedReasonCode` (which carries the code across
+     * error responses from `/api/job-queue/{id}/start`); this field is the
+     * *steady-state* companion for the same code on the job read path.
+     */
+    printStartBlockedReason: z.string().max(256).nullable().optional(),
   })
   .passthrough();
 export type CalibrationQueueJobState = z.infer<typeof CalibrationQueueJobState>;
-
-export const CalibrationQueueState = z
-  .object({
-    profileId: z.string().uuid(),
-    printerId: z.string().min(1).max(256),
-    /** Whether a print job for this calibration is currently queued. */
-    jobQueued: z.boolean(),
-    jobId: z.string().uuid().nullable(),
-    /** Whether a bed-clear acknowledgement is needed before print. */
-    awaitingBedClear: z.boolean(),
-    /** Whether print start is allowed (sync complete + printer fresh). */
-    printStartAllowed: z.boolean(),
-    /** If not allowed, the typed reason. */
-    printStartBlockedReason: z.string().max(256).nullable(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
-export type CalibrationQueueState = z.infer<typeof CalibrationQueueState>;
 
 export const CalibrationGetQueueStateRequest = z
   .object({

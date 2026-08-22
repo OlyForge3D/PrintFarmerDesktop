@@ -16,6 +16,7 @@ import {
   decideCalibrationAction,
   methodsForStage,
   validateObservation,
+  type ActionDecision,
   type CalibrationAttempt,
   type CalibrationDiagnostic,
   type CalibrationMethod,
@@ -239,6 +240,52 @@ function observationSummary(observation: CalibrationObservation): string {
     case 'shrinkage':
       return `nominal ${observation.nominalXmm}/${observation.nominalYmm}/${observation.nominalZmm} mm; measured ${observation.measuredXmm}/${observation.measuredYmm}/${observation.measuredZmm} mm`;
   }
+}
+
+/**
+ * Reason "Queue calibration print" is currently disabled, expressed as prose
+ * adjacent to the button so an operator does not have to read the whole gate
+ * paragraph below to know which cause to fix first.
+ *
+ * The ordering deliberately matches how recoverable each cause is:
+ *   1. An in-flight submit — the button label already narrates that.
+ *   2. A job already queued for this attempt — points at the panel below.
+ *   3. No G-code produced yet — either Generate has not been run, or the
+ *      slicing worker is configured-but-idle (docs/runbooks/calibration-rollout.md
+ *      Stage 4). We distinguish these two cases because they have different
+ *      fixes.
+ *   4. A runtime queue-gate blocker (`STALE_PRINTER_SNAPSHOT`,
+ *      `PHYSICAL_TOOLHEAD_NOZZLE_MISMATCH`, `UNSYNCED_MUTATIONS`, and so on)
+ *      surfaces the first blocker's `message` — the full list is still shown
+ *      by the queue gate paragraph.
+ *
+ * Returns null only if the button is enabled — the JSX only renders this hint
+ * when disabled, but returning null keeps the shape honest.
+ */
+function computeQueueDisabledReason(input: {
+  readonly queuePrintSubmitting: boolean;
+  readonly queueJobId: string | null;
+  readonly orchStatus: CalibrationOrchestrationStatus | null;
+  readonly orchId: string | null;
+  readonly queueDecision: ActionDecision;
+}): string | null {
+  if (input.queuePrintSubmitting) {
+    return null;
+  }
+  if (input.queueJobId !== null) {
+    return 'A print for this attempt is already queued below.';
+  }
+  if (input.orchStatus?.gcodeFileId == null) {
+    if (input.orchId === null) {
+      return 'Generate the calibration model first — G-code is not yet available.';
+    }
+    return "PrintFarmer's slicing worker has not produced G-code for this attempt yet. If the orchestration has been running without progress, verify that PrintFarmer's slicing worker is running (docs/runbooks/calibration-rollout.md, Stage 4).";
+  }
+  const firstBlocker = input.queueDecision.blockers[0];
+  if (firstBlocker !== undefined) {
+    return firstBlocker.message;
+  }
+  return null;
 }
 
 export function CalibrationStepWorkflow({
@@ -872,7 +919,49 @@ export function CalibrationStepWorkflow({
     'generate',
   );
   const queueDecision = decideCalibrationAction(state, runtime, 'queue');
-  const startDecision = decideCalibrationAction(state, runtime, 'startPrint');
+  // `startDecision` used to feed a third "Start calibration print" button whose
+  // gate could never open — `runtime.bedClearConfirmed` and
+  // `runtime.operatorPresent` are hardcoded `false` at :863-864 because
+  // acknowledging bed-clear IS the dispatch call
+  // (`handleBedClearConfirm` → `acknowledge-bed-clear-and-start`). The button
+  // and its `start-gate` paragraph are removed in favour of a single-source
+  // "Confirm bed clear" trigger, so `startDecision` and its `'startPrint'`
+  // gate are no longer computed here. Ripley owns the print-start safety
+  // ledger; the client-side gate is deliberately not a second dispatch path.
+  const queueButtonDisabled =
+    !queueDecision.allowed ||
+    orchStatus?.gcodeFileId == null ||
+    queueJobId !== null ||
+    queuePrintSubmitting;
+  /**
+   * The specific reason "Queue calibration print" is inert right now, so a
+   * disabled button is not identical for the three unrelated causes it used
+   * to conflate:
+   *   - a runtime gate blocker (`queueDecision.blockers`) — e.g.
+   *     `STALE_PRINTER_SNAPSHOT`, `PHYSICAL_TOOLHEAD_NOZZLE_MISMATCH`,
+   *     `UNSYNCED_MUTATIONS` from `decideCalibrationAction`,
+   *   - no G-code produced yet (`orchStatus.gcodeFileId == null`), which is
+   *     the Stage-4 trap from `docs/runbooks/calibration-rollout.md:87` when
+   *     the slicing worker is configured-but-idle,
+   *   - a job already queued for this attempt (`queueJobId !== null`),
+   * were all read as "the button doesn't work." The queue-gate paragraph
+   * below still lists every blocker for completeness; this hint is the
+   * adjacent-to-the-button summary that names the first cause.
+   *
+   * Ordered so the most-recoverable causes surface first: "already queued"
+   * points at the panel two sections below, "no G-code yet" points at
+   * Generate, and the runtime-gate blocker (which needs a printer or sync
+   * fix) is last.
+   */
+  const queueDisabledReason = queueButtonDisabled
+    ? computeQueueDisabledReason({
+        queuePrintSubmitting,
+        queueJobId,
+        orchStatus,
+        orchId,
+        queueDecision,
+      })
+    : null;
   const stepDraft = project.record.workspaceState.stepDrafts[stageId] ?? {
     prerequisites: '',
     methodNotes: '',
@@ -1379,6 +1468,13 @@ export function CalibrationStepWorkflow({
               generation and printer workflows. This renderer does not implement
               those operations or claim success.
             </p>
+            <p className="cal-field-help">
+              This calibration print is sent to the printer by two clicks in
+              order: <strong>Queue calibration print</strong> creates the exact
+              job, then <strong>Confirm bed clear</strong> acknowledges the bed
+              is empty and dispatches it. There is no separate
+              &ldquo;start&rdquo; button — confirming bed clear is the send.
+            </p>
             <div className="cal-actions">
               <button
                 type="button"
@@ -1394,13 +1490,8 @@ export function CalibrationStepWorkflow({
               <button
                 type="button"
                 className="cal-button"
-                disabled={
-                  !queueDecision.allowed ||
-                  orchStatus?.gcodeFileId == null ||
-                  queueJobId !== null ||
-                  queuePrintSubmitting
-                }
-                aria-describedby="queue-gate"
+                disabled={queueButtonDisabled}
+                aria-describedby="queue-gate queue-disabled-reason"
                 onClick={() => void handleQueuePrint()}
               >
                 {queuePrintSubmitting
@@ -1412,23 +1503,26 @@ export function CalibrationStepWorkflow({
                 type="button"
                 className="cal-button"
                 disabled={!queueJob || queueJob.bedClearState !== 'None'}
-                aria-describedby="start-gate"
+                aria-describedby="bed-clear-dispatch-hint"
                 onClick={() => setBedClearOpen(true)}
               >
                 Confirm bed clear
               </button>
-              <button
-                type="button"
-                className="cal-button"
-                disabled={
-                  !startDecision.allowed ||
-                  queueJob?.bedClearState !== 'Acknowledged'
-                }
-                aria-describedby="start-gate"
-              >
-                Start calibration print
-              </button>
             </div>
+            {queueDisabledReason !== null ? (
+              <p
+                id="queue-disabled-reason"
+                className="cal-field-hint"
+                role="status"
+              >
+                {queueDisabledReason}
+              </p>
+            ) : null}
+            <p id="bed-clear-dispatch-hint" className="cal-field-help">
+              Confirming bed clear runs the exact-job interlock and dispatches
+              this print. Once acknowledged the printer starts on the next
+              claim; there is nothing further to press here.
+            </p>
             {queuePrintError ? (
               <p className="cal-field-error" role="alert">
                 {queuePrintError}
@@ -1450,10 +1544,6 @@ export function CalibrationStepWorkflow({
                   : queueDecision.blockers
                       .map((item) => item.message)
                       .join(' ')}
-              </p>
-              <p id="start-gate">
-                <strong>Print-start gate:</strong>{' '}
-                {startDecision.blockers.map((item) => item.message).join(' ')}
               </p>
             </div>
 

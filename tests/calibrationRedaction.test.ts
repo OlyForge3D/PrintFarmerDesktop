@@ -1231,10 +1231,20 @@ describe('diagnostics command', () => {
             apiContractVersion: '1.4',
             calibrationApiVersion: '2026-07-01',
             calibrationSchemaVersion: '7',
+            // Load-bearing: `calibrationPersistenceEnabled` and
+            // `calibrationSyncEnabled` back the internal `calibrationApi*`
+            // / `calibrationChangeFeed*` / `calibrationOfflineDraft*` gates.
+            // The `calibrationContextEnabled` / `calibrationEventsEnabled`
+            // / `operatorFeatures.offlineWriteReplayEnabled` fields are real
+            // wire fields the schema declares but are not the load-bearing
+            // bits today. See `CALIBRATION_FLAG_SOURCES`.
+            calibrationContextEnabled: true,
+            calibrationEventsEnabled: true,
             calibrationPersistenceEnabled: true,
             calibrationSyncEnabled: true,
             calibrationPhotosEnabled: true,
             calibrationGenerationEnabled: true,
+            operatorFeatures: { offlineWriteReplayEnabled: true },
             supportedFirmwareFamilies: ['Klipper'],
             supportedGcodeDialects: ['Klipper'],
             supportedSlicerEngines: [

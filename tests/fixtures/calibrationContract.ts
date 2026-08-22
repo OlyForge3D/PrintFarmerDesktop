@@ -14,6 +14,24 @@
  * `permissions` member, because the real DTO has neither. Discovery and profile
  * resolution must work against this shape exactly as written; anything that
  * requires those members is requiring something no server sends.
+ *
+ * ⚠️ PROVENANCE CLAIM IS UNENFORCED — 2026-08-21 (Hicks / test-gap audit)
+ * ----------------------------------------------------------------------
+ * Nothing in this repository verifies that the shapes below still match the
+ * live PrintFarmer server. `scripts/check-calibration-provenance.mjs` does not
+ * cross-check this file against any server blob; there is no drift check.
+ * Every test that imports from here is effectively self-referential: it
+ * asserts the desktop matches a shape the desktop itself defined and calls
+ * that "server parity."
+ *
+ * For enforced, drift-checked server contract snapshots — the ones you should
+ * reach for when writing a new test — see
+ * `tests/fixtures/server-contract/README.md`, which pins the exact commit and
+ * blob SHAs of the C# source-of-truth and runs a diff against them at test
+ * time when the sibling `D:\s\pfarm1` checkout is available.
+ *
+ * Do not read the header above as evidence of currency: it is a comment, not
+ * a guarantee.
  */
 
 export const CALIBRATION_FIXTURE_IDS = {
