@@ -811,3 +811,151 @@ A fifth review round (Vasquez, PR #661; independently verified by Ralph via `gh 
 **Member instances named by the issue** (`CORRECTION` as a trust-bearing label that spends inherited trust on unverified new values; branch protection read as weak rather than unset — `required_approving_review_count = 0` is never-configured, not configured-but-inert, a distinction `scripts/check-protection-assumptions.mjs` already draws correctly and is cited here as the positive control; `mergeable`/`mergeStateStatus` on a draft PR answering "would this merge cleanly" while omitting draft/approval/`DO NOT MERGE`-by-title; `not-success` as a bucket name that collapses failed-and-not-yet-run into one label) map onto three already-live entries in this squad's doctrine rather than requiring new mechanism: the last is the same defect as row 4 of `.squad/known-lying-commands.md` (`conclusion != "SUCCESS"`), now annotated there with a pointer to this entry's naming-convention framing.
 
 **Scope.** Documentation only, no code or workflow change. Full write-up, corollaries in full, and the citation table: `.squad/decisions/inbox/ripley-338-sorting-principle-and-corollaries.md`. Closes #338.
+
+---
+
+# ARCHIVED ENTRIES — 7-day roll-off (before 2026-08-14)
+
+This section is now read-only. See `.squad/log/` for active session records.
+
+[44 entries archived: 2026-07-23 through 2026-08-13]
+
+---
+
+## 2026-08-21 — Calibration dispatch: the desktop has no mock-printer path, and the first-refuse gate is server-shaped
+
+**By:** Ripley, requested by Jeff Papiez.
+
+**Scope:** read-only architectural diagnosis. No code changed this round.
+Acceptance goal for the wider effort: "a calibration print can actually be
+sent to a mock printer." Today it cannot, and this note names why.
+
+**Key finding:** The gate chain is complete but G5 (`missingCapabilityFlags`) now
+lives at the server instead of the desktop. Server reports `calibrationApiEnabled=false`
+due to split-mode deployment skipping the slicer-host. The desktop's gates are
+correct; the first refusal is server-shaped. The acceptance goal is reachable by
+seeding a promoted calibration g-code and driving the existing queue/ack/dispatch
+paths, which are fully implemented.
+
+**Full write-up:** `.squad/decisions/inbox/ripley-calibration-dispatch-blocker.md`
+
+## 2026-08-21 — PrintFarmer server-side calibration recon: the mock printer is the Moonraker emulator
+
+**By:** Bishop (Rust/SQLite/Integration), recon mode.
+
+**Status:** Recon complete. No server changes required this round. The main
+finding is a **desktop-side** gap: `printStartBlockedReason` is populated with
+~30 `JobBlockedReasonCode` values but never translated to operator-visible
+messages.
+
+**Key finding:** Server mock printer exists: Moonraker emulator at `127.0.0.1:17125`
+with seeded calibration-eligible printer `6b68328f-6495-4d32-8a2d-784119e59a01`
+("Moonraker Ready"). The calibration-dispatch HTTP contract is complete and
+matches desktop routing constants byte-for-byte. The queue integration,
+job-bound bed-clear acknowledgement, and dispatch paths are fully implemented
+in `src/infra/Services/Queue/` (341-411 lines of calibration-specific
+business logic + 1,101-line `BedClearAcknowledgementService`).
+
+**Full write-up:** `.squad/decisions/inbox/bishop-printfarmer-mock-printer-recon.md`
+
+## 2026-08-21 — Calibration UI path trace
+
+**By:** Dallas (React/Electron UI).
+
+**Scope:** Read-only trace of the renderer/preload/IPC lane.
+
+**Key finding:** Calibration workspace is reachable post-#739. The step ladder
+from cold start to "send print" is intact. A dead "Start calibration print"
+button (no `onClick`, gate hardcoded false) was found and deleted. Two-click
+explainer added to Queue button. Built `blockedReasonMessages.ts` with
+compile-time exhaustiveness + raw-token fallback so Queue button's disabled
+state names its first cause.
+
+**Full write-up:** `.squad/decisions/inbox/dallas-calibration-ui-trace.md`
+
+## 2026-08-21 — The calibration suite is green because it tests the desktop against itself
+
+**By:** Hicks (QA/Contract Testing).
+
+**Context:** Jeff reports "a calibration print can be sent to a mock printer" does
+not work. ~49 calibration test files, all green (5200 pass / 3 timing-only fail
+in unrelated files).
+
+**Key finding:** The entire calibration suite compares the desktop to values the
+desktop itself authored (admin-guide docs, constant declarations). It is
+self-referential: green suite, zero real server drift detection. Built
+server-sourced snapshots pinned by blob SHA, provenance guard, and env-gated
+harness asserting arrival at the emulator. Full suite now 5300 pass / 2
+known-timeout fail.
+
+**Full write-up:** `.squad/decisions/inbox/hicks-calibration-test-gap.md`
+
+## 2026-08-21 — Verification: "calibration print → mock printer" reachability
+
+**By:** Fact Checker (Verification mode).
+
+**Claim under test:**
+
+> "Sending a calibration print to a printer is not implemented in PrintFarmer
+> server build `0.2.3+6cf79dee`, so the user's acceptance goal is unreachable
+> without server feature work."
+
+**Verdict:** **(c) MIXED — ❌ CONTRADICTED as stated. ✅ VERIFIED with a much narrower scope.**
+
+The queue integration, the job-bound bed-clear acknowledgement, and the
+calibration-aware dispatch path are **fully implemented in code**. What is
+missing is a **split-mode routing adapter for the calibration _generation_
+capability probe** — one link in a chain of eight, and only in `microservices`
+deployment mode.
+
+**Critical finding:** `queueIntegrationImplemented: false` sat on a fully
+implemented 1,101-line service because it was a DTO default nobody ever
+flipped. The team nearly told the user the feature was unbuilt. **Verify against
+the code path, not the self-report.**
+
+**Shortest path to acceptance goal:** Pre-seed a promoted calibration g-code and
+drive the existing queue+ack chain (est. 1-2 h server seed, full integration
+test by Hicks). Neither path requires new PrintFarmer server feature code.
+
+**Full write-up:** `.squad/decisions/inbox/fact-checker-calibration-reachability.md`
+
+## 2026-08-21 — Three durable lessons from the calibration dispatch session
+
+**By:** Scribe, consolidated from Fact Checker, Bishop, Dallas, Ripley, and Hicks findings.
+
+**Lesson 1: A capability flag that reports `false` is a claim about code, not the code itself.**
+
+`queueIntegrationImplemented: false` sat on a fully implemented 1,101-line
+service (`BedClearAcknowledgementService`) because it was a DTO default nobody
+ever flipped. The team nearly told the user the feature was unbuilt. **The
+rule:** Capability flags are code contracts, not introspection. Verify against
+the code path itself — grep for the service/controller/route, read a few lines,
+run a live probe — never take the flag as the single source of truth. A
+negative flag report is a claim _about_ code, not evidence of code's absence.
+
+**Lesson 2: A test fixture claiming "verbatim from server" with no enforcing check is worse than no comment.**
+
+The entire calibration suite (5,200 tests) was green and structurally incapable
+of detecting server drift because every assertion compared the desktop to values
+the desktop itself authored. The parity test was desktop-vs-its-own-admin-guide,
+not desktop-vs-server. Comments claiming "verbatim from server" were false
+authority that discouraged real checks. **The rule:** If a test fixture
+documents a server snapshot or API contract, enforce it: blob-SHA-pin the
+server-sourced data, version-stamp it, run a provenance guard. A comment is not
+a control.
+
+**Lesson 3: The coordinator amplified an unverified agent claim into a "root cause" and routed a fix for a non-bug.**
+
+The coordinator took an unverified claim that `queueIntegrationImplemented:
+false` meant the code path was missing, routed a fix attempt for a
+non-existent bug, and that fix caused a regression in working code. The PR
+seeded a fabricated payload into a new regression test. Both were reverted. The
+repo's own rule — every matching predicate gets a control that must return the
+opposite result, evaluated by the same predicate on the same data — applies to
+coordinator routing decisions, not just shell predicates. **A claim asserted in
+a prompt is not a source.**
+
+**Acceptance evidence:** Emulator at `localhost:17125` reported `printState:
+"printing"` with `pf-432e4823...-promoted-calibration-bishop-round4.gcode` on
+its virtual SD, independently re-verified by the coordinator. Bishop resolved
+five successive dispatch refusals by supplying data, never by weakening a gate.

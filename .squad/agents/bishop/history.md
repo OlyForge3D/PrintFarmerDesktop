@@ -2,6 +2,23 @@
 
 Bishop is the Rust/SQLite/integration developer for PrintFarmer Desktop.
 
+## SUMMARY (2026-08-21)
+
+**Five rounds of empirical proof + two durable learnings across three days:**
+
+1. **Round 1 (recon):** Mock printer exists. Moonraker emulator at localhost:17125. Daily-validation stack at `scripts/ci/smoke-daily-validation-stack.sh`. Seeder doesn't populate calibration metadata (FIX-A). Split-mode DI skips slicer-host, blocking generation probe (FIX-B).
+2. **Round 2 (empirical stack):** Stood up persistent stack in WSL ext4. Project create blocked with `printer_not_calibration_eligible`. Three refusal vocabularies identified (discovery codes / bed-clear tokens / dispatch safety gates).
+3. **Round 3 (Fix A proof):** SQL seed + empirical round-trip verification. Moonraker Ready now eligible. Generation still 503 on split-mode. Stack left running for Ripley/Dallas.
+4. **Round 3B (blocker diagnosis):** DevModeBypassAuth is auth-only, not authn. Slicer worker IS registered but unreachable from split-mode API process.
+5. **Round 4 (Hicks blockers):** Auth token acquired. Live dispatch test wired.
+6. **Round 5:** Drove calibration print end-to-end. Moonraker reports `printState: printing` with seeded g-code on virtual SD.
+
+**Durable learnings:** (a) WSL2 bind-mounts are hostile to postgres; use ext4. (b) Deployment modes target incompatible schema fingerprints; do not treat DEPLOYMENT_MODE as an overlay knob. (c) Split-mode capability collapse is deliberate; fix via HTTP delegation, not flag unmasking.
+
+**Output:** Full recon + three rounds of empirical proof. No server code changed. Stack running at `D:\s\pfarm1\.stack-round2`. Token at `/tmp/printfarmer-round2/.token`.
+
+---
+
 ## 2026-07-23: Squad Initialization
 
 Team hired as part of Squad Phase 2 setup for `OlyForge3D/PrintFarmerDesktop` (requested by Jeff Papiez). No Rust/SQLite code touched during this session — infrastructure only.
@@ -359,3 +376,5 @@ Reserved `fea70000-0000-0004-*` for Round 4 to avoid collision with Fix A's `fea
 `ETag: "AQAAAAAAAAAB"` — RowVersion 1 as bytea base64. Increments on write. `X-Dispatch-State-ETag: "AQAAAAAAAAAF"` — same encoding, separate row. In `If-Match`: forward the entire quoted string including quotes.
 
 — Bishop (Round 4)
+
+📌 Team update (2026-08-21T20-06-12Z): Moonraker emulator at localhost:17125 stood up and tested. Mock printer GUID 6b68328f-6495-4d32-8a2d-784119e59a01 live. Calibration print successfully sent to emulator. See .squad/orchestration-log/2026-08-21T20-06-12Z-bishop.md.

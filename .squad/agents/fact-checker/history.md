@@ -52,3 +52,5 @@ Decision written to `decisions/inbox/fact-checker-calibration-reachability.md`.
   actual service, hit the actual endpoint) reveals the code was there all
   along. Recording this here in case a future session re-encounters the
   same wire.
+
+📌 Team update (2026-08-21T20-06-12Z): Claim 'calibration dispatch unimplemented' CONTRADICTED. Queue integration fully implemented (1101-line service). Split-mode DI blocks only generation (one of eight links). Acceptance goal reachable via Path A. See .squad/orchestration-log/2026-08-21T20-06-12Z-fact-checker.md.

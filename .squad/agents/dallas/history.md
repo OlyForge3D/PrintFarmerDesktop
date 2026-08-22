@@ -130,3 +130,5 @@ string | null` but `CalibrationApiError` at the call sites has the
   flags to false. Any renderer feature that "needs" those flags set is
   the wrong architecture — the flag flip is a server-side atomic
   action, not a client state.
+
+📌 Team update (2026-08-21T20-06-12Z): Calibration workspace reachable post-#739; step ladder intact. Deleted dead 'Start calibration print' button. Built lockedReasonMessages.ts with message translation. See .squad/orchestration-log/2026-08-21T20-06-12Z-dallas.md.

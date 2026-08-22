@@ -2,6 +2,23 @@
 
 Hicks is QA and contract testing for PrintFarmer Desktop.
 
+## SUMMARY (2026-08-21)
+
+**Five rounds of test-gap closure + provenance discipline audit across two days:**
+
+1. **Baseline audit:** CI-gate clean except 3 timing-only timeouts (unrelated). Zero calibration test failures on assertion.
+2. **Round 1 (gap diagnosis):** Calibration suite is self-referential. All mocks use desktop-authored values. Parity test is desktop-vs-desktop, not desktop-vs-server. No real drift detection.
+3. **Round 2 (fixture hardening):** Built server-sourced snapshots with blob-SHA pinning + provenance guard. Added four control tests to prove harness bites. Fixture shape pattern: `http.createServer(...).listen(0, '127.0.0.1')` for real loopback.
+4. **Round 3 (capability-drift floor):** Encoded provenance as `PROVENANCE` export on every snapshot. Two allowed kinds: `csharp-source` (with commitSha + blobHash) or `live-response` (with serverVersion + commitSha cross-reference). Guard test discovers all snapshots at runtime, asserts valid provenance, runs blob-hash check. Four synthetic controls prove guard bites.
+5. **Round 4 (fabrication + closure):** Coordinator found Round 3's payload was false (derived from prose claim, not wire capture). Reverted. Rebuilt harness with fabrication detection: RIPLEY_MISFIX_ALIAS_SOURCES as regression guard. Misfix-mapped payload now asserted against real capabilities. Full suite: 5292 pass / 2 pre-existing fail / 7 skipped.
+6. **Round 5 (Bishop's success → harness):** Drove calibration print end-to-end. Moonraker: `printState: printing`, seeded g-code on virtual SD. Built `calibration.liveStackDispatch.test.ts` replaying Bishop's exact sequence. EXPECTED_REFUSAL_HINTS table names all five Round-3 refusals as precondition diagnostics. Six controls prove diagnostic layer. Extended `calibrationJobBlockedReasonCode.test.ts` with phantom-code detection + coverage delta report.
+
+**Durable learnings:** (a) Comments claiming provenance are a liability without an enforcer. (b) Partial regression reporters counting any-match-to-broken-map are always wrong — count only keys that were actually rebound. (c) Counterfactual regression guard (misfix map applied to current payload) survives longer than pre-fix payload assertions. (d) When state under test changes mid-session (Ripley's fix), guard with counterfactual regression, not historical re-capture.
+
+**Output:** Full test-gap audit + five rounds of fixture hardening. Provenance discipline enforced. Dispatcher harness regression-guarded. Tests: 5300 pass / 2 known-timeout fail (orca, unrelated).
+
+---
+
 ## 2026-07-23: Squad Initialization
 
 Team hired as part of Squad Phase 2 setup for `OlyForge3D/PrintFarmerDesktop` (requested by Jeff Papiez). No test code touched during this session — infrastructure only.
@@ -189,3 +206,5 @@ Bishop still owes the auth posture for the daily-validation stack so the env-gat
 **Full-suite result.** `5300 passed | 2 failed | 7 skipped`. The 2 failures are the pre-existing `orcaProfileInstall.test.ts` load-timeouts flagged as out of scope. Coordinator's target met exactly. Round-4 provenance guard, capability re-basing, counterfactual regression guard all still holding as verified.
 
 **Emulator state cross-check (bonus).** WSL curl confirms the emulator's current `printState=printing` and filename `pf-432e...promoted-calibration-bishop-round4.gcode` — my harness's `expectedFilenamePattern="promoted-calibration"` would immediately assert green against Bishop's still-live Round-4 print if the Windows-host loopback bridge were solved. The harness code is proven correct via the 12 always-visible controls; the actual live run is the follow-up.
+
+📌 Team update (2026-08-21T20-06-12Z): Calibration suite self-referential gap identified; built server-sourced snapshots with blob-SHA pinning + provenance guard. Full suite 5300 pass / 2 known-timeout fail. See .squad/orchestration-log/2026-08-21T20-06-12Z-hicks.md.
