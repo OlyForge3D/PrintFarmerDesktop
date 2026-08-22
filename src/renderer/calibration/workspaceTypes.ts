@@ -13,6 +13,7 @@ import type {
   OrcaProfileEntry,
 } from '@shared/ipc';
 import type { CalibrationEnvironment } from './api';
+import { describeBlockedReasonCode } from './blockedReasonMessages';
 import type {
   CalibrationEvent,
   CalibrationStageId,
@@ -286,6 +287,18 @@ export function errorMessage(error: unknown, fallback: string): string {
  * can quote, which resolves to the main-process log record where the backend's
  * raw detail was retained.
  *
+ * `blockedReasonCode`, when present, is the bounded machine identifier the
+ * server used to name the specific dispatch-safety gate that closed —
+ * translated by {@link describeBlockedReasonCode} into an operator-actionable
+ * sentence. Prepended rather than appended because it names the actual cause
+ * (`"The printer's firmware family no longer matches..."`) while `message` is
+ * the HTTP-category catalogue string (`"Bed-clear conflict:
+ * firmware_family_mismatch"` or `"Calibration data is invalid or unsafe."`),
+ * and reading the specific cause first is what Bishop's #740 diagnosis
+ * called for. An unknown code is quoted in an English sentence rather than
+ * swallowed, so a server-shipped-new-code case is visibly debuggable rather
+ * than a silent regression to the generic wording.
+ *
  * Appended rather than shown separately because every existing calibration
  * surface renders a single string, and a reference the operator cannot see is
  * a field that satisfies the ruling in the payload and fails it at the screen.
@@ -293,10 +306,18 @@ export function errorMessage(error: unknown, fallback: string): string {
 export function calibrationErrorText(error: {
   readonly message: string;
   readonly reference: string | null;
+  readonly blockedReasonCode?: string | null | undefined;
 }): string {
+  const blockedReasonSentence = describeBlockedReasonCode(
+    error.blockedReasonCode ?? null,
+  );
+  const primary =
+    blockedReasonSentence === null
+      ? error.message
+      : `${blockedReasonSentence} ${error.message}`;
   return error.reference === null
-    ? error.message
-    : `${error.message} Reference ${error.reference}.`;
+    ? primary
+    : `${primary} Reference ${error.reference}.`;
 }
 
 export function formatTimestamp(value: string): string {

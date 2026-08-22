@@ -52,6 +52,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CALIBRATION_FLAG_SOURCES,
   RemoteCalibrationCapabilities,
+  setCalibrationFlagBackingField,
+  unsetCalibrationFlagBackingField,
   type CalibrationFlagName,
 } from '../src/main/calibrationWire.js';
 import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
@@ -69,6 +71,38 @@ function parse(
   );
 }
 
+/**
+ * Build a split-shaped fixture where one flag's backing field is set to a
+ * specific value. Uses the `setCalibrationFlagBackingField` helper so the
+ * flat/nested topology of the source path is owned by production (see
+ * `CALIBRATION_FLAG_SOURCES`) — this test cannot silently drift into
+ * writing the wrong shape (e.g. writing `offlineWriteReplayEnabled` at the
+ * top level, where a real PrintFarmer body would never have it).
+ */
+function withFlagBackingField(
+  overrides: Record<string, unknown>,
+  flag: CalibrationFlagName,
+  value: boolean,
+): Record<string, unknown> {
+  const body = printFarmerCapabilitiesResponse(overrides);
+  setCalibrationFlagBackingField(body, flag, value);
+  return body;
+}
+
+/**
+ * Build a fixture where one flag's backing field is entirely absent —
+ * distinguishable from an explicit `false` for the `flagAdvertisement`
+ * assertions in AC4.
+ */
+function withoutFlagBackingField(
+  overrides: Record<string, unknown>,
+  flag: CalibrationFlagName,
+): Record<string, unknown> {
+  const body = printFarmerCapabilitiesResponse(overrides);
+  unsetCalibrationFlagBackingField(body, flag);
+  return body;
+}
+
 describe('capability flags are truthful in split deployment (#493)', () => {
   it('enumerates at least one flag from production (vacuity guard)', () => {
     // A `FLAG_NAMES.length === 0` would make every `it.each` below register
@@ -84,8 +118,6 @@ describe('capability flags are truthful in split deployment (#493)', () => {
   });
 
   describe.each(FLAG_NAMES)('flag %s', (flag) => {
-    const sourceField = CALIBRATION_FLAG_SOURCES[flag];
-
     // AC2 — per-flag fixture pair. Measured: replacing
     // `flags[flagName] = raw === true;` in calibrationWire.ts with
     // `flags[flagName] = true;` (a stuck-on guard) turns every
@@ -98,10 +130,9 @@ describe('capability flags are truthful in split deployment (#493)', () => {
     });
 
     it(`reports unavailable when unreachable in a split-shaped response`, () => {
-      const caps = parse({
-        deploymentMode: 'split',
-        [sourceField]: false,
-      });
+      const caps = RemoteCalibrationCapabilities.parse(
+        withFlagBackingField({ deploymentMode: 'split' }, flag, false),
+      );
       expect(caps.flags[flag]).toBe(false);
     });
   });
@@ -118,8 +149,6 @@ describe('capability flags are truthful in split deployment (#493)', () => {
   });
 
   describe.each(FLAG_NAMES)('flag %s — unknown vs false (AC4)', (flag) => {
-    const sourceField = CALIBRATION_FLAG_SOURCES[flag];
-
     // Measured: changing the `raw === undefined ? 'unknown' : ...` branch
     // in calibrationWire.ts to unconditionally return `'false'` (collapsing
     // absent into false, the pre-#493 behaviour) turns every "field is
@@ -127,10 +156,11 @@ describe('capability flags are truthful in split deployment (#493)', () => {
     // stays green — proving these two rows are not redundant with each
     // other and that `flagAdvertisement` actually distinguishes them.
     it('reports false advertisement when the backing field is explicitly false', () => {
-      const body = printFarmerCapabilitiesResponse({
-        deploymentMode: 'split',
-        [sourceField]: false,
-      });
+      const body = withFlagBackingField(
+        { deploymentMode: 'split' },
+        flag,
+        false,
+      );
       const caps = RemoteCalibrationCapabilities.parse(body);
       expect(caps.flagAdvertisement[flag]).toBe('false');
       // The fail-closed gate stays false either way; this pair is about
@@ -139,10 +169,7 @@ describe('capability flags are truthful in split deployment (#493)', () => {
     });
 
     it('reports unknown advertisement when the backing field is absent, distinguishable from false', () => {
-      const body = printFarmerCapabilitiesResponse({
-        deploymentMode: 'split',
-      });
-      delete body[sourceField];
+      const body = withoutFlagBackingField({ deploymentMode: 'split' }, flag);
       const caps = RemoteCalibrationCapabilities.parse(body);
       expect(caps.flagAdvertisement[flag]).toBe('unknown');
       expect(caps.flagAdvertisement[flag]).not.toBe('false');

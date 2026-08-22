@@ -95,14 +95,20 @@ function codeClientFlags(): string[] {
 }
 
 /**
- * The server-side switches an operator actually sets. Selected from the
- * capabilities schema by the `*Enabled` naming convention — a convention this
- * test depends on, and which the non-empty guard below is what protects.
+ * The server-side switches an operator actually sets, as documented in the
+ * runbook. Derived from `CALIBRATION_FLAG_SOURCES` — the single production
+ * source of truth for the client→server flag mapping — rather than from
+ * every `*Enabled` key on the raw wire schema. The schema still declares
+ * some historical switches (`calibrationPersistenceEnabled`,
+ * `calibrationSyncEnabled`) for strict validation of legacy fields, but the
+ * runbook must only document the switches PFD actually reads today. Reading
+ * every `*Enabled` key would demand the runbook keep documenting the flags
+ * PFD deliberately does not consume, and would drift back into the wrong
+ * vocabulary the 2026-08-21 fix corrected.
  */
 function codeServerSwitches(): string[] {
-  return shapeKeysOf(wire, 'RemoteCalibrationCapabilities')
-    .filter((key) => key.endsWith('Enabled'))
-    .sort();
+  const map = wire.CALIBRATION_FLAG_SOURCES;
+  return [...new Set(Object.values(map) as string[])].sort();
 }
 
 /** Every backticked token on the runbook's per-stage capability-flag lines. */
@@ -250,9 +256,13 @@ describe('calibration rollout runbook — the flag vocabulary table', () => {
 
   it('records that offline draft and change feed share one server switch', () => {
     // The single fact in the runbook that changes what an operator can do:
-    // there is no server state where one is on and the other is off. If the
-    // wire mapping ever separates them, this fails and the runbook's stage 6
-    // paragraph becomes wrong and must be rewritten.
+    // there is no server state where one is on and the other is off. Both
+    // gates are backed by `calibrationSyncEnabled` — the sync/change-feed
+    // subsystem — so if the wire mapping ever separates them, this fails
+    // and the runbook's stage 6 paragraph becomes wrong and must be
+    // rewritten. `operatorFeatures.offlineWriteReplayEnabled` is a related
+    // but distinct operator-features field, not the load-bearing bit here;
+    // see `CALIBRATION_FLAG_SOURCES` and its docblock for why.
     const byClient = new Map(
       runbookMappingRows().map((row) => [row.client, row.server]),
     );

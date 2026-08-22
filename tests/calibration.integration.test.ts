@@ -1645,6 +1645,7 @@ describe('Calibration IPC schema privilege denial', () => {
         capabilityFlags: null,
         grantedScopes: null,
         offlineEditingEnabled: false,
+        serverUnavailableReasons: [],
       }),
     ).not.toThrow();
     // Invalid reason
@@ -1658,6 +1659,7 @@ describe('Calibration IPC schema privilege denial', () => {
         capabilityFlags: null,
         grantedScopes: null,
         offlineEditingEnabled: false,
+        serverUnavailableReasons: [],
       }),
     ).toThrow();
   });
@@ -1964,6 +1966,7 @@ describe('Calibration IPC schema additive compatibility', () => {
         },
         grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
         offlineEditingEnabled: true,
+        serverUnavailableReasons: [],
       }),
     ).not.toThrow();
   });

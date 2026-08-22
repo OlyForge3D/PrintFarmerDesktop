@@ -31,6 +31,15 @@ export function printFarmerCapabilitiesResponse(
     calibrationArtifactPromotionEnabled: true,
     calibrationQueueEnabled: false,
     calibrationJobBoundBedClearEnabled: false,
+    // The live server hardcodes `calibrationEventsEnabled: false` today
+    // (`CalibrationCapabilityService.cs:203-205`, documented in
+    // `docs/API.md:108-110` and DTO XML at `PlatformCapabilitiesDto.cs:71-72`).
+    // It is a distinct, unimplemented future event-streaming subsystem, NOT
+    // the change-feed/sync path — which is `calibrationSyncEnabled` above.
+    // The desktop's `calibrationChangeFeedEnabled` gate reads
+    // `calibrationSyncEnabled`; this fixture must faithfully reflect the
+    // wire, so `calibrationEventsEnabled` stays `false` even in the healthy
+    // baseline.
     calibrationEventsEnabled: false,
     supportedFirmwareFamilies: ['Klipper'],
     supportedGcodeDialects: ['Klipper'],
@@ -41,7 +50,16 @@ export function printFarmerCapabilitiesResponse(
     idempotentModelUploadEnabled: true,
     modelThumbnailReplacementEnabled: true,
     platformNote: null,
-    operatorFeatures: {},
+    operatorFeatures: {
+      // `offlineWriteReplayEnabled` is an operator-facing capability the
+      // server advertises via `operatorFeatures`. The desktop's
+      // `calibrationOfflineDraftEnabled` gate is backed by
+      // `calibrationSyncEnabled` above (the sync/change-feed subsystem);
+      // this field is a related but separate capability the desktop can
+      // read via `readFlagBackingField` if a future use requires it.
+      // Kept faithful to the wire so nested-path parsing is exercised.
+      offlineWriteReplayEnabled: true,
+    },
     supportedSlicerEngines: [
       {
         type: 'OrcaSlicer',

@@ -1970,6 +1970,7 @@ export function registerIpcHandlers(
             capabilityFlags: null,
             grantedScopes: null,
             offlineEditingEnabled: false,
+            serverUnavailableReasons: [],
           },
         );
       }
@@ -1999,6 +2000,7 @@ export function registerIpcHandlers(
             capabilityFlags: caps.flags,
             grantedScopes: caps.grantedScopes,
             offlineEditingEnabled: false,
+            serverUnavailableReasons: caps.unavailableReasons,
           });
         }
 
@@ -2022,6 +2024,7 @@ export function registerIpcHandlers(
             capabilityFlags: caps.flags,
             grantedScopes: caps.grantedScopes,
             offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
+            serverUnavailableReasons: caps.unavailableReasons,
           });
         }
 
@@ -2035,6 +2038,10 @@ export function registerIpcHandlers(
             capabilityFlags: caps.flags,
             grantedScopes: caps.grantedScopes,
             offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
+            // Passed through even when calibration is available so the
+            // renderer can still surface a disabled feature the operator
+            // will hit later (e.g. `calibrationGeneration` off).
+            serverUnavailableReasons: caps.unavailableReasons,
           },
         );
       };
@@ -2099,6 +2106,7 @@ export function registerIpcHandlers(
             capabilityFlags: null,
             grantedScopes: null,
             offlineEditingEnabled: false,
+            serverUnavailableReasons: [],
           });
         }
         if (isForbidden(error)) {
@@ -2119,6 +2127,7 @@ export function registerIpcHandlers(
             capabilityFlags: null,
             grantedScopes: null,
             offlineEditingEnabled: false,
+            serverUnavailableReasons: [],
           });
         }
         const reason =
@@ -2139,6 +2148,7 @@ export function registerIpcHandlers(
             capabilityFlags: null,
             grantedScopes: null,
             offlineEditingEnabled: false,
+            serverUnavailableReasons: [],
           },
         );
       }

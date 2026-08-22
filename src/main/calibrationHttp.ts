@@ -303,7 +303,18 @@ export class CalibrationHttpError extends Error {
     readonly serverInstance: string | null = null,
     /**
      * The backend's ProblemDetails `errorCode` extension field, verbatim and
-     * untrusted. Same in-process-only disposition as `serverDetail`.
+     * untrusted, capped at 64 characters by `RemoteCalibrationProblemDetails`.
+     *
+     * Same in-process-only disposition as `serverDetail` for logging and for
+     * appearing in `.message`. Distinct from `serverDetail` in one respect:
+     * this field IS transferred across the IPC boundary onto
+     * `CalibrationApiError.blockedReasonCode` by `toApiError` below, so the
+     * renderer can name the specific dispatch gate that closed. The transfer
+     * is safe on the same grounds as the HTTP status code — a bounded,
+     * enum-shaped identifier drawn from a curated vocabulary
+     * (`DispatchSafetyGates.MapBlockedReason`), not free-form server prose.
+     * See the docblock on `CalibrationApiError.blockedReasonCode` in
+     * `src/shared/ipc.ts` for the ratifying disposition.
      */
     readonly serverErrorCode: string | null = null,
   ) {
@@ -362,6 +373,20 @@ export class CalibrationHttpError extends Error {
         ? Math.ceil(this.retryAfterMs / 1000)
         : null,
       reference,
+      // Passed through the IPC boundary because it is a bounded, enum-shaped
+      // ProblemDetails extension (`RemoteCalibrationProblemDetails.errorCode`
+      // is capped at 64 characters and populated by PrintFarmer with the
+      // vocabulary defined in `DispatchSafetyGates.MapBlockedReason`), so the
+      // renderer can name the specific dispatch gate that closed. This is a
+      // deliberate widening of the docblock claim on `serverErrorCode` above:
+      // that field's "in-process-only" wording covered `serverInstance` as
+      // well because both were untested policy notes, and `serverErrorCode`
+      // was the only member of that group carrying a code the renderer needs
+      // in order to translate a refusal into a sentence. `serverDetail` and
+      // `serverInstance` remain #177-withheld (they carry free-form prose and
+      // untrusted URLs respectively); the renderer contract is
+      // `CalibrationApiError.blockedReasonCode` in `src/shared/ipc.ts`.
+      blockedReasonCode: this.serverErrorCode,
     };
   }
 }
@@ -1272,45 +1297,33 @@ export class CalibrationHttpClient {
 
       // 409 — map error code to typed error
       if (pending.response.status === 409) {
-        let errorCode: string | null = null;
-        try {
-          const rawBody = await this.readBody(pending);
-          if (rawBody.length > 0) {
-            const parsed = JSON.parse(rawBody) as { error?: string };
-            errorCode = parsed.error ?? null;
-          }
-        } catch {
-          // ignore parse errors
-        }
-        const code409 = mapBedClearErrorCode409(errorCode);
+        const envelope = await this.readJobErrorEnvelope(pending);
+        const code409 = mapBedClearErrorCode409(envelope.error);
         throw new CalibrationHttpError(
           code409,
-          `Bed-clear conflict: ${errorCode ?? 'conflict'}`,
+          `Bed-clear conflict: ${envelope.error ?? 'conflict'}`,
           409,
           null,
           pending.ambiguous,
+          envelope.detail,
+          null,
+          envelope.error,
         );
       }
 
       // 422 — map error code to typed error
       if (pending.response.status === 422) {
-        let errorCode: string | null = null;
-        try {
-          const rawBody = await this.readBody(pending);
-          if (rawBody.length > 0) {
-            const parsed = JSON.parse(rawBody) as { error?: string };
-            errorCode = parsed.error ?? null;
-          }
-        } catch {
-          // ignore parse errors
-        }
-        const code422 = mapBedClearErrorCode422(errorCode);
+        const envelope = await this.readJobErrorEnvelope(pending);
+        const code422 = mapBedClearErrorCode422(envelope.error);
         throw new CalibrationHttpError(
           code422,
-          `Bed-clear validation failed: ${errorCode ?? 'invalid'}`,
+          `Bed-clear validation failed: ${envelope.error ?? 'invalid'}`,
           422,
           null,
           pending.ambiguous,
+          envelope.detail,
+          null,
+          envelope.error,
         );
       }
 
@@ -1615,6 +1628,63 @@ export class CalibrationHttpClient {
     return new TextDecoder().decode(combined);
   }
 
+  /**
+   * Read a `{ "error": "code", "detail": "…" }` refusal envelope from a
+   * PrintFarmer job-queue endpoint. Live wire capture (2026-08-21) shows
+   * these controllers respond with `application/json` on well-formed
+   * refusals — 428 `precondition_required`, 404 `job_not_found`, 409
+   * `printer_busy` — but the same controllers can also return `text/plain`
+   * from generic paths (`NotFound()` no-arg, `NotFound("Thumbnail not
+   * available")`). Feeding those through `JSON.parse` unconditionally used
+   * to throw and be silently swallowed by the try/catch, so the operator saw
+   * only the catalogued fallback and never the text the server sent.
+   *
+   * A text/plain body is now carried through as `detail` verbatim, trimmed
+   * and truncated to the same 4096-char bound the `RemoteCalibrationProblemDetails`
+   * schema applies to `detail`. `error` (the machine code) can only come from
+   * the JSON path — a text/plain refusal has no code — so callers should
+   * expect `error` to be `null` when only `detail` is populated.
+   */
+  private async readJobErrorEnvelope(
+    pending: PendingResponse,
+  ): Promise<{ error: string | null; detail: string | null }> {
+    let error: string | null = null;
+    let detail: string | null = null;
+    try {
+      const rawBody = await this.readBody(pending);
+      if (rawBody.length > 0) {
+        const contentType =
+          pending.response.headers.get('content-type')?.toLowerCase() ?? '';
+        const isJson =
+          contentType.startsWith('application/json') ||
+          contentType.startsWith('application/problem+json');
+        const isPlainText = contentType.startsWith('text/plain');
+        if (isJson || (!isPlainText && contentType === '')) {
+          const parsed = JSON.parse(rawBody) as {
+            error?: unknown;
+            detail?: unknown;
+          };
+          if (typeof parsed.error === 'string') {
+            error = parsed.error;
+          }
+          if (typeof parsed.detail === 'string') {
+            detail =
+              parsed.detail.length > 4096
+                ? parsed.detail.slice(0, 4096)
+                : parsed.detail;
+          }
+        } else if (isPlainText) {
+          const trimmed = rawBody.trim();
+          detail = trimmed.length > 4096 ? trimmed.slice(0, 4096) : trimmed;
+        }
+      }
+    } catch {
+      // Non-JSON payload on a JSON content-type; fall through with nulls so
+      // the catalogued refusal string still names the failure.
+    }
+    return { error, detail };
+  }
+
   private async statusError(
     response: Response,
     ambiguous: boolean,
@@ -1631,20 +1701,46 @@ export class CalibrationHttpClient {
     // contract-legal maximal `detail` before it could be read. The body-size
     // check here is a coarse DoS guard only, reusing the client's configured
     // response cap; it is not a stand-in for the schema's field validation.
+    //
+    // Content-type sniff before JSON.parse (2026-08-21): live PrintFarmer
+    // returns `text/plain` bodies from several error paths -- notably
+    // `GcodeFilesController.NotFound("Thumbnail not available")`. Feeding
+    // those through `JSON.parse` used to *silently discard the body* via the
+    // outer try/catch, so the operator saw only the catalogued fallback and
+    // never the string the server actually sent. A text/plain body is now
+    // carried through as `detail` verbatim, trimmed and truncated to the
+    // schema's `detail` limit so the caller cannot ship an unbounded string.
     let detail: string | null = null;
     let instance: string | null = null;
     let errorCode: string | null = null;
     try {
       const body = await response.text();
       if (body.length > 0 && body.length <= this.maxResponseBytes) {
-        const json: unknown = JSON.parse(body);
-        const parsed = RemoteCalibrationProblemDetails.safeParse(json);
-        if (parsed.success) {
-          // `title` is as server-controlled as `detail`; both are untrusted
-          // and both are carried on `serverDetail` only.
-          detail = parsed.data.detail ?? parsed.data.title ?? null;
-          instance = parsed.data.instance ?? null;
-          errorCode = parsed.data.errorCode ?? null;
+        const contentType =
+          response.headers.get('content-type')?.toLowerCase() ?? '';
+        const isJson =
+          contentType.startsWith('application/json') ||
+          contentType.startsWith('application/problem+json');
+        const isPlainText = contentType.startsWith('text/plain');
+        if (isJson || (!isPlainText && contentType === '')) {
+          // JSON, or an unlabelled body we can best-effort parse as JSON --
+          // the pre-content-type-check behaviour, preserved so a server that
+          // omits `Content-Type` on a JSON body still works.
+          const json: unknown = JSON.parse(body);
+          const parsed = RemoteCalibrationProblemDetails.safeParse(json);
+          if (parsed.success) {
+            // `title` is as server-controlled as `detail`; both are untrusted
+            // and both are carried on `serverDetail` only.
+            detail = parsed.data.detail ?? parsed.data.title ?? null;
+            instance = parsed.data.instance ?? null;
+            errorCode = parsed.data.errorCode ?? null;
+          }
+        } else if (isPlainText) {
+          // Truncate to the same bound the JSON schema would apply to
+          // `detail`, so a text/plain path cannot ship a longer server string
+          // than the JSON path can.
+          const trimmed = body.trim();
+          detail = trimmed.length > 4096 ? trimmed.slice(0, 4096) : trimmed;
         }
       }
     } catch {
