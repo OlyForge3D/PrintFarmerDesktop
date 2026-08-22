@@ -66,6 +66,20 @@ merge but is not a repeatable control.
 - No hits found for issues #206 or #501 anywhere in `.squad/` (grepped
   `.squad/decisions.md` and every file under `.squad/decisions/inbox/`).
   Nothing here supersedes a decision filed under those numbers.
+  **[Correction, 2026-08-22 (#740): the #206 half of this is no longer true and
+  was only ever a statement about the tree as it stood on the day this was
+  written.** `.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md`
+  was filed later and is now referenced from `.squad/decisions.md`,
+  `ripley-414-...`, `ripley-480-...`, `.squad/known-lying-commands.md`,
+  `.squad/skills/agent-collaboration/SKILL.md` and this file. It does not
+  conflict with this decision — it reaches a compatible conclusion from the
+  review-binding side, and its control note is cited in the update at the foot
+  of this file. The #501 half still holds: nothing under `.squad/` mentions
+  #501 except this line. The general lesson is the one
+  `ripley-516-absence-not-removal.md` and
+  `vasquez-absence-claims-need-adjacent-positive.md` already record — an
+  absence claim is perishable, so it must be dated and scoped, which this one
+  was not.**]
 
 ## Why this decision follows OlyForge3D/PrintFarmer instead of inventing a new mechanism
 
