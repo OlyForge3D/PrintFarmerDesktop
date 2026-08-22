@@ -155,7 +155,7 @@ test('mounts the React app shell', async () => {
   await expect(page.getByText('PrintFarmer Desktop')).toBeVisible();
   await expect(page.locator('.window-titlebar')).toBeVisible();
   await expect(page.getByLabel('UI design concepts')).toHaveCount(0);
-  await expect(page.getByLabel('Workspaces')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
   await expect(page.getByLabel('Library navigation')).toBeVisible();
   await expect(page.getByLabel('Model properties')).toBeVisible();
 });

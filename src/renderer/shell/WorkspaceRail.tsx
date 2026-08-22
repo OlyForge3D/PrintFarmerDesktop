@@ -38,7 +38,7 @@ export function WorkspaceRail({
   onNavigate,
 }: WorkspaceRailProps): React.JSX.Element {
   return (
-    <nav className="workspace-rail" aria-label="Workspaces">
+    <nav className="workspace-rail" aria-label="Primary">
       {GROUP_ORDER.map((group) => (
         <section
           key={group}

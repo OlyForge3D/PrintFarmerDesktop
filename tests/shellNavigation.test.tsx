@@ -1,5 +1,6 @@
 import {
   act,
+  within,
   fireEvent,
   render,
   screen,
@@ -10,6 +11,7 @@ import type { PrintFarmerApi, ResetCatalogResponse } from '@shared/ipc';
 import { App } from '../src/renderer/App.js';
 import {
   DEFAULT_WORKSPACE,
+  WORKSPACE_GROUP_LABELS,
   WORKSPACE_LIST,
   workspaceById,
   workspacesInGroup,
@@ -92,6 +94,32 @@ describe('shell navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Uploads/ }));
     await screen.findByRole('heading', { name: 'Uploads', level: 1 });
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+  });
+
+  /*
+   * Two elements with the same accessible name are ambiguous to assistive tech.
+   * The rail once shared its name with its own first group, which reached CI as
+   * a Playwright strict-mode violation rather than as the accessibility defect
+   * it actually was.
+   */
+  it('does not give the rail and its groups colliding accessible names', async () => {
+    installApi();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'All models', level: 1 });
+
+    expect(screen.getAllByRole('navigation', { name: 'Primary' })).toHaveLength(
+      1,
+    );
+
+    const rail = screen.getByRole('navigation', { name: 'Primary' });
+    const groupNames = [
+      ...new Set(WORKSPACE_LIST.map((workspace) => workspace.group)),
+    ].map((group) => WORKSPACE_GROUP_LABELS[group]);
+
+    expect(groupNames).not.toContain('Primary');
+    for (const name of groupNames) {
+      expect(within(rail).getAllByRole('region', { name })).toHaveLength(1);
+    }
   });
 
   it('reports ambient state in the statusbar instead of restating the route', async () => {
