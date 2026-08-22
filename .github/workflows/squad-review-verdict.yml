@@ -1,149 +1,675 @@
-name: Record squad review verdict
+name: Record squad review (self-attested)
 
 # merge-queue: publication
 #
-# This workflow never runs on pull_request or merge_group -- it is
-# workflow_dispatch-only, invoked by hand by a non-author repository
-# administrator once the squad panel has reached a consensus verdict on a
-# specific PR head. Requiring its context in branch protection would deadlock
-# every merge, because nobody dispatches it automatically. See
-# scripts/verify-squad-verdict.mjs and
-# .squad/decisions/inbox/vasquez-187-squad-verdict-evidence.md for why that is
-# a deliberate, documented choice rather than an oversight.
+# Squad pre-PR review RECORD.
+#
+# ⚠️ READ THIS BEFORE TRUSTING THE `squad/pre-pr-verdict` STATUS.
+#
+# THIS IS NOT INDEPENDENT REVIEW. IT PROVIDES NO SEPARATION OF DUTIES.
+#
+# Every squad agent — Bishop, Hicks, Vasquez, and every author agent — runs
+# under the repository owner's authority and posts through the owner's token.
+# A "reviewer agent approving an author agent" is therefore the owner approving
+# the owner's own work. The reviewer-is-not-the-author rule below is a QUALITY
+# HEURISTIC (a second agent with fresh context catches more than the author
+# re-reading its own output), not an independence guarantee. A green
+# `squad/pre-pr-verdict` means "a reviewer agent examined this exact commit and
+# recorded its findings", self-attested. It does NOT mean "a second party
+# approved this". Do not read it as sign-off, authorisation, or an audit
+# control that satisfies four-eyes.
+#
+# WHY IT IS SHAPED THIS WAY: the previous version of this workflow required a
+# *non-author repository administrator* to dispatch it by hand. This repository
+# has exactly one collaborator (`jpapiez`, admin — measured population-complete
+# on issue #206), who authors effectively every agent PR, so that guard could
+# never be satisfied. Its entire run history was empty: `gh run list --workflow
+# squad-review-verdict.yml` returned ZERO runs for its whole lifetime. Every fix
+# preserving genuine separation of duties requires a second human, a machine
+# identity controlled by someone other than the owner, or a real independent CI
+# adjudicator — none of which exist here (#111, #151, #187, #206, #414 each
+# reached that same wall from a different direction). Self-attested agent review
+# is accepted for single-maintainer operation instead. Nothing here launders the
+# owner's identity through a bot hop to fake independence; the gate states what
+# it is instead.
+#
+# NOT A REQUIRED CHECK, DELIBERATELY. `squad/pre-pr-verdict` is not in
+# `development`'s required status contexts and must not be added to them. That
+# is the standing decision in
+# `.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md`, and it is
+# not overridden here — see
+# `.squad/decisions/inbox/copilot-740-squad-verdict-semantics.md` for how this
+# design answers #206's specific technical objections while leaving its
+# conclusion intact. Enforcement lives in Ralph's merge logic
+# (`.squad/agents/ralph/loop.md` §9), not in branch protection.
+#
+# WHAT THIS RECORD GENUINELY GIVES YOU, even though review is self-attested:
+#   * SHA BINDING — a record is valid only for the exact head SHA it names. Push
+#     again and it goes stale and the gate fails. This really does prevent
+#     review-then-push-more, and it is the strongest control here.
+#   * PRESENCE — the gate fails when no review happened at all, which catches
+#     the real failure mode of a PR merging with zero examination.
+#   * AUDIT TRAIL — which reviewer agent ran, which SHA it examined, what it
+#     concluded.
+#   * LEGIBLE FAILURE — the status names the exact failing condition so a
+#     blocked session acts instead of parking indefinitely.
+#
+# HOW TO RECORD A REVIEW — post a PR comment containing these three lines:
+#
+#     <!-- squad-verdict -->
+#     Squad-Reviewer: bishop
+#     Squad-Verdict: APPROVE
+#     Squad-Head-SHA: 0123456789abcdef0123456789abcdef01234567
+#
+#   * `Squad-Reviewer` is a squad identity, validated against the repository's
+#     `squad:{member}` labels and the roster in `.squad/team.md`. It should not
+#     be the squad member who authored the PR (resolved from `Squad-Author:` in
+#     the PR body, then the `squad:` label on the linked issue, then the head
+#     branch name). Again: quality heuristic, not independence.
+#   * `Squad-Verdict` is APPROVE (the reviewer agent found nothing blocking) or
+#     REQUEST_CHANGES (it did). It is that agent's recorded conclusion, not an
+#     authorisation.
+#   * `Squad-Head-SHA` must equal the PR's live head SHA at evaluation time. A
+#     record against an older SHA is stale, does not count, and can never
+#     displace a reviewer's record on the current head.
+#   * The `<!-- squad-verdict -->` marker is REQUIRED. Fenced code blocks
+#     (including an unterminated fence, which GitHub renders as code to the end
+#     of the comment), quoted (`>`) lines, and every other HTML comment are
+#     stripped before parsing. Prose that illustrates, quotes, or hides the
+#     format is therefore not a binding record — what the gate counts is what a
+#     human reading the thread can see. Each field must appear exactly once in
+#     the remaining text.
+#   * The commenting account must be AUTHENTICATED as holding repository write
+#     access. This repository is PUBLIC, so any GitHub user can comment on a
+#     PR with no permission at all, and Ralph merges autonomously using the
+#     OWNER's write access — a forgeable record would lend those privileges to
+#     whoever forged it. Permission is resolved live through the collaborator
+#     permission API (`admin`/`maintain`/`write` only; `read`, which is what a
+#     non-collaborator returns on a public repo, and `triage` are rejected).
+#     `author_association` is a cheap pre-filter, never the authorisation.
+#     Lookups FAIL CLOSED: an error, rate limit, or unexpected shape rejects the
+#     record. Identity always comes from the API-supplied account, never from
+#     the comment text. No bot identity is allowlisted — that would re-create
+#     the bot-hop laundering rejected above.
+#   * PUT THE RECORD BLOCK FIRST in the comment. Sanitisation fails closed: an
+#     unterminated `<!--` or code fence earlier in the comment hides everything
+#     after it, exactly as GitHub renders it, which would drop your record.
+#   * FORK PRs never accept an agent record: anyone can open one on a public
+#     repository, so a record there could only be self-asserted by an
+#     unauthenticated party. An administrator's native GitHub approval at the
+#     current head is still honoured on that path, evaluated by the same code —
+#     it reads only API-supplied logins and the live head SHA.
+#
+# REVIEWER COUNT follows `.squad/skills/agent-collaboration/SKILL.md`
+# § "Documentation-Only Changes: One Reviewer", which is that file's single
+# definition of the rule: documentation-only PRs need one record, everything
+# else needs the bishop/hicks/vasquez panel. Its carve-outs — workflow YAML,
+# security/licensing/contract prose, and anything altering an agent's safety
+# boundary or merge-safety rules — keep the full panel even when only markdown
+# changed, and are implemented in `scripts/squad-verdict-gate.mjs`.
+#
+# OWNER OVERRIDE: on an in-scope PR a repository administrator satisfies the gate
+# unconditionally, either by approving through GitHub's native review UI at the
+# current head, or by posting a record whose `Squad-Reviewer` is their own GitHub
+# login. Only each administrator's MOST RECENT decisive review at that head
+# counts (APPROVED / CHANGES_REQUESTED / DISMISSED; COMMENTED is not decisive),
+# so a later change request outranks an earlier approval on the same commit. The
+# owner is never locked out of their own repository.
+#
+# The override does not apply to an out-of-scope PR, and does not need to: it
+# exists to clear a BLOCKED status, and an unlabelled PR has no such status to
+# clear. NOT_APPLICABLE is green, so an administrator can merge it directly at
+# any time. What the override cannot do there is authorise the UNATTENDED merger,
+# which by design only touches labelled PRs — to hand a PR to Ralph, label it.
+#
+# REMOVING THE LABEL IS NOT A HOLD. On a non-fork PR whose author resolves to a
+# roster member, this workflow re-applies the scope label on the next run, so
+# stripping it does not park the PR. That is the safe direction — it re-imposes
+# the review gate rather than bypassing it — but it means label removal is the
+# wrong tool for holding work back. To stop the unattended merger, record a
+# CHANGES_REQUESTED verdict, apply a `hold:*` label (the one mechanically
+# binding channel, per `.squad/holds.md` and #480), or mark the PR draft.
+#
+# The job itself always succeeds; the gate result is the `squad/pre-pr-verdict`
+# commit status. Keeping the run conclusion at `success` is what lets
+# scripts/verify-squad-verdict.mjs treat the run as a provenance record —
+# provenance meaning "this status really was written by this workflow", not
+# "someone independent approved this".
 #
 # Ported from OlyForge3D/PrintFarmer's .github/workflows/squad-review-verdict.yml
-# (PR #1187, fixing PrintFarmer issue #1116), which solved the identical
-# problem this repository's issue #187 raises: one GitHub account
-# authenticates every squad session, so GitHub 422s self-review and a
-# `reviews: []` PR is indistinguishable from an unreviewed one. This workflow
-# does not attempt native GitHub review. It posts a commit status whose
-# provenance is the workflow run itself -- not author-attested, not
-# forgeable by a comment, and checkable independently by
-# scripts/verify-squad-verdict.mjs.
+# (PR #1316, fixing PrintFarmer issue #1310) for this repository's issue #740.
 
-run-name: 'Squad verdict ${{ inputs.verdict }} for PR #${{ inputs.pr_number }} @ ${{ inputs.reviewed_head_sha }} by ${{ github.actor }}'
+run-name: 'Squad review record for PR #${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}'
 
 on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
+      # Scope is carried by the `squad` label, so the status must be
+      # re-evaluated whenever that label is applied or removed.
+      - labeled
+      - unlabeled
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Pull request number
+        description: Pull request number to re-evaluate
         required: true
         type: string
-      reviewed_head_sha:
-        description: Exact 40-character PR head SHA reviewed by the squad panel
-        required: true
-        type: string
-      verdict:
-        description: Bishop, Hicks, and Vasquez consensus verdict
-        required: true
-        type: choice
-        options:
-          - APPROVE
-          - CHANGES_REQUESTED
-          - REJECT
 
 permissions:
   contents: read
-  pull-requests: read
+  issues: read
+  # write, not read: this workflow applies the `squad` scope label itself. A
+  # separate labelling workflow cannot work here — GitHub does not start new
+  # workflow runs from events caused by the default GITHUB_TOKEN, so its
+  # `labeled` event would never re-trigger the evaluation that depends on it.
+  pull-requests: write
   statuses: write
+
+concurrency:
+  group: >-
+    squad-verdict-${{ github.event.pull_request.number
+    || github.event.issue.number || inputs.pr_number }}
+  cancel-in-progress: true
 
 jobs:
   record:
-    name: Record SHA-pinned verdict
+    name: Record SHA-pinned review
+    # issue_comment also fires for plain issues; only PR conversations qualify.
+    if: >-
+      github.event_name != 'issue_comment'
+      || github.event.issue.pull_request != null
     runs-on: ubuntu-latest
     steps:
-      - name: Validate provenance and record verdict
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      # Checks out the default branch, never the pull request head, so a PR can
+      # never supply the logic that judges it. pull_request_target already runs
+      # the workflow definition from the default branch; this keeps the helper
+      # module on the same footing. The whole `scripts` tree is fetched because
+      # squad-verdict-gate.mjs imports docs-only-change.mjs, this repository's
+      # single executable definition of "documentation".
+      - name: Check out gate logic from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Evaluate squad verdict evidence
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 #v9
         env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-          REVIEWED_HEAD_SHA: ${{ inputs.reviewed_head_sha }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-          VERDICT: ${{ inputs.verdict }}
+          PR_NUMBER: >-
+            ${{ github.event.pull_request.number || github.event.issue.number
+            || inputs.pr_number }}
         with:
           script: |
-            const prNumberInput = process.env.PR_NUMBER;
-            const prNumber = Number.parseInt(prNumberInput, 10);
-            const reviewedHeadSha = process.env.REVIEWED_HEAD_SHA;
-            const runAttempt = process.env.RUN_ATTEMPT;
-            const triggeringActor = process.env.TRIGGERING_ACTOR;
-            const verdict = process.env.VERDICT;
-            const actor = context.actor;
+            const gate = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/squad-verdict-gate.mjs`
+            );
 
-            if (runAttempt !== '1' || triggeringActor.toLowerCase() !== actor.toLowerCase()) {
-              core.setFailed('Verdict workflow reruns are not trusted. Dispatch a new run.');
+            const prNumberInput = String(process.env.PR_NUMBER ?? '');
+            if (!/^[1-9]\d*$/.test(prNumberInput)) {
+              core.setFailed('Could not resolve a pull request number.');
               return;
             }
-            if (!/^[1-9]\d*$/.test(prNumberInput) || !Number.isSafeInteger(prNumber)) {
-              core.setFailed('pr_number must be a positive integer.');
-              return;
-            }
-            if (!/^[0-9a-f]{40}$/.test(reviewedHeadSha)) {
-              core.setFailed(
-                'reviewed_head_sha must be an exact lowercase 40-character commit SHA.',
-              );
-              return;
-            }
+            const prNumber = Number.parseInt(prNumberInput, 10);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const repository = `${owner}/${repo}`;
 
             const { data: pull } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
+              owner, repo, pull_number: prNumber,
             });
             if (pull.state !== 'open') {
-              core.setFailed(`PR #${prNumber} is not open.`);
-              return;
-            }
-            if (pull.head.repo?.full_name !== context.payload.repository.full_name) {
-              core.setFailed('Squad verdict recording supports same-repository PRs only.');
-              return;
-            }
-            if (pull.user.login.toLowerCase() === actor.toLowerCase()) {
-              core.setFailed('The PR author cannot record their own squad verdict.');
+              core.notice(`PR #${prNumber} is not open; nothing to gate.`);
               return;
             }
 
-            const { data: actorPermission } =
-              await github.rest.repos.getCollaboratorPermissionLevel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                username: actor,
+            const headSha = String(pull.head?.sha ?? '').toLowerCase();
+            const targetUrl =
+              `${context.serverUrl}/${repository}/actions/runs/${context.runId}`;
+
+            const postStatus = (state, description) =>
+              github.rest.repos.createCommitStatus({
+                owner, repo, sha: headSha, state,
+                context: gate.verdictContext,
+                description, target_url: targetUrl,
               });
-            if (actorPermission.permission !== 'admin') {
-              core.setFailed('The recorder must be a repository administrator.');
-              return;
+
+            // Labels on the issues this PR closes are the most reliable author
+            // signal, so a failure here degrades author resolution rather than
+            // failing the run.
+            async function loadLinkedIssueLabels() {
+              try {
+                const linked = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        closingIssuesReferences(first: 20) {
+                          nodes { number labels(first: 50) { nodes { name } } }
+                        }
+                      }
+                    }
+                  }`, { owner, repo, number: prNumber });
+                return (linked.repository.pullRequest
+                  .closingIssuesReferences.nodes ?? [])
+                  .flatMap((node) => (node.labels?.nodes ?? []).map((l) => l.name));
+              } catch (error) {
+                core.warning(`Could not read linked issues: ${error.message}`);
+                return [];
+              }
             }
-            if (pull.head.sha.toLowerCase() !== reviewedHeadSha) {
-              core.setFailed(
-                `Stale verdict: PR head is ${pull.head.sha}, not ${reviewedHeadSha}.`,
+
+            const isFork = pull.head.repo?.full_name !== repository;
+
+            // Scope check first: the gate covers squad-authored PRs, marked by
+            // the `squad` label. Dependency bumps and ad-hoc human PRs are not
+            // agent output and get NOT_APPLICABLE instead of an unclearable
+            // BLOCKED. Checked before the fork branch so an out-of-scope fork PR
+            // is reported as out of scope rather than as a fork needing an
+            // administrator.
+            //
+            // Labelling happens HERE rather than in a separate workflow. A
+            // dedicated labeller would have to rely on its `labeled` event
+            // waking this workflow up, and GitHub does not start new workflow
+            // runs from events caused by the default GITHUB_TOKEN — so the
+            // re-evaluation would never fire, and the two workflows would race
+            // on `opened`. Doing both in one run removes the race and the token
+            // problem together.
+            //
+            // Safe as opt-in ONLY because Ralph will not auto-merge a PR whose
+            // status reports NOT_APPLICABLE; see gate.squadScopeLabel and
+            // .squad/agents/ralph/loop.md §9.
+            const roster = gate.rosterFromLabels(
+              (await github.paginate(github.rest.issues.listLabelsForRepo,
+                { owner, repo, per_page: 100 })).map((label) => label.name),
+            );
+
+            let squadLabeled = gate.hasSquadScopeLabel(pull.labels ?? []);
+            const author = gate.resolveAuthorMembers({
+              prBody: pull.body ?? '',
+              branchName: pull.head?.ref ?? '',
+              linkedIssueLabels: await loadLinkedIssueLabels(),
+              roster,
+            });
+
+            if (!squadLabeled &&
+                gate.canAutoScope({ authorMembers: author.members, roster, isFork })) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: prNumber,
+                  labels: [gate.squadScopeLabel],
+                });
+                squadLabeled = true;
+                core.notice(
+                  `Applied '${gate.squadScopeLabel}': resolved squad author ` +
+                  `${[...author.members].join('+')} from ${author.source}.`,
+                );
+              } catch (error) {
+                // Labelling is a convenience, not the gate. If it fails the PR
+                // stays out of scope and reports NOT_APPLICABLE, which is the
+                // safe direction: a human owns the merge.
+                core.warning(`Could not apply the scope label: ${error.message}`);
+              }
+            }
+
+            if (!squadLabeled) {
+              const outOfScope = gate.evaluateGate({ headSha, squadLabeled: false });
+              await postStatus(outOfScope.state, outOfScope.description);
+              core.notice(
+                `squad/pre-pr-verdict NOT_APPLICABLE: ${outOfScope.reason}. ` +
+                `Add the '${gate.squadScopeLabel}' label if this is squad-authored work.`,
               );
               return;
             }
 
-            const state = verdict === 'APPROVE' ? 'success' : 'failure';
-            const description = `${verdict} @ ${reviewedHeadSha.slice(0, 12)} by ${actor}`;
-            const targetUrl =
-              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
-              `/actions/runs/${context.runId}`;
+            // Author authentication. This repository is PUBLIC, so any GitHub
+            // user can comment on a PR with no permission at all. Ralph merges
+            // autonomously using the owner's write access, so a forgeable record
+            // would lend the owner's privileges to whoever forged it. Resolve the
+            // live collaborator permission for every commenter and fail closed on
+            // any error, rate limit, or unexpected shape.
+            const permissionCache = new Map();
+            async function permissionOf(login) {
+              if (typeof login !== 'string' || login === '') return 'unresolved';
+              const key = login.toLowerCase();
+              if (permissionCache.has(key)) return permissionCache.get(key);
+              let permission = 'unresolved';
+              try {
+                const { data } =
+                  await github.rest.repos.getCollaboratorPermissionLevel({
+                    owner, repo, username: login,
+                  });
+                permission = typeof data?.permission === 'string'
+                  ? data.permission
+                  : 'unresolved';
+              } catch (error) {
+                core.warning(
+                  `Could not verify repository permission for ${login}: ` +
+                  `${error.message}. Failing closed; any record from this ` +
+                  'account is rejected.',
+                );
+              }
+              permissionCache.set(key, permission);
+              return permission;
+            }
+            const isAdmin = async (login) =>
+              gate.hasAdminAccess(await permissionOf(login));
+            const canWrite = async (login) =>
+              gate.hasWriteAccess(await permissionOf(login));
 
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: reviewedHeadSha,
-              state,
-              context: 'squad/pre-pr-verdict',
-              description,
-              target_url: targetUrl,
+            const decisiveReviewStates = ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'];
+            async function loadReviews() {
+              const raw = await github.paginate(github.rest.pulls.listReviews,
+                { owner, repo, pull_number: prNumber, per_page: 100 });
+              const reviews = [];
+              for (const review of raw) {
+                // Permission is resolved for every decisive state, not just
+                // APPROVED: an administrator's later CHANGES_REQUESTED has to be
+                // able to outrank their own earlier approval on the same commit.
+                reviews.push({
+                  id: review.id,
+                  state: review.state,
+                  submittedAt: review.submitted_at,
+                  commitId: review.commit_id,
+                  login: review.user?.login ?? '',
+                  isAdmin: decisiveReviewStates.includes(review.state)
+                    ? await isAdmin(review.user?.login)
+                    : false,
+                });
+              }
+              return reviews;
+            }
+
+            if (isFork) {
+              // Fork PRs never accept an agent record: anyone can open one on a
+              // public repository, so a record there could only be self-asserted
+              // by an unauthenticated party. An administrator's native GitHub
+              // approval is still honoured, and is evaluated by the same code
+              // path as everywhere else — it reads only API-supplied logins and
+              // the live head SHA, never fork-controlled input, so fork-PR
+              // authorisation stays in code rather than falling back to prose.
+              const forkResult = gate.evaluateGate({
+                headSha, reviews: await loadReviews(), squadLabeled: true,
+              });
+              if (forkResult.override === 'github-review') {
+                await postStatus(forkResult.state, forkResult.description);
+                core.notice(`squad/pre-pr-verdict ${forkResult.description}`);
+                return;
+              }
+              await postStatus(
+                'failure',
+                `BLOCKED @ ${headSha.slice(0, 12)}: fork PR needs a repository administrator`,
+              );
+              core.warning(
+                'Fork pull request: agent review records are not accepted. ' +
+                'A repository administrator must review and approve directly.',
+              );
+              return;
+            }
+
+            const [rawComments, fileData] = await Promise.all([
+              github.paginate(github.rest.issues.listComments,
+                { owner, repo, issue_number: prNumber, per_page: 100 }),
+              github.paginate(github.rest.pulls.listFiles,
+                { owner, repo, pull_number: prNumber, per_page: 100 }),
+            ]);
+
+            const changedPaths = fileData.map((file) => file.filename);
+
+            // Resolve real repository permission for every account that posted
+            // something shaped like a verdict, and flag the owner override.
+            const comments = [];
+            for (const raw of rawComments) {
+              const shape = gate.parseVerdictComment({
+                ...raw, squadWriteAccess: true,
+              });
+              if (!shape) {
+                comments.push(raw);
+                continue;
+              }
+              const login = shape.commenter;
+              const comment = { ...raw, squadWriteAccess: await canWrite(login) };
+              if (comment.squadWriteAccess &&
+                  shape.reviewer === gate.normalizeMember(login) &&
+                  await isAdmin(login)) {
+                comment.squadAdminOverride = true;
+              }
+              comments.push(comment);
+            }
+
+            const reviews = await loadReviews();
+
+            // Sync-carry-forward exemption. A record pinned to an old head SHA
+            // stays valid at the current head when (1) the old SHA is a strict
+            // ancestor of the current head, (2) the PR's own diff against the
+            // base branch — NOT the raw commit list, which always contains the
+            // sync merge commit itself even for a clean sync — is byte-for-byte
+            // unchanged between the old SHA and the current head, AND (3) every
+            // commit introduced since review that isn't already reachable from
+            // base introduces nothing beyond what a clean merge of its own two
+            // parents would produce. (3) exists because (1)+(2) alone would let
+            // an author push a commit that changes the PR and a later commit
+            // that reverts it land back on the same final diff while still
+            // containing real author work in the range — exactly what the SHA
+            // pin exists to catch.
+            //
+            // This matters more here than it would elsewhere: `development` is
+            // a `strict: true` branch, so every PR must sync with base before
+            // it can merge, and without this exemption that mandatory sync
+            // would invalidate the review it just earned.
+            //
+            // (3) is NOT "the commit's own diff against its first parent is
+            // empty" — GitHub's single-commit endpoint diffs a merge commit
+            // against its first parent only, and that is naturally non-empty
+            // for a real sync merge (it necessarily includes everything pulled
+            // in from the base side). Instead, for a two-parent merge commit
+            // `[p1, p2]`, `compare(p1...p2)` is a three-dot compare pivoting on
+            // p1/p2's own merge base, so its `files` are exactly "what p2
+            // contributes beyond its common history with p1" — what a clean,
+            // no-conflict merge of p2 into p1 would add. If the merge commit's
+            // own diff matches that fingerprint, it added nothing beyond a
+            // clean merge; if it differs (a conflict resolved by changing
+            // logic, most obviously), it's disqualifying. A commit with any
+            // other parent count (an ordinary single-parent commit, i.e. real
+            // author work, or a rare octopus merge this check can't validate)
+            // always disqualifies.
+            const distinctOldShas = new Set();
+            for (const raw of rawComments) {
+              const shape = gate.parseVerdictComment({ ...raw, squadWriteAccess: true });
+              if (shape && shape.headSha !== headSha) {
+                distinctOldShas.add(shape.headSha);
+              }
+            }
+
+            const baseRef = pull.base?.ref ?? '';
+            // The compare endpoint silently caps `files` (no in-band
+            // truncation flag), so a diff at or beyond that cap can never be
+            // proven unchanged and must fail closed. 300 is GitHub's
+            // documented ceiling for this endpoint. Its `commits` array is
+            // similarly capped, but DOES expose `total_commits`, so an
+            // incomplete commit list is detectable and must also fail closed.
+            const compareFilesCap = 300;
+            const commitsIncomplete = (compare) =>
+              (compare.total_commits ?? (compare.commits ?? []).length) >
+              (compare.commits ?? []).length;
+            const carriedShas = new Set();
+            for (const oldSha of distinctOldShas) {
+              try {
+                const { data: ancestryCompare } =
+                  await github.rest.repos.compareCommitsWithBasehead({
+                    owner, repo, basehead: `${oldSha}...${headSha}`,
+                  });
+                const { data: reviewedCompare } =
+                  await github.rest.repos.compareCommitsWithBasehead({
+                    owner, repo, basehead: `${baseRef}...${oldSha}`,
+                  });
+                const { data: baseAheadCompare } =
+                  await github.rest.repos.compareCommitsWithBasehead({
+                    owner, repo, basehead: `${baseRef}...${headSha}`,
+                  });
+                const reviewedFiles = reviewedCompare.files ?? [];
+                const currentFiles = baseAheadCompare.files ?? [];
+
+                let nonBaseCommitsIntroduceNoExtraContent = false;
+                if (!commitsIncomplete(ancestryCompare) && !commitsIncomplete(baseAheadCompare)) {
+                  const aheadOfBaseShas = new Set(
+                    (baseAheadCompare.commits ?? []).map((c) => c.sha),
+                  );
+                  const nonBaseShas = (ancestryCompare.commits ?? [])
+                    .map((c) => c.sha)
+                    .filter((sha) => aheadOfBaseShas.has(sha));
+                  let allClean = true;
+                  for (const nonBaseSha of nonBaseShas) {
+                    const { data: singleCommit } = await github.rest.repos.getCommit({
+                      owner, repo, ref: nonBaseSha,
+                    });
+                    const parentShas = (singleCommit.parents ?? []).map((p) => p.sha);
+                    if (parentShas.length !== 2) {
+                      // Ordinary single-parent commit (real author work) or
+                      // an octopus merge this check can't validate.
+                      allClean = false;
+                      break;
+                    }
+                    const singleCommitFiles = singleCommit.files ?? [];
+                    // GitHub's single-commit endpoint exposes `stats.total`
+                    // (additions + deletions summed across the WHOLE commit,
+                    // independent of the 300-file cap on `files`) — verified
+                    // empirically (a real commit with >300 files still
+                    // reports its true total there). Summing the returned
+                    // `files` and comparing to `stats.total` catches most
+                    // truncation, but is not sufficient alone: a truncated
+                    // page whose missing files happen to be pure renames
+                    // (0 additions, 0 deletions) would still sum-match. Keep
+                    // the length-vs-cap heuristic as a second, independent
+                    // check — either signal firing means the list can't be
+                    // trusted.
+                    const singleCommitFilesSum = singleCommitFiles.reduce(
+                      (sum, f) => sum + (f.additions ?? 0) + (f.deletions ?? 0), 0,
+                    );
+                    const singleCommitFilesTruncated =
+                      singleCommitFiles.length >= compareFilesCap ||
+                      (typeof singleCommit.stats?.total === 'number' &&
+                        singleCommitFilesSum !== singleCommit.stats.total);
+                    const { data: parentsCompare } =
+                      await github.rest.repos.compareCommitsWithBasehead({
+                        owner, repo, basehead: `${parentShas[0]}...${parentShas[1]}`,
+                      });
+                    const parentsCompareFiles = parentsCompare.files ?? [];
+                    if (
+                      singleCommitFilesTruncated ||
+                      parentsCompareFiles.length >= compareFilesCap
+                    ) {
+                      // Either side of the equality check may be incomplete
+                      // — a capped/truncated list can never prove the
+                      // fingerprints match (or genuinely differ), so this
+                      // can't be trusted as proof of a clean merge.
+                      allClean = false;
+                      break;
+                    }
+                    if (
+                      gate.diffFingerprint(singleCommitFiles) !==
+                      gate.diffFingerprint(parentsCompareFiles)
+                    ) {
+                      // The merge commit's own diff differs from what
+                      // merging its two parents alone would produce — it
+                      // added something beyond a clean merge.
+                      allClean = false;
+                      break;
+                    }
+                  }
+                  nonBaseCommitsIntroduceNoExtraContent = allClean;
+                }
+
+                const eligible = gate.isCarriedAcrossSync({
+                  recordAncestryStatus: ancestryCompare.status,
+                  reviewedDiffFiles: reviewedFiles,
+                  currentDiffFiles: currentFiles,
+                  filesMayBeTruncated:
+                    reviewedFiles.length >= compareFilesCap ||
+                    currentFiles.length >= compareFilesCap,
+                  nonBaseCommitsIntroduceNoExtraContent,
+                });
+                if (eligible) {
+                  carriedShas.add(oldSha);
+                  core.notice(
+                    `Carrying review record at ${oldSha.slice(0, 12)} forward to ` +
+                    `${headSha.slice(0, 12)}: the PR's own diff against ` +
+                    `${baseRef} is unchanged since review, and every new ` +
+                    'non-base commit since then is a clean merge introducing ' +
+                    'nothing beyond its own two parents.',
+                  );
+                }
+              } catch (error) {
+                // Fails closed: a compare failure (rate limit, unknown SHA,
+                // repository not fetched, etc.) never carries a record
+                // forward — worst case is an unnecessary re-review, not a
+                // skipped one.
+                core.warning(
+                  `Could not evaluate sync carry-forward for ${oldSha}: ${error.message}. ` +
+                  'Treating the record as superseded.',
+                );
+              }
+            }
+
+            const result = gate.evaluateGate({
+              headSha,
+              changedPaths,
+              comments,
+              reviews,
+              roster,
+              authorMembers: author.members,
+              authorSource: author.source,
+              squadLabeled: true,
+              carriedShas,
             });
 
-            await core.summary
-              .addHeading('Squad pre-PR verdict')
+            await postStatus(result.state, result.description);
+
+            const summary = core.summary
+              .addHeading('Squad review record (self-attested)')
+              .addRaw(
+                '\n> ⚠️ This is **not** independent review and provides **no** ' +
+                'separation of duties. Every squad agent runs under the ' +
+                'repository owner\'s authority, so this records that a reviewer ' +
+                'agent examined this exact commit — it is not approval by a ' +
+                'second party. Only an `APPROVE (owner)` result is an ' +
+                'authorisation by a distinct principal.\n\n',
+              )
               .addTable([
                 [{ data: 'Field', header: true }, { data: 'Value', header: true }],
                 ['PR', `#${prNumber}`],
-                ['Reviewed head', reviewedHeadSha],
-                ['Verdict', verdict],
-                ['Recorded by', actor],
-              ])
-              .write();
+                ['Head SHA', headSha],
+                ['Result', result.passed
+                  ? (result.override
+                    ? 'APPROVE (owner)'
+                    : result.carried?.length > 0
+                      ? 'REVIEWED (self-attested, carried across sync)'
+                      : 'REVIEWED (self-attested)')
+                  : 'BLOCKED'],
+                ['Reason', result.reason],
+                ['Self-attested review records', result.approvals.join(', ') || '(none)'],
+                ['Expected reviewers', result.requiredMembers.join(', ') || 'n/a'],
+                ['Stale records', result.stale
+                  .map((r) => `${r.reviewer} @ ${r.headSha}`).join(', ') || '(none)'],
+              ]);
+            for (const note of result.notes) {
+              summary.addRaw(`\n- ${note}`);
+            }
+            await summary.write();
+
+            if (result.passed) {
+              core.notice(
+                `squad/pre-pr-verdict ${result.override ? 'APPROVE (owner)' : 'REVIEWED (self-attested)'}: ` +
+                `${result.reason}`,
+              );
+            } else {
+              core.warning(`squad/pre-pr-verdict BLOCKED: ${result.reason}`);
+            }
