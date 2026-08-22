@@ -450,6 +450,13 @@ jobs:
               }
               const login = shape.commenter;
               const comment = { ...raw, squadWriteAccess: await canWrite(login) };
+              // TEMPORARY (#744 root-cause verification, removed before review):
+              core.warning(
+                `[#744 debug] comment by ${login}: association=` +
+                `${comment.author_association} squadWriteAccess=` +
+                `${comment.squadWriteAccess} reviewer=${shape.reviewer} ` +
+                `trusted=${gate.parseVerdictComment(comment)?.trusted}`,
+              );
               if (comment.squadWriteAccess &&
                   shape.reviewer === gate.normalizeMember(login) &&
                   await isAdmin(login)) {
