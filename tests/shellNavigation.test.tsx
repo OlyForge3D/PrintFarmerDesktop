@@ -1,6 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { PrintFarmerApi } from '@shared/ipc';
+import type { PrintFarmerApi, ResetCatalogResponse } from '@shared/ipc';
 import { App } from '../src/renderer/App.js';
 import {
   DEFAULT_WORKSPACE,
@@ -102,13 +108,103 @@ describe('shell navigation', () => {
     await screen.findByRole('heading', { name: 'Sources', level: 1 });
     expect(statusbar).not.toHaveTextContent('Sources');
   });
+
+  /*
+   * The onboarding nudge appears on exactly the runs that have no source roots
+   * yet. Locking the rail behind it would strand a first run on the one place
+   * that cannot help, and it would narrow the #222 escape path that the old
+   * sidebar button deliberately kept open.
+   */
+  it('keeps the rail usable while the onboarding nudge is open, and answers it', async () => {
+    installApi({ listModels: vi.fn().mockResolvedValue([]) });
+    render(<App />);
+
+    const onboarding = await screen.findByRole('dialog', {
+      name: 'Set up your model library',
+    });
+    const railSources = screen.getByRole('button', { name: /^Sources/ });
+    expect(railSources).toBeEnabled();
+
+    fireEvent.click(railSources);
+    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+    expect(onboarding).not.toBeInTheDocument();
+  });
+
+  /*
+   * Clearing the catalog reports what it removed exactly once. Navigating away
+   * mid-reset unmounts the only surface that shows those counts, so the rail
+   * holds until the destructive operation settles -- the navigation half of a
+   * guard the old modal got for free by refusing to close.
+   */
+  it('holds navigation while a catalog reset is in flight', async () => {
+    let releaseReset: (value: ResetCatalogResponse) => void = () => {};
+    const resetCatalog = vi.fn(
+      () =>
+        new Promise<ResetCatalogResponse>((resolve) => {
+          releaseReset = resolve;
+        }),
+    );
+    installApi({ resetCatalog });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'All models', level: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
+    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset catalog' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Clear local catalog' }),
+    );
+
+    const railLibrary = screen.getByRole('button', { name: 'Library' });
+    await waitFor(() => expect(railLibrary).toBeDisabled());
+
+    await act(async () => {
+      releaseReset({ reset: true, modelsRemoved: 1, sourceRootsRemoved: 1 });
+      // Let the resolved reset settle through the library hook before asserting.
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(railLibrary).toBeEnabled());
+    expect(
+      await screen.findByText(
+        'Catalog cleared. Removed 1 indexed model and 1 source folder.',
+      ),
+    ).toBeVisible();
+  });
+
+  /* A destructive confirmation that takes focus must be cancellable by keyboard
+   * even though the place around it is not modal. */
+  it('cancels the reset confirmation on Escape without leaving the place', async () => {
+    installApi();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'All models', level: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
+    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset catalog' }));
+    const keep = await screen.findByRole('button', { name: 'Keep catalog' });
+    await waitFor(() => expect(keep).toHaveFocus());
+
+    fireEvent.keyDown(keep, { key: 'Escape' });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Clear this local catalog?'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole('main', { name: 'Catalog sources' }),
+    ).toBeInTheDocument();
+  });
 });
 
 function escapeForName(value: string): string {
   return value.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
-function installApi(): void {
+function installApi(overrides: Partial<PrintFarmerApi> = {}): void {
   const api: Partial<PrintFarmerApi> = {
     getAppInfo: vi.fn().mockResolvedValue({
       contractVersion: 2,
@@ -138,6 +234,11 @@ function installApi(): void {
     }),
     listUploadJobs: vi.fn().mockResolvedValue([]),
     renderThumbnail: vi.fn().mockRejectedValue(new Error('not rendered')),
+    resetCatalog: vi.fn().mockResolvedValue({
+      reset: true,
+      modelsRemoved: 1,
+      sourceRootsRemoved: 1,
+    }),
     getCalibrationAvailability: vi.fn().mockResolvedValue({
       available: false,
       unavailableReason: 'noProfile',
@@ -158,6 +259,7 @@ function installApi(): void {
       states: [],
       unhydratedProjects: [],
     }),
+    ...overrides,
   };
   Object.defineProperty(window, 'printFarmer', {
     value: api,

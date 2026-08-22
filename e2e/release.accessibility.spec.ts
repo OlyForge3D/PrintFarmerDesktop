@@ -97,31 +97,27 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await importButton.click();
       await expect(importDialog).toHaveCount(0);
 
-      const manageSources = page.getByRole('button', {
-        name: 'Manage sources',
-      });
-      await manageSources.click();
-      const sourcesDialog = page.getByRole('dialog', {
-        name: 'Catalog sources',
-      });
-      await expect(sourcesDialog).toBeVisible();
+      const railSources = page.getByRole('button', { name: /^Sources/ });
+      await railSources.click();
+      const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+      await expect(sourcesPane).toBeVisible();
       await expect(
-        page.getByRole('button', { name: 'Close catalog sources' }),
+        page.getByRole('heading', { name: 'Sources', level: 1 }),
       ).toBeFocused();
-      await expect(
-        page
-          .locator('.workspace')
-          .evaluate((element) => element.hasAttribute('inert')),
-      ).resolves.toBe(true);
       await expectNoMaterialViolations(page, 'catalog sources', testInfo);
       await page.getByRole('button', { name: 'Reset catalog' }).click();
       await expect(
         page.getByRole('button', { name: 'Keep catalog' }),
       ).toBeFocused();
       await expect(page.getByText('Clear this local catalog?')).toBeVisible();
-      await page.getByRole('button', { name: 'Keep catalog' }).click();
-      await page.getByRole('button', { name: 'Close catalog sources' }).click();
-      await expect(manageSources).toBeFocused();
+      // A destructive confirmation that takes focus stays cancellable from the
+      // keyboard even though the place around it is not modal.
+      await page.keyboard.press('Escape');
+      await expect(page.getByText('Clear this local catalog?')).toHaveCount(0);
+      await page.getByRole('button', { name: 'Library', exact: true }).click();
+      await expect(
+        page.getByRole('main', { name: 'Model library' }),
+      ).toBeVisible();
 
       const selectModel = page.getByRole('button', {
         name: `Select ${modelFixtureName}`,
@@ -146,7 +142,7 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await expect(back).toBeFocused();
       await expect(
         page
-          .locator('.workspace')
+          .locator('.app-body')
           .evaluate((element) => element.hasAttribute('inert')),
       ).resolves.toBe(true);
       await expectNoMaterialViolations(page, '3D viewer', testInfo);
@@ -171,7 +167,8 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await expect(viewerDialog).toHaveCount(0);
       await expect(previewButton).toBeFocused();
 
-      await manageSources.click();
+      await railSources.click();
+      await expect(sourcesPane).toBeVisible();
       await page.getByRole('button', { name: 'Reset catalog' }).click();
       await page.getByRole('button', { name: 'Clear local catalog' }).click();
       await expect(
@@ -179,10 +176,11 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
           'Catalog cleared. Removed 1 indexed model and 1 source folder.',
         ),
       ).toBeVisible();
+      await expect(sourcesPane.getByText('No folders connected')).toBeVisible();
+      await page.getByRole('button', { name: 'Library', exact: true }).click();
       await expect(
-        sourcesDialog.getByText('No folders connected'),
+        page.getByRole('main', { name: 'Model library' }),
       ).toBeVisible();
-      await page.getByRole('button', { name: 'Close catalog sources' }).click();
       await expect(selectModel).toHaveCount(0);
     },
     async () => {

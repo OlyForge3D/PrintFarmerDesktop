@@ -240,6 +240,17 @@ export function SourcesWorkspace({
               className="catalog-reset-confirmation"
               role="alert"
               aria-live="assertive"
+              onKeyDown={(event) => {
+                // A destructive confirmation that takes focus has to be
+                // cancellable from the keyboard. This is scoped to the
+                // confirmation rather than the document: the place around it is
+                // not modal, so Escape must not mean anything here once the
+                // decision is no longer on screen, and it must not fire while
+                // the clear is already running.
+                if (event.key !== 'Escape' || busy) return;
+                event.preventDefault();
+                setConfirmingReset(false);
+              }}
             >
               <strong>Clear this local catalog?</strong>
               <p>

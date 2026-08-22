@@ -952,11 +952,15 @@ export function App(): React.JSX.Element {
       if (
         destination === activeWorkspace ||
         workspaceSwitching ||
-        modalOpen ||
+        backgroundExcluded ||
+        library.status === 'resetting' ||
         modalOwnerRef.current !== 'none'
       ) {
         return;
       }
+      // Leaving Library by any route answers the onboarding nudge, the same way
+      // opening sources or profiles used to (#222).
+      setOnboardingDismissed(true);
       setAppError(null);
       setWorkspaceSwitching(true);
       try {
@@ -979,7 +983,7 @@ export function App(): React.JSX.Element {
         setWorkspaceSwitching(false);
       }
     },
-    [activeWorkspace, modalOpen, workspaceSwitching],
+    [activeWorkspace, backgroundExcluded, library.status, workspaceSwitching],
   );
   const openProfiles = (): void => {
     if (serverProfilesDisabled) return;
@@ -1091,8 +1095,20 @@ export function App(): React.JSX.Element {
   }, [onboardingOpen]);
 
   const activeDefinition = workspaceById(activeWorkspace);
+  /*
+   * Onboarding is deliberately excluded. It is a nudge, not a modal that owns
+   * the shell -- its backdrop is `pointer-events: none` precisely so the
+   * affordance underneath stays clickable (#222), and locking the rail behind
+   * it would strand every first run, where there are no source roots yet, on
+   * the one place that cannot help. A reset is different: it is destructive and
+   * reports what it removed exactly once, so hold navigation until it settles.
+   */
+  const resetInFlight = library.status === 'resetting';
   const navigationLocked =
-    modalOpen || modalOwner !== 'none' || workspaceSwitching;
+    backgroundExcluded ||
+    modalOwner !== 'none' ||
+    workspaceSwitching ||
+    resetInFlight;
   const sourcesNeedingAttention = library.sourceRoots.filter(
     (root) => root.status !== 'available',
   ).length;

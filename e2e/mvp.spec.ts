@@ -152,11 +152,10 @@ test('mounts the React app shell', async () => {
   // A blank window (failed preload/CSP) leaves #root empty; a mounted app fills
   // it and renders the header.
   await expect(page.locator('#root')).not.toBeEmpty();
-  await expect(
-    page.getByRole('heading', { name: 'PrintFarmer Desktop' }),
-  ).toBeVisible();
+  await expect(page.getByText('PrintFarmer Desktop')).toBeVisible();
   await expect(page.locator('.window-titlebar')).toBeVisible();
   await expect(page.getByLabel('UI design concepts')).toHaveCount(0);
+  await expect(page.getByLabel('Workspaces')).toBeVisible();
   await expect(page.getByLabel('Library navigation')).toBeVisible();
   await expect(page.getByLabel('Model properties')).toBeVisible();
 });
@@ -202,7 +201,7 @@ test('shows onboarding CTA for a fresh empty catalog', async () => {
   // two dismissOnboardingIfVisible snapshot checks in test 7 have already
   // seen count()=0 and returned without setting onboardingDismissed=true.
   // When the load then resolves, onboardingOpen becomes true, the backdrop
-  // mounts at z-index 24 over the sidebar, and the 'Manage sources' click
+  // mounts at z-index 24 over the sidebar, and the rail's Sources click
   // inside refreshCatalog retries behind it for 30 s.
   //
   // Wait here until the dialog (and its backdrop) are mounted so that the
@@ -223,22 +222,27 @@ test('shows onboarding CTA for a fresh empty catalog', async () => {
     'none',
   );
 
-  // End-to-end behavioral check: click 'Manage sources' while the dialog and
-  // its backdrop are still mounted — the onboarding is NOT dismissed before
-  // this click. With pointer-events:none the event reaches the sidebar button;
-  // openSources() fires, dismisses the onboarding as a side-effect, and
-  // opens the Catalog sources panel. Without the fix Playwright's
-  // actionability check reports "intercepted by .onboarding-backdrop" and
-  // times out, reproducing the exact #222 CI failure on this deterministic
-  // path.
-  await page.getByRole('button', { name: 'Manage sources' }).click();
-  const sourcesPanel = page.getByRole('dialog', { name: 'Catalog sources' });
-  await expect(sourcesPanel).toBeVisible();
-  // Restore state: close the sources panel so subsequent tests start clean.
-  await sourcesPanel
-    .getByRole('button', { name: 'Close catalog sources' })
-    .click();
-  await sourcesPanel.waitFor({ state: 'detached' });
+  // End-to-end behavioral check: click the rail's Sources entry while the
+  // dialog and its backdrop are still mounted — the onboarding is NOT dismissed
+  // before this click. With pointer-events:none the event reaches the rail
+  // beneath it; navigate() fires, dismisses the onboarding as a side-effect,
+  // and opens the Sources place. Without the fix Playwright's actionability
+  // check reports "intercepted by .onboarding-backdrop" and times out,
+  // reproducing the exact #222 CI failure on this deterministic path.
+  //
+  // The rail must also stay ENABLED while onboarding is up. Onboarding is a
+  // nudge, not a modal that owns the shell, and it appears on exactly the runs
+  // that have no source roots yet — so locking navigation behind it would
+  // strand a first run on the one place that cannot help.
+  const railSources = page.getByRole('button', { name: /^Sources/ });
+  await expect(railSources).toBeEnabled();
+  await railSources.click();
+  const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+  await expect(sourcesPane).toBeVisible();
+  await expect(onboardingDialog).toHaveCount(0);
+  // Restore state: return to the library so subsequent tests start clean.
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
 });
 
 test('uses reliable custom window chrome', async () => {
@@ -438,7 +442,7 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   ).toBeVisible();
   expect(
     await page
-      .locator('.workspace')
+      .locator('.app-body')
       .evaluate((element) => element.hasAttribute('inert')),
   ).toBe(true);
 

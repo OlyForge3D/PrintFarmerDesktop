@@ -1788,7 +1788,11 @@ describe('<App />', () => {
       name: 'Printer Calibration',
     });
     await screen.findByRole('dialog', { name: 'Set up your model library' });
-    await waitFor(() => expect(calibrationSwitch).toBeDisabled());
+    // The onboarding nudge does not own the shell, so it must NOT lock the
+    // rail -- it appears on exactly the runs with no source roots yet (#222).
+    // The server-profiles dialog below is a real modal and does lock it; that
+    // contrast is the point of this test.
+    await waitFor(() => expect(calibrationSwitch).toBeEnabled());
 
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(calibrationSwitch).toBeEnabled());
