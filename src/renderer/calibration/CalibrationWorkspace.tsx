@@ -44,6 +44,7 @@ function WorkspaceContent(): React.JSX.Element {
   return (
     <div className="calibration-workspace" aria-busy={store.loading}>
       <nav className="cal-workspace-nav" aria-label="Calibration views">
+        <h2 className="cal-nav-label">Calibration</h2>
         <button
           type="button"
           onClick={() => void store.navigate('dashboard')}
@@ -76,12 +77,6 @@ function WorkspaceContent(): React.JSX.Element {
             </button>
           </>
         ) : null}
-        <span className="cal-nav-profile">
-          Profile:{' '}
-          {store.profileId === null
-            ? 'Not selected'
-            : store.profileName || 'Selected'}
-        </span>
       </nav>
 
       <div className="cal-global-live" role="status" aria-live="polite">

@@ -129,7 +129,6 @@ export function ImportWizard({
       >
         <header className="import-header">
           <div>
-            <p className="pane-eyebrow">Smart import</p>
             <h2 id="import-wizard-title">Organize models before importing</h2>
             <p className="import-source-path" title={draft.path}>
               {draft.path}

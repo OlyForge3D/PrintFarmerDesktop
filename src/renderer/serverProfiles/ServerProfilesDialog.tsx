@@ -211,7 +211,6 @@ export function ServerProfilesDialog({
       >
         <header className="profile-dialog-header">
           <div>
-            <p className="pane-eyebrow">PrintFarmer connection</p>
             <h2 id="server-profiles-title">{dialogTitle}</h2>
             <p>Credentials stay encrypted in this computer's OS vault.</p>
           </div>

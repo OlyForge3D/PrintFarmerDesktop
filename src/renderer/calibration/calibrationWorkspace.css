@@ -1,5 +1,10 @@
+/*
+ * Calibration's second level uses the same left-rail idiom as the library's, so
+ * an operator learns one navigation vocabulary and applies it in both places.
+ */
 .calibration-workspace {
   display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -10,38 +15,55 @@
 
 .cal-workspace-nav {
   display: flex;
-  min-height: 42px;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 16px;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  grid-row: 1 / -1;
+  grid-column: 1;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 0;
+  padding: 12px 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
   background: var(--sidebar);
+  scrollbar-gutter: stable;
 }
 
 .cal-workspace-nav button {
+  display: flex;
   min-height: 30px;
-  padding: 4px 10px;
+  align-items: center;
+  padding: 0 8px;
   border: 1px solid transparent;
   border-radius: var(--control-radius);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  text-align: left;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    color 150ms ease-out;
 }
 
-.cal-workspace-nav button:hover,
-.cal-workspace-nav button[aria-current='page'] {
-  border-color: var(--border-strong);
-  background: var(--surface);
+.cal-nav-label {
+  margin: 0 0 7px 8px;
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.cal-workspace-nav button:hover {
+  background: var(--surface-hover);
   color: var(--text);
 }
 
-.cal-nav-profile {
-  min-width: 0;
-  margin-left: auto;
-  overflow: hidden;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.cal-workspace-nav button[aria-current='page'] {
+  border-color: var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
 }
 
 .cal-global-live {
@@ -54,6 +76,8 @@
 }
 
 .cal-global-alert {
+  grid-column: 2;
+  grid-row: 2;
   padding: 8px 16px;
   border-bottom: 1px solid #7b343a;
   background: #2d171a;
@@ -61,10 +85,18 @@
 }
 
 .cal-workspace-content {
+  grid-column: 2;
+  grid-row: 3;
   min-width: 0;
   min-height: 0;
   overflow: auto;
   scrollbar-gutter: stable;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cal-workspace-nav button {
+    transition-duration: 1ms;
+  }
 }
 
 .cal-view {
@@ -92,8 +124,10 @@
 
 .cal-view-heading h1 {
   margin: 0;
-  font-size: clamp(22px, 2.4vw, 32px);
-  line-height: 1.15;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 26px;
 }
 
 .cal-view-heading h1:focus {
@@ -109,7 +143,7 @@
 .cal-stage-position {
   margin: 7px 0 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .cal-stage-position {

@@ -1,4 +1,3 @@
-import type { ServerProfile } from '@shared/ipc';
 import type { FilterKey } from './filter';
 import type { SourceRootSummary } from './sourceRoots';
 import { Icon, type IconName } from '../ui/Icon';
@@ -15,33 +14,6 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
 
 export type LibraryCounts = Record<FilterKey, number>;
 
-export function serverStatusLabel(profile: ServerProfile | null): string {
-  if (!profile) return 'Disconnected';
-  if (profile.status === 'error') return 'Connection error';
-  if (profile.status === 'legacy') return 'Legacy fallback';
-  return 'Connected';
-}
-
-function serverProfileVersionLabel(profile: ServerProfile | null): string {
-  if (!profile) return 'No server selected yet';
-  return profile.version?.version ?? 'Legacy server';
-}
-
-function serverProfileAccessibleLabel(profile: ServerProfile | null): string {
-  const actionLabel = profile ? 'Manage connection' : 'Connect to PrintFarmer';
-  const detailLabels = profile
-    ? [
-        profile.displayName,
-        serverProfileVersionLabel(profile),
-        `Status: ${serverStatusLabel(profile)}`,
-      ]
-    : [
-        serverProfileVersionLabel(profile),
-        `Status: ${serverStatusLabel(profile)}`,
-      ];
-  return `${actionLabel}: ${detailLabels.join(', ')}`;
-}
-
 export interface LibrarySidebarProps {
   query: string;
   filter: FilterKey;
@@ -52,10 +24,6 @@ export interface LibrarySidebarProps {
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterKey) => void;
   onAddFolder: () => void;
-  onManageSources: () => void;
-  serverProfile: ServerProfile | null;
-  serverProfilesDisabled: boolean;
-  onManageServerProfiles: () => void;
 }
 
 interface NavigationItem {
@@ -89,10 +57,6 @@ export function LibrarySidebar({
   onQueryChange,
   onFilterChange,
   onAddFolder,
-  onManageSources,
-  serverProfile,
-  serverProfilesDisabled,
-  onManageServerProfiles,
 }: LibrarySidebarProps): React.JSX.Element {
   return (
     <aside className="library-sidebar" aria-label="Library navigation">
@@ -153,50 +117,6 @@ export function LibrarySidebar({
           <Icon name="folder" />
           <span>{scanningFolder ? 'Scanning...' : 'Add folder'}</span>
         </button>
-        <button
-          type="button"
-          className="sidebar-secondary-action manage-catalog-sources"
-          onClick={onManageSources}
-          disabled={busy}
-        >
-          <Icon name="collection" />
-          <span>Manage sources</span>
-        </button>
-      </div>
-      <div className="sidebar-server">
-        <p className="sidebar-section-label">PrintFarmer server</p>
-        <button
-          type="button"
-          className={
-            serverProfile
-              ? 'server-profile-entry'
-              : 'server-profile-entry server-profile-entry--cta'
-          }
-          disabled={serverProfilesDisabled}
-          aria-label={serverProfileAccessibleLabel(serverProfile)}
-          onClick={onManageServerProfiles}
-        >
-          <span
-            className={`server-status-dot ${serverProfile?.status ?? 'none'}`}
-            aria-hidden="true"
-          />
-          <span aria-hidden="true">
-            <strong className={serverProfile ? undefined : 'server-cta-label'}>
-              {serverProfile?.displayName ?? 'Connect to PrintFarmer'}
-            </strong>
-            <small>{serverProfileVersionLabel(serverProfile)}</small>
-            <small
-              className={`server-accessible-status ${serverProfile?.status ?? 'none'}`}
-            >
-              Status: {serverStatusLabel(serverProfile)}
-            </small>
-          </span>
-        </button>
-        {serverProfile?.warnings.includes('insecureHttp') ? (
-          <p className="sidebar-transport-warning">
-            HTTP connection is not encrypted
-          </p>
-        ) : null}
       </div>
     </aside>
   );

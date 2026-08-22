@@ -13,18 +13,15 @@ export const modelFixtureName =
   'precision-calibration-fixture-with-an-intentionally-long-name.obj';
 
 export async function refreshCatalog(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Manage sources' }).click();
-  const sourcesDialog = page.getByRole('dialog', {
-    name: 'Catalog sources',
-  });
-  await sourcesDialog.getByRole('button', { name: 'Refresh catalog' }).click();
-  const close = sourcesDialog.getByRole('button', {
-    name: 'Close catalog sources',
-  });
-  await expect(sourcesDialog).toHaveAttribute('aria-busy', 'false');
-  await expect(close).toBeEnabled();
-  await close.click();
-  await sourcesDialog.waitFor({ state: 'detached' });
+  // Sources is a place in the workspace rail, not a dialog: navigate to it,
+  // refresh, and navigate back rather than opening and closing a modal.
+  await page.getByRole('button', { name: /^Sources/ }).click();
+  const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+  await expect(sourcesPane).toBeVisible();
+  await sourcesPane.getByRole('button', { name: 'Refresh catalog' }).click();
+  await expect(sourcesPane).toHaveAttribute('aria-busy', 'false');
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
 }
 
 export async function importModelFixture(

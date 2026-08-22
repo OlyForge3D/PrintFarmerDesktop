@@ -68,7 +68,6 @@ export function LibraryOnboarding({
       >
         <header className="library-onboarding-header">
           <div>
-            <p className="pane-eyebrow">Welcome</p>
             <h2 id="library-onboarding-title">Set up your model library</h2>
             <p id="library-onboarding-description">
               Add a source folder to index STL, 3MF, and OBJ files without

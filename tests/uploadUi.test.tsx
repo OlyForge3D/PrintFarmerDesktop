@@ -7,7 +7,7 @@ import type {
   UploadJob,
 } from '@shared/ipc';
 import { App } from '../src/renderer/App.js';
-import { UploadQueueDialog } from '../src/renderer/uploads/UploadQueueDialog.js';
+import { UploadsWorkspace } from '../src/renderer/uploads/UploadsWorkspace.js';
 
 const models: LogicalModel[] = ['a', 'b', 'c'].map((name, index) => ({
   hash: String(index + 1).repeat(64),
@@ -52,13 +52,14 @@ describe('catalog multi-selection and upload queue UI', () => {
     expect(screen.getByText('0 selected')).toBeVisible();
   });
 
-  it('opens one accessible queue modal, warns for legacy mode, and restores focus', async () => {
+  it('sends a started job to the uploads place without trapping the operator there', async () => {
     const startUploadJob = vi.fn(() => Promise.resolve(uploadJob()));
     installApi({
       listServerProfiles: vi.fn().mockResolvedValue({
         profiles: [legacyProfile()],
         selectedProfileId: legacyProfile().id,
       }),
+      listUploadJobs: vi.fn().mockResolvedValue([uploadJob()]),
       startUploadJob,
     });
     const { container } = render(<App />);
@@ -69,22 +70,29 @@ describe('catalog multi-selection and upload queue UI', () => {
       name: 'Upload to PrintFarmer',
     });
     await waitFor(() => expect(upload).toBeEnabled());
-    upload.focus();
     fireEvent.click(upload);
 
-    const dialog = screen.getByRole('dialog', { name: 'Upload queue' });
-    expect(dialog).toBeVisible();
-    expect(container.querySelector('.workspace')).toHaveAttribute('inert');
-    expect(
-      screen.getAllByText(/interrupted retries may/i).length,
-    ).toBeGreaterThan(0);
+    const heading = await screen.findByRole('heading', {
+      name: 'Uploads',
+      level: 1,
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.getByRole('main', { name: 'Upload queue' })).toBeVisible();
+    expect(container.querySelector('.app-body')).not.toHaveAttribute('inert');
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/interrupted retries may/i).length,
+      ).toBeGreaterThan(0),
+    );
     expect(startUploadJob).toHaveBeenCalledWith({
       profileId: legacyProfile().id,
       hashes: [models[0]!.hash],
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Close upload queue' }));
-    await waitFor(() => expect(upload).toHaveFocus());
-    expect(container.querySelector('.workspace')).not.toHaveAttribute('inert');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Library' }));
+    expect(
+      await screen.findByRole('heading', { name: 'All models', level: 1 }),
+    ).toBeVisible();
   });
 
   it('requires explicit legacy-risk confirmation and offers deliberate reset recovery', () => {
@@ -109,7 +117,7 @@ describe('catalog multi-selection and upload queue UI', () => {
     const confirm = vi.fn();
     const reset = vi.fn();
     render(
-      <UploadQueueDialog
+      <UploadsWorkspace
         jobs={[job]}
         busy={false}
         error="The upload queue is corrupt."
@@ -120,7 +128,7 @@ describe('catalog multi-selection and upload queue UI', () => {
         onConfirmLegacyRetry={confirm}
         onRemove={vi.fn()}
         onReset={reset}
-        onClose={vi.fn()}
+        onGoToLibrary={vi.fn()}
       />,
     );
     expect(
@@ -141,7 +149,7 @@ describe('catalog multi-selection and upload queue UI', () => {
     expect(reset).toHaveBeenCalledOnce();
   });
 
-  it('manages source folders in one modal and confirms catalog reset inline', async () => {
+  it('manages source folders in their own place and confirms catalog reset inline', async () => {
     const resetCatalog = vi.fn().mockResolvedValue({
       reset: true,
       modelsRemoved: 3,
@@ -149,16 +157,16 @@ describe('catalog multi-selection and upload queue UI', () => {
     });
     installApi({ resetCatalog });
     const { container } = render(<App />);
-    const manage = await screen.findByRole('button', {
-      name: 'Manage sources',
-    });
-    manage.focus();
+    const manage = await screen.findByRole('button', { name: /^Sources/ });
     fireEvent.click(manage);
 
-    expect(
-      screen.getByRole('dialog', { name: 'Catalog sources' }),
-    ).toBeVisible();
-    expect(container.querySelector('.workspace')).toHaveAttribute('inert');
+    const heading = await screen.findByRole('heading', {
+      name: 'Sources',
+      level: 1,
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.getByRole('main', { name: 'Catalog sources' })).toBeVisible();
+    expect(container.querySelector('.app-body')).not.toHaveAttribute('inert');
     expect(screen.getByText('Configured folders')).toBeVisible();
     expect(screen.getByText('C:\\models')).toBeVisible();
 
@@ -179,11 +187,10 @@ describe('catalog multi-selection and upload queue UI', () => {
       ),
     ).toBeVisible();
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Close catalog sources' }),
-    );
-    await waitFor(() => expect(manage).toHaveFocus());
-    expect(container.querySelector('.workspace')).not.toHaveAttribute('inert');
+    fireEvent.click(screen.getByRole('button', { name: 'Library' }));
+    expect(
+      await screen.findByRole('heading', { name: 'All models', level: 1 }),
+    ).toBeVisible();
   });
 
   it('offers ordinary retry for modern recoverable uncertainty', () => {
@@ -208,7 +215,7 @@ describe('catalog multi-selection and upload queue UI', () => {
     };
     const retry = vi.fn();
     render(
-      <UploadQueueDialog
+      <UploadsWorkspace
         jobs={[job]}
         busy={false}
         error={null}
@@ -219,7 +226,7 @@ describe('catalog multi-selection and upload queue UI', () => {
         onConfirmLegacyRetry={vi.fn()}
         onRemove={vi.fn()}
         onReset={vi.fn()}
-        onClose={vi.fn()}
+        onGoToLibrary={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Retry incomplete' }));
@@ -251,7 +258,7 @@ describe('catalog multi-selection and upload queue UI', () => {
       uncertain: 0,
     };
     render(
-      <UploadQueueDialog
+      <UploadsWorkspace
         jobs={[job]}
         busy={false}
         error={null}
@@ -262,7 +269,7 @@ describe('catalog multi-selection and upload queue UI', () => {
         onConfirmLegacyRetry={vi.fn()}
         onRemove={vi.fn()}
         onReset={vi.fn()}
-        onClose={vi.fn()}
+        onGoToLibrary={vi.fn()}
       />,
     );
     expect(

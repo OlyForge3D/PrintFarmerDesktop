@@ -1,0 +1,382 @@
+/*
+ * Shell chrome: the frame that stays put while places change inside it.
+ * The titlebar, rail, and statusbar share one surface so the window reads as a
+ * single instrument with a work area cut out of it.
+ */
+
+.shell-region {
+  display: contents;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-main-column {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Rail ---------------------------------------------------------------- */
+
+.workspace-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  padding: 12px 0 10px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--titlebar);
+  scrollbar-gutter: stable;
+}
+
+.rail-group {
+  min-width: 0;
+}
+
+.rail-group-label {
+  margin: 0 0 7px 16px;
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.rail-list {
+  margin: 0;
+  padding: 0 8px;
+  list-style: none;
+}
+
+.rail-list li + li {
+  margin-top: 2px;
+}
+
+.rail-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    color 150ms ease-out;
+}
+
+.rail-item > svg {
+  color: var(--quiet);
+  transition: color 150ms ease-out;
+}
+
+.rail-item:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.rail-item:hover:not(:disabled) > svg {
+  color: var(--muted);
+}
+
+.rail-item[aria-current='page'] {
+  border-color: var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rail-item[aria-current='page'] > svg {
+  color: var(--accent);
+}
+
+.rail-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-badge {
+  min-width: 19px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+.rail-badge.warning {
+  background: #3b2f1b;
+  color: var(--warning);
+}
+
+/*
+ * Narrow windows drop the labels, not the destinations. The label text stays in
+ * the accessible name and the badge keeps reporting status, which is the part an
+ * operator cannot afford to lose.
+ */
+@media (max-width: 1120px) {
+  .rail-group-label,
+  .rail-item-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .rail-group + .rail-group {
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .workspace-rail {
+    gap: 6px;
+    overflow-x: hidden;
+    scrollbar-gutter: auto;
+  }
+
+  .rail-list {
+    padding: 0 6px;
+  }
+
+  .rail-item {
+    grid-template-columns: 18px;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0;
+  }
+
+  .rail-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 16px;
+    border: 1px solid var(--titlebar);
+    font-size: 10px;
+    line-height: 15px;
+  }
+}
+
+/* Authority ----------------------------------------------------------- */
+
+.authority-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+}
+
+.authority-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 26px;
+  max-width: 100%;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  cursor: pointer;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out;
+}
+
+.authority-entry:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.authority-entry > svg {
+  flex: none;
+  color: var(--quiet);
+}
+
+.authority-name {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.authority-detail,
+.authority-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.authority-detail::before,
+.authority-status::before {
+  color: var(--border-strong);
+  content: '·';
+}
+
+.authority-detail {
+  color: var(--quiet);
+}
+
+.authority-status {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.authority-status.connected {
+  color: var(--success);
+}
+
+.authority-status.legacy {
+  color: var(--warning);
+}
+
+.authority-status.error {
+  color: var(--danger);
+}
+
+.authority-entry--cta {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.authority-entry--cta > svg {
+  color: var(--accent);
+}
+
+.authority-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid #4d3a1d;
+  border-radius: var(--control-radius);
+  background: #2b2013;
+  color: var(--warning);
+  font-size: 12px;
+}
+
+/* Status -------------------------------------------------------------- */
+
+.status-activity {
+  flex: none;
+  color: var(--muted);
+}
+
+.status-item {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  color: var(--quiet);
+}
+
+.status-item--warning {
+  color: var(--warning);
+}
+
+.status-item--build {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Service places ------------------------------------------------------ */
+
+.uploads-pane,
+.sources-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--content-padding);
+  overflow-y: auto;
+  background: var(--canvas);
+}
+
+.service-heading {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 1080px;
+}
+
+.service-heading h1 {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.service-heading p {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--muted);
+}
+
+.service-heading-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.uploads-pane > *,
+.sources-pane > * {
+  max-width: 1080px;
+}
+
+.uploads-pane .upload-job-list {
+  min-height: 0;
+}
+
+.empty-state-action {
+  margin-top: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-item,
+  .rail-item > svg,
+  .authority-entry {
+    transition-duration: 1ms;
+  }
+}
