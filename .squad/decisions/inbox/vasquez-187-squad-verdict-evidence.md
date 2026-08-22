@@ -66,6 +66,20 @@ merge but is not a repeatable control.
 - No hits found for issues #206 or #501 anywhere in `.squad/` (grepped
   `.squad/decisions.md` and every file under `.squad/decisions/inbox/`).
   Nothing here supersedes a decision filed under those numbers.
+  **[Correction, 2026-08-22 (#740): the #206 half of this is no longer true and
+  was only ever a statement about the tree as it stood on the day this was
+  written.** `.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md`
+  was filed later and is now referenced from `.squad/decisions.md`,
+  `ripley-414-...`, `ripley-480-...`, `.squad/known-lying-commands.md`,
+  `.squad/skills/agent-collaboration/SKILL.md` and this file. It does not
+  conflict with this decision — it reaches a compatible conclusion from the
+  review-binding side, and its control note is cited in the update at the foot
+  of this file. The #501 half still holds: nothing under `.squad/` mentions
+  #501 except this line. The general lesson is the one
+  `ripley-516-absence-not-removal.md` and
+  `vasquez-absence-claims-need-adjacent-positive.md` already record — an
+  absence claim is perishable, so it must be dated and scoped, which this one
+  was not.**]
 
 ## Why this decision follows OlyForge3D/PrintFarmer instead of inventing a new mechanism
 
@@ -185,3 +199,38 @@ npx vitest run tests/squadReviewVerdict.test.ts tests/scriptReachability.test.ts
 not by the write response (per
 `ripley-held-branch-force-push-control.md`'s own warning that the write
 response is not evidence).
+
+---
+
+## Update, 2026-08-22 (#740): items 2 and 3 above are superseded; item 1's premise was wrong
+
+**Kept:** the diagnosis (§"The problem"), the identity model (advisory, not
+native GitHub review), and the decision *not* to make `squad/pre-pr-verdict` a
+required status check. All three still hold.
+
+**Superseded:** the mechanism. This decision shipped PrintFarmer PR #1187's
+`workflow_dispatch`-only workflow requiring a **non-author repository
+administrator** to dispatch it by hand, and reasoned that it would become
+achievable "the day #111/#151's revisit trigger fires". That reasoning was
+wrong in a way this document could have caught at the time: `jpapiez` is the
+only collaborator *and* the only admin *and* the author of every agent PR, so
+"administrator AND not-the-author" had an empty solution set from the first day.
+Measured 2026-08-22: `gh run list --workflow squad-review-verdict.yml` returns
+**zero runs, ever**. The control this decision shipped never fired once, and
+"ready for the moment a second identity exists" was doing the work that
+"currently inert" should have been doing.
+
+PrintFarmer found the identical defect on its own issue **#1310** and replaced
+the mechanism in **PR #1316**: the record is now a PR comment carrying a
+`<!-- squad-verdict -->` block, and the workflow subscribes to
+`pull_request_target` / `issue_comment` / `pull_request_review` and publishes the
+status against the **live** head SHA. #740 ports that. Item 3's conclusion is
+unaffected and was re-derived independently — the status stays out of branch
+protection.
+
+**Item 4 is unaffected** and is not re-litigated here; see #206's control note
+for the later measurement of `development`'s `required_pull_request_reviews`
+sub-resource disagreeing with GraphQL.
+
+Full reasoning, including a point-by-point engagement with #206:
+`.squad/decisions/inbox/copilot-740-squad-verdict-semantics.md`.
