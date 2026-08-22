@@ -119,26 +119,33 @@ export const UNENFORCED_CHECKS = {
     'contexts above.',
   'check:squad-verdict':
     'Its verifier logic IS enforced in CI: tests/squadReviewVerdict.test.ts ' +
-    'drives bindStatusToHead, verifySquadVerdict and selectSquadVerdict over ' +
-    'plain fixtures, including the forgery/lookalike/rerun arms and both ' +
-    'directions of head-movement supersession. Its main() additionally needs ' +
-    'a specific PR number and a live commit status posted by a prior, ' +
-    'independently-dispatched run of squad-review-verdict.yml — neither of ' +
-    'which a per-PR CI run can supply about itself without asking whether its ' +
-    'own still-running checks had finished. ' +
+    'drives bindStatusToHead, verifySquadVerdict, selectSquadVerdict and ' +
+    'exitCodeFor over plain fixtures, including the forgery/lookalike/rerun ' +
+    'arms, both directions of head-movement supersession, the per-event ' +
+    'workflow-provenance rules, and a round-trip that derives every status ' +
+    'description from evaluateGate itself rather than hand-writing it. ' +
+    'tests/squadVerdictGate.test.ts covers the gate the status comes from. ' +
+    'Its main() additionally needs a specific PR number and a live commit ' +
+    'status, neither of which a per-PR CI run can supply about itself without ' +
+    'asking whether its own still-running checks had finished. ' +
     'STATE THE WEAKNESS PLAINLY: nothing forces anyone to run this before ' +
-    'merging, and squad-review-verdict.yml itself is workflow_dispatch-only, ' +
-    'so no PR here carries a squad/pre-pr-verdict status until a non-author ' +
-    'administrator manually dispatches it. Until then, review here is ' +
-    'advisory and author-opened squad PRs require a human GitHub approval ' +
-    'before merge — recorded as a decision in ' +
-    '.squad/decisions/inbox/vasquez-187-squad-verdict-evidence.md, not left ' +
-    'implicit. Ported from OlyForge3D/PrintFarmer #1187 (fixing PrintFarmer ' +
-    'issue #1116), which carries the identical unwired script for the ' +
-    'identical reason. Discharge path: the day #111/#151 revisit trigger ' +
-    'fires (a second collaborator or non-admin automation account), a ' +
-    'non-author administrator can dispatch the verdict workflow for real, ' +
-    'and this check becomes invocable from whatever performs the merge.',
+    'merging. As of #740 the status itself IS produced automatically — ' +
+    'squad-review-verdict.yml now runs on pull_request_target, issue_comment ' +
+    'and pull_request_review rather than workflow_dispatch alone, so a ' +
+    'squad-labelled PR does carry a squad/pre-pr-verdict bound to its live ' +
+    'head (the previous shape required a non-author administrator to dispatch ' +
+    'by hand and, on a single-collaborator repository, never once fired). ' +
+    'What remains unenforced is the CONSUMPTION step: squad/pre-pr-verdict is ' +
+    'deliberately NOT a required branch-protection context ' +
+    '(.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md, ' +
+    'reaffirmed in .../copilot-740-squad-verdict-semantics.md), so reading it ' +
+    'is Ralph procedure, not a mechanical refusal. Discharge path: ' +
+    ".squad/agents/ralph/loop.md §9 instructs branching on this command's " +
+    'exit code at every merge-gate decision; wiring it into an automated ' +
+    'dispatcher would need the same privileged, per-PR credential ' +
+    'check:required-contexts above is blocked on. Ported from ' +
+    'OlyForge3D/PrintFarmer #1316 (fixing PrintFarmer issue #1310), which ' +
+    'carries the identical unwired script for the identical reason.',
   'check:behind-base':
     'Its judgement IS enforced in CI: tests/behindBase.test.ts drives ' +
     'evaluateBehindBase and formatResult over plain objects, exercising all ' +

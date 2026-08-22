@@ -316,6 +316,27 @@ work irreversibly. Reaping stays a human decision.
   checks rollup.
 - Require an explicit approval, or a recorded reviewer verdict, **at the current head SHA**. An
   approval attached to an older SHA is invalid. Green CI alone never authorizes a merge.
+- **Read that verdict mechanically, from `squad/pre-pr-verdict` (#740).** Run
+  `npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr <n>` and branch on its
+  exit code, not on the colour of the status and not on reading the comment thread yourself:
+
+  | exit | classification                       | action                                         |
+  | ---- | ------------------------------------ | ---------------------------------------------- |
+  | 0    | `REVIEWED` / `APPROVED`              | usable merge evidence at the reported head SHA |
+  | 2    | `CHANGES_REQUESTED`                  | a live rejection — route back to the author    |
+  | 3    | `MISSING` / `INVALID` / `SUPERSEDED` | no usable evidence — owner approval only       |
+  | 4    | `NOT_APPLICABLE`                     | **out of scope — never merge unattended**      |
+
+  **Exit 4 is not permission.** The commit status is green, but green there means "no review was
+  required because this is not a squad PR", not "reviewed". A PR without the `squad` label is
+  merged by a human, deliberately. This coupling is what makes the gate's opt-in scoping safe at
+  all — `scripts/squad-verdict-gate.mjs`'s `squadScopeLabel` names this section as its
+  counterparty, so if this clause is ever relaxed, that scoping becomes a hole. Keep them together.
+
+- **`REVIEWED` is self-attested, not independent.** Every squad agent runs under the owner's single
+  identity, so it records that a reviewer agent examined that exact commit — not that a second
+  party approved it. Only `APPROVED` (`APPROVE (owner)`) is an authorisation by a distinct
+  principal. Never report a `REVIEWED` result as independent review.
 - Never merge a draft.
 - **Serialize merges.** Verify one merge landed and its linked issue closed before starting another.
 - For conflicting or dirty branches, delegate a fresh fix session from `development`. Do not mutate

@@ -25,6 +25,10 @@ A PR merges only with **unanimous reviewer approval** plus **green CI**. The aut
 
 Reviews are run as independent agents against an **exact commit SHA and branch-contribution range**, not "the PR" and not a bare commit diff. Always pin both in the review request and require the reviewer to confirm them.
 
+**Since #740, a squad-labelled PR carries that verdict as a machine-readable, SHA-bound commit status.** Post the review outcome as a PR comment containing a `<!-- squad-verdict -->` marker plus one `Squad-Reviewer:`, one `Squad-Verdict:` (`APPROVE` or `REQUEST_CHANGES`) and one `Squad-Head-SHA:` line, and `.github/workflows/squad-review-verdict.yml` re-evaluates and publishes `squad/pre-pr-verdict` against the **live** head. `npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr <n>` verifies that status came from that workflow and nothing else.
+
+Read it for exactly what it says, and no more. **It is self-attested and provides no separation of duties** — every squad agent runs under the owner's single identity, so a reviewer agent recording `APPROVE` is the owner recording it. A green `REVIEWED (self-attested)` means a reviewer agent examined _that exact commit_; only `APPROVE (owner)` is an authorisation by a distinct principal. What it genuinely buys is SHA binding (push again and it goes stale), presence (it fails when nothing reviewed the change at all), and a legible audit trail. **It is deliberately not a required status check** and must not become one — see `.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md` and `.../copilot-740-squad-verdict-semantics.md`.
+
 ## Documentation-Only Changes: One Reviewer
 
 **This section is the single definition of the documentation-only reviewer rule. Anywhere else that mentions it points here and does not restate it.**
@@ -64,6 +68,15 @@ Reference example for carve-out 3: `.squad/agents/ralph/loop.md` §1 (Safety Bou
 
 The carve-out turns on what a change **alters**, not on which file it lives in. Fixing a typo in that same file's §10 reporting format alters no permission and is documentation-only. Adding, relaxing or deleting a clause in §1, §8 or §9 is not. When the two readings are close, take the full gate: an extra reviewer on prose costs minutes, and a rule loosened without review is how an unattended merge goes wrong, which is the incident class `.squad/decisions.md` already records.
 
+4. **Anything that is documentation by path but not prose a reviewer reads** — a `docs/**` screenshot, diagram export, or other binary asset. `isDocumentationPath` admits these, correctly, for the question it exists to answer (may CI stand down the steps a prose edit cannot affect). It is the wrong answer here, because the one-reviewer exemption is justified by "one person read the prose".
+
+**How the gate automates this.** `scripts/squad-verdict-gate.mjs` implements the carve-outs above as three exported lists plus a prose-extension intersection, so `#740`'s `squad/pre-pr-verdict` status and this section cannot drift apart — `tests/squadVerdictGate.test.ts` asserts they name exactly the same paths, in both directions.
+
+- **Always the full panel, whole tree** (carve-outs 1 and 3): `.github/**`, `.githooks/**`, `.squad/**`, `.copilot/**`, `.claude/**`, `.cursor/**`. Whether a given edit under these moves an agent's safety boundary cannot be decided from the path, so the conservative reading is applied to the whole tree. `.claude/**` and `.cursor/**` do not exist here yet and are listed in advance, because the cost of getting this wrong is paid on the commit that adds the tree.
+- **Always the full panel, root agent-instruction files** (carve-out 3): `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `COPILOT.md`, `.cursorrules`. These are agent behaviour by content though nothing in their path says so. None exists here yet either.
+- **Always the full panel, consequential prose** (carve-out 2): `docs/security/**`, `docs/adr/**`, `docs/compliance/**`, plus `THIRD_PARTY_NOTICES.md`, `docs/scene-contract.md`, and anything whose name marks it as security, licensing, notice, code-of-conduct or API-contract material — `LICENSE` and `SECURITY.md` are matched that way rather than by name.
+- **Always the full panel, non-prose assets** (carve-out 4): a path qualifies for one reviewer only if it also ends `.md`, `.markdown`, `.rst`, `.adoc` or `.txt`. This is strictly narrower than `isDocumentationPath`, so it can only ever fail toward the full panel.
+
 ### Routing the single reviewer
 
 Pick by domain from `.squad/routing.md`, and pick someone listed Active in `.squad/team.md`. Where the domain is unclear or the change is cross-cutting, the default is this repo's Lead, **🏗️ Ripley**.
@@ -88,7 +101,7 @@ This is an executable guard only for dispatches that use its output. The reposit
 
 ## Record the verdict on the pull request
 
-**A verdict that is not on the PR does not exist.** Post every review outcome as a comment on the pull request, naming the exact head SHA it was pinned to, before communicating it anywhere else.
+**A verdict that is not on the PR does not exist.** Post every review outcome as a comment on the pull request, naming the exact head SHA it was pinned to, before communicating it anywhere else. Since #740 that comment is also the machine-readable record: include the `<!-- squad-verdict -->` block described under "The merge gate" so `squad/pre-pr-verdict` picks it up. Put the block **first** in the comment — sanitisation fails closed, so an unterminated code fence or HTML comment earlier in the body hides everything after it, exactly as GitHub renders it.
 
 This is not bookkeeping. Two rejected PRs once sat at `reviewDecision: ""`, zero reviews, zero comments, **6/6 green CI** — indistinguishable, to any automation, from mergeable work. The hourly backlog driver is told to merge "green and approved" PRs, and nothing in the repository marked those two as rejected. Both carried reproduced defects.
 
@@ -120,6 +133,8 @@ This calls `GET /actions/runs?head_sha=<sha>` directly — the endpoint that act
 **Chosen enforcement channel for #480, now live:** `development`'s `required_status_checks.contexts` includes `"Sequencing hold"` — the check goes red for any `hold:*` label (`scripts/check-sequencing-hold.mjs`), and because it is now a required context, that red **blocks the merge** (`mergeable_state: "blocked"`), not merely advisory anymore. This is decided and documented (`.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`). Both prerequisites are done: **(1)** `sequencing-hold.yml` subscribes to `merge_group` and declares `# merge-queue: reports` (PR #690); **(2)** the repository-owner-only branch-protection write landed on 2026-08-16 under this session's explicit task instruction to attempt it (superseding the earlier self-restraint recorded in prior #480 dispatches, which had the same `admin: true` capability but were not directed to use it) — see `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`'s 2026-08-16 update for the raw before/after API evidence and the positive/negative-control demonstration. `npm run check:hold-gate-readiness` now reports **ready**.
 
 **A comment-only verdict — BLOCKING or otherwise — remains explicitly advisory even now that the label channel is binding.** Nothing in the `Sequencing hold` mechanism reads free-text comments; it reads a label, which is why it can be evaluated by a required check at all. A reviewer who wants a verdict enforced must apply a `hold:*` label — a comment alone still does not refuse a merge.
+
+**#740 adds a second, non-binding channel and does not change that.** A `<!-- squad-verdict -->` comment is now read by `.github/workflows/squad-review-verdict.yml`, which re-evaluates on `issue_comment` and writes `squad/pre-pr-verdict` against the live head SHA — so unlike a plain comment it _is_ bound to a commit, which is the specific gap #206 named ("a comment produces no new head, so there is no re-run point bound to the commit"). But `squad/pre-pr-verdict` is **not** in `development`'s required contexts and must not be added: #206's conclusion stands, and the status is consumed by Ralph's merge logic (`.squad/agents/ralph/loop.md` §9), not by branch protection. So there remain exactly two mechanical merge refusals here — a `hold:*` label and draft state.
 
 ### `/pulls/{n}/reviews` and `reviewDecision` are not review state here (#414)
 
