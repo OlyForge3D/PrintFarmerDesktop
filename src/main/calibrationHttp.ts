@@ -303,7 +303,13 @@ export class CalibrationHttpError extends Error {
     readonly serverInstance: string | null = null,
     /**
      * The backend's ProblemDetails `errorCode` extension field, verbatim and
-     * untrusted, capped at 64 characters by `RemoteCalibrationProblemDetails`.
+     * untrusted, capped at 64 characters. The cap is enforced in the
+     * `.transform` on `RemoteCalibrationProblemDetails`
+     * (`calibrationWire.ts`) — not by the raw `errorCode` field's own bound
+     * alone, which a server can bypass via the wider (256-char) `error`
+     * fallback the transform also coalesces (issue #743). `serverErrorCode`
+     * populated from `readJobErrorEnvelope` (the bed-clear/job-queue path)
+     * is separately clipped to the same 64 chars at its own read site.
      *
      * Same in-process-only disposition as `serverDetail` for logging and for
      * appearing in `.message`. Distinct from `serverDetail` in one respect:
@@ -374,8 +380,10 @@ export class CalibrationHttpError extends Error {
         : null,
       reference,
       // Passed through the IPC boundary because it is a bounded, enum-shaped
-      // ProblemDetails extension (`RemoteCalibrationProblemDetails.errorCode`
-      // is capped at 64 characters and populated by PrintFarmer with the
+      // ProblemDetails extension, capped at 64 characters (enforced in the
+      // `RemoteCalibrationProblemDetails` `.transform` in `calibrationWire.ts`,
+      // and separately in `readJobErrorEnvelope` for the bed-clear/job-queue
+      // path — see issue #743) and populated by PrintFarmer with the
       // vocabulary defined in `DispatchSafetyGates.MapBlockedReason`), so the
       // renderer can name the specific dispatch gate that closed. This is a
       // deliberate widening of the docblock claim on `serverErrorCode` above:
@@ -1644,6 +1652,14 @@ export class CalibrationHttpClient {
    * schema applies to `detail`. `error` (the machine code) can only come from
    * the JSON path — a text/plain refusal has no code — so callers should
    * expect `error` to be `null` when only `detail` is populated.
+   *
+   * `error` is truncated to 64 chars (issue #743), the same way `detail` is
+   * truncated to 4096 above, rather than left unbounded. This value flows
+   * straight into `CalibrationHttpError.serverErrorCode` at the 409/422
+   * call sites below and from there onto `CalibrationApiError.blockedReasonCode`
+   * (bounded 64 in `src/shared/ipc.ts`); an unbounded `error` here let a
+   * 65-256-char server value pass this read and then throw a Zod validation
+   * exception at IPC serialization instead of failing closed.
    */
   private async readJobErrorEnvelope(
     pending: PendingResponse,
@@ -1665,7 +1681,10 @@ export class CalibrationHttpClient {
             detail?: unknown;
           };
           if (typeof parsed.error === 'string') {
-            error = parsed.error;
+            error =
+              parsed.error.length > 64
+                ? parsed.error.slice(0, 64)
+                : parsed.error;
           }
           if (typeof parsed.detail === 'string') {
             detail =

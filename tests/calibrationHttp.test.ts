@@ -18,6 +18,7 @@ import {
   CalibrationHttpError,
   type CalibrationTokenProvider,
 } from '../src/main/calibrationHttp.js';
+import { CalibrationApiError } from '../src/shared/ipc.js';
 import type { RemoteCalibrationApplyRequest } from '../src/main/calibrationWire.js';
 import {
   missingCalibrationFlags,
@@ -769,6 +770,165 @@ describe('CalibrationHttpClient HTTP status mapping', () => {
     const permApiError = permErr.toApiError(null);
     expect(permApiError.code).toBe('revisionConflict');
     expect(permApiError.retryable).toBe(false);
+  });
+});
+
+// ==========================================================================
+// Issue #743 — blocked-reason code bounds disagree across the wire→IPC path
+//
+// `RemoteCalibrationProblemDetails.error` is bounded to 256 chars, but
+// `CalibrationApiError.blockedReasonCode` (the field the coalesced value is
+// eventually assigned to) is bounded to 64. A server `error` string in the
+// 65-256-char band — legal under the wire schema, illegal under the IPC
+// schema — used to pass every read along the way and only fail once
+// `CalibrationApiError.parse(...)` ran during IPC serialization, surfacing as
+// an unhandled rejection instead of a clean, catalogued refusal.
+//
+// Every test below is paired with a stated negative control: the assertion
+// is written so it only passes if the 65-256-char band is actually clipped,
+// not merely because the call path never reaches that value. (Confirmed
+// locally: reverting either clip reproduces a `ZodError` thrown out of
+// `CalibrationApiError.parse`, or a `serverErrorCode`/`blockedReasonCode`
+// longer than 64, for the corresponding test below.)
+// ==========================================================================
+
+describe('#743 — blocked-reason code bounds (256-char wire vs 64-char IPC)', () => {
+  // 100 chars: squarely inside the 65-256 band where the two schemas used to
+  // disagree (over the old 64-char cap, under the 256-char wire cap).
+  const DISAGREEMENT_BAND_LENGTH = 100;
+  const longServerError = 'e'.repeat(DISAGREEMENT_BAND_LENGTH);
+
+  it('clips a ProblemDetails body whose only code is a 100-char `error` field to 64 chars', async () => {
+    // No `errorCode`/`code` present, so the transform's coalesce falls all
+    // the way through to `error` — the exact fallback this issue is about.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      json(
+        {
+          title: 'Service Unavailable',
+          error: longServerError,
+        },
+        503,
+      ),
+    );
+    const client = makeClient(fetchMock);
+
+    let error: CalibrationHttpError | undefined;
+    try {
+      await client.getChanges(
+        PROFILE_ID,
+        BASE_URL,
+        null,
+        null,
+        10,
+        AbortSignal.timeout(5000),
+      );
+    } catch (err) {
+      error = err as CalibrationHttpError;
+    }
+
+    expect(error).toBeInstanceOf(CalibrationHttpError);
+    // NEGATIVE CONTROL: the fixture is genuinely in the disagreement band —
+    // if this were false, a passing assertion below would prove nothing.
+    expect(longServerError.length).toBeGreaterThan(64);
+    expect(longServerError.length).toBeLessThanOrEqual(256);
+    expect(error?.serverErrorCode).toBe(longServerError.slice(0, 64));
+    expect(error?.serverErrorCode?.length).toBe(64);
+
+    // The value that actually crosses the IPC boundary must validate against
+    // the 64-char CalibrationApiError.blockedReasonCode bound without
+    // throwing — this is the exception this issue reports at `ipc.ts:3166`.
+    expect(() =>
+      CalibrationApiError.parse(
+        error?.toApiError('11111111-2222-4333-8444-555555555555'),
+      ),
+    ).not.toThrow();
+    expect(
+      CalibrationApiError.parse(
+        error?.toApiError('11111111-2222-4333-8444-555555555555'),
+      ).blockedReasonCode,
+    ).toBe(longServerError.slice(0, 64));
+  });
+
+  it('clips a bed-clear/job-queue envelope whose `error` field is 100 chars to 64 chars', async () => {
+    // Drives `readJobErrorEnvelope` via a 409 acknowledge-bed-clear response —
+    // the second, independent leak in this issue (unbounded `parsed.error`).
+    const stableTokens = (): CalibrationTokenProvider => ({
+      getAuthenticatedContext: vi.fn().mockResolvedValue({
+        baseUrl: BASE_URL,
+        token: 'test-jwt',
+        binding: BINDING,
+      }),
+    });
+    const fetchMock = vi.fn().mockImplementation(
+      () =>
+        new Response(JSON.stringify({ error: longServerError }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const client = new CalibrationHttpClient(stableTokens(), {
+      fetch: fetchMock,
+      timeoutMs: 10_000,
+      maxResponseBytes: 1024 * 1024,
+      now: () => Date.now(),
+      random: () => 0.5,
+      sleep: () => Promise.resolve(),
+    });
+
+    let error: CalibrationHttpError | undefined;
+    try {
+      await client.acknowledgeBedClearAndStart(
+        PROFILE_ID,
+        BASE_URL,
+        '44444444-4444-4444-8444-444444444444',
+        '55555555-5555-4555-8555-555555555555',
+        '66666666-6666-4666-8666-666666666666',
+        'AAAAAAAAAAAA==',
+        'BBBBBBBBBBBB==',
+        null,
+        AbortSignal.timeout(5000),
+      );
+    } catch (err) {
+      error = err as CalibrationHttpError;
+    }
+
+    expect(error).toBeInstanceOf(CalibrationHttpError);
+    // NEGATIVE CONTROL: confirms the fixture is in the disagreement band.
+    expect(longServerError.length).toBeGreaterThan(64);
+    expect(error?.serverErrorCode).toBe(longServerError.slice(0, 64));
+    expect(error?.serverErrorCode?.length).toBe(64);
+    expect(() =>
+      CalibrationApiError.parse(
+        error?.toApiError('11111111-2222-4333-8444-555555555556'),
+      ),
+    ).not.toThrow();
+  });
+
+  it('a schema-legal 64-char `error`/`errorCode` survives untouched (boundary, not over-truncation)', async () => {
+    const exactly64 = 'e'.repeat(64);
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        json({ title: 'Service Unavailable', error: exactly64 }, 503),
+      );
+    const client = makeClient(fetchMock);
+
+    let error: CalibrationHttpError | undefined;
+    try {
+      await client.getChanges(
+        PROFILE_ID,
+        BASE_URL,
+        null,
+        null,
+        10,
+        AbortSignal.timeout(5000),
+      );
+    } catch (err) {
+      error = err as CalibrationHttpError;
+    }
+
+    expect(error?.serverErrorCode).toBe(exactly64);
+    expect(error?.serverErrorCode?.length).toBe(64);
   });
 });
 
