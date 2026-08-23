@@ -52,9 +52,9 @@ class-field seams — there are no classes at all in
 ## 2026-08-22: Calibration Path C complete (Profile-Selection Cascade)
 
 📌 Team update (2026-08-22T21:30:47Z): Completed profile-selection cascade renderer + safety-gate fix + printerModelId enrichment end-to-end (commits a45fae54, 3e114396, 05c355ff, 9bdd7a45, 34fce54e). Root cause identified by Bishop/Fact Checker: desktop never called `PUT /api/printers/{id}/calibration-setup`, leaving profile columns NULL. Path C fixes this by cascading machine → process → filament selection before setup. Acceptance suite 9/9 green. Full write-up in `.squad/decisions.md` calibration entries and `.squad/orchestration-log/2026-08-22T21-30-47Z-dallas.md`.
-  "Start calibration print" (no IPC) — reads label-first as the
-  opposite of what happens. A user hunting for "send print" naturally
-  clicks "Start."
+"Start calibration print" (no IPC) — reads label-first as the
+opposite of what happens. A user hunting for "send print" naturally
+clicks "Start."
 
 ## 2026-08-21 (evening): Calibration UI Round 2 — three fixes shipped
 

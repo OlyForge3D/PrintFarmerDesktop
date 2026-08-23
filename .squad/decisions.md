@@ -1250,7 +1250,6 @@ bypass exercise: supply data, never bypass checks.
   end-to-end dispatch through the emulator without any product-code
   weakening, once Issue A lands.
 
-
 ---
 
 # Bishop — Calibration Path C implementation (main-process / IPC / HTTP)
@@ -1338,7 +1337,7 @@ Added 9 new schemas at end of file (after `RemoteQueueSubscriptionResources`):
 - `IPC_CONTRACT_VERSION` bumped **2 → 3**.
 - 6 new `IpcChannel` entries.
 - Unified `CalibrationSlicerProfileRef { name, guid: null | uuid, source:
-  'system'|'custom', displayLabel, contentSha256 }` type for the four
+'system'|'custom', displayLabel, contentSha256 }` type for the four
   system-profile-listing channels. The renderer never has to reconcile
   a Guid-less row against a Guid-bearing one.
 - Distinct `CalibrationCustomProfileRef` for the custom-profile channel
@@ -1441,8 +1440,8 @@ profile picker and the job provenance boundary share vocabulary
 2. Renderer runs the four-step cascade (extended → for-model → for-machines
    × 2, or custom) and the operator picks three profiles.
 3. Renderer calls `setupCalibrationPrinter({ profileId, printerId,
-   machineProfileId, processProfileId, filamentProfileId, rowVersion,
-   operationId })`.
+machineProfileId, processProfileId, filamentProfileId, rowVersion,
+operationId })`.
 4. Main process sends the PUT with `If-Match: <rowVersion>` and
    `Idempotency-Key: <operationId>`.
 5. **Success (200)**: response carries the new `rowVersion`, which the
@@ -1524,7 +1523,7 @@ Cascading picker flow:
 ## Anti-drift signals for future sessions
 
 - **A `Zod schema round-trip test passes ≠ the wire is correct.**
-  `tests/calibrationHttp.pathC.test.ts` fixtures cite line numbers in the
+`tests/calibrationHttp.pathC.test.ts` fixtures cite line numbers in the
   research report; never accept a change to those fixtures unless the
   report cited was itself updated. This is the specific mechanism that
   let three prior PRs (#742, #743, #745, #739) land calibration fixes
@@ -1543,18 +1542,19 @@ Cascading picker flow:
 
 Ran in order, all against the current state:
 
-| Command | Result |
-|---|---|
-| `npm run check:provenance` | ✅ pass (0 derived files, source v1.3.2) |
-| `npm run verify:target-profiles` | ✅ pass (82 files pinned) |
-| `npm run check:script-reachability` | ✅ pass (97 scripts, 0 orphans) |
-| `npm run check:inert-class-field-seams` | ✅ pass |
-| `npm run typecheck` | ✅ pass |
-| `npm run lint` | ✅ pass |
-| `npm run format` | ✅ pass (after `npm run format:write`) |
-| `npm run test` | 26 new tests pass; failures are all baseline-or-intended |
+| Command                                 | Result                                                   |
+| --------------------------------------- | -------------------------------------------------------- |
+| `npm run check:provenance`              | ✅ pass (0 derived files, source v1.3.2)                 |
+| `npm run verify:target-profiles`        | ✅ pass (82 files pinned)                                |
+| `npm run check:script-reachability`     | ✅ pass (97 scripts, 0 orphans)                          |
+| `npm run check:inert-class-field-seams` | ✅ pass                                                  |
+| `npm run typecheck`                     | ✅ pass                                                  |
+| `npm run lint`                          | ✅ pass                                                  |
+| `npm run format`                        | ✅ pass (after `npm run format:write`)                   |
+| `npm run test`                          | 26 new tests pass; failures are all baseline-or-intended |
 
 Test suite failures — all accounted for:
+
 - 4 × `orcaProfileInstall.test.ts` timeouts — pre-existing (baseline 2;
   extra 2 attributed to concurrent CPU load during the gate run).
 - 2 × `calibration.snapshotProvenanceGuard.test.ts` —
@@ -1599,7 +1599,6 @@ of `src/main/ipc.ts`, `src/main/calibrationHttp.ts`,
 - Turn-0 diagnosis (invalidated): `bishop-calibration-rootcause-v1.md`.
 - Turn-1 diagnosis (partly invalidated): `bishop-calibration-rootcause.md`.
 
-
 ---
 
 # Decision — `printerModelId` sourcing (2026-08-22T15:43:27-07:00)
@@ -1635,7 +1634,6 @@ Bounded by `CALIBRATION_MAX_PRINTER_CANDIDATES = 500` (real farms are <30). No t
 ## Deprecation path
 
 When PrintFarmer server-side follow-up adds `printerModelId` to `CalibrationCandidateDto`, the enrichment loop becomes redundant. The precedence test (`calibration.listPrinters.modelEnrichment.handler.test.ts` — third case) documents that the wire value wins, so the loop can be safely removed when the wire is universally reliable.
-
 
 ---
 
@@ -1703,11 +1701,13 @@ reachable in production.**
 ### Problem A — UNSATISFIABLE GATE at project creation
 
 `src/main/calibrationWire.ts:1113–1117` hardcodes:
+
 ```
 emergencyStopAvailable: false,
 thermalProtectionConfirmed: false,
 ventilationAssessed: false,
 ```
+
 and `permissions: null` at line 1124. The design decision is correct
 and documented (comment 1084–1096, 1120–1123, and confirmed by
 `tests/calibration.workspace-ipc.test.ts:1010–1026`): PrintFarmer's
@@ -1737,6 +1737,7 @@ what PrintFarmer publishes.
 `deriveCandidateEligibility` at
 `src/main/calibrationWire.ts:464–507` returns non-null **only when
 every one of these is exactly true**:
+
 ```
 dto.eligible === true
 dto.rejectionReasons.length === 0
@@ -1746,6 +1747,7 @@ dto.firmware?.gcodeDialect === 'Klipper'   // exact byte match
 dto.slicer?.engine === 'OrcaSlicer'        // exact byte match
 dto.slicer?.distribution === 'upstream'    // exact byte match
 ```
+
 `CalibrationPrinterEligibility` in `src/shared/ipc.ts:1288–1300` is a
 strict Zod object with `z.literal('Klipper')`, `z.literal('OrcaSlicer')`,
 `z.literal('upstream')` — again, exact byte match. If PrintFarmer's
@@ -1808,7 +1810,7 @@ from candidate.
   If the operator leaves these blank, `INCOMPLETE_FILAMENT_IDENTITY`
   fires in the reducer.
 - **`emergencyStopAvailable/thermalProtectionConfirmed/
-  ventilationAssessed`:** HARDCODED to `false` at
+ventilationAssessed`:** HARDCODED to `false` at
   `src/main/calibrationWire.ts:1115–1117`. **No UI ever sets them
   to `true`.** No IPC channel accepts an operator acknowledgement
   for them. **Nothing in the codebase can ever make them `true`,**
@@ -1831,31 +1833,31 @@ one call that registers every calibration handler (via
 
 ## Evidence table — required binding fields vs where populated
 
-| Binding field                              | Where populated at runtime                                     | Status |
-| ------------------------------------------ | -------------------------------------------------------------- | ------ |
-| `printer.backendProfileId`                 | wizard form → `bindingFromContext` (ProjectEligibility.ts:305) | ✅     |
-| `printer.backendPrinterId`                 | `context.printerId` from server DTO                            | ✅     |
-| `printer.printerConfigurationId`           | `context.configurationId` = `snapshot?.printerId`              | ✅ if server publishes snapshot.printerId |
-| `printer.printerConfigurationRevision`     | `dto.configurationRevision ?? snapshot?.configurationRevision` | ✅ if either is set |
-| `snapshot.snapshotId`                      | `dto.snapshotSha256 ?? snapshot?.snapshotSha256`               | ✅ if server publishes snapshotSha256 |
-| `snapshot.snapshotRevision`                | `snapshot?.configurationRevision` (aliased)                    | ✅     |
-| `snapshot.capturedAt`                      | `dto.capturedAtUtc ?? snapshot?.capturedAtUtc`                 | ✅ if either is set |
-| `snapshot.configurationRevision`           | same as printer field, mirrored                                | ✅     |
-| `snapshot.toolheads[].toolId/toolheadId`   | `snapshot?.toolheads[]` from server                            | ✅ if server sends toolheads |
-| `snapshot.toolheads[].nozzle.diameterMm`   | `toolhead.nozzleDiameter`                                      | ✅     |
-| `snapshot.toolheads[].nozzle.material`     | `toolhead.nozzleMaterial`                                      | ⚠️ nullable-passthrough; if server sends null, bindingDiagnostics INCOMPLETE_NOZZLE_CONTEXT |
-| `snapshot.safety.buildVolumeMm.{x,y,z}`    | `snapshot.buildVolume` from server                             | ✅ if published |
-| `snapshot.safety.maximumNozzleTemperatureC`| max across `toolhead.maxHotendTemperature`                     | ✅ if any toolhead has one |
-| `snapshot.safety.maximumBedTemperatureC`   | `snapshot.maxBedTemperature`                                   | ✅ if published |
-| `snapshot.safety.maximumVolumetricRateMm3S`| max across `toolhead.maxVolumetricFlow`                        | ✅ if any toolhead has one |
-| `snapshot.safety.emergencyStopAvailable`   | **hardcoded `false`** (calibrationWire.ts:1115)                | ❌ UNREACHABLE |
-| `snapshot.safety.thermalProtectionConfirmed` | **hardcoded `false`** (calibrationWire.ts:1116)              | ❌ UNREACHABLE |
-| `snapshot.safety.ventilationAssessed`      | **hardcoded `false`** (calibrationWire.ts:1117)                | ❌ UNREACHABLE |
-| `selectedToolId/ToolheadId/NozzleId`       | wizard form                                                    | ✅     |
-| `profileIdentities.{machine,process,filament}` | `exactProfileIdentity()` — requires non-empty profileRevision AND `/^[a-f0-9]{64}$/` sha256 | ⚠️ brittle: any casing/length variance → null |
-| `filament.filamentProjectId`               | `store.environment.createId()`                                 | ✅     |
-| `filament.provider/product/sku`            | wizard form (typed by operator)                                | ✅ if operator fills form |
-| `permissions.readPrinter/writeCalibration/generateCalibration/startPrint` | not in binding — checked by `evaluatePrinterEligibility` (dead code) and by `calibrationActionGate` against capability, not binding | N/A for binding |
+| Binding field                                                             | Where populated at runtime                                                                                                          | Status                                                                                      |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `printer.backendProfileId`                                                | wizard form → `bindingFromContext` (ProjectEligibility.ts:305)                                                                      | ✅                                                                                          |
+| `printer.backendPrinterId`                                                | `context.printerId` from server DTO                                                                                                 | ✅                                                                                          |
+| `printer.printerConfigurationId`                                          | `context.configurationId` = `snapshot?.printerId`                                                                                   | ✅ if server publishes snapshot.printerId                                                   |
+| `printer.printerConfigurationRevision`                                    | `dto.configurationRevision ?? snapshot?.configurationRevision`                                                                      | ✅ if either is set                                                                         |
+| `snapshot.snapshotId`                                                     | `dto.snapshotSha256 ?? snapshot?.snapshotSha256`                                                                                    | ✅ if server publishes snapshotSha256                                                       |
+| `snapshot.snapshotRevision`                                               | `snapshot?.configurationRevision` (aliased)                                                                                         | ✅                                                                                          |
+| `snapshot.capturedAt`                                                     | `dto.capturedAtUtc ?? snapshot?.capturedAtUtc`                                                                                      | ✅ if either is set                                                                         |
+| `snapshot.configurationRevision`                                          | same as printer field, mirrored                                                                                                     | ✅                                                                                          |
+| `snapshot.toolheads[].toolId/toolheadId`                                  | `snapshot?.toolheads[]` from server                                                                                                 | ✅ if server sends toolheads                                                                |
+| `snapshot.toolheads[].nozzle.diameterMm`                                  | `toolhead.nozzleDiameter`                                                                                                           | ✅                                                                                          |
+| `snapshot.toolheads[].nozzle.material`                                    | `toolhead.nozzleMaterial`                                                                                                           | ⚠️ nullable-passthrough; if server sends null, bindingDiagnostics INCOMPLETE_NOZZLE_CONTEXT |
+| `snapshot.safety.buildVolumeMm.{x,y,z}`                                   | `snapshot.buildVolume` from server                                                                                                  | ✅ if published                                                                             |
+| `snapshot.safety.maximumNozzleTemperatureC`                               | max across `toolhead.maxHotendTemperature`                                                                                          | ✅ if any toolhead has one                                                                  |
+| `snapshot.safety.maximumBedTemperatureC`                                  | `snapshot.maxBedTemperature`                                                                                                        | ✅ if published                                                                             |
+| `snapshot.safety.maximumVolumetricRateMm3S`                               | max across `toolhead.maxVolumetricFlow`                                                                                             | ✅ if any toolhead has one                                                                  |
+| `snapshot.safety.emergencyStopAvailable`                                  | **hardcoded `false`** (calibrationWire.ts:1115)                                                                                     | ❌ UNREACHABLE                                                                              |
+| `snapshot.safety.thermalProtectionConfirmed`                              | **hardcoded `false`** (calibrationWire.ts:1116)                                                                                     | ❌ UNREACHABLE                                                                              |
+| `snapshot.safety.ventilationAssessed`                                     | **hardcoded `false`** (calibrationWire.ts:1117)                                                                                     | ❌ UNREACHABLE                                                                              |
+| `selectedToolId/ToolheadId/NozzleId`                                      | wizard form                                                                                                                         | ✅                                                                                          |
+| `profileIdentities.{machine,process,filament}`                            | `exactProfileIdentity()` — requires non-empty profileRevision AND `/^[a-f0-9]{64}$/` sha256                                         | ⚠️ brittle: any casing/length variance → null                                               |
+| `filament.filamentProjectId`                                              | `store.environment.createId()`                                                                                                      | ✅                                                                                          |
+| `filament.provider/product/sku`                                           | wizard form (typed by operator)                                                                                                     | ✅ if operator fills form                                                                   |
+| `permissions.readPrinter/writeCalibration/generateCalibration/startPrint` | not in binding — checked by `evaluatePrinterEligibility` (dead code) and by `calibrationActionGate` against capability, not binding | N/A for binding                                                                             |
 
 **Three fields are unreachable by construction. Two more depend on
 byte-exact server output that a shipping PrintFarmer build may not
@@ -1904,7 +1906,7 @@ Replace strict `=== 'Klipper'` / `=== 'OrcaSlicer'` / `=== 'upstream'`
 with case-insensitive comparison plus trim. Same treatment inside
 `projectCalibrationPrinterContext` at lines 1406–1409. The shared IPC
 `CalibrationPrinterEligibility` (shared/ipc.ts:1288–1300) uses
-`z.literal(...)`, so the wire projection needs to *canonicalize* the
+`z.literal(...)`, so the wire projection needs to _canonicalize_ the
 values to the expected literal before the schema parses — not loosen
 the schema. Preserves the invariant that the wire carries only the
 canonical literal, without failing on a server that writes
@@ -1964,8 +1966,8 @@ touching the file — it eliminates a next-time diagnosis trap.
 
 - **No integration test asserts the full chain
   `real PrintFarmer DTO → projectCalibrationPrinterContext →
-  bindingFromContext → createCalibrationState → zero
-  error-severity diagnostics`.** Every unit test either fixture-crafts
+bindingFromContext → createCalibrationState → zero
+error-severity diagnostics`.** Every unit test either fixture-crafts
   a context with `emergencyStopAvailable: true` (see
   `tests/calibration.domain.test.ts:74`,
   `tests/calibration.workspace.test.tsx:103,386`,
@@ -2007,7 +2009,6 @@ Two claims in this report are absence claims and need controls:
   finds multiple `true` assignments in fixtures. The tool CAN find
   `true` — its absence in `src/` is real, not an instrument failure.
 
-
 ---
 
 # Bishop — Calibration "click a printer = huge error" root cause (v2 after Dallas)
@@ -2023,7 +2024,7 @@ Two claims in this report are absence claims and need controls:
 
 **H2 (Desktop never pushes the capability data) — NOT APPLICABLE. There is no such contract.** There is no code path anywhere in `src/main/` that POSTs printer capability/firmware/profile-assignment data to PrintFarmer. The four calibration POSTs in `src/main/calibrationHttp.ts` are `apply` (change-set sync), `generateJob`, `jobQueue` create, `acknowledgeBedClearAndStart`. The `jobQueue` POST at `calibrationHttp.ts:1125–1149` SENDS PROFILE HASHES (`machineProfileSha256`, `processProfileSha256`, `filamentProfileSha256`) — it EXPECTS the server to already hold the fields the rejection codes list as missing. `calibrationCapabilityRefresh.ts` is a 105-line 403-driven GET throttler, not a push. `orcaProfileDiscovery.ts` → `findLocalOrcaProfileRaw` is used only after binding (`src/main/ipc.ts:5234`, inside `CalibrationGenerateOrcaProfile`) to PATCH a local base for artifact generation. No IPC channel exists to seed a printer's capability record (grep against `src/shared/ipc.ts` for `SetPrinter|UpdatePrinter|ConfigurePrinter|PrinterCapabilit|SeedPrinter` returns zero hits; positive control: 20+ `Calibration*` channel enum values exist, so grep works).
 
-**H3 (Genuinely empty server) — TRUE.** The specific rejection codes Dallas reported (`firmware_family_unknown`, `firmware_version_missing`, `machine_profile_missing`, `process_profile_missing`, `filament_profile_missing`, `nozzle_diameter_missing`, `nozzle_material_missing`, `build_volume_x_missing`) all appear in the recognised catalogue at `src/shared/ipc.ts:1344–1440`. Note the subtle difference in the code names: `firmware_family_unknown` means the server has *no* firmware family value at all (not "detected but not Klipper" — that's `firmware_family_not_klipper`). Same for `_missing` codes: they mean the server's own DB has NULL for that column. **PrintFarmer's calibration columns are unpopulated for the printers the user is clicking on.** The prior history entry ("emulator seeder NULL calibration columns" → upstream `OlyForge3D/PrintFarmer#1851`) is this bug from the other side.
+**H3 (Genuinely empty server) — TRUE.** The specific rejection codes Dallas reported (`firmware_family_unknown`, `firmware_version_missing`, `machine_profile_missing`, `process_profile_missing`, `filament_profile_missing`, `nozzle_diameter_missing`, `nozzle_material_missing`, `build_volume_x_missing`) all appear in the recognised catalogue at `src/shared/ipc.ts:1344–1440`. Note the subtle difference in the code names: `firmware_family_unknown` means the server has _no_ firmware family value at all (not "detected but not Klipper" — that's `firmware_family_not_klipper`). Same for `_missing` codes: they mean the server's own DB has NULL for that column. **PrintFarmer's calibration columns are unpopulated for the printers the user is clicking on.** The prior history entry ("emulator seeder NULL calibration columns" → upstream `OlyForge3D/PrintFarmer#1851`) is this bug from the other side.
 
 ## Answer to Vasquez's real directive: "the user wants calibration to actually run"
 
@@ -2081,6 +2082,7 @@ See "Proposed minimal desktop fix" below.
 **File:** `src/renderer/calibration/NewCalibrationProject.tsx` (the wizard) and `src/renderer/calibration/projectEligibility.ts` (bullet builder).
 
 **What Dallas owns, not me.** The bullets today are raw rejection codes. When ALL of the missing pieces are server-owned (machine/process/filament profile, firmware family, nozzle diameter, build volume), a raw list is unactionable. Dallas should:
+
 1. Group server-owned rejections into a single "This printer needs configuration on the PrintFarmer server before it can be calibrated" callout with a link/button.
 2. Keep the code-list under a "Show details" disclosure.
 3. If the desktop configuration is `remoteAdminUrl != null`, surface a "Open printer settings in PrintFarmer" button — this is a URL not an IPC channel, so no new capability boundary is required.
@@ -2173,7 +2175,6 @@ I recognise this is not the answer you wanted. It IS the answer the code support
 - `$LASTEXITCODE` capture: none of my Powershell probes chained `| Select-Object -First N` before checking exit code. Every match count I quote came from `Measure-Object` or from unfiltered output.
 - Revision expressions with `^ { }` avoided in all commands.
 
-
 ---
 
 # Dallas — Calibration profile-selection cascade lands (Path C, renderer half)
@@ -2208,7 +2209,7 @@ setup PUT succeeds. Pure filter/decode helpers live in
   fieldset.** That fieldset is disabled until `printerReady`, which is
   precisely the gate the refused-environment test says must be bypassed.
 - **Not a new wizard step upstream of "New calibration project".** The
-  operator-observable flow is: pick a printer → *see* the cascade immediately
+  operator-observable flow is: pick a printer → _see_ the cascade immediately
   → submit → context reloads → wizard proceeds. Making it a modal or a
   separate step would double the ceremony without adding safety.
 - **Independent component (not a hook inside `NewCalibrationProject`)** so
@@ -2219,15 +2220,15 @@ setup PUT succeeds. Pure filter/decode helpers live in
 
 ## Files changed
 
-| Path | Kind | Summary |
-| --- | --- | --- |
-| `src/renderer/calibration/api.ts` | edit | Extended the `CalibrationApi` type to include Bishop's 6 new channels. |
-| `src/renderer/calibration/profileSelection.ts` | **new** | Pure helper module. Filter/decode functions with strong opinions: filament customs excluded unless `compatiblePrinters.includes(machineName)`; machine/process customs permissive when the parent has no `printerModelId` (a transient state until the candidate DTO gains the field). |
-| `src/renderer/calibration/ProfileSelectionSection.tsx` | **new** | Cascade component. Three dropdowns (`aria-label="Machine profile"` / `Process profile` / `Filament profile`), `<optgroup>` for system-vs-user origin, `noModelAlias` UX, 412-conflict handling with refetch-and-reprompt, epoch-guarded async loads, no silent retries. |
-| `src/renderer/calibration/NewCalibrationProject.tsx` | edit | Imported and mounted `<ProfileSelectionSection>` between the printer-choice fieldset and the Step-2 (Baseline) fieldset. Renamed the legacy legend "Base OrcaSlicer profile and mode" → "Baseline slicer profile bundle and mode" so the refused-environment test's fieldset regex resolves to the new cascade, not the legacy fieldset. |
-| `tests/calibrationProfileSelectionFlow.test.tsx` | edit | Populated Hicks's `profileSelectionApi()` stub with the 6 new channel mocks and the sentinel custom-profile fixtures (applicable + inapplicable filament; custom machine + custom process). Deleted the scaffolding control per Hicks's TODO. Added `waitFor`-based helpers (`openWizardAndPickPrinter`, `pickMachineAndAwaitProcess`) so tests see settled state after async catalog loads — assertions unchanged. Adjusted the "proceed action" query from `queryByRole` to `queryAllByRole` because both my new "Save calibration setup" button and the legacy "Create calibration project" button match the permissive regex; the assertion (that at least one enabled proceed action exists) is preserved. |
-| `tests/calibrationRefusedEnvironment.test.tsx` | edit | Populated Hicks's `refusedEnvironmentApi()` stub with 6 new channel mocks (empty data — this test asserts only reachability). Deleted the scaffolding control per Hicks's TODO. |
-| `tests/calibration.workspace.test.tsx` | edit | Added 6 new channel mocks (empty/neutral) so the legacy stub still satisfies `CalibrationApi`. Not exercised by the legacy suite; guards against silent regressions. |
+| Path                                                   | Kind    | Summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/renderer/calibration/api.ts`                      | edit    | Extended the `CalibrationApi` type to include Bishop's 6 new channels.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `src/renderer/calibration/profileSelection.ts`         | **new** | Pure helper module. Filter/decode functions with strong opinions: filament customs excluded unless `compatiblePrinters.includes(machineName)`; machine/process customs permissive when the parent has no `printerModelId` (a transient state until the candidate DTO gains the field).                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `src/renderer/calibration/ProfileSelectionSection.tsx` | **new** | Cascade component. Three dropdowns (`aria-label="Machine profile"` / `Process profile` / `Filament profile`), `<optgroup>` for system-vs-user origin, `noModelAlias` UX, 412-conflict handling with refetch-and-reprompt, epoch-guarded async loads, no silent retries.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `src/renderer/calibration/NewCalibrationProject.tsx`   | edit    | Imported and mounted `<ProfileSelectionSection>` between the printer-choice fieldset and the Step-2 (Baseline) fieldset. Renamed the legacy legend "Base OrcaSlicer profile and mode" → "Baseline slicer profile bundle and mode" so the refused-environment test's fieldset regex resolves to the new cascade, not the legacy fieldset.                                                                                                                                                                                                                                                                                                                                                                        |
+| `tests/calibrationProfileSelectionFlow.test.tsx`       | edit    | Populated Hicks's `profileSelectionApi()` stub with the 6 new channel mocks and the sentinel custom-profile fixtures (applicable + inapplicable filament; custom machine + custom process). Deleted the scaffolding control per Hicks's TODO. Added `waitFor`-based helpers (`openWizardAndPickPrinter`, `pickMachineAndAwaitProcess`) so tests see settled state after async catalog loads — assertions unchanged. Adjusted the "proceed action" query from `queryByRole` to `queryAllByRole` because both my new "Save calibration setup" button and the legacy "Create calibration project" button match the permissive regex; the assertion (that at least one enabled proceed action exists) is preserved. |
+| `tests/calibrationRefusedEnvironment.test.tsx`         | edit    | Populated Hicks's `refusedEnvironmentApi()` stub with 6 new channel mocks (empty data — this test asserts only reachability). Deleted the scaffolding control per Hicks's TODO.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `tests/calibration.workspace.test.tsx`                 | edit    | Added 6 new channel mocks (empty/neutral) so the legacy stub still satisfies `CalibrationApi`. Not exercised by the legacy suite; guards against silent regressions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ## The custom-profile trap — how it is enforced
 
@@ -2307,9 +2308,9 @@ mismatches only happen at the filament layer, which is filtered strictly.
    mode" → "Baseline slicer profile bundle and mode" so the refused-
    environment test's regex `/Base OrcaSlicer profile|machine profile/i`
    resolves to the new cascade, not the legacy fieldset. The `<label>Base
-   OrcaSlicer profile</label>` for the underlying `<select>` is unchanged —
+OrcaSlicer profile</label>` for the underlying `<select>` is unchanged —
    `tests/calibration.workspace.test.tsx:1130` uses `getByLabelText('Base
-   OrcaSlicer profile')` and still passes.
+OrcaSlicer profile')` and still passes.
 
 3. **Test-timing fix that is NOT weakening an assertion:** Hicks's original
    `openWizardAndPickPrinter` returned before the cascade's initial catalog
@@ -2340,7 +2341,6 @@ mismatches only happen at the filament layer, which is filtered strictly.
 - Vasquez's directive: `.squad/decisions/inbox/vasquez-calibration-profile-selection-directive.md`
 - Earlier safety-gate decision: `.squad/decisions/inbox/dallas-calibration-safety-gate-fix.md`
 - Prior commits: `a45fae54` (safety-gate), `54e0d022` (Bishop's main half)
-
 
 ---
 
@@ -2374,9 +2374,9 @@ All 8 gates pass modulo the known-acceptable residuals the user pre-authorized:
 - `lint` ✓
 - `format` ✓ (after `prettier --write` on the new file)
 - `test` — 5473 passed / 5 failed / 7 skipped
-    - 2× `calibration.snapshotProvenanceGuard` (pfarm1 blob drift, `it.skipIf` in CI)
-    - 3× `orcaProfileInstall`-family 5000ms timeouts: `orcaProfileInstall.test.ts:restores…` × 2 and `calibrationMaliciousInputCorpus.test.ts > symlinkJunctionEscape × orcaProfileInstall`
-    - Acceptance suites: `calibrationProfileSelectionFlow` (9/9), `calibrationRefusedEnvironment` (1/1), `calibrationPrinterModelIdWiring` (2/2) — GREEN.
+  - 2× `calibration.snapshotProvenanceGuard` (pfarm1 blob drift, `it.skipIf` in CI)
+  - 3× `orcaProfileInstall`-family 5000ms timeouts: `orcaProfileInstall.test.ts:restores…` × 2 and `calibrationMaliciousInputCorpus.test.ts > symlinkJunctionEscape × orcaProfileInstall`
+  - Acceptance suites: `calibrationProfileSelectionFlow` (9/9), `calibrationRefusedEnvironment` (1/1), `calibrationPrinterModelIdWiring` (2/2) — GREEN.
 
 ### Candid end-to-end blocker statement
 
@@ -2389,7 +2389,6 @@ All 8 gates pass modulo the known-acceptable residuals the user pre-authorized:
 - **Bishop:** you're likely the only agent left touching the profile-selection code paths. Server-side enrichment cleanup, or the setup PUT → context refetch chain if the first real farm surfaces something. The desktop side of the profile-selection cascade is done.
 - **Hicks:** your acceptance suite (`calibrationProfileSelectionFlow` 9 tests + `calibrationRefusedEnvironment` 1 test) is stable and covers the intended contract. My new `calibrationPrinterModelIdWiring` pair guards the JSX wiring specifically.
 - **Vasquez:** requested "candid statement of anything still standing between the user and a working end-to-end calibration run." Above three items are the total set I can identify. #1 is the concrete pre-flight; #2 is the "first real-hardware run" caveat; #3 is confirmation the safety gate wasn't disturbed.
-
 
 ---
 
@@ -2438,7 +2437,7 @@ The wizard's rejection-code list was introduced deliberately by PR #733 (`fix(ca
 
 > "PrintFarmer refuses a printer by naming every unmet precondition, and those codes reach the renderer intact. They used to stop here: an ineligible candidate produced one sentence saying canonical eligibility was incomplete, which is equally true of a printer that is merely offline, one whose firmware was never identified and one whose slicer engine was never set. The operator saw a refusal with no field to go and populate, and support saw a report with nothing in it. The codes are read out instead."
 
-So the "huge" list *replaces* an older single sentence that operators complained about. Reverting the volume would be a regression on that fix.
+So the "huge" list _replaces_ an older single sentence that operators complained about. Reverting the volume would be a regression on that fix.
 
 ## Then what is actually broken? — the answer is upstream, not in the renderer
 
@@ -2448,8 +2447,8 @@ If every printer in the user's environment shows the huge refusal list on click,
 
 - **PREMATURE EVALUATION** — no. The evaluation happens against the printer-list response (which has already resolved) at the exact moment the operator asks to inspect a candidate. There is no "not yet fetched" state being evaluated as "invalid."
 - **MISSING FETCH** — no. `loadCreationData` fetches printers on wizard mount; `selectPrinter` fetches per-printer context on the Continue button. Both are IPC-typed and Zod-validated.
-- **UNSATISFIABLE UI** — no. The wizard exposes controls for `emergencyStop`, `thermalProtection`, `ventilation`, `machineClear` (`NewCalibrationProject.tsx` form fields, safety checkboxes). `bedClearConfirmed` / `operatorPresent` are surfaced through `CalibrationBedClearDialog` at print-start time (this is by design — the acknowledgement *is* the dispatch call, per `CalibrationStepWorkflow.tsx:922-930`).
-- **PRESENTATION ONLY** — closest, but with an important caveat. The renderer's presentation is *by design*, and the design has already been reviewed. The bug isn't that the renderer presents the reasons; it's that the server has refusals to present at all, for every printer, in the user's actual environment. So this is best described as **"faithful presentation of a broken-upstream state,"** which is not one of the four choices — but if forced, it belongs under PRESENTATION as *the layer whose behavior the user sees*, while the fault line is elsewhere.
+- **UNSATISFIABLE UI** — no. The wizard exposes controls for `emergencyStop`, `thermalProtection`, `ventilation`, `machineClear` (`NewCalibrationProject.tsx` form fields, safety checkboxes). `bedClearConfirmed` / `operatorPresent` are surfaced through `CalibrationBedClearDialog` at print-start time (this is by design — the acknowledgement _is_ the dispatch call, per `CalibrationStepWorkflow.tsx:922-930`).
+- **PRESENTATION ONLY** — closest, but with an important caveat. The renderer's presentation is _by design_, and the design has already been reviewed. The bug isn't that the renderer presents the reasons; it's that the server has refusals to present at all, for every printer, in the user's actual environment. So this is best described as **"faithful presentation of a broken-upstream state,"** which is not one of the four choices — but if forced, it belongs under PRESENTATION as _the layer whose behavior the user sees_, while the fault line is elsewhere.
 
 ## Inert class-field seam check (repo-mandated)
 
@@ -2471,7 +2470,6 @@ If a future round wants to make the huge-list experience less alarming when the 
 None of these change the underlying "server refuses every printer" state; they just make the presentation of that state kinder. They should only land after Bishop confirms the upstream shape, so we don't accidentally hide a real environmental problem behind a friendly summary.
 
 **Why:** Requested by Vasquez while triaging the "calibration completely non-functional" complaint after three prior PRs (#742, #743/#745, #739) landed green without fixing the observed behavior. Recording so the next session investigating this does not repeat the wrong-hypothesis loop.
-
 
 ---
 
@@ -2641,7 +2639,6 @@ None of my staged files are involved in these failures.
   drift-detection collision. The fix ended up requiring both the wire-through
   AND the drift-predicate change; either alone would have left a live bug.
 
-
 ---
 
 # Fact Checker — Calibration H3 challenge (2026-08-22)
@@ -2722,7 +2719,7 @@ attached. The desktop is faithfully rendering server truth. Bishop's H3 is
 right on this narrow question.
 
 **BUT** — and this is decisive — Bishop's Turn 0 also identified a
-*separate* bug ("Problem A") that fires later in the flow. Q1 does not
+_separate_ bug ("Problem A") that fires later in the flow. Q1 does not
 adjudicate Problem A. Q2 does.
 
 ---
@@ -2906,6 +2903,7 @@ fills in the four safety checkboxes, fills the baseline profile, hits
 "Create project."
 
 **PROBLEM A FIRES.** The wizard shows:
+
 > _"Positive hardware limits and explicit safety confirmations are required."_
 
 The user has checked every box. There is nothing else to click. Calibration
@@ -2917,6 +2915,7 @@ and it still fails with the same generic error."
 adapters) or `"Klipper 0.12.0-rc1"` or `"Klipper (Kalico fork)"`. Strict
 literal `'Klipper'` misses. `firmwareCompatible: false`, `eligibility: null`,
 `client_eligibility_unverified` fires. The user sees:
+
 > _"PrintFarmer called this printer ready without naming the Klipper firmware,
 > Klipper G-code dialect and upstream OrcaSlicer identities calibration
 > requires."_
@@ -2989,7 +2988,7 @@ Rationale, drawn from the codebase itself:
 - `src/main/calibrationActionGate.ts:346-360` is the enforcement site for
   operator safety confirmation. It reads
   `input.operatorAcknowledgement`, NOT `context.safety`, with the explicit
-  comment "`context.safety` is deliberately *not* consulted."
+  comment "`context.safety` is deliberately _not_ consulted."
 - The three-boolean check in `hasCompleteSafetyContext` is therefore the ONE
   place in the codebase where the desktop asks `context.safety` a question
   the design says lives elsewhere. Removing that check restores internal
@@ -3071,7 +3070,6 @@ Optional in the same PR: canonicalize the four firmware/slicer literals.
 Defer `profilesEvaluated` split and `workspaceState .catch(null)` to
 follow-ups.
 
-
 ---
 
 # Fact-checker verdict — calibration safety-gate reachability
@@ -3140,11 +3138,11 @@ Full trace, checkbox → consumer:
    updates `form[field]` only.
 3. `NewCalibrationProject.tsx:298-304` — the wizard's `blockers` derivation
    pushes `'Complete every operator safety acknowledgment.'` if any is false.
-   This is a *form-submission* blocker (line 431 `announce('Project creation
-   has errors…')` and `return`), not a binding population.
+   This is a _form-submission_ blocker (line 431 `announce('Project creation
+has errors…')` and `return`), not a binding population.
 4. `NewCalibrationProject.tsx:440-451` — when the operator has ticked all four
    boxes and clicks submit, we call `bindingFromContext(profileId, context,
-   selectedTool.toolId, {filamentProjectId, provider, product, sku, spoolId})`.
+selectedTool.toolId, {filamentProjectId, provider, product, sku, spoolId})`.
    **The checkbox values are not among the arguments.** They cannot reach
    `bindingFromContext` — its signature has no channel for them.
 5. `src/renderer/calibration/projectEligibility.ts:268-333` —
@@ -3156,7 +3154,7 @@ Full trace, checkbox → consumer:
    into `state.diagnostics`. `bindingDiagnostics` reads
    `binding.snapshot.safety.emergencyStopAvailable` — which is `false`.
 7. `NewCalibrationProject.tsx:467-479` — if any diagnostic is `severity ===
-   'error'`, `setErrors({ binding: … })` and return. **Project creation is
+'error'`, `setErrors({ binding: … })` and return. **Project creation is
    refused.**
 
 Dallas is technically right that the checkboxes exist in the form. Dallas is
@@ -3205,7 +3203,7 @@ is clearly live where `evaluatePrinterEligibility` is dead.
    uses.
 4. Passed the binding to `createCalibrationState(…)`.
 5. Asserted that `state.diagnostics.filter(d => d.severity === 'error').map(d
-   => d.code)` contains `'INCOMPLETE_SAFETY_CONTEXT'`.
+=> d.code)` contains `'INCOMPLETE_SAFETY_CONTEXT'`.
 
 Result:
 
@@ -3238,10 +3236,12 @@ reach the UI.
 **Consumer 2 — `ProjectOverview.tsx:67-84`, `rebaseBlockers`.** LIVE. This
 runs every time the operator opens the "Rebase snapshot" flow on an existing
 project. Line 67-68 is:
+
 ```
 if (!context.safety || !context.permissions)
   blockers.push('The refreshed safety or permission context is incomplete.');
 ```
+
 Because `context.permissions` is unconditionally `null`, this blocker fires
 unconditionally on every rebase. The block at lines 78-84 for individual
 fields is unreachable (short-circuited by line 67), which changes nothing —
@@ -3270,7 +3270,7 @@ limits and explicit safety confirmations are required" the instant they click
 The end-to-end fault chain:
 
 1. `RemoteCalibrationPrinterContext.transform` (`calibrationWire.ts:1098-
-   1118`) emits `safety.emergencyStopAvailable = false`,
+1118`) emits `safety.emergencyStopAvailable = false`,
    `thermalProtectionConfirmed = false`, `ventilationAssessed = false` on every
    successful parse.
 2. `bindingFromContext` (`projectEligibility.ts:325`) copies this block into
@@ -3282,7 +3282,7 @@ The end-to-end fault chain:
    the create.
 
 The operator's four safety checkboxes are collected in `form.*`, used only as
-form-validation gates *before* step 1, and dropped before step 2. Even a
+form-validation gates _before_ step 1, and dropped before step 2. Even a
 perfectly-behaved operator who ticks every box cannot promote any wire field.
 
 **What must change alongside the profile-selection work — one of these
@@ -3346,15 +3346,14 @@ the existing suite has never crossed.
 
 Bishop's turn-0 diagnosis was right. His later pivot to "H3 confirmed" (which
 argued this was fine because a different path was dead) glossed over that
-`bindingDiagnostics` is a *separate* function from `evaluatePrinterEligibility`
-and lives on a *separate*, still-active call graph. The two functions sitting
+`bindingDiagnostics` is a _separate_ function from `evaluatePrinterEligibility`
+and lives on a _separate_, still-active call graph. The two functions sitting
 in the same file made them look like a package deal; they are not.
 
 Dallas's read of the wizard form is factually true — the checkboxes ARE there
 — but Dallas did not follow through to the binding constructor's signature.
 The checkboxes are wired to a form-blocker, not to the binding. The seam
 Dallas thought existed does not exist.
-
 
 ---
 
@@ -3373,11 +3372,11 @@ Dallas thought existed does not exist.
 
 1. **Hand-builds a `CalibrationBinding` and calls a pure function** (`evaluatePrinterEligibility`, `contextEligibilityBlockers`, `bindingDiagnostics`). This exercises the gate; the population path is bypassed.
 2. **Mocks `getCalibrationPrinterContext` at the renderer API level with a fully-authoritative `CalibrationPrinterContext`.** Every workspace-level test in `calibration.workspace.test.tsx` does this. It exercises the wizard against a payload that never comes back from a real PrintFarmer.
-3. **Runs `projectCalibrationPrinterContext` against `tests/fixtures/calibrationContract.ts`**, a DTO fixture *this repository authored itself*. The provenance guard (`tests/calibration.snapshotProvenanceGuard.test.ts`) `it.skipIf(!serverRepo)`s when `D:\s\pfarm1` is absent — so in CI it never fires. Local runs on this machine (where `pfarm1` is present) surface a real hash drift but that failure never gates a merge.
+3. **Runs `projectCalibrationPrinterContext` against `tests/fixtures/calibrationContract.ts`**, a DTO fixture _this repository authored itself_. The provenance guard (`tests/calibration.snapshotProvenanceGuard.test.ts`) `it.skipIf(!serverRepo)`s when `D:\s\pfarm1` is absent — so in CI it never fires. Local runs on this machine (where `pfarm1` is present) surface a real hash drift but that failure never gates a merge.
 
 **Not one calibration test walks the operator path where every candidate returns from `listCalibrationPrinters` with `eligibility === null` and a populated `rejectionReasonCodes[]`.** That is precisely the state PrintFarmer's daily-validation emulator returns today (Section D of decisions.md — seeder leaves ~40 calibration-eligibility columns NULL on every seeded printer), which is exactly the state the user is hitting in production. Neither the wire projector nor the wizard has a test that fails when every printer comes back refused.
 
-Dallas confirmed independently that the user's "huge error" is *not* `evaluatePrinterEligibility` — it is `candidateEligibilityBlockers` faithfully mapping each server code through `describeRejectionReasonCode`, one bullet per code, ~25-26 bullets per printer. That function is exhaustively unit-tested in isolation but never against a realistic *environment*-level refused payload.
+Dallas confirmed independently that the user's "huge error" is _not_ `evaluatePrinterEligibility` — it is `candidateEligibilityBlockers` faithfully mapping each server code through `describeRejectionReasonCode`, one bullet per code, ~25-26 bullets per printer. That function is exhaustively unit-tested in isolation but never against a realistic _environment_-level refused payload.
 
 The gap is architectural: **every fixture that claims to represent the server was authored by the desktop team.** A fixture that agrees with a buggy mapping passes forever. Three PRs merged green under this rubric.
 
@@ -3385,20 +3384,20 @@ The gap is architectural: **every fixture that claims to represent the server wa
 
 ## Inventory — what each calibration test actually asserts
 
-| Test file | Actually asserts | Would fail today? |
-|---|---|---|
-| `tests/calibration.domain.test.ts` | Pure `evaluatePrinterEligibility` on hand-built bindings. | N — bypasses the plumbing entirely. |
-| `tests/calibrationDiagnostics.test.ts` | Pure `bindingDiagnostics` code coverage. | N — same. |
-| `tests/calibrationActionGate.test.ts` | Pure action-availability gate against hand-built state. | N — same. |
-| `tests/calibrationCandidateFencing.test.ts` | Reducer refuses cross-printer edits. | N — hand-built binding. |
-| `tests/calibration.workspace.test.tsx` (2000+ lines) | Wizard flow with mocked `getCalibrationPrinterContext` returning a hand-built `CalibrationPrinterContext`. Includes a "trap" candidate (`printer-name-trap`) with `firmware_family_not_klipper` — asserts the operator sees "Calibration currently requires Klipper firmware". | N — asserts the presence of a specific code's wording, not the "wall" invariant. Passes even with 100 bullets rendered. |
-| `tests/calibration.workspace-ipc.test.ts` | `projectCalibrationPrinterContext(RemoteCalibrationPrinterContext.parse(calibrationContractDto()))`. | N — fixture is self-authored. If desktop's mapping is buggy, and the DTO shape was written to match the buggy mapping, both stay in agreement forever. |
-| `tests/calibrationHttp.test.ts` | Auth/retry/quota behavior of `getCandidates`. Does NOT test `getPrinterContext`. | N — the affected endpoint has no dedicated test. |
-| `tests/fixtures/server-contract/calibrationCandidatesDto.snapshot.ts` + guard | Name-set check pinned by blob SHA. **Guard skips without sibling `D:\s\pfarm1` checkout.** | N in CI (guard skips). Y on this machine but the check has no gating power in the required job. |
-| `tests/calibrationWireBlockedReasonCode.test.ts` (my Round-3 work) | Client-side reason-code clipping. | N — unrelated to the plumbing. |
-| `tests/calibrationJobBlockedReasonCode.test.ts` (my Round-3 work) | Wire-token wording coverage. | N — unrelated. |
-| `native/model-core` calibration.rs tests (gated behind `--features sqlite`) | Rust-side conflict resolution. | N — this is a Rust concern, not the desktop plumbing. Note bare `cargo test` skips these entirely. |
-| `e2e/calibration.spec.ts`, `e2e/calibrationJourneys.spec.ts`, `e2e/calibrationA11yTests.ts` | Playwright end-to-end — the ONLY tests that could plausibly exercise the real path. | **NOT RUN by the required CI Desktop job.** See below. |
+| Test file                                                                                   | Actually asserts                                                                                                                                                                                                                                                               | Would fail today?                                                                                                                                      |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/calibration.domain.test.ts`                                                          | Pure `evaluatePrinterEligibility` on hand-built bindings.                                                                                                                                                                                                                      | N — bypasses the plumbing entirely.                                                                                                                    |
+| `tests/calibrationDiagnostics.test.ts`                                                      | Pure `bindingDiagnostics` code coverage.                                                                                                                                                                                                                                       | N — same.                                                                                                                                              |
+| `tests/calibrationActionGate.test.ts`                                                       | Pure action-availability gate against hand-built state.                                                                                                                                                                                                                        | N — same.                                                                                                                                              |
+| `tests/calibrationCandidateFencing.test.ts`                                                 | Reducer refuses cross-printer edits.                                                                                                                                                                                                                                           | N — hand-built binding.                                                                                                                                |
+| `tests/calibration.workspace.test.tsx` (2000+ lines)                                        | Wizard flow with mocked `getCalibrationPrinterContext` returning a hand-built `CalibrationPrinterContext`. Includes a "trap" candidate (`printer-name-trap`) with `firmware_family_not_klipper` — asserts the operator sees "Calibration currently requires Klipper firmware". | N — asserts the presence of a specific code's wording, not the "wall" invariant. Passes even with 100 bullets rendered.                                |
+| `tests/calibration.workspace-ipc.test.ts`                                                   | `projectCalibrationPrinterContext(RemoteCalibrationPrinterContext.parse(calibrationContractDto()))`.                                                                                                                                                                           | N — fixture is self-authored. If desktop's mapping is buggy, and the DTO shape was written to match the buggy mapping, both stay in agreement forever. |
+| `tests/calibrationHttp.test.ts`                                                             | Auth/retry/quota behavior of `getCandidates`. Does NOT test `getPrinterContext`.                                                                                                                                                                                               | N — the affected endpoint has no dedicated test.                                                                                                       |
+| `tests/fixtures/server-contract/calibrationCandidatesDto.snapshot.ts` + guard               | Name-set check pinned by blob SHA. **Guard skips without sibling `D:\s\pfarm1` checkout.**                                                                                                                                                                                     | N in CI (guard skips). Y on this machine but the check has no gating power in the required job.                                                        |
+| `tests/calibrationWireBlockedReasonCode.test.ts` (my Round-3 work)                          | Client-side reason-code clipping.                                                                                                                                                                                                                                              | N — unrelated to the plumbing.                                                                                                                         |
+| `tests/calibrationJobBlockedReasonCode.test.ts` (my Round-3 work)                           | Wire-token wording coverage.                                                                                                                                                                                                                                                   | N — unrelated.                                                                                                                                         |
+| `native/model-core` calibration.rs tests (gated behind `--features sqlite`)                 | Rust-side conflict resolution.                                                                                                                                                                                                                                                 | N — this is a Rust concern, not the desktop plumbing. Note bare `cargo test` skips these entirely.                                                     |
+| `e2e/calibration.spec.ts`, `e2e/calibrationJourneys.spec.ts`, `e2e/calibrationA11yTests.ts` | Playwright end-to-end — the ONLY tests that could plausibly exercise the real path.                                                                                                                                                                                            | **NOT RUN by the required CI Desktop job.** See below.                                                                                                 |
 
 ---
 
@@ -3412,6 +3411,7 @@ The repo's governing rule (`known-lying-commands.md`) is: every matching predica
 **Experiment:** Backed up `src/renderer/calibration/projectEligibility.ts` and mutated `bindingFromContext` to return `null` unconditionally (`if (context !== null) return null;`). Ran the 9 highest-coverage calibration test files (~430 tests).
 
 **Result:** **427 of 430 tests still passed.** Only 3 failed:
+
 - `tests/calibration.workspace-ipc.test.ts > "accepts a context that is evaluated, eligible and carries no blockers"`
 - `tests/calibration.workspace.test.tsx > "creates a complete explicit project and persists the exact workspace payload"`
 - `tests/calibration.workspace.test.tsx > "requires a newer same-identity snapshot, reason, and explicit retest stages for rebase"`
@@ -3420,7 +3420,7 @@ Three tests out of 430 (0.7%) actually exercise the plumbing at all — and none
 
 File restored via inverse edit; `git status --porcelain` on that file returned empty.
 
-**Conclusion.** The claim "the calibration test suite would fail if the runtime plumbing were broken" is *demonstrably false* against the actual suite. This is the same class of failure Vasquez flagged three times over: matching predicate lies unless it has a control.
+**Conclusion.** The claim "the calibration test suite would fail if the runtime plumbing were broken" is _demonstrably false_ against the actual suite. This is the same class of failure Vasquez flagged three times over: matching predicate lies unless it has a control.
 
 ---
 
@@ -3471,16 +3471,17 @@ The failing test IS the user's bug reproduced in vitest. The control test IS the
 
 **Where the test runs.** In the required `desktop` CI job, as a vitest file under `tests/`. So merging a fake fix that doesn't touch either the upstream or the wizard collapse will be blocked at merge queue.
 
-**Assumption flagged.** The 25 reason codes in the fixture (`REFUSED_ENVIRONMENT_CODES`) are the desktop's best estimate of the seeder-null shape. The assertion `bullets.length <= 1` is *independent* of which specific codes are used, so if Bishop reports a different real code set the test still functions — only the fixture needs updating. TODO comments in the file mark this.
+**Assumption flagged.** The 25 reason codes in the fixture (`REFUSED_ENVIRONMENT_CODES`) are the desktop's best estimate of the seeder-null shape. The assertion `bullets.length <= 1` is _independent_ of which specific codes are used, so if Bishop reports a different real code set the test still functions — only the fixture needs updating. TODO comments in the file mark this.
 
 ---
 
 ## Notes to Bishop and Dallas
 
 **To Bishop.** The regression test is written against a fixture I authored (`REFUSED_ENVIRONMENT_CODES`), not against your reported real payload. It's marked `TODO(hicks/bishop)`. When you finish tracing the actual `listCalibrationPrinters` response the emulator sends, please either:
+
 - confirm the fixture's shape, or
 - swap in your captured payload and I'll validate the assertion still bites.
-The invariant (`bullets.length <= 1`) does not depend on the specific codes.
+  The invariant (`bullets.length <= 1`) does not depend on the specific codes.
 
 **To Dallas.** Your inbox root-cause note flipped the analysis — `evaluatePrinterEligibility` really is dead code in the renderer; the huge message really is `candidateEligibilityBlockers`. My regression test asserts against your identified DOM (`<ul id="candidate-eligibility">`). Your suggested "environment-level notice when every printer is refused" is one of the two ways this test can flip to green — so if you take that path, your fix's PR gets green on my test the day it lands, and it will regress-guard future rewrites of the picker.
 
@@ -3496,7 +3497,6 @@ The invariant (`bullets.length <= 1`) does not depend on the specific codes.
 - Consider extracting `makeApi` from `calibration.workspace.test.tsx` into a shared `tests/helpers/calibrationApi.ts` — my new test duplicated ~150 lines of it. Follow-up refactor.
 
 📌 Team update (2026-08-22): The calibration test suite is 99.3% gate-logic tests over hand-built fixtures. A regression test that catches the user's bug now lives at `tests/calibrationRefusedEnvironment.test.tsx` and blocks the required CI Desktop job. See `.squad/decisions/inbox/hicks-calibration-test-gap.md`.
-
 
 ---
 
@@ -3518,7 +3518,7 @@ The wall of `rejectionReasonCodes` was a symptom of asking the server the WRONG 
 
 ### What I did in this reframe round
 
-1. **Kept `tests/calibrationRefusedEnvironment.test.tsx` as a regression guard, but pivoted its assertion.** The old assertion ("≤ 1 bullet in `<ul id="candidate-eligibility">`") checks the *symptom*. The new assertion ("the profile-selection fieldset is not disabled after picking a refused printer") checks the *causal gate* — was the operator dead-ended, or does the wizard let them pull the profile-selection lever anyway?
+1. **Kept `tests/calibrationRefusedEnvironment.test.tsx` as a regression guard, but pivoted its assertion.** The old assertion ("≤ 1 bullet in `<ul id="candidate-eligibility">`") checks the _symptom_. The new assertion ("the profile-selection fieldset is not disabled after picking a refused printer") checks the _causal gate_ — was the operator dead-ended, or does the wizard let them pull the profile-selection lever anyway?
    - **Failing side:** `expect(profileFieldset).not.toBeDisabled()` — currently fails, "Received element is disabled: `<fieldset disabled="" />`".
    - **Matching-predicate control:** `expect(profileFieldset).toBeDisabled()` — currently passes. Strict inversion, so if BOTH ever pass on the same fixture the fixture is broken not the code.
    - Rationale: today the fieldset containing "Base OrcaSlicer profile and mode" is `disabled={!printerReady || ...}` where `printerReady = printerChosen && candidateBlockers.length === 0 && context !== null` — a refused candidate has ~26 blockers → fieldset is disabled → operator has no lever. That's precisely "dead-ended by an undifferentiated code dump."
@@ -3545,16 +3545,16 @@ All uncertain points in `calibrationProfileSelectionFlow.test.tsx` are marked wi
 
 ### Full CI gate (this reframe round, in Desktop-job order)
 
-| Step                            | Result                                                                                       |
-| ------------------------------- | -------------------------------------------------------------------------------------------- |
-| `check:provenance`              | ✅ 0 derived files, source v1.3.2                                                             |
-| `verify:target-profiles`        | ✅ 82 files pinned                                                                            |
-| `check:script-reachability`     | ✅ 96 invoked, 0 unresolved                                                                   |
-| `check:inert-class-field-seams` | ✅ no candidates                                                                              |
-| `typecheck`                     | ✅ clean                                                                                      |
-| `lint`                          | ✅ clean                                                                                      |
-| `format`                        | ✅ clean across whole repo (format:write applied first)                                       |
-| `test`                          | 10 failed / 5389 passed / 7 skipped — 6 are MY intended regressions, 4 are pre-existing OOS  |
+| Step                            | Result                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `check:provenance`              | ✅ 0 derived files, source v1.3.2                                                           |
+| `verify:target-profiles`        | ✅ 82 files pinned                                                                          |
+| `check:script-reachability`     | ✅ 96 invoked, 0 unresolved                                                                 |
+| `check:inert-class-field-seams` | ✅ no candidates                                                                            |
+| `typecheck`                     | ✅ clean                                                                                    |
+| `lint`                          | ✅ clean                                                                                    |
+| `format`                        | ✅ clean across whole repo (format:write applied first)                                     |
+| `test`                          | 10 failed / 5389 passed / 7 skipped — 6 are MY intended regressions, 4 are pre-existing OOS |
 
 Pre-existing OOS failures accounted for: 2× `orcaProfileInstall.test.ts` (Vasquez flagged in original brief), 2× `calibration.snapshotProvenanceGuard.test.ts` (pfarm1 sibling drift, `it.skipIf(!serverRepo)` — never fires in CI).
 
@@ -3565,7 +3565,6 @@ Pre-existing OOS failures accounted for: 2× `orcaProfileInstall.test.ts` (Vasqu
 - **Fact Checker:** the "safety flags hardcoded to `false` on a live path" verdict I reached this round is a correction to my V1 claim that only `evaluatePrinterEligibility` (dead code) consumed them. `bindingDiagnostics` (LIVE) enforces the same triple. Please confirm my read of `reducer.ts:115` and `reducer.ts:726` as the live consumers.
 - **Vasquez:** two failing test files ready for merge; 6 intended failures + 4 pre-existing OOS failures. Ready to hand off.
 
-
 ---
 
 ## API-CONTRACT LANDED (2026-08-22T19:29:44.441-07:00 — Vasquez relaying api-contract researcher)
@@ -3575,6 +3574,7 @@ The api-contract researcher completed reading `OlyForge3D/PrintFarmer` @ `b0a021
 ### TODOs resolved
 
 **(1) Endpoint names** — replaced hypothetical stubs with cited endpoints:
+
 - Machine (system): `GET /api/slicer/profiles/machine/for-model/{modelId:guid}?slicerEngineVersion=` → `List<MachineProfileDto>` (`ProfilesController.cs:846-900`)
 - Also DB-backed: `GET /api/slicer/profiles/extended` (`:144-158`) — what `CalibrationSetupModal` itself uses
 - Process (system): `POST /api/slicer/profiles/process/for-machines` body `{ machineNames: [M] }` (`:909-933`)
@@ -3584,6 +3584,7 @@ The api-contract researcher completed reading `OlyForge3D/PrintFarmer` @ `b0a021
 **(2) System-vs-user origin distinction** — the reference (`NewSliceJobPage.tsx`) merges two lists client-side. There is NO `isSystem` flag on the worker DTOs — the wire-level distinction is structural (system has no `Id` field, custom has a `Guid Id`). Updated my second `it` block to sample BOTH inline option text AND `<optgroup>` labels so it's invariant to whether Dallas renders the origin as a suffix or a group. Added a `TODO(hicks/dallas)` marker for icon-only or badge-component alternatives.
 
 **(3) Applicability filtering — the asymmetry is a bug-farm.** This is the key finding.
+
 - System profiles come PRE-FILTERED from `/for-machines` (worker evaluates `compatible_printers` / `compatible_printers_condition`). ✅
 - Custom profiles come UNFILTERED from `/custom`. The desktop MUST filter client-side (`NewSliceJobPage.tsx:1024-1038` — `compatible.some(c => c === selectedMachineProfileId)`). The filter operating server-side while client-side silently passes everything looks correct in code review.
 - Added a dedicated describe block `custom-profile applicability filter (server vs client asymmetry)` — the failing proposition is "a custom filament whose `compatible_printers` does NOT include the chosen machine is EXCLUDED"; the matching-predicate control is "an APPLICABLE custom filament IS included." Both currently fail vacuously (machine selector missing) but flip to real assertions once Bishop lands the `listCalibrationCustomProfiles` channel. Marked `TODO(hicks/bishop)`.
@@ -3591,18 +3592,22 @@ The api-contract researcher completed reading `OlyForge3D/PrintFarmer` @ `b0a021
 ### New tests added this round
 
 **Custom-profile applicability describe block** (2 tests) — the highest-value test in the batch per Vasquez:
+
 - `"a custom filament whose compatible_printers does NOT include the chosen machine is excluded from the filament dropdown"` — asserts on option text matching `/inapplicable custom filament/i` being absent. Fails vacuously today, catches the client-side-filter regression once the flow lands.
 - `"control: a custom filament whose compatible_printers DOES include the chosen machine IS present in the filament dropdown"` — strict inversion. Fails vacuously today.
 
 **Eligibility ordering describe block** (1 test):
+
 - `"picking a refused printer does NOT trigger an up-front getCalibrationPrinterContext call"` — asserts (a) the machine selector is present (observable outcome) AND (b) `getCalibrationPrinterContext` was not called (belt-and-suspenders internal check, safe because the mock REJECTS with a pointed message; unhandled rejection = failure signal). Pins the ordering: eligibility is re-checked AFTER PUT `/calibration-setup` succeeds, not before.
 
 **If-Match / 412 conflict describe block** (1 test):
+
 - `"a 412 Precondition Failed on PUT /api/printers/{id}/calibration-setup is surfaced to the operator as a conflict, not silently retried"` — placeholder until Bishop lands the PUT channel; then tightens to fire a 412-shaped mock and check for operator-visible conflict presentation. Guards Vasquez's stated risk: "the operator sees a real conflict rather than a silent retry or a swallowed error."
 
 ### Fixture correction — `REFUSED_ENVIRONMENT_CODES` now cites service line numbers
 
 Every rejection code in the refused-printer fixture is verified against `PrinterCalibrationContextService.cs`:
+
 - `machine_profile_missing:572`
 - `process_profile_missing:582`
 - `filament_profile_missing:592`
@@ -3613,16 +3618,16 @@ Citations added inline to the fixture. This is no longer a self-authored guess t
 
 ### Full CI gate (after api-contract landed)
 
-| Step | Result |
-| --- | --- |
-| `check:provenance` | ✅ 0 derived files, source v1.3.2 |
-| `verify:target-profiles` | ✅ 82 files pinned |
-| `check:script-reachability` | ✅ 96 invoked, 0 unresolved |
-| `check:inert-class-field-seams` | ✅ no candidates |
-| `typecheck` | ✅ clean |
-| `lint` | ✅ clean |
-| `format` | ✅ clean across whole repo |
-| `test` | 16 failed / 5390 passed / 7 skipped — 10 intended new + 6 pre-existing OOS |
+| Step                            | Result                                                                     |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| `check:provenance`              | ✅ 0 derived files, source v1.3.2                                          |
+| `verify:target-profiles`        | ✅ 82 files pinned                                                         |
+| `check:script-reachability`     | ✅ 96 invoked, 0 unresolved                                                |
+| `check:inert-class-field-seams` | ✅ no candidates                                                           |
+| `typecheck`                     | ✅ clean                                                                   |
+| `lint`                          | ✅ clean                                                                   |
+| `format`                        | ✅ clean across whole repo                                                 |
+| `test`                          | 16 failed / 5390 passed / 7 skipped — 10 intended new + 6 pre-existing OOS |
 
 ### Handover — updated
 
@@ -3630,7 +3635,6 @@ Citations added inline to the fixture. This is no longer a self-authored guess t
 - **Dallas:** three cascading `<select>` (or `<combobox>`) with the accessible names `/machine profile/i`, `/process profile/i`, `/filament profile/i`. If you group system vs user with `<optgroup>`, my test matcher already covers that. The custom-profile applicability filter is a client-side responsibility per report §B — implement the equivalent of `NewSliceJobPage.tsx:1024-1038` for filament (parse `rawJson.compatible_printers`) and `classifyCustomProfileScope` for machine/process.
 - **Fact Checker:** thanks for the independent confirmation on `bindingDiagnostics`. That finding is settled.
 - **Vasquez:** 10 intended failures + 6 pre-existing OOS on this reframe round. `.squad/decisions/inbox/hicks-calibration-test-gap.md` ready for Scribe merge. `npm run format` is clean across the whole repo.
-
 
 ---
 
@@ -3675,4 +3679,3 @@ per-printer eligibility projection.
 `thermalProtectionConfirmed`, and `ventilationAssessed` to `false` (and `permissions` to `null`
 at :1124), while the renderer gate demands all three be `true`. If real, that blocks calibration
 regardless of how profile selection is implemented, and must be fixed alongside this work.
-
