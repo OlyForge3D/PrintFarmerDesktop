@@ -2176,6 +2176,31 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         signal,
       );
+      // Enrich each candidate with its catalog `PrinterModel` Guid from
+      // `GET /api/printers/{id}/details`. `CalibrationCandidateDto` omits the
+      // model Guid from the wire, so without this fetch the renderer's Path C
+      // cascade (`ProfileSelectionSection`) cannot call `/for-model/{modelId}`
+      // and degrades to the catalog-wide `/extended` list — showing machine
+      // profiles for every printer model rather than the operator's.
+      //
+      // Fetched in parallel via `Promise.allSettled` so one printer whose
+      // details endpoint returns 403/404 does not empty the whole list. A
+      // failed or absent enrichment resolves to `null`, which the renderer
+      // interprets as "model unknown, permissive fallback" via
+      // `src/renderer/calibration/profileSelection.ts:49-53` — deliberately
+      // distinct from a known-but-unmatched Guid.
+      const detailPromises = printers.printers.map((printer) =>
+        calibrationHttp
+          .getPrinterDetails(
+            selectedId,
+            ctx.profile.baseUrl,
+            printer.printerId,
+            signal,
+          )
+          .then((detail) => detail.modelId)
+          .catch(() => null as string | null),
+      );
+      const enrichedModelIds = await Promise.all(detailPromises);
       // Projected and validated one candidate at a time, for the same reason
       // the wire layer parses them one at a time: the response schema covers
       // the whole list, so a single candidate this projection cannot render
@@ -2187,16 +2212,25 @@ export function registerIpcHandlers(
       const projected: unknown[] = [];
       const renderableCandidates: RemoteCalibrationPrinterCandidate[] = [];
       let unprojectable = 0;
-      for (const printer of printers.printers) {
+      for (let index = 0; index < printers.printers.length; index += 1) {
+        const printer = printers.printers[index]!;
         const eligibility = projectCalibrationEligibility(printer);
         if (printer.profilesEvaluated !== false) {
           unprojectable += 1;
           continue;
         }
+        // Prefer the wire's own `printerModelId` (populated by builds that
+        // include it on `CalibrationCandidateDto`); fall back to the
+        // `/details` enrichment when the candidate wire is silent. Both paths
+        // resolve to `null` when neither has an answer — Dallas's permissive
+        // fallback triggers on `null`, not on empty string.
+        const printerModelId =
+          printer.printerModelId ?? enrichedModelIds[index] ?? null;
         const candidate = CalibrationPrinterCandidate.safeParse({
           printerId: printer.printerId,
           displayName: printer.displayName,
           printerModel: printer.printerModel,
+          printerModelId,
           firmwareCompatible: isExplicitCalibrationEligibilityComplete(printer),
           orcaProfileId: printer.orcaProfileId,
           isOnline: printer.isOnline,
@@ -5556,6 +5590,620 @@ export function registerIpcHandlers(
             message: err instanceof Error ? err.message : 'Restore failed.',
             retryable: false,
           },
+        });
+      }
+    },
+  );
+
+  // --- Path C: Slicer profile picker + calibration-setup -------------------
+  // The five profile-listing handlers below plus the setup PUT are the
+  // desktop's implementation of PrintFarmer's calibration-setup flow (see
+  // decisions/inbox/bishop-calibration-path-c-implementation.md). They exist
+  // so that a real printer whose CalibrationMachineProfileId / ProcessProfileId
+  // / FilamentProfileId columns are NULL (which is every real printer until an
+  // operator runs this wizard) can be driven through the picker → PUT
+  // sequence, populating those columns and unblocking eligibility.
+
+  // GET /api/slicer/profiles/extended.
+  //
+  // The `/extended` endpoint is DB-backed and returns Guids for BOTH system
+  // and custom profiles. Handler splits the flat response by `profileType`
+  // into three unified `CalibrationSlicerProfileRef[]` arrays. All rows are
+  // marked `source: 'system'` because the DB row is the resolved-Guid source
+  // of truth for the setup PUT — even a custom-authored profile appears here.
+  // The renderer distinguishes ownership via `CalibrationListCustomProfiles`.
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListExtendedProfiles,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListExtendedProfiles].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const remote = await calibrationHttp.getExtendedProfiles(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        const machineProfiles: unknown[] = [];
+        const processProfiles: unknown[] = [];
+        const filamentProfiles: unknown[] = [];
+        for (const row of remote.profiles) {
+          const ref = {
+            name: row.name,
+            guid: row.id,
+            source: 'system' as const,
+            displayLabel: null,
+            contentSha256: row.contentSha256,
+          };
+          if (row.profileType === 'machine') machineProfiles.push(ref);
+          else if (row.profileType === 'process') processProfiles.push(ref);
+          else filamentProfiles.push(ref);
+        }
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.extended.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationListExtendedProfiles
+        ].response.parse({
+          status: 'ok',
+          machineProfiles,
+          processProfiles,
+          filamentProfiles,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.extended.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Extended profile list failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationListExtendedProfiles
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // GET /api/slicer/profiles/machine/for-model/{modelId}.
+  //
+  // Returns names + Guids for the raw for-model list — the handler joins
+  // against a fresh `/extended` fetch so the response is the fully-resolved
+  // `CalibrationSlicerProfileRef`. The renderer never has to guess a Guid.
+  //
+  // 404 (no OrcaSlicer alias for the model) is surfaced as `ok` with an
+  // empty list and `noModelAlias: true` so the renderer can distinguish
+  // "catalog admins must add an alias" from "genuinely nothing to pick".
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListMachineProfilesForModel,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationListMachineProfilesForModel
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        let raw;
+        try {
+          raw = await calibrationHttp.getMachineProfilesForModel(
+            selectedId,
+            ctx.profile.baseUrl,
+            request.printerModelId,
+            signal,
+          );
+        } catch (error) {
+          if (
+            error instanceof CalibrationHttpError &&
+            error.code === 'notFound'
+          ) {
+            emitCalibrationLog({
+              level: 'info',
+              component: 'calibration.http',
+              event: 'profiles.forModel.listed',
+              correlationId,
+              correlationOrigin,
+              profileId: selectedId,
+              outcome: 'ok',
+              durationMs: Date.now() - startedAt,
+            });
+            return ipcSchemas[
+              IpcChannel.CalibrationListMachineProfilesForModel
+            ].response.parse({
+              status: 'ok',
+              profiles: [],
+              noModelAlias: true,
+              fetchedAt: new Date().toISOString(),
+            });
+          }
+          throw error;
+        }
+        // Second call resolves each name to its Guid. The two calls run
+        // sequentially rather than in parallel because most operators pick
+        // once per session, so latency dominates over responsiveness, and
+        // running them serially lets the second short-circuit when the first
+        // is empty.
+        const guidByName = new Map<string, string>();
+        if (raw.length > 0) {
+          const extendedSignal = AbortSignal.timeout(10_000);
+          const extended = await calibrationHttp.getExtendedProfiles(
+            selectedId,
+            ctx.profile.baseUrl,
+            extendedSignal,
+          );
+          for (const row of extended.profiles) {
+            if (row.profileType === 'machine') {
+              guidByName.set(row.name, row.id);
+            }
+          }
+        }
+        const projected = raw.map((p) => ({
+          name: p.name,
+          guid: guidByName.get(p.name) ?? null,
+          source: 'system' as const,
+          displayLabel:
+            p.manufacturer !== '' && p.printerModel !== null
+              ? `${p.manufacturer} ${p.printerModel}`
+              : (p.printerModel ?? p.manufacturer ?? null),
+          contentSha256: null,
+        }));
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.forModel.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationListMachineProfilesForModel
+        ].response.parse({
+          status: 'ok',
+          profiles: projected,
+          noModelAlias: false,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.forModel.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Machine profile list failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationListMachineProfilesForModel
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // POST /api/slicer/profiles/process/for-machines.
+  //
+  // Server-side applicability filter by `compatible_printers`. Handler
+  // reuses the same for-model pattern of joining against `/extended` for
+  // Guids — process profile Guids are what the setup PUT persists.
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListProcessProfilesForMachines,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationListProcessProfilesForMachines
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const raw = await calibrationHttp.getProcessProfilesForMachines(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.machineNames,
+          signal,
+        );
+        const guidByName = new Map<string, string>();
+        if (raw.length > 0) {
+          const extendedSignal = AbortSignal.timeout(10_000);
+          const extended = await calibrationHttp.getExtendedProfiles(
+            selectedId,
+            ctx.profile.baseUrl,
+            extendedSignal,
+          );
+          for (const row of extended.profiles) {
+            if (row.profileType === 'process') {
+              guidByName.set(row.name, row.id);
+            }
+          }
+        }
+        const projected = raw.map((p) => ({
+          name: p.name,
+          guid: guidByName.get(p.name) ?? null,
+          source: 'system' as const,
+          displayLabel: p.quality,
+          contentSha256: null,
+        }));
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.processForMachines.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationListProcessProfilesForMachines
+        ].response.parse({
+          status: 'ok',
+          profiles: projected,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.processForMachines.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Process profile list failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationListProcessProfilesForMachines
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // POST /api/slicer/profiles/filament/for-machines.
+  //
+  // Same shape as the process endpoint; distinct only in the Guid resolution
+  // pulled from the `filament` subset of `/extended`.
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListFilamentProfilesForMachines,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationListFilamentProfilesForMachines
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const raw = await calibrationHttp.getFilamentProfilesForMachines(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.machineNames,
+          signal,
+        );
+        const guidByName = new Map<string, string>();
+        if (raw.length > 0) {
+          const extendedSignal = AbortSignal.timeout(10_000);
+          const extended = await calibrationHttp.getExtendedProfiles(
+            selectedId,
+            ctx.profile.baseUrl,
+            extendedSignal,
+          );
+          for (const row of extended.profiles) {
+            if (row.profileType === 'filament') {
+              guidByName.set(row.name, row.id);
+            }
+          }
+        }
+        const projected = raw.map((p) => ({
+          name: p.name,
+          guid: guidByName.get(p.name) ?? null,
+          source: 'system' as const,
+          displayLabel:
+            p.manufacturer !== null
+              ? `${p.manufacturer} ${p.material}`
+              : p.material,
+          contentSha256: null,
+        }));
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.filamentForMachines.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationListFilamentProfilesForMachines
+        ].response.parse({
+          status: 'ok',
+          profiles: projected,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.filamentForMachines.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Filament profile list failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationListFilamentProfilesForMachines
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // GET /api/slicer/profiles/custom.
+  //
+  // Custom profiles come with a Guid Id directly, so no resolution against
+  // `/extended` is required. Applicability is enforced on the RENDERER
+  // (client-side filter by `printerModelId` for machine, `compatiblePrinters`
+  // for process/filament) per §B.2 of the research report — the shape here
+  // is the raw list.
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListCustomProfiles,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListCustomProfiles].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const remote = await calibrationHttp.getCustomProfiles(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        const projected = remote.profiles.map((p) => ({
+          id: p.id,
+          name: p.name,
+          profileType: p.profileType,
+          printerModelId: p.printerModelId,
+          compatiblePrinters: p.compatiblePrinters,
+          createdAt: p.createdAt,
+        }));
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.custom.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationListCustomProfiles
+        ].response.parse({
+          status: 'ok',
+          profiles: projected,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.custom.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Custom profile list failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationListCustomProfiles
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // PUT /api/printers/{printerId}/calibration-setup.
+  //
+  // The core of Path C. Persists the three Guids on the printer row so the
+  // server's `calibration-context` endpoint stops emitting the
+  // `*_profile_missing` rejection codes. `If-Match: <rowVersion>` gives
+  // optimistic concurrency; a 412 is surfaced as `calibrationSetupConflict`
+  // and never retried silently. The renderer re-opens the wizard.
+  registerCalibrationHandler(
+    IpcChannel.CalibrationSetupPrinter,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSetupPrinter].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const result = await calibrationHttp.putCalibrationSetup(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.printerId,
+          {
+            machineProfileId: request.machineProfileId,
+            processProfileId: request.processProfileId,
+            filamentProfileId: request.filamentProfileId,
+          },
+          request.operationId,
+          request.rowVersion,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'calibration.setup.applied',
+          correlationId,
+          correlationOrigin,
+          operationId: request.operationId,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse({
+          status: 'ok',
+          printerId: result.printerId,
+          eligible: result.eligible,
+          machineProfileId: result.machineProfileId,
+          processProfileId: result.processProfileId,
+          filamentProfileId: result.filamentProfileId,
+          rowVersion: result.rowVersion,
+          updatedAtUtc: result.updatedAtUtc,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'calibration.setup.applied',
+          correlationId,
+          correlationOrigin,
+          operationId: request.operationId,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration setup failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse({
+          status: 'error',
+          error: apiError,
         });
       }
     },

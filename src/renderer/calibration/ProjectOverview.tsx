@@ -64,25 +64,18 @@ function rebaseBlockers(
     blockers.push(
       'The refreshed printer, dimensions, or OrcaSlicer context is incomplete.',
     );
-  if (!context.safety || !context.permissions)
-    blockers.push('The refreshed safety or permission context is incomplete.');
-  else if (
-    !context.safety.emergencyStopAvailable ||
-    !context.safety.thermalProtectionConfirmed ||
-    !context.safety.ventilationAssessed
-  )
-    blockers.push(
-      'The refreshed context no longer confirms all required machine safety controls.',
-    );
-  else if (
-    !context.permissions.readPrinter ||
-    !context.permissions.writeCalibration ||
-    !context.permissions.generateCalibration ||
-    !context.permissions.startPrint
-  )
-    blockers.push(
-      'The refreshed context no longer grants all calibration permissions.',
-    );
+  if (!context.safety)
+    blockers.push('The refreshed physical printer limits are missing.');
+  // Neither the interlock booleans inside `safety` nor `context.permissions`
+  // are re-checked here. Both are absent from PrintFarmer's context DTO —
+  // `permissions` is always `null` and the three interlock booleans are always
+  // `false` at the wire boundary (`calibrationWire.ts` documents this: the
+  // server has no field to publish them). Reading them here permanently
+  // blocked every rebase, because a rebase against a real server could not
+  // clear a check the server had never populated. The operator's confirmations
+  // made at project creation are preserved in `state.binding.snapshot.safety`
+  // and carried into the new binding below; authorisation is enforced by the
+  // action interlock against the capability payload's effective permissions.
   const refreshedTool = context.toolheads.find(
     (tool) => tool.toolId === state.binding.selectedToolId,
   );
@@ -219,6 +212,21 @@ export function ProjectOverview(): React.JSX.Element {
       rebaseContext,
       state.binding.selectedToolId,
       state.binding.filament,
+      // Carry the operator's prior interlock confirmations forward. They are
+      // physical attestations about the machine's installation (E-stop wired,
+      // thermal runaway protection configured, ventilation adequate) that do
+      // not change from one snapshot to the next unless the operator
+      // physically modified the printer, so recording them at project
+      // creation and preserving them across rebase is the truthful reading.
+      // Per-print acknowledgement (`machineClear`/bed clear) is enforced
+      // separately by `calibrationActionGate` before every dispatch.
+      {
+        emergencyStopAvailable:
+          state.binding.snapshot.safety.emergencyStopAvailable,
+        thermalProtectionConfirmed:
+          state.binding.snapshot.safety.thermalProtectionConfirmed,
+        ventilationAssessed: state.binding.snapshot.safety.ventilationAssessed,
+      },
     );
     if (binding === null) {
       store.reportError(

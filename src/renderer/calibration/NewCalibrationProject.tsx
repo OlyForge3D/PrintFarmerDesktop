@@ -13,6 +13,7 @@ import {
   orcaProfileScopeBlockers,
   selectedBaseProfileFromEntry,
 } from './projectEligibility';
+import { ProfileSelectionSection } from './ProfileSelectionSection';
 
 interface FormState {
   readonly displayName: string;
@@ -448,6 +449,18 @@ export function NewCalibrationProject(): React.JSX.Element {
         sku: form.sku.trim(),
         ...(form.spoolId.trim() ? { spoolId: form.spoolId.trim() } : {}),
       },
+      // The three physical-interlock attestations the operator has just made
+      // in the wizard. Guarded above by `printerReady` and the safety-check
+      // portion of `blockers` (`form.emergencyStop && form.thermalProtection &&
+      // form.ventilation && form.machineClear`), so all three are true here.
+      // `machineClear` is a per-print acknowledgement enforced separately by
+      // `calibrationActionGate` before dispatch; it is not a binding-time
+      // property of the snapshot.
+      {
+        emergencyStopAvailable: form.emergencyStop,
+        thermalProtectionConfirmed: form.thermalProtection,
+        ventilationAssessed: form.ventilation,
+      },
     );
     if (binding === null) {
       setErrors({
@@ -840,6 +853,37 @@ export function NewCalibrationProject(): React.JSX.Element {
             </div>
           </fieldset>
 
+          {/*
+            Path C — cascading profile selection. Runs against the printer the
+            operator just highlighted, BEFORE server eligibility is checked.
+            Real PrintFarmer printers ship with the calibration profile columns
+            NULL on the row (issue #1851's fix is emulator-only), so
+            `getCalibrationPrinterContext` refuses them with a wall of missing-
+            input codes until this PUT populates the columns. The whole point
+            of the flow is that it is offered UNGATED — the refused printer is
+            exactly the one that needs configuring.
+
+            See `.squad/decisions/inbox/bishop-calibration-path-c-implementation.md`
+            for the API contract this consumes, and Vasquez's directive at
+            `.squad/decisions/inbox/vasquez-calibration-profile-selection-directive.md`.
+          */}
+          {highlightedPrinterId !== null && store.profileId !== null ? (
+            <ProfileSelectionSection
+              profileId={store.profileId}
+              printerId={highlightedPrinterId}
+              printerModelId={highlightedCandidate?.printerModelId ?? null}
+              disabled={!canLoad || submitting || store.disabled}
+              environment={store.environment}
+              onSetupComplete={(printerId) => {
+                // After the setup PUT succeeds the printer's calibration
+                // columns are populated; the legacy per-printer context fetch
+                // now has real inputs to resolve against, so it is safe (and
+                // useful) to trigger it here to unlock the downstream wizard.
+                void store.selectPrinter(printerId);
+              }}
+            />
+          ) : null}
+
           <fieldset
             disabled={
               !printerReady ||
@@ -1060,7 +1104,7 @@ export function NewCalibrationProject(): React.JSX.Element {
           <fieldset
             disabled={!printerReady || !canLoad || submitting || store.disabled}
           >
-            <legend>Base OrcaSlicer profile and mode</legend>
+            <legend>Baseline slicer profile bundle and mode</legend>
             <label>
               Base OrcaSlicer profile
               <select

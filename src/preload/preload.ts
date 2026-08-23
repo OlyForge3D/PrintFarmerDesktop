@@ -144,6 +144,19 @@ import {
   type CalibrationInstallOrcaProfileResponse,
   type CalibrationRestoreOrcaProfileRequest,
   type CalibrationRestoreOrcaProfileResponse,
+  // --- Path C: Slicer profile picker + calibration-setup -------------------
+  type CalibrationListExtendedProfilesRequest,
+  type CalibrationListExtendedProfilesResponse,
+  type CalibrationListMachineProfilesForModelRequest,
+  type CalibrationListMachineProfilesForModelResponse,
+  type CalibrationListProcessProfilesForMachinesRequest,
+  type CalibrationListProcessProfilesForMachinesResponse,
+  type CalibrationListFilamentProfilesForMachinesRequest,
+  type CalibrationListFilamentProfilesForMachinesResponse,
+  type CalibrationListCustomProfilesRequest,
+  type CalibrationListCustomProfilesResponse,
+  type CalibrationSetupPrinterRequest,
+  type CalibrationSetupPrinterResponse,
 } from '@shared/ipc';
 
 /**
@@ -662,6 +675,64 @@ const api: PrintFarmerApi = {
         IpcChannel.CalibrationRestoreOrcaProfile,
         request,
       ),
+    ),
+  // --- Path C: Slicer profile picker + calibration-setup -------------------
+  listCalibrationExtendedProfiles: async (
+    request: CalibrationListExtendedProfilesRequest,
+  ): Promise<CalibrationListExtendedProfilesResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListExtendedProfiles].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListExtendedProfiles,
+        request,
+      ),
+    ),
+  listCalibrationMachineProfilesForModel: async (
+    request: CalibrationListMachineProfilesForModelRequest,
+  ): Promise<CalibrationListMachineProfilesForModelResponse> =>
+    ipcSchemas[
+      IpcChannel.CalibrationListMachineProfilesForModel
+    ].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListMachineProfilesForModel,
+        request,
+      ),
+    ),
+  listCalibrationProcessProfilesForMachines: async (
+    request: CalibrationListProcessProfilesForMachinesRequest,
+  ): Promise<CalibrationListProcessProfilesForMachinesResponse> =>
+    ipcSchemas[
+      IpcChannel.CalibrationListProcessProfilesForMachines
+    ].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListProcessProfilesForMachines,
+        request,
+      ),
+    ),
+  listCalibrationFilamentProfilesForMachines: async (
+    request: CalibrationListFilamentProfilesForMachinesRequest,
+  ): Promise<CalibrationListFilamentProfilesForMachinesResponse> =>
+    ipcSchemas[
+      IpcChannel.CalibrationListFilamentProfilesForMachines
+    ].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListFilamentProfilesForMachines,
+        request,
+      ),
+    ),
+  listCalibrationCustomProfiles: async (
+    request: CalibrationListCustomProfilesRequest,
+  ): Promise<CalibrationListCustomProfilesResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListCustomProfiles].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListCustomProfiles,
+        request,
+      ),
+    ),
+  setupCalibrationPrinter: async (
+    request: CalibrationSetupPrinterRequest,
+  ): Promise<CalibrationSetupPrinterResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationSetupPrinter, request),
     ),
 };
 

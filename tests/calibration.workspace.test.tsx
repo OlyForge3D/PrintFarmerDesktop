@@ -258,6 +258,7 @@ const candidates: CalibrationPrinterCandidate[] = [
     printerId: 'printer-name-trap',
     displayName: 'Klipper Orca Super Printer',
     printerModel: null,
+    printerModelId: null,
     firmwareCompatible: false,
     orcaProfileId: 'orca-base',
     isOnline: true,
@@ -274,6 +275,7 @@ const candidates: CalibrationPrinterCandidate[] = [
     printerId: 'printer-safe',
     displayName: 'Unbranded cell 7',
     printerModel: 'Machine 400',
+    printerModelId: null,
     firmwareCompatible: true,
     orcaProfileId: null,
     isOnline: true,
@@ -670,6 +672,56 @@ function makeApi(savedRecord = record()) {
     openCalibrationManifestUrl: vi
       .fn<CalibrationApi['openCalibrationManifestUrl']>()
       .mockResolvedValue({ status: 'ok' }),
+    // --- Path C: profile-selection channels (Bishop's 6 IPC surface) ------
+    // Not exercised by this legacy suite; the flow-level tests live in
+    // `calibrationProfileSelectionFlow.test.tsx`. Return neutral defaults so
+    // any accidental invocation surfaces as an empty catalog rather than
+    // silently populating the wizard.
+    listCalibrationExtendedProfiles: vi
+      .fn<CalibrationApi['listCalibrationExtendedProfiles']>()
+      .mockResolvedValue({
+        status: 'ok',
+        machineProfiles: [],
+        processProfiles: [],
+        filamentProfiles: [],
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    listCalibrationMachineProfilesForModel: vi
+      .fn<CalibrationApi['listCalibrationMachineProfilesForModel']>()
+      .mockResolvedValue({
+        status: 'ok',
+        profiles: [],
+        noModelAlias: false,
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    listCalibrationProcessProfilesForMachines: vi
+      .fn<CalibrationApi['listCalibrationProcessProfilesForMachines']>()
+      .mockResolvedValue({
+        status: 'ok',
+        profiles: [],
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    listCalibrationFilamentProfilesForMachines: vi
+      .fn<CalibrationApi['listCalibrationFilamentProfilesForMachines']>()
+      .mockResolvedValue({
+        status: 'ok',
+        profiles: [],
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    listCalibrationCustomProfiles: vi
+      .fn<CalibrationApi['listCalibrationCustomProfiles']>()
+      .mockResolvedValue({
+        status: 'ok',
+        profiles: [],
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    setupCalibrationPrinter: vi
+      .fn<CalibrationApi['setupCalibrationPrinter']>()
+      .mockRejectedValue(
+        new Error(
+          'setupCalibrationPrinter: legacy workspace suite does not exercise setup.',
+        ),
+      ),
   } satisfies CalibrationApi;
 }
 

@@ -14,6 +14,7 @@ import {
   createPackagedStartupTrace,
   launchInstrumentedElectronTestApp,
 } from './helpers/packagedApp';
+import { IPC_CONTRACT_VERSION } from '../src/shared/ipc';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -169,7 +170,12 @@ test('exposes the printFarmer preload bridge', async () => {
 
 test('reports app info from the main process over IPC', async () => {
   const info = await page.evaluate(() => window.printFarmer.getAppInfo());
-  expect(info.contractVersion).toBe(2);
+  // Compare the running app's reported version against the source constant
+  // rather than a literal. A literal goes stale on every legitimate contract
+  // bump (it was pinned at 2 when the contract moved to 3), which turns a
+  // packaging-drift guard into a chore. This still fails if the packaged
+  // bundle reports a version the source does not declare.
+  expect(info.contractVersion).toBe(IPC_CONTRACT_VERSION);
   await expect(page.getByLabel('Application status')).toContainText(
     `v${info.appVersion}`,
   );

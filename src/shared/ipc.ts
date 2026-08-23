@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 2 as const;
+export const IPC_CONTRACT_VERSION = 3 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -54,6 +54,19 @@ export const IpcChannel = {
   CalibrationGenerateOrcaProfile: 'calibration:generateOrcaProfile',
   CalibrationInstallOrcaProfile: 'calibration:installOrcaProfile',
   CalibrationRestoreOrcaProfile: 'calibration:restoreOrcaProfile',
+  // --- Path C: profile selection + calibration-setup (Vasquez brief) -------
+  // Six channels for the cascading profile picker and the PUT that persists
+  // Machine/Process/Filament profile Guids on the printer, unblocking the
+  // real calibration eligibility check.
+  CalibrationListExtendedProfiles: 'calibration:listExtendedProfiles',
+  CalibrationListMachineProfilesForModel:
+    'calibration:listMachineProfilesForModel',
+  CalibrationListProcessProfilesForMachines:
+    'calibration:listProcessProfilesForMachines',
+  CalibrationListFilamentProfilesForMachines:
+    'calibration:listFilamentProfilesForMachines',
+  CalibrationListCustomProfiles: 'calibration:listCustomProfiles',
+  CalibrationSetupPrinter: 'calibration:setupPrinter',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -1701,6 +1714,31 @@ export const CalibrationPrinterCandidate = z
     displayName: z.string().min(1).max(256),
     /** Printer model/make string for display. */
     printerModel: z.string().max(256).nullable(),
+    /**
+     * Catalog `PrinterModel` GUID this printer maps to.
+     *
+     * Sourced by the main-process handler from `GET /api/printers/{id}/details`
+     * (`OlyForge3D/PrintFarmer:src/infra/Dtos/PrinterDetailsDto.cs:17`) —
+     * `CalibrationCandidateDto` does not include it on the wire. The renderer's
+     * cascading profile picker uses it to call
+     * `GET /api/slicer/profiles/machine/for-model/{modelId}` and to filter
+     * custom machine/process profiles by model.
+     *
+     * `null` deliberately means "model unknown" — the wire response was
+     * missing the field, the details enrichment fetch failed, or the operator
+     * is running a server build predating the model catalog. The renderer's
+     * permissive fallback (`src/renderer/calibration/profileSelection.ts:49-53`)
+     * shows the wider catalog pool rather than an empty picker in that case.
+     * Encoding "unknown" as an empty string would collapse it into "known
+     * value that matches nothing" and silently defeat the fallback — the exact
+     * shape the calibration contract exists to prevent.
+     *
+     * Additive on the response schema: `optional().default(null)` means older
+     * or hand-written clients that omit the field still parse; the field is
+     * always populated by the current main-process handler, so no version bump
+     * is needed. `nullable()` covers the "field known, value unknown" case.
+     */
+    printerModelId: z.string().uuid().nullable().optional().default(null),
     /** Whether the printer meets the Klipper firmware/dialect requirement. */
     firmwareCompatible: z.boolean(),
     /** OrcaSlicer profile identity associated with this printer. */
@@ -4254,6 +4292,14 @@ export const CalibrationApiErrorCode = z.enum([
   'calibrationJobIncompatible',
   /** HTTP 422 filament_check_failed — filament material or nozzle mismatch. */
   'filamentCheckFailed',
+  // --- Calibration setup PUT (Path C, issue #55) --------------------------
+  /**
+   * HTTP 412 on PUT /api/printers/{id}/calibration-setup — the printer's row
+   * version moved between the wizard opening and the setup PUT. Distinct from
+   * `revisionConflict` so the renderer can point specifically at the
+   * calibration binding row and re-open the wizard rather than silently retry.
+   */
+  'calibrationSetupConflict',
 ]);
 export type CalibrationApiErrorCode = z.infer<typeof CalibrationApiErrorCode>;
 
@@ -6266,6 +6312,326 @@ export const RetargetDisposeResponse = z
   .strict();
 export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 
+// --- Path C: Slicer profile picker + calibration-setup ---------------------
+//
+// Six IPC channels that let the operator see the machine/process/filament
+// profiles PrintFarmer offers for a printer, and persist their three-way
+// selection so the server marks the printer calibration-eligible.
+//
+// The renderer sees a unified `{ name, guid?, source, ...display }` shape per
+// profile. Main-process is responsible for:
+//   * calling `/api/slicer/profiles/extended` (Guids for system profiles)
+//   * calling `/api/slicer/profiles/machine/for-model/{modelId}` (system,
+//     name-keyed) or `/for-machines` (server-side applicability filter)
+//   * calling `/api/slicer/profiles/custom` (Guid-keyed, filtered client-side)
+//   * calling `PUT /api/printers/{id}/calibration-setup` with the resolved
+//     Guids the operator picked, gated by `If-Match: <rowVersion>` and
+//     returning a distinct 'calibrationSetupConflict' error on 412.
+//
+// The renderer never sees SHA-256 as a profile identifier: the wire migration
+// documented at §C.2 of `printfarmer-api-contract.md` says system profiles are
+// name-keyed on the worker DTOs, Guid-keyed via `/extended`, and custom
+// profiles are Guid-keyed everywhere. The existing `machineProfileSha256`
+// fields on `CalibrationStartPrintRequest` / `CalibrationJobProvenance` are
+// PROVENANCE hashes for a generated gcode job — a different concern from the
+// identity used to select a profile — and are left in place unchanged.
+
+/** Longest single profile name string carried over the desktop IPC boundary. */
+const CALIBRATION_MAX_PROFILE_NAME = 512;
+/** Cap on the number of profiles the main process forwards to the renderer. */
+const CALIBRATION_MAX_PROFILE_LIST = 2048;
+/** Cap on the number of machine names the renderer may pass to /for-machines. */
+const CALIBRATION_MAX_MACHINE_FILTER = 64;
+
+/**
+ * Unified profile row the renderer sees. `guid` is present for custom
+ * profiles and for system profiles the main process was able to resolve
+ * against `/extended`; `null` when only a canonical name is known (a system
+ * profile whose Guid the DB list didn't carry). The renderer sends `guid`
+ * back on the setup submission for the PUT; if it's null, the wizard should
+ * refuse the selection with an actionable message rather than send a partial
+ * setup that would be silently rejected.
+ */
+export const CalibrationSlicerProfileRef = z
+  .object({
+    /** Canonical `Name` string. Identity for system profiles on the wire. */
+    name: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    /** Resolved Guid required by PUT calibration-setup, or null. */
+    guid: z.string().uuid().nullable(),
+    /** `'system'` (worker DTO or extended row) or `'custom'` (user-created). */
+    source: z.enum(['system', 'custom']),
+    /** Optional human-readable manufacturer / material / quality label. */
+    displayLabel: z.string().max(512).nullable(),
+    /**
+     * Provenance-only sha256 of the profile content. Never used for lookup
+     * or applicability. Retained so audit records can pin exactly the profile
+     * revision the operator saw when they made their selection.
+     */
+    contentSha256: z.string().max(256).nullable(),
+  })
+  .strict();
+export type CalibrationSlicerProfileRef = z.infer<
+  typeof CalibrationSlicerProfileRef
+>;
+
+// --- calibration:listExtendedProfiles ---
+
+export const CalibrationListExtendedProfilesRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationListExtendedProfilesRequest = z.infer<
+  typeof CalibrationListExtendedProfilesRequest
+>;
+
+export const CalibrationListExtendedProfilesResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        machineProfiles: z
+          .array(CalibrationSlicerProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        processProfiles: z
+          .array(CalibrationSlicerProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        filamentProfiles: z
+          .array(CalibrationSlicerProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        fetchedAt: z.string().datetime(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationListExtendedProfilesResponse = z.infer<
+  typeof CalibrationListExtendedProfilesResponse
+>;
+
+// --- calibration:listMachineProfilesForModel ---
+
+export const CalibrationListMachineProfilesForModelRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    printerModelId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationListMachineProfilesForModelRequest = z.infer<
+  typeof CalibrationListMachineProfilesForModelRequest
+>;
+
+export const CalibrationListMachineProfilesForModelResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        /**
+         * System machine profiles + user's custom machine profiles scoped to
+         * the printer's catalog model. Server responded with a 404 → returned
+         * as ok with an empty list AND `noModelAlias: true`, so the renderer
+         * can distinguish "no OrcaSlicer alias for this model" (fixable by
+         * catalog admins) from "genuinely nothing applicable" (fixable by
+         * uploading a custom profile).
+         */
+        profiles: z
+          .array(CalibrationSlicerProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        noModelAlias: z.boolean(),
+        fetchedAt: z.string().datetime(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationListMachineProfilesForModelResponse = z.infer<
+  typeof CalibrationListMachineProfilesForModelResponse
+>;
+
+// --- calibration:listProcessProfilesForMachines ---
+
+export const CalibrationListProcessProfilesForMachinesRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    machineNames: z
+      .array(z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME))
+      .min(1)
+      .max(CALIBRATION_MAX_MACHINE_FILTER),
+  })
+  .strict();
+export type CalibrationListProcessProfilesForMachinesRequest = z.infer<
+  typeof CalibrationListProcessProfilesForMachinesRequest
+>;
+
+export const CalibrationListProcessProfilesForMachinesResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        profiles: z
+          .array(CalibrationSlicerProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        fetchedAt: z.string().datetime(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationListProcessProfilesForMachinesResponse = z.infer<
+  typeof CalibrationListProcessProfilesForMachinesResponse
+>;
+
+// --- calibration:listFilamentProfilesForMachines ---
+
+export const CalibrationListFilamentProfilesForMachinesRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    machineNames: z
+      .array(z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME))
+      .min(1)
+      .max(CALIBRATION_MAX_MACHINE_FILTER),
+  })
+  .strict();
+export type CalibrationListFilamentProfilesForMachinesRequest = z.infer<
+  typeof CalibrationListFilamentProfilesForMachinesRequest
+>;
+
+export const CalibrationListFilamentProfilesForMachinesResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        profiles: z
+          .array(CalibrationSlicerProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        fetchedAt: z.string().datetime(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationListFilamentProfilesForMachinesResponse = z.infer<
+  typeof CalibrationListFilamentProfilesForMachinesResponse
+>;
+
+// --- calibration:listCustomProfiles ---
+
+export const CalibrationListCustomProfilesRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationListCustomProfilesRequest = z.infer<
+  typeof CalibrationListCustomProfilesRequest
+>;
+
+/**
+ * Custom profile row. Unlike the unified `CalibrationSlicerProfileRef` this
+ * carries `printerModelId` and `compatiblePrinters` verbatim from the server
+ * so the renderer can do the client-side applicability filter the React
+ * `NewSliceJobPage` performs (§B.2 of the API contract report).
+ */
+export const CalibrationCustomProfileRef = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    profileType: z.enum(['machine', 'process', 'filament']),
+    printerModelId: z.string().uuid().nullable(),
+    compatiblePrinters: z
+      .array(z.string().max(CALIBRATION_MAX_PROFILE_NAME))
+      .max(CALIBRATION_MAX_PROFILE_LIST)
+      .nullable(),
+    createdAt: z.string().datetime().nullable(),
+  })
+  .strict();
+export type CalibrationCustomProfileRef = z.infer<
+  typeof CalibrationCustomProfileRef
+>;
+
+export const CalibrationListCustomProfilesResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        profiles: z
+          .array(CalibrationCustomProfileRef)
+          .max(CALIBRATION_MAX_PROFILE_LIST),
+        fetchedAt: z.string().datetime(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationListCustomProfilesResponse = z.infer<
+  typeof CalibrationListCustomProfilesResponse
+>;
+
+// --- calibration:setupPrinter ---
+
+export const CalibrationSetupPrinterRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    printerId: z.string().uuid(),
+    /**
+     * All three profile Guids must be present. The server accepts null for
+     * any of them (it clears the binding), but the desktop UX requires the
+     * operator to pick all three; a partial submit means the wizard is
+     * incomplete and the renderer must refuse it before this channel is
+     * invoked.
+     */
+    machineProfileId: z.string().uuid(),
+    processProfileId: z.string().uuid(),
+    filamentProfileId: z.string().uuid(),
+    /**
+     * Opaque row-version from a prior `calibration-context` or setup response.
+     * `null` on the very first call (the printer has never had its calibration
+     * bindings set); the server accepts an unconditional PUT in that state.
+     */
+    rowVersion: z.string().max(2048).nullable(),
+    /**
+     * Client-generated idempotency key. Reusing the same key with a different
+     * body yields the same 409 semantics as the rest of the calibration API.
+     */
+    operationId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationSetupPrinterRequest = z.infer<
+  typeof CalibrationSetupPrinterRequest
+>;
+
+export const CalibrationSetupPrinterResponse = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ok'),
+      printerId: z.string().uuid(),
+      /**
+       * `true` when the server marked the printer eligible immediately after
+       * the PUT. `false` when it still refuses (typically because other
+       * calibration inputs the setup PUT does not touch — toolhead metrology,
+       * safety sign-off — are still outstanding); the renderer follows up
+       * with `calibration-context` to see the residual rejection reasons.
+       * `null` when the server response omitted the field.
+       */
+      eligible: z.boolean().nullable(),
+      machineProfileId: z.string().uuid().nullable(),
+      processProfileId: z.string().uuid().nullable(),
+      filamentProfileId: z.string().uuid().nullable(),
+      /** Server-reported new row version to send on the next mutation. */
+      rowVersion: z.string().max(2048).nullable(),
+      updatedAtUtc: z.string().datetime().nullable(),
+    })
+    .strict(),
+  z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
+]);
+export type CalibrationSetupPrinterResponse = z.infer<
+  typeof CalibrationSetupPrinterResponse
+>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -6609,6 +6975,30 @@ export const ipcSchemas = {
     request: CalibrationRestoreOrcaProfileRequest,
     response: CalibrationRestoreOrcaProfileResponse,
   },
+  [IpcChannel.CalibrationListExtendedProfiles]: {
+    request: CalibrationListExtendedProfilesRequest,
+    response: CalibrationListExtendedProfilesResponse,
+  },
+  [IpcChannel.CalibrationListMachineProfilesForModel]: {
+    request: CalibrationListMachineProfilesForModelRequest,
+    response: CalibrationListMachineProfilesForModelResponse,
+  },
+  [IpcChannel.CalibrationListProcessProfilesForMachines]: {
+    request: CalibrationListProcessProfilesForMachinesRequest,
+    response: CalibrationListProcessProfilesForMachinesResponse,
+  },
+  [IpcChannel.CalibrationListFilamentProfilesForMachines]: {
+    request: CalibrationListFilamentProfilesForMachinesRequest,
+    response: CalibrationListFilamentProfilesForMachinesResponse,
+  },
+  [IpcChannel.CalibrationListCustomProfiles]: {
+    request: CalibrationListCustomProfilesRequest,
+    response: CalibrationListCustomProfilesResponse,
+  },
+  [IpcChannel.CalibrationSetupPrinter]: {
+    request: CalibrationSetupPrinterRequest,
+    response: CalibrationSetupPrinterResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -6804,4 +7194,23 @@ export interface PrintFarmerApi {
   restoreOrcaProfile(
     request: CalibrationRestoreOrcaProfileRequest,
   ): Promise<CalibrationRestoreOrcaProfileResponse>;
+  // --- Path C: Slicer profile picker + calibration-setup -------------------
+  listCalibrationExtendedProfiles(
+    request: CalibrationListExtendedProfilesRequest,
+  ): Promise<CalibrationListExtendedProfilesResponse>;
+  listCalibrationMachineProfilesForModel(
+    request: CalibrationListMachineProfilesForModelRequest,
+  ): Promise<CalibrationListMachineProfilesForModelResponse>;
+  listCalibrationProcessProfilesForMachines(
+    request: CalibrationListProcessProfilesForMachinesRequest,
+  ): Promise<CalibrationListProcessProfilesForMachinesResponse>;
+  listCalibrationFilamentProfilesForMachines(
+    request: CalibrationListFilamentProfilesForMachinesRequest,
+  ): Promise<CalibrationListFilamentProfilesForMachinesResponse>;
+  listCalibrationCustomProfiles(
+    request: CalibrationListCustomProfilesRequest,
+  ): Promise<CalibrationListCustomProfilesResponse>;
+  setupCalibrationPrinter(
+    request: CalibrationSetupPrinterRequest,
+  ): Promise<CalibrationSetupPrinterResponse>;
 }

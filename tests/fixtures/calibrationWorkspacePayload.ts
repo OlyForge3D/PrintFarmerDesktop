@@ -94,10 +94,12 @@ export function validWorkspace(): CalibrationWorkspacePayloadType {
       maximumNozzleTemperatureC: 300,
       maximumBedTemperatureC: 120,
       maximumVolumetricRateMm3S: 30,
-      // False, matching what a real context reports: PrintFarmer publishes no
-      // interlock assertions, so a workspace that recorded `true` would claim
-      // the server confirmed something it was never asked about — and would
-      // then read as drifted against every context it is compared with.
+      // These three interlock booleans are operator-owned in the workspace
+      // binding: they carry the wizard's checkbox attestations, not any
+      // server-published fact. PrintFarmer's `CalibrationContextDto` never
+      // populates them, so drift detection deliberately ignores them here.
+      // False in this fixture just represents a benign default; a workspace
+      // that a real operator drove through the wizard would carry `true`.
       emergencyStopAvailable: false,
       thermalProtectionConfirmed: false,
       ventilationAssessed: false,

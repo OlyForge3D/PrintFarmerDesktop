@@ -49,6 +49,10 @@ Empirical proof via SQL + paired API round-trips. Fix A works: `Moonraker Ready`
 
 Five sequential refusals, each legitimate:
 
+## 2026-08-22: Calibration Path C main-process plumbing (6 IPC channels + setup PUT)
+
+📌 Team update (2026-08-22T21:30:47Z): Implemented Path C main-process integration for profile-selection cascade (commits 54e0d022, 9f62a958). Root cause diagnosed: desktop never called `PUT /api/printers/{id}/calibration-setup`, leaving `CalibrationMachineProfileId`, `ProcessProfileId`, `FilamentProfileId` NULL on printer row → 15-40 rejection codes on every calibration attempt. Path C fix: 6 new Zod IPC channels for profile listing + setup PUT integration, Desktop IPC v2→v3, If-Match 412 conflict handling, printerModelId enrichment from details endpoint. Dallas wired renderer cascade (acceptance 9/9 green), Hicks proved test-gap (427/430 pass with plumbing deleted), Fact Checker verified safety-gate defect. Full write-up: `.squad/decisions.md` calibration entries and `.squad/orchestration-log/2026-08-22T21-30-47Z-bishop.md`.
+
 1. UNIQUE constraint collision on attempt id — UPDATE in place, not INSERT-then-recover.
 2. Filament check — both `Printers.CurrentMaterial` and `Toolheads.CurrentMaterial` null (Fix A seed doesn't set them). Load PLA.
 3. GCode integrity — `StoredGcodeIntegrityVerifier` opens `/app/gcode + FilePath + FileName` and SHA-256s bytes (cannot fake in-DB).
@@ -71,3 +75,202 @@ Stack fully torn down (11 containers, network, volumes). Ports verified dead (po
 **Durable learnings:** (1) Grep/view auto-redact but literal is on disk — use PowerShell substring + hash for "no secret" claim. (2) Generated artifacts go under repo, not `/tmp/` only — distinguish input (keep) from output (purge). (3) Program.cs `:119-122` = where bool is _computed_, `:202-207` = where it _guards_ — cite the guard for action site. (4) Scribe consumes inbox files — each round writes _new_ file (e.g. `bishop-round5-…md`), not append to old. (5) Self-contradicting DTO: `Operational = true` but all `*Implemented = false` — grep for `<Field> =` assignments; if only one path, rest are lies. (6) `docker cp` puts files under container-owned paths — use throwaway container with root access for cleanup. (7) Positive control for "port dead": HTTP-connect, not netstat filter.
 
 ---
+
+---
+
+# 2026-08-22 — Calibration "click a printer = huge error" root cause (main-process scope)
+
+**Task:** Vasquez asked me to determine whether the main process is capable of producing a complete `CalibrationBinding` + canonical eligibility payload for a real printer, and where the chain breaks. Dallas and Hicks split the renderer/tests scope in parallel.
+
+**Result:** Diagnosis complete; decision recorded at `.squad/decisions/inbox/bishop-calibration-rootcause.md`.
+
+## Durable learnings
+
+1. **"Only referenced in tests" can hide from user-facing bug reports**. `evaluatePrinterEligibility` in `src/renderer/calibration/domain/eligibility.ts` is dead code — only imported by `tests/calibration.domain.test.ts`, verified with a positive control (`bindingDiagnostics` from the same file has 3 live callers, so grep can find live callers when they exist). Vasquez's prompt confidently identified it as the emitter of the "huge error message"; the three literal codes it emits (`CANONICAL_CALIBRATION_ELIGIBILITY_REQUIRED`, `MISSING_PRINTER_BINDING`, `INSUFFICIENT_CALIBRATION_PERMISSIONS`) do not appear in a live UI path anywhere. Prior sessions probably chased those codes for a full day without checking whether they could actually reach the screen. **Always cite the live call graph, not just the definition.**
+
+2. **The three prior calibration PRs (#742, #743/745, #739) shipped green because the tests fabricated the very shape they were testing.** `tests/calibration.workspace-ipc.test.ts:1010–1026` — the "keeps discovery satisfiable while machine movement stays fail-closed" test — proves the main-process projection produces `safety.emergencyStopAvailable === false` and `permissions === null` and asserts THAT SPECIFIC output is intended. `tests/calibration.domain.test.ts:74` builds a binding with `emergencyStopAvailable: true` and asserts `bindingDiagnostics` returns empty. **Neither test feeds the output of the first into the input of the second.** The seam between "what the main process produces" and "what the reducer's `bindingDiagnostics` requires" is exactly where the contract breaks, and every test lives on one side or the other.
+
+3. **`profilesEvaluated !== false` is a known-lying-command shape (`.squad/known-lying-commands.md` row 4 analogue).** At `src/main/ipc.ts:2192`, `null` (older server) and `true` both fold into "unprojectable" alongside genuine parse failures. The alarming-looking bucket absorbs a distinct null-state without distinguishing it. Not the primary root cause here, but a next-time diagnosis trap worth eliminating.
+
+4. **Hardcoded `false` with correct-looking comments is the design pattern that hides unsatisfiability.** `calibrationWire.ts:1115–1117` sets three safety booleans to `false` with an eloquent 15-line comment explaining why. The comment is correct: PrintFarmer's DTO doesn't publish them. But no downstream reader accounts for that — `bindingDiagnostics` demands they be true. When the design intent is "these will always be false", the CONSUMER contract must be updated too. **A design-intent comment in the producer without a matching enforcement in the consumer is documentation, not architecture.**
+
+5. **`main.ts` having zero calibration references is not a bug.** All handlers register through `registerIpcHandlers()` (main.ts:242) which is defined in `ipc.ts`. Grepping for "calibration" in main.ts and finding zero hits is the expected shape, not a missing-wiring signal — verified by the presence of the single `registerIpcHandlers` call.
+
+## Files inspected but not modified (out of scope this round)
+
+- `src/main/calibrationHttp.ts` — routes and Zod parsing verified; DTO transforms confirmed correct
+- `src/main/calibrationWire.ts` — projection logic; three problem areas identified
+- `src/main/ipc.ts:2158–2315` — `listCalibrationPrinters` / `getCalibrationPrinterContext` handlers
+- `src/shared/ipc.ts:1288–2055` — CalibrationPrinterEligibility / CalibrationPrinterContext schemas
+- `src/renderer/calibration/domain/eligibility.ts` — `evaluatePrinterEligibility` (dead), `bindingDiagnostics` (live)
+- `src/renderer/calibration/projectEligibility.ts` — `bindingFromContext`, `contextEligibilityBlockers`, `candidateEligibilityBlockers`
+- `src/renderer/calibration/CalibrationWorkspaceStore.tsx:880–1010` — `selectPrinter` implementation
+- `src/renderer/calibration/NewCalibrationProject.tsx:100–200,420–500,700–950` — wizard bullets and form
+- `tests/calibrationPrinterFirstSelection.test.tsx` — happy-path fixture proves the shape the main process must emit
+- `tests/calibration.workspace-ipc.test.ts:1010–1026` — proves the intended-false safety booleans
+
+## Proposed fixes (documented in the decision inbox file; no code changes made this round)
+
+1. Relax `src/shared/ipc.ts:1995–2014` so the three safety booleans are `.optional().default(false)` — matches the DTO truth PrintFarmer publishes. Requires Desktop IPC v2 bump. Not in a `derivedRoot`. Requires Dallas to simultaneously relax `bindingDiagnostics` in the renderer.
+2. Canonicalize (case-insensitive + trim) the `firmware.family/gcodeDialect/slicer.engine/slicer.distribution` literals inside `deriveCandidateEligibility` (calibrationWire.ts:486–489) and `projectCalibrationPrinterContext` (calibrationWire.ts:1406–1409) before Zod hits them.
+3. Distinguish `profilesEvaluated: null` (older server, unknown) from `true` (already evaluated) at `ipc.ts:2192` so the drop is diagnosable in the field.
+
+---
+
+# 2026-08-22T18:25 — Pivot after Dallas: H3 confirmed, H1/H2 refuted with evidence
+
+**Task:** Vasquez pivoted the brief after Dallas control-verified that `evaluatePrinterEligibility` is dead code. Three hypotheses to discriminate: H1 desktop mangles good response, H2 desktop never pushes capability data, H3 genuinely empty server.
+
+**Result:** Decision file updated at `.squad/decisions/inbox/bishop-calibration-rootcause.md` (v1 kept as `-v1.md` for provenance).
+
+## Durable learnings — this round
+
+1. **A superRefine is not a coercion.** Dallas described `src/shared/ipc.ts:1768–1776` as "forces `eligibility` to pair with `firmwareCompatible === false`". Rereading the code, it's a _symmetric_ self-consistency check: `firmwareCompatible !== (eligibility !== null)` throws. The desktop handler at `src/main/ipc.ts:2196–2218` computes both sides from the same predicate (`isExplicitCalibrationEligibilityComplete` is by construction `projectCalibrationEligibility(...) !== null`, `calibrationWire.ts:1192–1196`), so the invariant is upheld by construction. **A superRefine that describes a constraint the surrounding code cannot violate is a documentation of the invariant, not a source of failure.**
+
+2. **"There is no such contract" is a valid answer to a plumbing hypothesis.** Vasquez's H2 assumed the desktop is _supposed to_ POST capability data. The full non-GET HTTP surface in `src/main/calibrationHttp.ts` (4 POSTs + 1 PUT) sends: change-set apply, generation-start, queue-job create, bed-clear ack, photo binary. None send firmware/machineProfile/processProfile/filamentProfile/buildVolume/nozzle payload data. The queue-job POST at `calibrationHttp.ts:1125–1149` sends _references_ (`machineProfileSha256`, `processProfileSha256`, `filamentProfileSha256`) that EXPECT the server to already hold the fields the rejection codes list as missing. **This is telling: the whole architecture assumes the server has these fields, so if it doesn't, the desktop wasn't designed to seed them.** Fixing the desktop by adding such a POST is a server-API change first, a desktop change second.
+
+3. **The rejection-code catalog carries semantic bits Dallas's summary elided.** `firmware_family_unknown` (server has NULL, `src/shared/ipc.ts:1370`) is a distinct code from `firmware_family_not_klipper` (server has a value, but it's not Klipper, line 1369). The user's rejection list contains `_unknown`. That single-word difference disambiguates "server hasn't detected firmware" from "server detected wrong firmware". This is why the emulator-seeder issue (upstream `OlyForge3D/PrintFarmer#1851`, NULL calibration columns) is exactly this bug from the server side. **Read the code names literally before framing the failure.**
+
+4. **`calibrationCapabilityRefresh.ts` is misnamed with respect to a naive read.** The filename suggests "push capabilities to server". The 105-line file is a 403 → re-GET throttler. Reading the file itself is faster than trying to infer from the name. Skimmed the whole 105 lines in ~60s and got the shape right; naming misled me for 30s until I opened it.
+
+5. **`orcaProfileDiscovery.ts` participates in generation, not eligibility.** `findLocalOrcaProfileRaw` at line 955 is called only from `src/main/ipc.ts:5234` inside `CalibrationGenerateOrcaProfile` — AFTER a project has been bound to an eligible printer, to PATCH a local base for artifact generation. The `orca*.ts` files are UPLOAD-flow assets, not eligibility-flow inputs. Vasquez's H2 hint ("the rejection codes literally name machine_profile_missing... those are Orca/slicer profile concepts the DESKTOP owns") was intuitively reasonable but architecturally wrong. **In PrintFarmer's architecture, the server owns the printer's assigned profile; the desktop owns the ORCA-INSTALL profile it patches for a specific calibration attempt. Distinct concepts sharing vocabulary.**
+
+6. **The uncomfortable answer.** The user directive was "make this work"; the code says the fix starts server-side. Rather than proposing a fix that hides the problem behind a nicer message (Vasquez explicitly rejected that), I proposed (A) group server-owned rejections into an actionable callout with a "configure on server" link, (B) distinguish `profilesEvaluated: null` from `true` at ipc.ts:2192 so awaiting-evaluation is diagnosable, (C) file for the server-side seed endpoint. That's genuinely everything the desktop can do. **A diagnosis that reports "we can't fix this from here" is only defensible if it also lists every desktop lever and explains why each doesn't reach the failure — not by asserting powerlessness. Fix A and Fix B are real levers.**
+
+## Method notes
+
+- Traced every non-GET HTTP verb in `src/main/*.ts` with a single grep, confirming completeness with a Measure-Object POST count (4 in calibrationHttp.ts, matching the manual list).
+- Verified the tautology `isExplicitCalibrationEligibilityComplete === (projectCalibrationEligibility !== null)` at `src/main/calibrationWire.ts:1195` with a single line read.
+- Applied positive controls to two absence claims: the "no capability-seed IPC channel" claim was controlled by the presence of 20+ `Calibration*` enum values under the same grep; the "no capability-seed POST" claim was controlled by 4 real POSTs found under the same grep.
+- Kept v1 decision as `-v1.md` rather than overwriting — provenance for the pivot.
+
+---
+
+## 2026-08-22 — Path C implementation (turn 2)
+
+**Turn-1 pivot was wrong; turn-0 diagnosis was right.** Fact Checker
+confirmed `bindingDiagnostics` is LIVE (call sites `domain/reducer.ts:115`
+from Create, `:726` from rebase), distinct from the DEAD
+`evaluatePrinterEligibility`. The two functions LOOK similar and I let
+that talk me out of the correct turn-0 finding. **Lesson for future
+sessions:** when Dallas says "X is dead code" and X is a domain function,
+verify the specific import lines yourself before letting the finding
+propagate into your framing. `evaluatePrinterEligibility` was dead;
+`bindingDiagnostics` was not; treating them as one concept caused me to
+throw out my correct finding.
+
+**Root cause (research agent confirmed):** `PUT /api/printers/{id}/calibration-setup`
+was never implemented on the desktop. Real printers stay ineligible
+forever because `CalibrationMachineProfileId` / `ProcessProfileId` /
+`FilamentProfileId` are NULL and only the setup PUT populates them
+in production (`PrintersController.cs:5439-5577`,
+`api.ts:1486-1504`). Issue #1851 was closed with emulator-only fix.
+
+**Path C implemented:** 6 new Zod-validated IPC channels + HTTP methods
+
+- preload bridge + handlers.
+
+* `calibration:listExtendedProfiles` (GET `/api/slicer/profiles/extended`)
+* `calibration:listMachineProfilesForModel` (GET .../machine/for-model/{id})
+* `calibration:listProcessProfilesForMachines` (POST .../process/for-machines)
+* `calibration:listFilamentProfilesForMachines` (POST .../filament/for-machines)
+* `calibration:listCustomProfiles` (GET .../custom)
+* `calibration:setupPrinter` (PUT /api/printers/{id}/calibration-setup)
+
+Desktop IPC contract v2 → v3. Sidecar RPC handshake v1 untouched.
+
+**Identity model decision:** Unified `CalibrationSlicerProfileRef {name, guid, source, displayLabel, contentSha256}`. System profiles have no `Id` on the wire (canonical `Name` is identity); `/extended` is the bridge that carries Guids for all rows. Main-process resolves name → Guid by joining applicability lists against `/extended`; renderer never sees a `guid: null` ref for a system profile in the picker.
+
+**If-Match / 412 handling:** New `'calibrationSetupConflict'` error code (added to `CalibrationHttpErrorCode`, `CalibrationApiErrorCode`, `CALIBRATION_LOG_ERROR_CODES`). NEVER silently retried — the renderer must re-open the wizard. Silent retry against a stale precondition would clobber whatever concurrent change moved the row.
+
+**Tests added:**
+
+- `tests/calibrationHttp.pathC.test.ts` — 14 tests, fixtures built from
+  VERBATIM DTOs cited by line number in the research report.
+- `tests/ipc.calibrationSetup.test.ts` — 12 tests, IPC schema
+  round-trips + version bump assertion.
+- `tests/calibration.ipc.authorization-matrix.test.ts` — extended with 6
+  new MATRIX rows so the "exactly the profileId channels" control passes.
+
+**CI gate results (all ran in order):**
+
+| Command                         | Result                                                   |
+| ------------------------------- | -------------------------------------------------------- |
+| `check:provenance`              | ✅                                                       |
+| `verify:target-profiles`        | ✅                                                       |
+| `check:script-reachability`     | ✅                                                       |
+| `check:inert-class-field-seams` | ✅                                                       |
+| `typecheck`                     | ✅                                                       |
+| `lint`                          | ✅                                                       |
+| `format`                        | ✅ (after `format:write`)                                |
+| `test`                          | 26 new tests pass; failures all pre-existing or intended |
+
+**Test failures accounted for** — none caused by my changes:
+
+- 4 × `orcaProfileInstall.test.ts` timeouts — baseline (2) plus 2 machine-load-caused.
+- 2 × `calibration.snapshotProvenanceGuard.test.ts` — external pfarm1 checkout drift; I did not touch the C# snapshot files.
+- 9 × `calibrationProfileSelectionFlow.test.tsx` — Hicks's acceptance tests, INTENDED to fail until Dallas wires renderer.
+- 1 × `calibrationRefusedEnvironment.test.tsx` — same intent.
+
+## Learnings
+
+7. **Editing a densely-methoded class needs unique `old_str` context, EVERY time.** During insert-after-`apply()` in `calibrationHttp.ts`, my `old_str` matched two similar method boundaries and the edit accidentally dropped `async getProject(`. Caught by typecheck. **Fix:** always include the method BODY's first line or a nearby structural marker as part of the `old_str`, never just the closing brace of the preceding method.
+
+8. **Two hardcoded IPC version tests exist** — `tests/ipc.test.ts:32` and `tests/sidecar.test.ts:297` both explicitly `expect(IPC_CONTRACT_VERSION).toBe(N)`. Both must update on every bump. The `calibration.ipc.authorization-matrix.test.ts` also enforces channel enumeration; it fails LOUDLY when a new profile-scoped channel appears without a MATRIX row. That is the correct shape — one test that fails guides you to the fix.
+
+9. **Zod schema drift shows up in `CalibrationApiErrorCode` enum too.** Adding `'calibrationSetupConflict'` to `CalibrationHttpErrorCode` (main process) is not enough; the corresponding renderer-facing enum in `src/shared/ipc.ts` at `CalibrationApiErrorCode` must ALSO carry the code, or the `toApiError` mapping produces an invalid discriminated-union member and the response schema throws. Both places need the code.
+
+10. **Hicks's "intended to fail" acceptance tests are load-bearing.** They FAIL the whole test suite until Dallas wires the renderer. That is the correct behavior; do NOT weaken them. A green CI on `calibrationProfileSelectionFlow.test.tsx` today would mean either the flow works or the test is vacuous — no third option. The fact that they use `expect.fail` with specific "flow not implemented" messages is deliberate: they self-diagnose the failure mode.
+
+11. **Handler design decision recorded IN CODE COMMENTS above every handler.** The `/for-model` / `/for-machines` handlers make two HTTP calls per operator picker step (raw list + `/extended` for Guid resolution). Recorded the reasoning in code comments so a future session doesn't refactor them to pass `guid: null` refs to the renderer. Owner-facing decision goes in the decision file; implementation-facing decision goes at the callsite. Both are needed.
+
+## Method notes (turn 2)
+
+- Ran `npx tsc --noEmit -p tsconfig.json | Select-String "error TS" | Select-Object -First 40` after every meaningful edit, not as a final gate. Caught the dropped `getProject(` header in the second cycle instead of at test time.
+- Ran targeted `npx vitest run tests/<new-file>.test.ts` for the two new test files before running the full suite. Caught the `CalibrationApiErrorCode` enum omission in ~1s of vitest instead of ~5 minutes of the full suite.
+- Used `(Get-Content -Raw) -replace ... | Set-Content -NoNewline` for the 6-way `.next()` → `.beginFlow()` rewrite instead of six separate `edit` calls. Single atomic transform is safer than six that could each fail independently.
+- Captured `$LASTEXITCODE` was not needed in this session because I used exit-code-aware `Select-Object -Last N` after each command completed (not `-First N` upstream of a native command). Followed the .squad/known-lying-commands.md rule.
+- Left calibration-setup PUT's Idempotency-Key emission uncontrolled by a fixture that agrees with our test — the test asserts the header value from the mock's request, not from a pre-canned server response. That is the shape Hicks warned about avoiding.
+
+# Bishop — printerModelId enrichment (2026-08-22 turn 3)
+
+## Task
+
+Vasquez's follow-up after Dallas's cascade landed at `3e114396`: `ProfileSelectionSection` needs `printerModelId` on `CalibrationPrinterCandidate` to call `/for-model/{modelId}`, otherwise the operator sees the catalog-wide `/extended` list and Dallas's per-model custom filter falls back permissively. My job: thread a real Guid from server → wire → IPC contract → renderer.
+
+## Findings
+
+- `CalibrationCandidateDto` (`OlyForge3D/PrintFarmer:src/infra/Calibration/CalibrationContracts.cs:205-296`) does NOT carry `ModelId`. `CalibrationContextDto` inherits from it and also does not. Nothing under `/calibration-candidates` or `/calibration-context` exposes the catalog Guid.
+- `Printer` entity (`Domain/Printer.cs:231`) has `ModelId: Guid` (non-nullable in-domain).
+- Of the four `/api/printers/*` endpoints scanned:
+  - `GET /{id}` → `PrinterDto` — has `ModelName: string?`, no `ModelId`
+  - `GET /{id}/details` → `PrinterDetailsDto` — HAS `ModelId: Guid?` (Dtos/PrinterDetailsDto.cs:17)
+  - `GET /summary` → `PrinterSummaryDto` — no model info
+  - `GET /calibration-candidates` — no model info
+- `/details` is the only endpoint that carries the catalog Guid. Report anticipates this at line 418: "GET /api/printers/{P.id} (may need the details endpoint to get modelId)".
+
+## Decisions
+
+1. **Source**: enrich `listCalibrationPrinters` handler via parallel `getPrinterDetails(printerId)` per candidate. `.catch(() => null)` per promise, then `Promise.all` — a single 403/404 does not empty the farm. Bounded by `CALIBRATION_MAX_PRINTER_CANDIDATES = 500` (real farms are <30).
+2. **Contract version**: kept at v3. `printerModelId: z.string().uuid().nullable().optional().default(null)` is additive-nullable — old clients that omit the field parse; new handler always populates; not a breaking change to the message shape.
+3. **Nullability**: `null` means "model unknown" (Dallas's permissive fallback engages); a Guid means "match by exact model". Encoding "unknown" as `""` would collapse it into "known-but-matches-nothing" and silently defeat the fallback. This is documented in the schema comment, in the projection comment, and in the handler.
+4. **Precedence for future server-side follow-up**: if PrintFarmer later populates `printerModelId` on the candidate wire itself, the wire value wins (`printer.printerModelId ?? enrichedModelIds[index] ?? null`). A dedicated test proves the precedence by engineering a disagreement.
+
+## Files changed
+
+- `src/main/calibrationWire.ts`: added `printerModelId: ServerGuid.nullish().transform(v => v ?? null)` on `RemoteCalibrationCandidateDto`; forwarded through the `RemoteCalibrationPrinterCandidate` projection; added `RemotePrinterDetailsDto` schema at end of file (only `modelId` validated, `.passthrough()` for the rest).
+- `src/main/calibrationHttp.ts`: added `ROUTES.printerDetails(printerId)` and `getPrinterDetails(profileId, baseUrl, printerId, signal)`. Rationale comment above the method explains why failure is bubbled here and swallowed at the caller.
+- `src/shared/ipc.ts`: added `printerModelId: z.string().uuid().nullable().optional().default(null)` to `CalibrationPrinterCandidate` immediately after `printerModel`. Contract remains at v3.
+- `src/main/ipc.ts`: `CalibrationListPrinters` handler now fetches `/details` in parallel per candidate; merges via `printer.printerModelId ?? enrichedModelIds[index] ?? null`.
+- Tests: added 6 tests to `tests/calibrationHttp.pathC.test.ts` (`getPrinterDetails` — success, missing modelId, null modelId, URL/method, 404-reject control, 403-reject control). Added new file `tests/calibration.listPrinters.modelEnrichment.handler.test.ts` with 3 tests (enrichment populates, control: fetch failure does not drop printer and leaves `printerModelId: null`, precedence: wire wins over enrichment).
+- Test fixtures updated to include `printerModelId: null` (additive): `e2e/helpers/calibrationA11yFixture.ts`, `tests/calibration.workspace.test.tsx`, `tests/calibrationProfileSelectionFlow.test.tsx`, `tests/calibrationRefusalExplanation.test.ts`, `tests/calibrationRefusedEnvironment.test.tsx`. No assertions touched.
+
+## Learnings (turn 3)
+
+12. **Zod `.optional().default(null)` still emits required in the output type.** Input is optional, but the inferred output type has `printerModelId: string | null` — NOT `string | null | undefined` — because the default fills it in. Test fixtures typed against the output type must include the field; ones that parse raw objects can omit it. `.nullish()` behaves differently and gives `undefined | null | value`. The distinction bit me on 5 test-fixture files during this turn — a targeted grep pattern that finds "typed with `: CalibrationPrinterCandidate = {`" would catch these preemptively.
+
+13. **`.passthrough()` is right for a partial-view DTO.** `RemotePrinterDetailsDto` validates only `modelId`; the rest of `PrinterDetailsDto` passes through unchecked. If we ever add another field consumer, we validate that field; nothing about `.passthrough()` blocks strict validation of the rest later.
+
+14. **Parallel-fetch tolerance via per-promise `.catch(() => null)` is safer than `Promise.allSettled`.** With `Promise.allSettled` you still have to inspect every result's status; with `.catch` on each promise you get a plain `Promise.all` array where every position is either a value or `null` (or the type you declared). Ergonomically cleaner and forces the "what to substitute on failure" decision at the point of the fetch.
+
+15. **URL check with fetch mocks: use `String(call[0])`.** `fetchMock.mock.calls[0][0]` can be a URL object; strict `.toBe` on the string fails with "expected URL{} to be 'http://...'". Same file already had the `String(call[0])` pattern I missed — mirror it always.
