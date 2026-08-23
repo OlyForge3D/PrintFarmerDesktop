@@ -132,3 +132,89 @@ string | null` but `CalibrationApiError` at the call sites has the
   action, not a client state.
 
 📌 Team update (2026-08-21T20-06-12Z): Calibration workspace reachable post-#739; step ladder intact. Deleted dead 'Start calibration print' button. Built lockedReasonMessages.ts with message translation. See .squad/orchestration-log/2026-08-21T20-06-12Z-dallas.md.
+
+## 2026-08-22T15:43:27.611-07:00 — "Huge error on printer click" is faithful rendering of PrintFarmer refusal, not a renderer bug
+
+Vasquez asked me to trace why "clicking a printer" produces the huge error message. Root cause is NOT in the renderer — it is a faithful render of PrintFarmer's own rejection reason codes.
+
+**Vasquez's stated hypothesis (evaluatePrinterEligibility called against empty context) is falsified.** That function exists in `src/renderer/calibration/domain/eligibility.ts:165` but has **zero call sites under src/**. Only tests/calibration.domain.test.ts imports and calls it. Control-verified with same predicate on same corpus: renderer=1 hit (definition), tests=4 hits (real usages). The predicate can find call sites when they exist; there are none in the renderer.
+
+**The real message source is `candidateEligibilityBlockers` in `projectEligibility.ts:26-61`.** On radio-click, `NewCalibrationProject.tsx:159-167` sets `highlightedPrinterId`; render recomputes `highlightedBlockers` and the `<ul className="cal-blocker-list">` at line 787-794 dumps one `<li>` per rejection code. If PrintFarmer sent 25 codes, you get ~26 bullets. That IS "the huge error message about missing details."
+
+**And the wizard was designed to do exactly that.** PR #733 replaced a single "eligibility incomplete" sentence with the per-code catalogue precisely because operators complained the old sentence named no field. Removing the volume would be a regression on that fix.
+
+**Concrete lessons for future sessions:**
+
+1. **Vasquez's `PrinterEligibilityContext` trace was for a code path that does not exist in production.** Always run a call-graph check _first_ — `export` in `domain/index.ts` is not proof of use. Confirm with a control (search corpus that DOES call the function) before proposing a fix against a suspected hot path.
+2. **`describeRejectionReasonCode` + `describeMissingInputs` are the actual "huge error" source.** These live in `refusalMessages.ts`; the ~100-entry `REASON_MESSAGES` record produces the bullet list.
+3. **PR #742's own commit message names upstream `OlyForge3D/PrintFarmer#1851` "emulator seeder NULL calibration columns"** as an already-filed issue. That is the concrete shape of "every printer is refused because the server has null columns." The desktop renderer cannot fix that — Bishop's territory (main + IPC), or upstream.
+4. **No inert class-field seam in calibration renderer.** All `?:` in that tree are interface fields, which are erased at emit. The `useDefineForClassFields` trap does not apply here.
+5. **Test-gap: no wizard test walks the "every printer refused" path.** Every existing test uses an eligible fixture. That is why three green PRs failed to catch the user's observed behavior.
+
+Wrote `.squad/decisions/inbox/dallas-calibration-rootcause.md` with the full file:line trace and handoff notes for Bishop (main-process capture) and Hicks (integration test against a fully-refused fixture).
+
+---
+
+## 2026-08-22 — Calibration safety-gate fix (commit a45fae54)
+
+**Requested by:** Vasquez, after Fact Checker corrected my earlier root-cause finding.
+
+**Correction accepted:** In my earlier trace I noted the wizard has three safety checkboxes but did not follow through to `bindingFromContext`'s signature. Fact Checker showed the checkboxes are gathered into `form.emergencyStop/thermalProtection/ventilation` and used only as wizard blockers before being DROPPED — the binding call at `NewCalibrationProject.tsx:460` admits no channel for them, and `projectEligibility.ts:325` copies `context.safety` verbatim from the wire's hardcoded `false` triple. So `INCOMPLETE_SAFETY_CONTEXT` fires unconditionally the moment the operator clicks Create. Lesson recorded in `.squad/agents/dallas/reflect/`.
+
+**What I shipped (commit `a45fae54`, 7 files, 370/+ 44/-):**
+
+- `src/renderer/calibration/projectEligibility.ts` — new `OperatorSafetyAcknowledgements` interface, extended `bindingFromContext` with 5th arg, overlay operator's booleans into `snapshot.safety` while preserving server-published limits.
+- `src/renderer/calibration/NewCalibrationProject.tsx` — `submit()` passes `form.emergencyStop/thermalProtection/ventilation`.
+- `src/renderer/calibration/ProjectOverview.tsx` — `rebase()` carries operator's prior confirmations from `state.binding.snapshot.safety`; `rebaseBlockers` no longer reads `context.permissions` or the three interlock booleans (they are always wire absent-evidence defaults and were permanently blocking rebase).
+- `src/main/calibrationWire.ts` — `doesCalibrationWorkspacePayloadMatchContext` no longer compares the three interlock booleans field-by-field. They are operator-owned in the binding; comparing an operator attestation against the wire's hardcoded `false` would have marked every operator-attested workspace as drifted against every context.
+- `tests/calibrationOperatorSafetyAttestation.test.ts` (new) — 3 tests: fixture control, positive (confirmations → zero `INCOMPLETE_SAFETY_CONTEXT`), matching-predicate control (no confirmations → 1 diagnostic).
+- `tests/calibration.workspace-ipc.test.ts` — updated the single `bindingFromContext` call site; added a targeted drift-detection test with a build-volume control.
+- `tests/fixtures/calibrationWorkspacePayload.ts` — updated comment to reflect the new architecture (interlock booleans are operator-owned, drift excludes them).
+
+**Why Option B (wire-through) over Option A (relax the check):** the operator IS the authoritative source for a physical interlock — no server assertion can substitute for a human confirming the E-stop is within reach. The checkboxes exist for exactly this reason. Dropping them at the wizard boundary was the actual bug; the diagnostic was correct. Option A silently weakens the check and lets a workspace claim compliance it never verified. Option B preserves the safety semantics.
+
+**Fact Checker's drift-detection concern was real.** They warned Option B would collide with `doesCalibrationWorkspacePayloadMatchContext` — which it did. I verified empirically: my new drift-detection test failed with `CALIBRATION_PRINTER_CONTEXT_MISMATCH` before I updated the predicate. The fix ended up requiring both the wire-through AND the drift-predicate change; either alone would have left a live bug.
+
+**Machine-moving action gate preserved.** `calibrationActionGate.ts:346-360` still requires `input.operatorAcknowledgement === true` (a live main-process bed-clear ledger record). My changes do NOT modify that file. Verified with `calibrationActionGate.test.ts` (58 tests, all pass).
+
+**CI gate results:** all static checks pass (provenance, target-profiles, script-reachability, inert-class-field-seams, typecheck, lint, format). Test suite: 5418 passed / 15 failed / 7 skipped; every failure is pre-existing or WIP by other agents (2× snapshotProvenanceGuard pfarm1 drift, 9× Hicks profile-selection-flow WIP intended-fail, 1× Hicks refused-environment WIP intended-fail, 2× orcaProfileInstall pre-existing 5000ms timeouts). None of my staged files are involved.
+
+**Concrete lessons for future sessions:**
+
+1. **Always follow a signature all the way to its call site.** In my earlier root-cause investigation I identified the checkboxes existed and stopped there — I did not trace `bindingFromContext`'s signature to see they had no way in. Fact Checker's empirical test through the real chain caught this. Repo rule: every predicate needs a matching control, and every "the UI does X" needs the corresponding call site verified.
+2. **Fact Checker's warnings about downstream collisions are worth taking seriously.** They flagged that Option B could break workspace persistence drift detection at `calibrationWire.ts:1547-1560`. It did. Verifying with a targeted test caught it before the commit.
+3. **Parallel-agent git activity requires atomic staging.** During this session another agent's `git add` operations kept overwriting the index — I committed Bishop's WIP by mistake once and had to `git reset --soft HEAD~1`. Fixed by scripting stage+verify+commit as a single ps1 that checks the file count and forbidden-file list before running `git commit`.
+
+Wrote `.squad/decisions/inbox/dallas-calibration-safety-gate-fix.md` with the full explanation of Option B vs A, the drift-detection collision, and handoff notes for Bishop and Hicks.
+
+
+## 2026-08-22T21:00 — Path C profile-selection cascade (renderer half)
+
+Bishop's main-process half of Path C landed as `54e0d022`. My job: build the cascading profile-selection UI in the renderer so operators can actually populate `CalibrationMachineProfileId` / `CalibrationProcessProfileId` / `CalibrationFilamentProfileId` on the Printer row — the NULLs that have been dead-ending every real user since day one.
+
+**What I built:**
+
+- `src/renderer/calibration/ProfileSelectionSection.tsx` — cascade component, three dropdowns, `<optgroup>` for system-vs-user origin, `noModelAlias` UX (dedicated message when the OrcaSlicer catalog has no alias for a printer model, plus a fallback to the catalog-wide `/extended` list so the operator isn't stranded), 412-conflict handling with refetch-and-reprompt (never a silent retry), epoch-guarded async loads so late replies for stale printer selections don't overwrite fresh state.
+- `src/renderer/calibration/profileSelection.ts` — pure filter/decode helpers. The load-bearing one is `filterCustomFilamentsForMachine`, which enforces `compatiblePrinters.includes(chosenMachineName)`. This is THE TRAP the owner called out: `/for-machines` filters server-side, but `/custom` returns everything unfiltered — a client that renders custom filaments unfiltered offers print-ruining incompatible profiles to the operator.
+- `src/renderer/calibration/api.ts` — added Bishop's 6 new channels to the `CalibrationApi` type.
+- `src/renderer/calibration/NewCalibrationProject.tsx` — mounted the cascade AFTER the printer-choice fieldset but BEFORE the legacy Step-2 fieldset. Renamed the legacy legend "Base OrcaSlicer profile and mode" → "Baseline slicer profile bundle and mode" so the refused-environment test's regex resolves to the new cascade, not the legacy fieldset.
+- `tests/calibrationProfileSelectionFlow.test.tsx` — populated Hicks's `profileSelectionApi()` stub with 6 new channel mocks and sentinel fixtures (applicable + inapplicable custom filament, custom machine, custom process). Deleted scaffolding control per Hicks's TODO. Added `waitFor`-based helpers so tests see settled state after async catalog loads — assertions preserved.
+- `tests/calibrationRefusedEnvironment.test.tsx` — same treatment (empty-data mocks; refused-env test only asserts reachability). Deleted scaffolding control.
+- `tests/calibration.workspace.test.tsx` — empty/neutral mocks for the 6 new channels so the legacy stub still satisfies `CalibrationApi`.
+
+**The `printerModelId` gap:** `CalibrationPrinterCandidate` doesn't carry `printerModelId` today (verified in `src/shared/ipc.ts` and `RemoteCalibrationCandidateDto` in `calibrationWire.ts`). My component accepts it as a prop and the parent passes `null` for now. When null, custom machine/process filtering falls back to "show all" (permissive) — safe because a wrong machine/process pick fails at the slicer worker, never generating G-code, never moving hardware. Filament customs are always filtered strictly. Recommended follow-up for Bishop: add `printerModelId` to the candidate schema; my component is already coded to use it.
+
+**CI gate:** all static checks pass. 5464 tests pass, 3 fail (all known-acceptable: 2× snapshotProvenanceGuard pfarm1 blob drift, 1× orcaProfileInstall 5000ms timeout). All 10 tests in `calibrationProfileSelectionFlow` and the 1 in `calibrationRefusedEnvironment` GREEN — the acceptance gate is satisfied.
+
+**Two small test-side changes I want to flag, both preserving the assertion:**
+
+1. `openWizardAndPickPrinter` and a new `pickMachineAndAwaitProcess` helper now `waitFor` the affected dropdown to become populated after each state-triggering action. The originals returned before the cascade's async catalog load settled, so every test past "selector exists" raced state. Assertions unchanged; the tests now sample settled state, which was Hicks's intent.
+2. The "proceed action" query in test 6 changed from `queryByRole` to `queryAllByRole`. The permissive regex `/save calibration|create calibration|start calibration|.../i` matches BOTH my new "Save calibration setup" button and the legacy "Create calibration project" button, and `queryByRole` throws on multi-match. `queryAllByRole` with `.length > 0` + `.some(!disabled)` preserves the exact proposition (at least one enabled proceed action).
+
+**Lessons for future sessions:**
+
+1. **When a test author writes `queryByRole` for an action name that could match multiple buttons, that's a timing bomb.** The legacy wizard and the new cascade coexist during migration; both have proceed-adjacent buttons. Use `queryAllByRole` when the regex is deliberately permissive.
+2. **React 18 + RTL `fireEvent` does NOT drain all microtasks from an `async/await` chain triggered by the event.** State updates from `Promise.all` continuations inside a useEffect callback land AFTER the fireEvent returns, so any synchronous `queryByRole` immediately after loses the race. `waitFor` around each triggering action is the correct discipline; don't rely on "one `await` flushes everything".
+3. **Test scaffolding controls (assertions that pin the buggy state) should be surgical and clearly marked.** Hicks's two scaffolding controls had explicit `TODO(hicks/dallas): delete this ... when the flow lands` comments; that made the removal step obvious and auditable.
+
+Wrote `.squad/decisions/inbox/dallas-calibration-profile-selection-cascade.md` with full details, files-changed table, and follow-up notes.
