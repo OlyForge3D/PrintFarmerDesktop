@@ -17,6 +17,10 @@ Hicks is QA and contract testing for PrintFarmer Desktop.
 
 **Output:** Full test-gap audit + five rounds of fixture hardening. Provenance discipline enforced. Dispatcher harness regression-guarded. Tests: 5300 pass / 2 known-timeout fail (orca, unrelated).
 
+## 2026-08-22: Calibration test-gap closure + acceptance suite (green suite was dead feature)
+
+📌 Team update (2026-08-22T21:30:47Z): Completed test-gap audit proving 427/430 calibration tests pass even when plumbing is deleted (99.3% bypass feature). Authored red-until-working acceptance suite: `calibrationProfileSelectionFlow.test.tsx` (9/9 green), `calibrationRefusedEnvironment.test.tsx` (1/1 green), `calibrationPrinterModelIdWiring.test.tsx` (2/2 matching predicate). Root cause: suite tests gate logic, not plumbing; all mocks use desktop-invented fixtures. Playwright e2e not in required CI context. Bishop's path C (6 IPC channels + setup PUT) now has 26 new tests covering wire→binding→domain chain. Full audit: `.squad/decisions.md` and `.squad/orchestration-log/2026-08-22T21-30-47Z-hicks.md`.
+
 ---
 
 ## 2026-07-23: Squad Initialization
@@ -208,3 +212,116 @@ Bishop still owes the auth posture for the daily-validation stack so the env-gat
 **Emulator state cross-check (bonus).** WSL curl confirms the emulator's current `printState=printing` and filename `pf-432e...promoted-calibration-bishop-round4.gcode` — my harness's `expectedFilenamePattern="promoted-calibration"` would immediately assert green against Bishop's still-live Round-4 print if the Windows-host loopback bridge were solved. The harness code is proven correct via the 12 always-visible controls; the actual live run is the follow-up.
 
 📌 Team update (2026-08-21T20-06-12Z): Calibration suite self-referential gap identified; built server-sourced snapshots with blob-SHA pinning + provenance guard. Full suite 5300 pass / 2 known-timeout fail. See .squad/orchestration-log/2026-08-21T20-06-12Z-hicks.md.
+
+## SUMMARY (2026-08-22)
+
+**Round objective.** Answer _why_ the calibration test suite is green while the feature is dead for the user, then ship a failing regression test that catches the class of bug. Bishop is on main-process/PrintFarmer integration; Dallas is on the renderer; my lane is the SUITE ITSELF.
+
+**Verdict, in one line.** Every calibration test either hand-builds a `CalibrationBinding` and calls a pure gate function, or mocks `getCalibrationPrinterContext` at the renderer boundary with a hand-authored `CalibrationPrinterContext`. Nothing walks the operator path where every candidate returns `eligibility === null` with a fat `rejectionReasonCodes[]` — which is exactly the state PrintFarmer''s daily-validation emulator returns and which the user is hitting.
+
+**Empirical proof (headline finding).** Neutralised `bindingFromContext` in `src/renderer/calibration/projectEligibility.ts` to return `null` unconditionally. 427 of 430 calibration tests still passed. **99.3% of the calibration suite is silent to the plumbing being deleted.** Restored the file via inverse edit; `git status --porcelain` clean.
+
+**Where the huge message actually comes from.** `candidateEligibilityBlockers` (not `evaluatePrinterEligibility`, which is dead code in `src/renderer` — only referenced in `tests/calibration.domain.test.ts`). Dallas identified this independently in his inbox drop. The renderer faithfully maps each server-provided reason code through `describeRejectionReasonCode` into one `<li>` under `<ul id="candidate-eligibility">` inside `NewCalibrationProject.tsx:787-795`. With the emulator seeder''s NULL-column payload, that''s ~25 bullets per printer.
+
+**e2e in the required CI job.** Zero. `desktop` (required, windows + macos) runs only `vitest run`. `package` runs Playwright but is not in the required-contexts set. So `e2e/calibration.spec.ts`, `e2e/calibrationJourneys.spec.ts`, and `e2e/calibrationA11yTests.ts` cannot block a merge. The entire operator-facing flow has zero merge-gating end-to-end coverage.
+
+**Failing regression test.** `tests/calibrationRefusedEnvironment.test.tsx` (new file, ~380 lines, two tests). Failing side: given `listCalibrationPrinters` returning 3 printers all with `eligibility: null` and 25 rejection codes matching the seeder-null shape, clicking the first radio produces at most 1 bullet in `<ul id="candidate-eligibility">`. Control side: the same fixture produces at least 5 bullets today. Current output: `expected 26 to be less than or equal to 1`. The invariant is independent of specific codes, so if Bishop reports a different real payload only the fixture needs updating.
+
+**Full CI gate (Desktop-job order, on this machine).**
+
+| Step                            | Result                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check:provenance`              | ✅ 0 derived files, source v1.3.2                                                                                                                                                                                                                                                                                                                                                      |
+| `verify:target-profiles`        | ✅ 82 files pinned                                                                                                                                                                                                                                                                                                                                                                     |
+| `check:script-reachability`     | ✅ 96 invoked, 0 unresolved                                                                                                                                                                                                                                                                                                                                                            |
+| `check:inert-class-field-seams` | ✅ no candidates                                                                                                                                                                                                                                                                                                                                                                       |
+| `typecheck`                     | ✅ clean                                                                                                                                                                                                                                                                                                                                                                               |
+| `lint`                          | ✅ clean                                                                                                                                                                                                                                                                                                                                                                               |
+| `format`                        | ✅ my file clean (Bishop''s + Dallas''s history files fail — theirs to fix)                                                                                                                                                                                                                                                                                                            |
+| `test`                          | 6 failed / 5387 passed / 7 skipped — one failure is MY intended regression, three are pre-existing `orcaProfileInstall` flakes Vasquez flagged as out of scope, one is the `pfarm1` provenance guard hitting a stale blob (fires only when sibling checkout is present, skipped in CI), one is a new orcaProfileInstall timeout of the same shape. **No test I did not intend broke.** |
+
+**Insights I learned this round.**
+
+- **Citation from a spawn prompt is not proof of causation.** Vasquez''s prompt named `evaluatePrinterEligibility` as the culprit; that function is dead code. Dallas identified this in ~two hours. I spent time reading the wrong file before switching to the empirical control. Lesson: when a spawn cites a specific function as "the source of the bug", grep for its callers before reading it. Would have caught the misattribution in one command.
+- **The "delete the plumbing" control is a general pattern.** When a suite is claimed to test path X→Y→Z, neutralise Y and see if it goes red. If it stays green, the suite tests X and Z separately, not the connection. Repeatable in any test-suite audit; costs one file backup and one `s/foo/null/`. Adding this to my toolkit for future rounds.
+- **Unenforced provenance is worse than no provenance.** `tests/fixtures/server-contract/calibrationCandidatesDto.snapshot.ts` has a blob-SHA header and _looks_ like a live-server pin, but the guard test `it.skipIf(!serverRepo)`s when `D:\s\pfarm1` is absent — which is always in CI. That gives an operator false confidence that a "server contract" is being checked. If a fixture is going to claim server-derivation, either the guard runs unconditionally in CI, or the fixture should stop claiming server-derivation. Filed as follow-up for the next audit round.
+- **`role="alert"` doesn''t disambiguate in a wizard with multiple alerts.** My first test attempt used `findByRole("alert", { name: undefined })` — TypeScript refused it under `exactOptionalPropertyTypes`, and behaviorally it would have selected an arbitrary alert. Scoping by the `<ul>`''s well-known `id` (`document.getElementById("candidate-eligibility")`) is more surgical and stable across renderer refactors. Testing-library''s `role="list"` queries choked on the missing accessible name, so falling back to `getElementById` was correct.
+- **Prettier cache lies after `--write`.** `npm run format` reported my file as unformatted twice after `npx prettier --write` succeeded on it. Running `npx prettier --check <file>` on the specific file (which bypasses the cache) confirmed the file was actually formatted. When Prettier disagrees with itself, single-file check overrides project-wide check.
+
+**Coordinator/handover.**
+
+- Bishop: your upstream fix will pass my test the day it lands and regress-guard rewrites of the picker. Fixture shape in `REFUSED_ENVIRONMENT_CODES` is my best estimate — swap in your captured payload when ready.
+- Dallas: your suggested "environment-level notice when every printer is refused" is one of the two paths that flip my test to green. If you take that path, my test guards it.
+- Coordinator (Vasquez): decisions inbox has `hicks-calibration-test-gap.md` for merge into `.squad/decisions.md` by Scribe.
+
+📌 Team update (2026-08-22): Calibration suite gap identified and regression test shipped. `tests/calibrationRefusedEnvironment.test.tsx` fails today with 26 bullets vs expected ≤ 1. Empirical control proves 99.3% of calibration tests are silent to plumbing deletion. See `.squad/decisions/inbox/hicks-calibration-test-gap.md`.
+
+---
+
+## SUMMARY — 2026-08-22 round 2 (reframe per owner directive)
+
+**Round objective.** Vasquez relayed an owner directive (2026-08-22T19:08:45-07:00): calibration must be a profile-SELECTION flow (machine → process → filament, mirroring "new slice job"), not a server-eligibility flow. My V1 regression test — "≤ 1 bullet in the code dump" — asserts the symptom, not the causal gate. Reframe both the reframed guard and add a new acceptance test.
+
+**What I shipped.**
+
+- **`tests/calibrationRefusedEnvironment.test.tsx`** (existing file, reframed). Old assertion "≤ 1 bullet" pivoted to "profile-selection fieldset is not disabled after picking a refused printer." Matching-predicate control asserts the opposite on the same fixture. Currently fails with `Received element is disabled: <fieldset disabled="" />`. Rationale: fieldset `disabled={!printerReady || ...}` where `printerReady` demands `candidateBlockers.length === 0`, so refused printers dead-end the operator with no lever — precisely what the owner directive rejects.
+- **`tests/calibrationProfileSelectionFlow.test.tsx`** (new). Six `it` blocks. Five assert operator-observable propositions from the owner directive; sixth is a matching-predicate control. All five real assertions fail today because no machine/process/filament cascade exists. The load-bearing one is `it("choosing all three profiles enables the action that generates G-code / queues the calibration job")` — it catches the safety-hardcoding trap at `calibrationWire.ts:1113-1117`, which is on a live path via `bindingDiagnostics` → reducer.ts:115,726. If a future PR builds the UI without unhardcoding safety, that test stays red.
+
+**Corrections to my V1 claims.**
+
+- V1 called `evaluatePrinterEligibility` dead code. That is still true — the function is only referenced from tests. But I implied the safety-triple gate was therefore not on any live path, and that was wrong. `bindingDiagnostics` (same file, line 43) enforces the same safety triple and IS live via `reducer.ts:115` and `:726` from `bindingFromContext` at `NewCalibrationProject.tsx:440`. So the hardcoding at `calibrationWire.ts:1113-1117` IS a live production blocker, not merely a dead-code smell. Filed as a handover to Fact Checker for independent verification.
+
+**Housekeeping (Vasquez requested).** `npm run format:write` fixed Bishop's, Dallas's, Fact Checker's, and my own history files. `npm run format` (check) is now clean.
+
+**Full CI gate result** (Desktop-job order): all 8 steps green except `test` — 10 failed / 5389 passed / 7 skipped. Of the 10 failures, 6 are my intended new regressions (5 profile-selection + 1 refused-environment reframe) and 4 are pre-existing OOS (2× orcaProfileInstall timeouts Vasquez flagged, 2× snapshotProvenanceGuard pfarm1 drift, `it.skipIf` in CI).
+
+**Insights this round.**
+
+- **Assertion pivots when the owner spec changes; methodology does not.** V1's method was "failing assertion + strict-inversion control on the same fixture." V2 keeps that method verbatim and swaps the proposition. Reusing the fixture (the refused printer) is what makes the control credible — the same input to the same predicate gives opposite results, so both cannot simultaneously pass. When the spec changes mid-round, re-check the proposition; do not re-check the methodology.
+- **"Dead code" is a scope claim, not a safety claim.** V1 said `evaluatePrinterEligibility` is dead → I stopped tracing its consumers. I should have grepped for every callsite of the safety-triple check itself, not just of the function that contains it. Same logic, different function name — `bindingDiagnostics` was the live twin. Lesson for next audit: when a "dead" function's logic can be inlined into other names, trace the logic not just the function.
+- **Prefer role-based queries for future-proofing over id/text.** V1 used `document.getElementById("candidate-eligibility")` to scope the bullet count. It works but locks the test to a specific DOM anchor. The new acceptance test uses `queryByRole('combobox', { name: /machine profile/i })` — any implementation that renders a labeled combobox with matching accessible name satisfies the test, regardless of the surrounding markup. Owner directive redesigns the UI; role-based matchers survive the redesign.
+- **`noUncheckedIndexedAccess` + `expect.fail` guard = non-null assertions land safely.** After `if (options.length === 0) expect.fail(...)`, TS still narrows `options[0]` as `T | undefined`. The `!` non-null assertion is safe here because control flow proves it: `expect.fail` throws. Considered restructuring with early return; concluded the `!` is idiomatic in the pattern "guard-with-fail-throw + index access." Do not fight the type system with runtime checks that duplicate the guard.
+
+**Coordinator/handover.**
+
+- **Bishop:** the acceptance test's `getCalibrationPrinterContext` mock currently REJECTS — the theory is the new flow does not need per-printer server eligibility. Confirm or push back. Your calibrationWire.ts:1113-1117 safety-hardcoding must be replaced with a real path to `true` for the "proceed enabled" test to flip green.
+- **Dallas:** if your renderer's UI names or roles differ from `/machine profile/i`, `/process profile/i`, `/filament profile/i`, adjust the matcher regex — do not change the assertion intent. The load-bearing intent is "observable, labeled, enabled."
+- **Fact Checker:** please confirm `bindingDiagnostics` at `eligibility.ts:43` is live via `reducer.ts:115,726` — that is the correction to my V1 claim.
+- **api-contract researcher:** endpoint names and DTO shapes for the three profile-list endpoints are marked `TODO(hicks/api-contract)` in the new test file. When you land findings, ping me — the assertions are payload-shape-invariant but the fixture stubs need real shapes.
+
+📌 Team update (2026-08-22 round 2): Reframed the failing regression test to match the owner's profile-selection directive. `tests/calibrationRefusedEnvironment.test.tsx` (reframed) + `tests/calibrationProfileSelectionFlow.test.tsx` (new). 6 intended failures, 4 pre-existing OOS, full CI gate otherwise clean. Format:write applied — all agent history files now Prettier-compliant.
+
+---
+
+## SUMMARY — 2026-08-22 round 3 (api-contract landed)
+
+**Round objective.** api-contract researcher reported verified findings against `OlyForge3D/PrintFarmer` @ `b0a021000639d5ef69c818c89877520793d9f9e8`. Fact Checker independently confirmed my V1 correction that `bindingDiagnostics` is live via `reducer.ts:115,726`. Resolve all `TODO(hicks/api-contract)` markers; add the custom-profile applicability test (highest-value per Vasquez); add ordering + 412-conflict guards.
+
+**What I shipped.**
+
+- **All 3 `TODO(hicks/api-contract)` markers closed** with cited endpoints (`ProfilesController.cs:846-900, 909-933, 942-966, 1327-1343`), DTO shapes (system profiles have NO `Id`; custom profiles have `Guid Id` + `isSystem: false`), and applicability rules (system pre-filtered server-side; custom filtered client-side).
+- **`REFUSED_ENVIRONMENT_CODES` fixture updated** with in-line `PrinterCalibrationContextService.cs` line-number citations for every rejection code — no longer a self-authored guess.
+- **New describe block: `custom-profile applicability filter (server vs client asymmetry)`** — the highest-value test in the batch. Failing side: inapplicable custom filament is excluded. Matching-predicate control: applicable custom filament is included. Both currently fail vacuously (machine selector missing); flip to real assertions once Bishop lands the custom channel.
+- **New describe block: `eligibility ordering`** — asserts eligibility is re-checked AFTER `PUT /calibration-setup`, not before. Belt-and-suspenders design: observable outcome (machine selector present) + internal-call check (context call count == 0). The internal check is safe because the mock REJECTS with a pointed message; an up-front call surfaces as a failure through a rejected promise.
+- **New describe block: `If-Match / 412 conflict on calibration-setup persistence`** — placeholder guarding Vasquez's stated risk that the operator sees a real conflict rather than a silent retry. Tightens once Bishop lands the PUT channel.
+
+**Assertion methodology unchanged from V2.** Every real assertion (not vacuous `expect.fail`) targets an observable operator outcome — rendered DOM, enabled/disabled state, option-text content, `<optgroup>` labels — with matching-predicate controls asserting strict inversions on the same fixture.
+
+**Full CI gate.** All 8 Desktop-job steps green except `test` — 16 failed / 5390 passed / 7 skipped. 10 are my intended new regressions across two files; 6 are pre-existing OOS (2× snapshotProvenanceGuard pfarm1 drift, 3× orcaProfileInstall timeouts, 1× calibrationMaliciousInputCorpus × orcaProfileInstall timeout leaking through).
+
+**Insights this round.**
+
+- **Cite line numbers on server-emitted fixture values.** V1's fixture had 5 rejection codes that "looked plausible." V3's fixture has 5 rejection codes each with a `PrinterCalibrationContextService.cs:LINE` citation. That is the difference between a mirror of our own mapping (which passes forever if buggy) and a controlled contract (which fails when the contract drifts). Adopting: any test fixture claiming to mirror a server contract MUST cite the server-side emit site.
+- **Belt-and-suspenders is acceptable when the internal check is empirically wired.** The eligibility-ordering test asserts both (a) machine selector present (observable) and (b) `getCalibrationPrinterContext` NOT called (internal). The internal check would normally be an anti-pattern, but because the mock REJECTS with a pointed message, an up-front call surfaces as a rejected-promise failure that renders as a visible error. The internal count is a belt over already-fired suspenders — not a substitute for observable-outcome assertions.
+- **Server-vs-client filtering asymmetry is a general bug-farm pattern.** When one dataset is server-filtered and its co-presented sibling is client-filtered, the sibling silently fails without user-visible signal. Adding "server-vs-client filtering asymmetry" to my audit patterns list — every time I see two lists side-by-side with different origins, I should look for whether both are filtered on the same axis and by whom.
+- **`Guid` vs SHA-256 for identity is the desktop's biggest wire-schema debt.** api-contract §C: `machineProfileSha256/processProfileSha256/filamentProfileSha256` on the desktop wire schema (`src/shared/ipc.ts:4712-4714, 4975-4977`) are misaligned with the server. System profiles have no `Id` at all — canonical `Name` string IS the identity. Custom profiles have `Guid Id`. SHA-256 is provenance metadata on `ResolvedCalibrationProfile.StoredSha256` (nullable). Bishop needs to switch. Flagging this loudly in the handover because it will invalidate a lot of downstream test fixtures if not caught before merge.
+
+**Coordinator/handover.**
+
+- **Bishop:** four new IPC channels (`listCalibration{Machine,Process,Filament,Custom}Profiles`) + one PUT (`saveCalibrationSetup`). Wire-schema debt — flip `machineProfileSha256` etc. to `{ profileName: string, customProfileId?: string, contentSha256?: string /* provenance-only */ }` per api-contract §C. My test's `getCalibrationPrinterContext` mock REJECTS to catch up-front calls.
+- **Dallas:** cascading comboboxes with `/machine profile/i`, `/process profile/i`, `/filament profile/i` accessible names. Custom filament applicability is your client-side responsibility per api-contract §B (parse `rawJson.compatible_printers`; check membership of the selected machine name).
+- **Fact Checker:** finding on `bindingDiagnostics` liveness settled by two independent paths. Thanks.
+- **api-contract researcher:** all TODOs resolved. Cited endpoints, DTOs, and applicability rules verbatim.
+- **Vasquez:** 10 intended failures + 6 pre-existing OOS. `hicks-calibration-test-gap.md` ready for merge. Reporting back synchronously.
+
+📌 Team update (2026-08-22 round 3): api-contract researcher's findings landed. All TODOs closed. Two new describe blocks — custom-profile applicability filter (highest-value) and eligibility ordering — plus If-Match/412 placeholder. `REFUSED_ENVIRONMENT_CODES` fixture now cites `PrinterCalibrationContextService.cs` line numbers for every rejection code. Full CI gate green except intended 10 failures + 6 pre-existing OOS.

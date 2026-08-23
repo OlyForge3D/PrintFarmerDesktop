@@ -49,6 +49,10 @@ Empirical proof via SQL + paired API round-trips. Fix A works: `Moonraker Ready`
 
 Five sequential refusals, each legitimate:
 
+## 2026-08-22: Calibration Path C main-process plumbing (6 IPC channels + setup PUT)
+
+📌 Team update (2026-08-22T21:30:47Z): Implemented Path C main-process integration for profile-selection cascade (commits 54e0d022, 9f62a958). Root cause diagnosed: desktop never called `PUT /api/printers/{id}/calibration-setup`, leaving `CalibrationMachineProfileId`, `ProcessProfileId`, `FilamentProfileId` NULL on printer row → 15-40 rejection codes on every calibration attempt. Path C fix: 6 new Zod IPC channels for profile listing + setup PUT integration, Desktop IPC v2→v3, If-Match 412 conflict handling, printerModelId enrichment from details endpoint. Dallas wired renderer cascade (acceptance 9/9 green), Hicks proved test-gap (427/430 pass with plumbing deleted), Fact Checker verified safety-gate defect. Full write-up: `.squad/decisions.md` calibration entries and `.squad/orchestration-log/2026-08-22T21-30-47Z-bishop.md`.
+
 1. UNIQUE constraint collision on attempt id — UPDATE in place, not INSERT-then-recover.
 2. Filament check — both `Printers.CurrentMaterial` and `Toolheads.CurrentMaterial` null (Fix A seed doesn't set them). Load PLA.
 3. GCode integrity — `StoredGcodeIntegrityVerifier` opens `/app/gcode + FilePath + FileName` and SHA-256s bytes (cannot fake in-DB).
