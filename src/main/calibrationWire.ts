@@ -3021,3 +3021,361 @@ export const RemoteQueueSubscriptionResources = z
 export type RemoteQueueSubscriptionResources = z.infer<
   typeof RemoteQueueSubscriptionResources
 >;
+
+// --- Slicer profile selection (Path C, calibration-setup) ------------------
+//
+// These schemas mirror the PrintFarmer server DTOs that back the four profile
+// listing endpoints and the `PUT /api/printers/{id}/calibration-setup` route.
+// The wire is name-keyed for system profiles (there is no `Id` on the worker
+// DTOs), Guid-keyed for custom (database-owned) profiles, and Guid-keyed on the
+// PUT itself. Guids for system profiles are obtained from
+// `GET /api/slicer/profiles/extended` (the DB-backed row list that the React
+// `CalibrationSetupModal` uses).
+//
+// Verbatim citations (OlyForge3D/PrintFarmer @ b0a021000639d5ef69c818c89877520793d9f9e8):
+//   - MachineProfileDto:      src/slicer/Farm.Slicer.Module/Dtos/MachineProfileDto.cs:12-102
+//   - ProcessProfileDto:      src/slicer/Farm.Slicer.Module/Dtos/ProcessProfileDto.cs:12-120
+//   - FilamentProfileDto:     src/slicer/Farm.Slicer.Module/Dtos/FilamentProfileDto.cs:12-95
+//   - CustomProfile:          src/Web/ReactApp/src/services/slicerProfilesService.ts:229-269
+//   - CalibrationSetupRequestDto: src/Web/ReactApp/src/types/api.ts:1486-1504
+//   - CalibrationSetupResultDto:  src/Web/ReactApp/src/types/api.ts:1523-1537
+//   - PUT controller:         src/api/Controllers/PrintersController.cs:5439-5577
+//   - Extended list:          src/slicer/Farm.Slicer.Module.Api/Controllers/Slicing/ProfilesController.cs:144-158
+
+/** Length ceiling for a single profile name string. Name is identity for system profiles. */
+const MAX_PROFILE_NAME_LEN = 512;
+/** Cap on the number of profiles returned by any single listing endpoint. */
+const MAX_PROFILE_LIST = 2048;
+
+/**
+ * `MachineProfileDto` — the OrcaSlicer worker's authoritative machine profile.
+ * No `Id`. `Name` is identity; every other field is display / applicability
+ * metadata and is defaulted the way the C# DTO defaults it so an older or
+ * newer server that omits a member degrades that member rather than dropping
+ * the whole record.
+ */
+export const RemoteMachineProfile = z
+  .object({
+    name: z.string().min(1).max(MAX_PROFILE_NAME_LEN),
+    manufacturer: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? ''),
+    description: z
+      .string()
+      .max(4096)
+      .nullish()
+      .transform((v) => v ?? null),
+    // `printer_model` in JSON per [JsonPropertyName("printer_model")]; the
+    // desktop consumes it as `printerModel`. The server serializes both cases
+    // for camelCase clients; accept either shape.
+    printerModel: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? null),
+    printerVariant: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? null),
+    instantiation: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? true),
+    inherits: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? null),
+    nozzleDiameter: z
+      .number()
+      .finite()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+    nozzleType: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    isHighFlowNozzle: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    buildVolumeX: z
+      .number()
+      .finite()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+    buildVolumeY: z
+      .number()
+      .finite()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+    buildVolumeZ: z
+      .number()
+      .finite()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteMachineProfile = z.infer<typeof RemoteMachineProfile>;
+
+/**
+ * `ProcessProfileDto`. `compatible_printers` is a list of exact machine
+ * profile Names — the applicability rule. `compatible_printers_condition` is
+ * `[JsonIgnore]` on the server so it is never exposed; the server evaluates
+ * the OrcaSlicer condition itself when filtering `/for-machines`.
+ */
+export const RemoteProcessProfile = z
+  .object({
+    name: z.string().min(1).max(MAX_PROFILE_NAME_LEN),
+    quality: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? 'standard'),
+    compatiblePrinters: boundedWireList(
+      z.string().max(MAX_PROFILE_NAME_LEN),
+    ).default([]),
+    layerHeight: z
+      .number()
+      .finite()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+    infillPercentage: z
+      .number()
+      .finite()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? null),
+    supports: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    description: z
+      .string()
+      .max(4096)
+      .nullish()
+      .transform((v) => v ?? null),
+    instantiation: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? true),
+    inherits: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteProcessProfile = z.infer<typeof RemoteProcessProfile>;
+
+/** `FilamentProfileDto`. Applicability by `compatible_printers` name list. */
+export const RemoteFilamentProfile = z
+  .object({
+    name: z.string().min(1).max(MAX_PROFILE_NAME_LEN),
+    material: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? 'PLA'),
+    manufacturer: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? null),
+    compatiblePrinters: boundedWireList(
+      z.string().max(MAX_PROFILE_NAME_LEN),
+    ).default([]),
+    nozzleTemperature: z
+      .number()
+      .finite()
+      .nullish()
+      .transform((v) => v ?? null),
+    bedTemperature: z
+      .number()
+      .finite()
+      .nullish()
+      .transform((v) => v ?? null),
+    instantiation: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? true),
+    inherits: z
+      .string()
+      .max(MAX_PROFILE_NAME_LEN)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteFilamentProfile = z.infer<typeof RemoteFilamentProfile>;
+
+/**
+ * `ExtendedProfilesResponseDto` — DB-backed list of ALL profiles the server
+ * knows about, INCLUDING Guids for system profiles. This is the source we use
+ * to resolve a canonical Name to the Guid required by
+ * `PUT /api/printers/{id}/calibration-setup`.
+ *
+ * Server route: `GET /api/slicer/profiles/extended`
+ * Controller:   `ProfilesController.cs:144-158`
+ *
+ * The exact wire shape of each embedded row isn't dictated by the report so we
+ * accept a passthrough object per row and only require the fields we need for
+ * name→Guid resolution: `id` (Guid), `name`, and `profileType`.
+ */
+export const RemoteExtendedProfileEntry = z
+  .object({
+    id: ServerGuid,
+    name: z.string().min(1).max(MAX_PROFILE_NAME_LEN),
+    // Server enum spellings vary between builds. Accept the canonical trio
+    // ('machine' | 'process' | 'filament') and drop anything else.
+    profileType: z.enum(['machine', 'process', 'filament']),
+    isSystem: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? true),
+    printerModelId: ServerGuid.nullish().transform((v) => v ?? null),
+    createdAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    contentSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteExtendedProfileEntry = z.infer<
+  typeof RemoteExtendedProfileEntry
+>;
+
+/**
+ * The extended list may be shaped as either a flat array or as
+ * `{ profiles: [...] }`. Accept both; normalise to a flat array downstream.
+ */
+export const RemoteExtendedProfilesResponse = z
+  .union([
+    z
+      .object({
+        profiles: boundedWireList(RemoteExtendedProfileEntry),
+      })
+      .passthrough(),
+    boundedWireList(RemoteExtendedProfileEntry).transform((profiles) => ({
+      profiles,
+    })),
+  ])
+  .transform((v) => ({
+    profiles: (v.profiles ?? []).slice(0, MAX_PROFILE_LIST),
+  }));
+export type RemoteExtendedProfilesResponse = z.infer<
+  typeof RemoteExtendedProfilesResponse
+>;
+
+/**
+ * `CustomProfile` — user-created profile stored in the PrintFarmer DB with a
+ * Guid Id. Custom filament profiles carry `compatiblePrinters` inline; custom
+ * machine/process carry a `printerModelId` GUID for catalog scoping.
+ */
+export const RemoteCustomProfile = z
+  .object({
+    id: ServerGuid,
+    name: z.string().min(1).max(MAX_PROFILE_NAME_LEN),
+    profileType: z.enum(['machine', 'process', 'filament']),
+    isSystem: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    createdAt: ServerInstant.nullish().transform((v) => v ?? null),
+    rawJson: z
+      .string()
+      .max(1_048_576)
+      .nullish()
+      .transform((v) => v ?? null),
+    printerModelId: ServerGuid.nullish().transform((v) => v ?? null),
+    compatiblePrinters: boundedWireList(z.string().max(MAX_PROFILE_NAME_LEN))
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCustomProfile = z.infer<typeof RemoteCustomProfile>;
+
+/**
+ * `CustomProfilesListResponseDto`. Accept both `{ profiles: [...] }` and a
+ * bare array; some builds serialize a paged envelope, others a flat list.
+ */
+export const RemoteCustomProfilesList = z
+  .union([
+    z
+      .object({
+        profiles: boundedWireList(RemoteCustomProfile),
+      })
+      .passthrough(),
+    boundedWireList(RemoteCustomProfile).transform((profiles) => ({
+      profiles,
+    })),
+  ])
+  .transform((v) => ({
+    profiles: (v.profiles ?? []).slice(0, MAX_PROFILE_LIST),
+  }));
+export type RemoteCustomProfilesList = z.infer<typeof RemoteCustomProfilesList>;
+
+/**
+ * `CalibrationSetupRequestDto` — body of `PUT /api/printers/{id}/calibration-setup`.
+ * Guid strings; passing an all-zero Guid clears a binding. Only the three
+ * profile bindings are wired here — the report notes the full DTO also carries
+ * toolhead metrology, excluded regions and firmware sign-off, but the desktop
+ * caller sources those from the operator-visible printer context and the
+ * safety checkboxes elsewhere. Passthrough keeps this additive on the wire.
+ *
+ * Server: `PrintersController.cs:5439-5577` + `api.ts:1486-1504`.
+ */
+export const RemoteCalibrationSetupRequest = z
+  .object({
+    machineProfileId: ServerGuid.nullable(),
+    processProfileId: ServerGuid.nullable(),
+    filamentProfileId: ServerGuid.nullable(),
+  })
+  .passthrough();
+export type RemoteCalibrationSetupRequest = z.infer<
+  typeof RemoteCalibrationSetupRequest
+>;
+
+/**
+ * `CalibrationSetupResultDto` — server's response after the PUT succeeds.
+ * The desktop only needs to know it succeeded and to trigger a fresh
+ * `calibration-context` fetch to re-check eligibility.
+ *
+ * Passthrough because the server evolves this record additively; we only
+ * strictly require the acknowledgement fields the report cites in §F.1.
+ */
+export const RemoteCalibrationSetupResult = z
+  .object({
+    printerId: ServerGuid,
+    eligible: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
+    machineProfileId: ServerGuid.nullish().transform((v) => v ?? null),
+    processProfileId: ServerGuid.nullish().transform((v) => v ?? null),
+    filamentProfileId: ServerGuid.nullish().transform((v) => v ?? null),
+    updatedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    /**
+     * Server-reported opaque row version. Downstream operations that mutate
+     * the printer's calibration state (a follow-up PUT to change bindings)
+     * must send this back as `If-Match`.
+     */
+    rowVersion: z
+      .string()
+      .max(2048)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationSetupResult = z.infer<
+  typeof RemoteCalibrationSetupResult
+>;

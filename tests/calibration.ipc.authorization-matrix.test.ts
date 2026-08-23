@@ -441,6 +441,45 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
       backupHash: SHA256,
     }),
   },
+  // --- Path C: Slicer profile picker + calibration-setup -------------------
+  {
+    channel: IpcChannel.CalibrationListExtendedProfiles,
+    request: (profileId) => ({ profileId }),
+  },
+  {
+    channel: IpcChannel.CalibrationListMachineProfilesForModel,
+    request: (profileId) => ({ profileId, printerModelId: uuid(3) }),
+  },
+  {
+    channel: IpcChannel.CalibrationListProcessProfilesForMachines,
+    request: (profileId) => ({
+      profileId,
+      machineNames: ['Voron 2.4 350'],
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationListFilamentProfilesForMachines,
+    request: (profileId) => ({
+      profileId,
+      machineNames: ['Voron 2.4 350'],
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationListCustomProfiles,
+    request: (profileId) => ({ profileId }),
+  },
+  {
+    channel: IpcChannel.CalibrationSetupPrinter,
+    request: (profileId) => ({
+      profileId,
+      printerId: uuid(3),
+      machineProfileId: uuid(4),
+      processProfileId: uuid(5),
+      filamentProfileId: uuid(6),
+      rowVersion: 'rv-1',
+      operationId: uuid(7),
+    }),
+  },
 ];
 
 /** Reads the `code` a handler refused with, without assuming it threw an Error. */

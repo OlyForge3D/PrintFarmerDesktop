@@ -113,6 +113,10 @@ export const CALIBRATION_LOG_ERROR_CODES = [
   // would be coerced to 'unknownErrorCode' at the logging boundary and no
   // runbook could name it.
   'unclassifiedValidationFailure',
+  // A 412 on `PUT /api/printers/{id}/calibration-setup`. Distinct from the
+  // generic `revisionConflict` so log lines can point at the exact resource
+  // whose row moved underneath a calibration-setup PUT.
+  'calibrationSetupConflict',
   // CalibrationEngineErrorCode
   'NOT_FOUND',
   'UNAVAILABLE',
@@ -303,6 +307,8 @@ const ERROR_MESSAGES: Record<CalibrationLogErrorCode, string> = {
     'The server refused the operation as a conflict but gave a reason this build does not recognise; the cause is not established.',
   unclassifiedValidationFailure:
     'The server rejected the request as unprocessable but gave a reason this build does not recognise; the payload has not been shown to be invalid.',
+  calibrationSetupConflict:
+    'The printer calibration binding changed since the wizard was opened; re-open the wizard to see the current bindings.',
   NOT_FOUND: 'The requested calibration resource was not found locally.',
   UNAVAILABLE: 'Calibration is unavailable for the selected server profile.',
   CAPABILITIES_MISMATCH:
