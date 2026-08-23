@@ -871,10 +871,7 @@ export function NewCalibrationProject(): React.JSX.Element {
             <ProfileSelectionSection
               profileId={store.profileId}
               printerId={highlightedPrinterId}
-              // `CalibrationPrinterCandidate` does not (yet) carry the
-              // catalog-model Guid — the candidate DTO omits it and the wire
-              // mapper cannot invent it. When the field lands, wire it here.
-              printerModelId={null}
+              printerModelId={highlightedCandidate?.printerModelId ?? null}
               disabled={!canLoad || submitting || store.disabled}
               environment={store.environment}
               onSetupComplete={(printerId) => {

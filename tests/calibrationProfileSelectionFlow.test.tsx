@@ -103,11 +103,14 @@ const INAPPLICABLE_CUSTOM_FILAMENT_GUID =
   '22222222-2222-4222-8222-222222222205';
 const CUSTOM_MACHINE_GUID = '22222222-2222-4222-8222-222222222206';
 const CUSTOM_PROCESS_GUID = '22222222-2222-4222-8222-222222222207';
-// The catalog model Guid the fixture printer references. `CalibrationPrinter
-// Candidate` doesn't carry `printerModelId` today, so the renderer passes
-// `null` here and the custom machine/process filter falls back to "no model —
-// exclude for safety". Once the candidate DTO grows the field, wire it here
-// and both fixture customs will pass the model filter.
+// The catalog model Guid the fixture printer references. Bishop's commit
+// `9f62a958` added `printerModelId` to `CalibrationPrinterCandidate` via
+// enrichment from `GET /api/printers/{id}/details`; the fixture in this
+// file leaves it `null` deliberately so the custom machine/process filter
+// falls back to "no model — include all", which is the permissive fallback
+// the cascade uses when the server cannot supply a model. The matched-
+// predicate pair proving the wiring is exercised lives in
+// `tests/calibrationPrinterModelIdWiring.test.tsx`.
 const CUSTOM_PRINTER_MODEL_GUID = '22222222-2222-4222-8222-2222222222aa';
 // The canonical Name string for the sample system machine. `POST /api/slicer/
 // profiles/filament/for-machines` takes `{ machineNames: [<this>] }`; the
