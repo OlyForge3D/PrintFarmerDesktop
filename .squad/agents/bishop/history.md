@@ -274,3 +274,63 @@ Vasquez's follow-up after Dallas's cascade landed at `3e114396`: `ProfileSelecti
 14. **Parallel-fetch tolerance via per-promise `.catch(() => null)` is safer than `Promise.allSettled`.** With `Promise.allSettled` you still have to inspect every result's status; with `.catch` on each promise you get a plain `Promise.all` array where every position is either a value or `null` (or the type you declared). Ergonomically cleaner and forces the "what to substitute on failure" decision at the point of the fetch.
 
 15. **URL check with fetch mocks: use `String(call[0])`.** `fetchMock.mock.calls[0][0]` can be a URL object; strict `.toBe` on the string fails with "expected URL{} to be 'http://...'". Same file already had the `String(call[0])` pattern I missed — mirror it always.
+
+## 2026-08-22 — Calibration missing-inputs field-dependency analysis (requested by Vasquez)
+
+Analysis-only task (no code changes). Bucketed all 34 fields on PrintFarmer's `CalibrationSetupModal` "missing inputs" banner to determine whether PR #747 (Path C profile cascade) is merge-safe and merge-sufficient.
+
+**Key findings:**
+
+1. **`PUT /api/printers/{id}/calibration-setup` IS a partial-merge PATCH.** Verified against `CalibrationPrinterUpdateMapper.cs` at pinned SHA `b0a021`. Every `Set`/`SetString`/`SetJson`/`SetProfileId`/`SetDate` helper returns false when the requested value is null. The toolhead loop is guarded by `request.Toolheads is { Length: > 0 }`. **Our 3-field PUT does not wipe anything an operator previously entered.** PR #747 is safe to merge on the destructive-write axis.
+
+2. **Machine profile binding back-fills 12+4 fields** via runtime coalesce (`printer.X ?? derivedFacts.X`) in `PrinterCalibrationContextService.ValidateHardware`. The 4 nozzle-geometry fields are gated on `isActiveToolhead == true` (`ResolveActiveToolheadFacts:1636-1649`), so `activeToolheadIndex` must be set first for those.
+
+3. **Two banner fields are unreachable via the setup endpoint:** `hasEnclosure` and `maxTravelAcceleration`. Not on `CalibrationSetupRequestDto`. Web modal has the same limitation — requires admin `PUT /api/printers/{id}` under `printers:admin`. Server contract gap, not a desktop bug.
+
+4. **Firmware detection populates zero fields on the banner.** `DetectFirmwareIdentityAsync` at `PrintersService.cs:1698+` writes firmware family/version/dialect/detection metadata only. `SupportsPressureAdvance`/`SupportsFirmwareRetraction` are operator entries (bucket C), settable via setup PUT but not derivable.
+
+**Bucket counts:** A = 12 (+4 conditional) · B = 0 · C = 15 (2 unreachable via setup) · D = 1.
+
+**PR #747 verdict:** merge-safe, not merge-sufficient. A follow-up story is needed for a metrology form (11 inputs + 1 attestation + firmware-detect button + escalation banner for the two admin-gated fields).
+
+Full analysis with file:line evidence in `.squad/decisions/inbox/bishop-calibration-field-dependencies.md`.
+
+## 2026-08-23 — Calibration generation capability analysis (requested by Vasquez, session reconstruction)
+
+**Context:** A prior session was cleared mid-investigation. Two artefacts survived: my own `bishop-calibration-field-dependencies.md` (Path C bucket table) and the verified API contract at `printfarmer-api-contract.md`. The owner had reversed my Path C recommendation to Path A after my first analysis; I began implementing Path A (998 uncommitted lines). Then I found evidence that may invalidate Path A entirely, which is what this session's investigation resolved.
+
+**Full analysis in `.squad/decisions/inbox/bishop-calibration-generation-capability.md`.**
+
+**Key findings, in one paragraph each:**
+
+1. **Path A is not viable for a calibration print.** `SlicePrintBridgeController.cs:554-568` refuses any slice job carrying a `CalibrationProjectId` / `CalibrationAttemptId` / `CalibrationOrchestrationId` from `send-to-printer` with the code `calibration_primary_queue_required` — "Calibration slice output must be promoted as an immutable G-code artifact and created through POST /api/job-queue. Direct send and generic slice import are not allowed." An untagged slice job would sidestep the refusal but produce ordinary sliced Orca output, not calibration output, and would not exist at all for the runtime-Klipper methods (`pressure_advance_*`, `retraction`, `max_volumetric_speed`, `shrinkage`).
+
+2. **Eligibility is a hard wall at both project and attempt creation.** `CalibrationProjectService.cs:321`, `:1049`, `:3179-3184`: both `POST /api/calibration-projects` and `POST /.../attempts` call `IsExplicitlyEligible(context)` and refuse with `printer_not_calibration_eligible` when it is false. The gate covers `context.Eligible` **plus** `Firmware.Family == "Klipper"`, `Firmware.GcodeDialect == "Klipper"`, `Slicer.Engine == "OrcaSlicer"`, and canonical `Slicer.Distribution`. There is no lighter endpoint that bypasses this gate.
+
+3. **Only `final_verification` needs an external `Model3DId`.** For every other method, `CalibrationGenerationSaga.ResolveModelAsync` (`:911-967`) calls `CalibrationBodyGeometryFactory.Build(run.Specification)` to synthesize the body server-side, then stores it as a `Model3D` under the project owner. Our `assets/calibration-asset-manifest.json` is correct to leave `FlowRateCalibration` and `PressureAdvanceCalibration` disabled — the desktop should never need to ship those STLs.
+
+4. **`OrcaCalibrationPlanCompiler` and `KlipperCalibrationGcodeGenerator` are not alternatives — they run in series on every non-verification generation.** The Orca plan compiler produces the effective native profile the pinned OrcaSlicer worker slices from (attestation harness). The Klipper generator produces byte-deterministic Klipper G-code from the same specification. **The bytes published to `GcodeFileId` are the Klipper generator's output** (`ComposeFinalGcodeAsync:1589-1595`, `workerId: null` is the tell). The worker's sliced bytes are checksum-verified, then dropped.
+
+5. **PrintFarmer's own `compliance/calibration-provenance.json` has `approvedSources: []` and `entries: []`.** Every calibration file is filed as "Independent PrintFarmer implementation ... no external calibration source code was copied or adapted." Adopting OrcaSlicer as a provenance source anywhere in the PFD program would be a first-in-kind decision, not the ratification of an existing precedent.
+
+6. **The "golden" tests are not real goldens.** `CalibrationGoldenGenerationTests.cs:76-92` compares `second.X.Should().Be(first.X)` on two consecutive `Run(method, nozzle, directDrive)` invocations. No OrcaSlicer output is pinned anywhere in the server tree. These are same-build determinism / input-sensitivity tests; they prove nothing about parity. Classic self-referential-fixture pattern from `.squad/known-lying-commands.md`.
+
+7. **Generated output reaches the printer via `POST /api/job-queue` with the saga's `GcodeFileId`.** Never `send-to-printer`. Server-side controller: `JobQueueController.QueueJobAsync` at `:113-165` accepts `QueuePrintJobDto { GcodeFileId, ... }` + `Idempotency-Key` header, returns 201 with `Location: /api/job-queue/{id}` and `JobQueuePrintJobDto` on success.
+
+**Decisions I made:**
+
+- **Reversed my own reversal.** Path C was right after all; the 33-field wall is real, unavoidable, and cannot be picked around by a different endpoint because there is no other endpoint that produces a calibration artifact. Recorded this reversal explicitly in the decision file so future sessions do not go around the same loop.
+- **Discard Path A's slice/send channels, reshape its test into an inverted control.** The uncommitted 998 lines split cleanly: the wire changes go, the test file is kept but rewritten to prove `IsCalibrationSlice` refusal (same-predicate-opposite-result on the wire boundary, which is the right shape of test).
+- **Parity work belongs upstream in `OlyForge3D/PrintFarmer`, not the desktop.** The G-code the printer prints is authored by PrintFarmer's Klipper generator, not by the desktop. Any real goldens or OrcaSlicer provenance ratification has to live where the generator lives.
+
+**Learnings (turn):**
+
+16. **A "cheaper endpoint that bypasses the wall" is a hypothesis, not a finding — until you have read the refusal predicate on both endpoints and on every route by which the underlying resource can be created.** My first analysis measured only the eligibility gate at `GET /calibration-context`. This session found two more gates at the resource-creation aggregates (project and attempt). If I had read `CreateAttemptAsync` on the first pass I would not have recommended Path A.
+
+17. **`IsExplicitlyEligible` is stricter than `context.Eligible`.** Even a printer that has fully populated its 33 inputs but is not on Klipper/OrcaSlicer/canonical-distribution will fail the create-attempt check. Worth surfacing in the desktop eligibility UI so an operator with a Marlin/Prusa printer doesn't chase phantom rejections.
+
+18. **The saga uses the slicer as an attestation harness, not as the source of the printed bytes.** This is a subtle architectural choice — the sliced bytes are verified for identity/pinning but never published — and it means "parity with OrcaSlicer" is inherited only for the profile-slicing side-effects, not for the emitted G-code. This decisively closes the "just use OrcaSlicer's slicer" idea from the wrong side.
+
+19. **`compliance/calibration-provenance.json:approvedSources: []` is not silence, it is a statement.** Every calibration file in PrintFarmer has an explicit "Independent PrintFarmer implementation ... no external calibration source code was copied or adapted." claim as a `referenceRecord`. That is a stronger claim than "we haven't looked yet" — it is a positive assertion of independent authorship. Do not misread the empty `approvedSources` as an incomplete manifest.
+
+20. **The "golden" pattern trap on this codebase is `first == second` masquerading as `actual == pinned_expected`.** The former tests determinism; the latter tests parity. Only the latter survives a rewrite of the generator. Same lesson as Hicks's 427/430 tests-passing-with-plumbing-deleted case; different subsystem, same shape. Always ask: what value is `first` compared to when `second` did not exist yet?
