@@ -1714,6 +1714,31 @@ export const CalibrationPrinterCandidate = z
     displayName: z.string().min(1).max(256),
     /** Printer model/make string for display. */
     printerModel: z.string().max(256).nullable(),
+    /**
+     * Catalog `PrinterModel` GUID this printer maps to.
+     *
+     * Sourced by the main-process handler from `GET /api/printers/{id}/details`
+     * (`OlyForge3D/PrintFarmer:src/infra/Dtos/PrinterDetailsDto.cs:17`) —
+     * `CalibrationCandidateDto` does not include it on the wire. The renderer's
+     * cascading profile picker uses it to call
+     * `GET /api/slicer/profiles/machine/for-model/{modelId}` and to filter
+     * custom machine/process profiles by model.
+     *
+     * `null` deliberately means "model unknown" — the wire response was
+     * missing the field, the details enrichment fetch failed, or the operator
+     * is running a server build predating the model catalog. The renderer's
+     * permissive fallback (`src/renderer/calibration/profileSelection.ts:49-53`)
+     * shows the wider catalog pool rather than an empty picker in that case.
+     * Encoding "unknown" as an empty string would collapse it into "known
+     * value that matches nothing" and silently defeat the fallback — the exact
+     * shape the calibration contract exists to prevent.
+     *
+     * Additive on the response schema: `optional().default(null)` means older
+     * or hand-written clients that omit the field still parse; the field is
+     * always populated by the current main-process handler, so no version bump
+     * is needed. `nullable()` covers the "field known, value unknown" case.
+     */
+    printerModelId: z.string().uuid().nullable().optional().default(null),
     /** Whether the printer meets the Klipper firmware/dialect requirement. */
     firmwareCompatible: z.boolean(),
     /** OrcaSlicer profile identity associated with this printer. */

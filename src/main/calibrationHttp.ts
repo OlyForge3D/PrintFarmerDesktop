@@ -41,6 +41,7 @@ import type {
   RemoteCustomProfilesList,
   RemoteCalibrationSetupRequest,
   RemoteCalibrationSetupResult,
+  RemotePrinterDetailsDto,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -66,6 +67,7 @@ import {
   RemoteFilamentProfile as FilamentProfileSchema,
   RemoteCustomProfilesList as CustomProfilesListSchema,
   RemoteCalibrationSetupResult as CalibrationSetupResultSchema,
+  RemotePrinterDetailsDto as PrinterDetailsSchema,
 } from './calibrationWire.js';
 
 // --- Issue-#138 route templates (single authoritative source) ----------------
@@ -221,6 +223,16 @@ const ROUTES = {
   /** PUT — persist the three calibration profile Guids on the printer. */
   calibrationSetup: (printerId: string) =>
     `/api/printers/${encodeURIComponent(printerId)}/calibration-setup`,
+  /**
+   * GET — printer details, used by Path C only to source the catalog
+   * `PrinterModel` Guid that `CalibrationCandidateDto` omits from the wire.
+   *
+   * The full response is `PrinterDetailsDto`
+   * (`OlyForge3D/PrintFarmer:src/infra/Dtos/PrinterDetailsDto.cs:10`) — this
+   * client parses only `modelId`.
+   */
+  printerDetails: (printerId: string) =>
+    `/api/printers/${encodeURIComponent(printerId)}/details`,
 } as const;
 
 /**
@@ -1044,6 +1056,42 @@ export class CalibrationHttpClient {
     } finally {
       pending.dispose();
     }
+  }
+
+  /**
+   * `GET /api/printers/{printerId}/details` — used only to source the catalog
+   * `PrinterModel` Guid that the calibration-candidates list omits from the
+   * wire.
+   *
+   * Path C's `/for-model/{modelId}` endpoint needs a real Guid to return the
+   * system machine profiles applicable to a printer; without one the cascade
+   * degrades to the catalog-wide `/extended` list and shows profiles for every
+   * model instead of just the operator's. Every other server field on the
+   * details response is ignored here — this is a targeted enrichment, not a
+   * general printer read.
+   *
+   * Failure is deliberately swallowed at the call site (the `listPrinters`
+   * handler enriches with `Promise.allSettled`): a printer whose details
+   * cannot be read still surfaces in the candidate list, with
+   * `printerModelId: null`, which the renderer's permissive fallback (Dallas's
+   * `profileSelection.ts:49-53`) treats as "model unknown, show the wider
+   * pool". Losing the whole list because one printer's details endpoint
+   * returned 403 or 404 would reintroduce exactly the empty-list failure the
+   * candidate contract already exists to prevent.
+   */
+  async getPrinterDetails(
+    profileId: string,
+    baseUrl: string,
+    printerId: string,
+    signal: AbortSignal,
+  ): Promise<RemotePrinterDetailsDto> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.printerDetails(printerId),
+      PrinterDetailsSchema,
+      signal,
+    );
   }
 
   /**

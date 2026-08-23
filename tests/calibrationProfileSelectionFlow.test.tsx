@@ -207,6 +207,7 @@ function refusedButRealPrinter(
     printerId,
     displayName,
     printerModel: 'Klipper machine',
+    printerModelId: null,
     firmwareCompatible: false,
     orcaProfileId: null,
     isOnline: true,

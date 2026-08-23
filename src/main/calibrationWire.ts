@@ -448,6 +448,20 @@ const RemoteCalibrationCandidateDto = z
       .boolean()
       .nullish()
       .transform((v) => v ?? null),
+    /**
+     * Catalog `PrinterModel` GUID the printer maps to.
+     *
+     * Additive: PrintFarmer builds predating an eventual server-side follow-up
+     * that would include it on `CalibrationCandidateDto` omit the field. Absent
+     * therefore parses to `null`, and the main-process handler enriches it from
+     * `GET /api/printers/{id}/details` when possible. Absence and enrichment
+     * failure both resolve to `null` deliberately — never to an empty string —
+     * because the renderer's applicability filter treats `null` as "model
+     * unknown, take the permissive path" and any other value as "match by
+     * exact model". Collapsing those two states would silently defeat the
+     * fallback.
+     */
+    printerModelId: ServerGuid.nullish().transform((v) => v ?? null),
   })
   .passthrough();
 
@@ -617,6 +631,13 @@ export const RemoteCalibrationPrinterCandidate =
      * predating the field, where it stays null and is read as "not evaluated".
      */
     profilesEvaluated: dto.profilesEvaluated,
+    /**
+     * Catalog printer-model Guid, propagated from the wire dto. `null` on
+     * builds that do not include it on `CalibrationCandidateDto`; the main
+     * process handler enriches it from `/api/printers/{id}/details` before
+     * projecting into the renderer-facing `CalibrationPrinterCandidate`.
+     */
+    printerModelId: dto.printerModelId,
     eligibility: deriveCandidateEligibility(dto),
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<
@@ -3379,3 +3400,30 @@ export const RemoteCalibrationSetupResult = z
 export type RemoteCalibrationSetupResult = z.infer<
   typeof RemoteCalibrationSetupResult
 >;
+
+/**
+ * Partial view of `PrinterDetailsDto` — only the field we need for the Path C
+ * cascade.
+ *
+ * `CalibrationCandidateDto` (`/api/printers/calibration-candidates`) and
+ * `CalibrationContextDto` (`/api/printers/{id}/calibration-context`) both
+ * inherit from a base that has no catalog `PrinterModel` Guid on the wire.
+ * `PrinterDetailsDto` (`/api/printers/{id}/details`) is the only endpoint that
+ * exposes `ModelId: Guid?` today — cited server-side at
+ * `OlyForge3D/PrintFarmer:src/infra/Dtos/PrinterDetailsDto.cs:17`.
+ *
+ * We accept every other field via `.passthrough()` so an older or newer
+ * deployment shape does not fail parsing; only `modelId` is validated. The
+ * projection normalises `undefined`/absent to `null` because that is exactly
+ * the semantics the renderer's applicability filter expects (see
+ * `src/renderer/calibration/profileSelection.ts:26-53`): `null` means "model
+ * unknown, take the permissive path", any Guid means "match by exact model".
+ * Collapsing absent to an empty string would silently defeat that fallback,
+ * which is precisely the failure this contract fix exists to prevent.
+ */
+export const RemotePrinterDetailsDto = z
+  .object({
+    modelId: ServerGuid.nullish().transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemotePrinterDetailsDto = z.infer<typeof RemotePrinterDetailsDto>;

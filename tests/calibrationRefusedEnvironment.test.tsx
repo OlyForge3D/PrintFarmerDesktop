@@ -148,6 +148,7 @@ function refusedCandidate(
     printerId,
     displayName,
     printerModel: 'Emulated Klipper Machine',
+    printerModelId: null,
     firmwareCompatible: false,
     orcaProfileId: null,
     isOnline: true,

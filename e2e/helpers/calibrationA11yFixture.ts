@@ -667,6 +667,7 @@ export async function applyCalibrationScenario(
           printerId: ids.printerId,
           displayName: 'A11y Fixture Printer',
           printerModel: 'A11y Reference Klipper',
+          printerModelId: null,
           firmwareCompatible: true,
           orcaProfileId: ids.orcaProfileId,
           isOnline: scenario.offline !== true,

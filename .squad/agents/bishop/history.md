@@ -227,3 +227,46 @@ Desktop IPC contract v2 → v3. Sidecar RPC handshake v1 untouched.
 - Used `(Get-Content -Raw) -replace ... | Set-Content -NoNewline` for the 6-way `.next()` → `.beginFlow()` rewrite instead of six separate `edit` calls. Single atomic transform is safer than six that could each fail independently.
 - Captured `$LASTEXITCODE` was not needed in this session because I used exit-code-aware `Select-Object -Last N` after each command completed (not `-First N` upstream of a native command). Followed the .squad/known-lying-commands.md rule.
 - Left calibration-setup PUT's Idempotency-Key emission uncontrolled by a fixture that agrees with our test — the test asserts the header value from the mock's request, not from a pre-canned server response. That is the shape Hicks warned about avoiding.
+
+# Bishop — printerModelId enrichment (2026-08-22 turn 3)
+
+## Task
+
+Vasquez's follow-up after Dallas's cascade landed at `3e114396`: `ProfileSelectionSection` needs `printerModelId` on `CalibrationPrinterCandidate` to call `/for-model/{modelId}`, otherwise the operator sees the catalog-wide `/extended` list and Dallas's per-model custom filter falls back permissively. My job: thread a real Guid from server → wire → IPC contract → renderer.
+
+## Findings
+
+- `CalibrationCandidateDto` (`OlyForge3D/PrintFarmer:src/infra/Calibration/CalibrationContracts.cs:205-296`) does NOT carry `ModelId`. `CalibrationContextDto` inherits from it and also does not. Nothing under `/calibration-candidates` or `/calibration-context` exposes the catalog Guid.
+- `Printer` entity (`Domain/Printer.cs:231`) has `ModelId: Guid` (non-nullable in-domain).
+- Of the four `/api/printers/*` endpoints scanned:
+  - `GET /{id}` → `PrinterDto` — has `ModelName: string?`, no `ModelId`
+  - `GET /{id}/details` → `PrinterDetailsDto` — HAS `ModelId: Guid?` (Dtos/PrinterDetailsDto.cs:17)
+  - `GET /summary` → `PrinterSummaryDto` — no model info
+  - `GET /calibration-candidates` — no model info
+- `/details` is the only endpoint that carries the catalog Guid. Report anticipates this at line 418: "GET /api/printers/{P.id} (may need the details endpoint to get modelId)".
+
+## Decisions
+
+1. **Source**: enrich `listCalibrationPrinters` handler via parallel `getPrinterDetails(printerId)` per candidate. `.catch(() => null)` per promise, then `Promise.all` — a single 403/404 does not empty the farm. Bounded by `CALIBRATION_MAX_PRINTER_CANDIDATES = 500` (real farms are <30).
+2. **Contract version**: kept at v3. `printerModelId: z.string().uuid().nullable().optional().default(null)` is additive-nullable — old clients that omit the field parse; new handler always populates; not a breaking change to the message shape.
+3. **Nullability**: `null` means "model unknown" (Dallas's permissive fallback engages); a Guid means "match by exact model". Encoding "unknown" as `""` would collapse it into "known-but-matches-nothing" and silently defeat the fallback. This is documented in the schema comment, in the projection comment, and in the handler.
+4. **Precedence for future server-side follow-up**: if PrintFarmer later populates `printerModelId` on the candidate wire itself, the wire value wins (`printer.printerModelId ?? enrichedModelIds[index] ?? null`). A dedicated test proves the precedence by engineering a disagreement.
+
+## Files changed
+
+- `src/main/calibrationWire.ts`: added `printerModelId: ServerGuid.nullish().transform(v => v ?? null)` on `RemoteCalibrationCandidateDto`; forwarded through the `RemoteCalibrationPrinterCandidate` projection; added `RemotePrinterDetailsDto` schema at end of file (only `modelId` validated, `.passthrough()` for the rest).
+- `src/main/calibrationHttp.ts`: added `ROUTES.printerDetails(printerId)` and `getPrinterDetails(profileId, baseUrl, printerId, signal)`. Rationale comment above the method explains why failure is bubbled here and swallowed at the caller.
+- `src/shared/ipc.ts`: added `printerModelId: z.string().uuid().nullable().optional().default(null)` to `CalibrationPrinterCandidate` immediately after `printerModel`. Contract remains at v3.
+- `src/main/ipc.ts`: `CalibrationListPrinters` handler now fetches `/details` in parallel per candidate; merges via `printer.printerModelId ?? enrichedModelIds[index] ?? null`.
+- Tests: added 6 tests to `tests/calibrationHttp.pathC.test.ts` (`getPrinterDetails` — success, missing modelId, null modelId, URL/method, 404-reject control, 403-reject control). Added new file `tests/calibration.listPrinters.modelEnrichment.handler.test.ts` with 3 tests (enrichment populates, control: fetch failure does not drop printer and leaves `printerModelId: null`, precedence: wire wins over enrichment).
+- Test fixtures updated to include `printerModelId: null` (additive): `e2e/helpers/calibrationA11yFixture.ts`, `tests/calibration.workspace.test.tsx`, `tests/calibrationProfileSelectionFlow.test.tsx`, `tests/calibrationRefusalExplanation.test.ts`, `tests/calibrationRefusedEnvironment.test.tsx`. No assertions touched.
+
+## Learnings (turn 3)
+
+12. **Zod `.optional().default(null)` still emits required in the output type.** Input is optional, but the inferred output type has `printerModelId: string | null` — NOT `string | null | undefined` — because the default fills it in. Test fixtures typed against the output type must include the field; ones that parse raw objects can omit it. `.nullish()` behaves differently and gives `undefined | null | value`. The distinction bit me on 5 test-fixture files during this turn — a targeted grep pattern that finds "typed with `: CalibrationPrinterCandidate = {`" would catch these preemptively.
+
+13. **`.passthrough()` is right for a partial-view DTO.** `RemotePrinterDetailsDto` validates only `modelId`; the rest of `PrinterDetailsDto` passes through unchecked. If we ever add another field consumer, we validate that field; nothing about `.passthrough()` blocks strict validation of the rest later.
+
+14. **Parallel-fetch tolerance via per-promise `.catch(() => null)` is safer than `Promise.allSettled`.** With `Promise.allSettled` you still have to inspect every result's status; with `.catch` on each promise you get a plain `Promise.all` array where every position is either a value or `null` (or the type you declared). Ergonomically cleaner and forces the "what to substitute on failure" decision at the point of the fetch.
+
+15. **URL check with fetch mocks: use `String(call[0])`.** `fetchMock.mock.calls[0][0]` can be a URL object; strict `.toBe` on the string fails with "expected URL{} to be 'http://...'". Same file already had the `String(call[0])` pattern I missed — mirror it always.

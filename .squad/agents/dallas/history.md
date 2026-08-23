@@ -187,7 +187,6 @@ Wrote `.squad/decisions/inbox/dallas-calibration-rootcause.md` with the full fil
 
 Wrote `.squad/decisions/inbox/dallas-calibration-safety-gate-fix.md` with the full explanation of Option B vs A, the drift-detection collision, and handoff notes for Bishop and Hicks.
 
-
 ## 2026-08-22T21:00 — Path C profile-selection cascade (renderer half)
 
 Bishop's main-process half of Path C landed as `54e0d022`. My job: build the cascading profile-selection UI in the renderer so operators can actually populate `CalibrationMachineProfileId` / `CalibrationProcessProfileId` / `CalibrationFilamentProfileId` on the Printer row — the NULLs that have been dead-ending every real user since day one.

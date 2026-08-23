@@ -2176,6 +2176,31 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         signal,
       );
+      // Enrich each candidate with its catalog `PrinterModel` Guid from
+      // `GET /api/printers/{id}/details`. `CalibrationCandidateDto` omits the
+      // model Guid from the wire, so without this fetch the renderer's Path C
+      // cascade (`ProfileSelectionSection`) cannot call `/for-model/{modelId}`
+      // and degrades to the catalog-wide `/extended` list — showing machine
+      // profiles for every printer model rather than the operator's.
+      //
+      // Fetched in parallel via `Promise.allSettled` so one printer whose
+      // details endpoint returns 403/404 does not empty the whole list. A
+      // failed or absent enrichment resolves to `null`, which the renderer
+      // interprets as "model unknown, permissive fallback" via
+      // `src/renderer/calibration/profileSelection.ts:49-53` — deliberately
+      // distinct from a known-but-unmatched Guid.
+      const detailPromises = printers.printers.map((printer) =>
+        calibrationHttp
+          .getPrinterDetails(
+            selectedId,
+            ctx.profile.baseUrl,
+            printer.printerId,
+            signal,
+          )
+          .then((detail) => detail.modelId)
+          .catch(() => null as string | null),
+      );
+      const enrichedModelIds = await Promise.all(detailPromises);
       // Projected and validated one candidate at a time, for the same reason
       // the wire layer parses them one at a time: the response schema covers
       // the whole list, so a single candidate this projection cannot render
@@ -2187,16 +2212,25 @@ export function registerIpcHandlers(
       const projected: unknown[] = [];
       const renderableCandidates: RemoteCalibrationPrinterCandidate[] = [];
       let unprojectable = 0;
-      for (const printer of printers.printers) {
+      for (let index = 0; index < printers.printers.length; index += 1) {
+        const printer = printers.printers[index]!;
         const eligibility = projectCalibrationEligibility(printer);
         if (printer.profilesEvaluated !== false) {
           unprojectable += 1;
           continue;
         }
+        // Prefer the wire's own `printerModelId` (populated by builds that
+        // include it on `CalibrationCandidateDto`); fall back to the
+        // `/details` enrichment when the candidate wire is silent. Both paths
+        // resolve to `null` when neither has an answer — Dallas's permissive
+        // fallback triggers on `null`, not on empty string.
+        const printerModelId =
+          printer.printerModelId ?? enrichedModelIds[index] ?? null;
         const candidate = CalibrationPrinterCandidate.safeParse({
           printerId: printer.printerId,
           displayName: printer.displayName,
           printerModel: printer.printerModel,
+          printerModelId,
           firmwareCompatible: isExplicitCalibrationEligibilityComplete(printer),
           orcaProfileId: printer.orcaProfileId,
           isOnline: printer.isOnline,

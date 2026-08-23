@@ -525,3 +525,147 @@ describe('CalibrationHttpClient.putCalibrationSetup', () => {
     expect(result.machineProfileId).toBeNull();
   });
 });
+
+// -----------------------------------------------------------------------------
+// getPrinterDetails
+// -----------------------------------------------------------------------------
+//
+// Sourced from `OlyForge3D/PrintFarmer:src/infra/Dtos/PrinterDetailsDto.cs`:
+//   public sealed record PrinterDetailsDto(
+//     Guid Id, string Name, ..., Guid? ModelId, string? ModelName, ...);
+//
+// Only `modelId` is validated by our schema (`.passthrough()` accepts the rest)
+// because this endpoint is called for one purpose only: to enrich the
+// candidate list with the catalog `PrinterModel` Guid that
+// `CalibrationCandidateDto` omits.  A fixture that mirrored the full
+// `PrinterDetailsDto` would tempt a future change to read from a passthrough
+// field and silently create a second, un-schema'd wire coupling.
+describe('CalibrationHttpClient.getPrinterDetails', () => {
+  const detailsFixture = () => ({
+    id: PRINTER_ID,
+    name: 'Voron 2.4 350 — cell 3',
+    slugName: 'cell-3',
+    modelId: PRINTER_MODEL_ID,
+    modelName: 'Voron 2.4 350',
+    firmwareFamily: 'Klipper',
+    firmwareVersion: 'v0.12.0',
+    isOnline: true,
+    lastSeenAtUtc: '2026-08-20T18:30:00.000Z',
+  });
+
+  it('parses PrinterDetailsDto and returns the catalog modelId', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(detailsFixture()));
+    const client = makeClient(fetchMock);
+
+    const result = await client.getPrinterDetails(
+      PROFILE_ID,
+      BASE_URL,
+      PRINTER_ID,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.modelId).toBe(PRINTER_MODEL_ID);
+  });
+
+  it('coerces a missing modelId to null (server predates the field)', async () => {
+    // Same call, same fixture minus `modelId`. This is the "field known,
+    // value unknown" case that the schema's `.nullish().transform(v => v ?? null)`
+    // exists to normalise. The renderer's permissive fallback reads `null`
+    // as "model unknown, show the wider pool" — an empty string would
+    // collapse that into "known-but-matches-nothing" instead.
+    const withoutModel = detailsFixture();
+    delete (withoutModel as { modelId?: unknown }).modelId;
+    const fetchMock = vi.fn().mockResolvedValue(json(withoutModel));
+    const client = makeClient(fetchMock);
+
+    const result = await client.getPrinterDetails(
+      PROFILE_ID,
+      BASE_URL,
+      PRINTER_ID,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.modelId).toBeNull();
+  });
+
+  it('coerces an explicit null modelId to null (server has no catalog match)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json({ ...detailsFixture(), modelId: null }));
+    const client = makeClient(fetchMock);
+
+    const result = await client.getPrinterDetails(
+      PROFILE_ID,
+      BASE_URL,
+      PRINTER_ID,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.modelId).toBeNull();
+  });
+
+  it('targets GET /api/printers/{printerId}/details with the auth header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(detailsFixture()));
+    const client = makeClient(fetchMock);
+
+    await client.getPrinterDetails(
+      PROFILE_ID,
+      BASE_URL,
+      PRINTER_ID,
+      AbortSignal.timeout(5_000),
+    );
+
+    const call = fetchMock.mock.calls[0] as [
+      URL | string,
+      RequestInit | undefined,
+    ];
+    expect(String(call[0])).toBe(
+      `${BASE_URL}/api/printers/${PRINTER_ID}/details`,
+    );
+    expect(call[1]?.method ?? 'GET').toBe('GET');
+  });
+
+  // Control: prove the failure mode we tolerate. `getPrinterDetails` is
+  // meant to *raise* on HTTP failure so the caller (the `listPrinters`
+  // handler) can catch and record `printerModelId: null`. If the method
+  // silently swallowed the error, the handler would never learn the
+  // enrichment failed and might record something misleading — this control
+  // fails if the method starts absorbing errors.
+  it('rejects on a 404 so the caller can decide what to do', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{"error":"not found"}', {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const client = makeClient(fetchMock);
+
+    await expect(
+      client.getPrinterDetails(
+        PROFILE_ID,
+        BASE_URL,
+        PRINTER_ID,
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toBeInstanceOf(CalibrationHttpError);
+  });
+
+  it('rejects on a 403 (missing scope) so the caller can decide what to do', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{"error":"forbidden"}', {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const client = makeClient(fetchMock);
+
+    await expect(
+      client.getPrinterDetails(
+        PROFILE_ID,
+        BASE_URL,
+        PRINTER_ID,
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toBeInstanceOf(CalibrationHttpError);
+  });
+});

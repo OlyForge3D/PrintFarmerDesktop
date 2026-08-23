@@ -134,6 +134,7 @@ function refusedCandidate(
     printerId: 'aaaaaaaa-1111-4111-8111-222222222222',
     displayName: 'x400',
     printerModel: null,
+    printerModelId: null,
     firmwareCompatible: false,
     orcaProfileId: null,
     isOnline: true,
