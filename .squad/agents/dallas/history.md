@@ -217,3 +217,25 @@ Bishop's main-process half of Path C landed as `54e0d022`. My job: build the cas
 3. **Test scaffolding controls (assertions that pin the buggy state) should be surgical and clearly marked.** Hicks's two scaffolding controls had explicit `TODO(hicks/dallas): delete this ... when the flow lands` comments; that made the removal step obvious and auditable.
 
 Wrote `.squad/decisions/inbox/dallas-calibration-profile-selection-cascade.md` with full details, files-changed table, and follow-up notes.
+
+## 2026-08-23T07:30 — LAST INCH: printerModelId wired end-to-end (commit 9bdd7a45)
+
+Bishop's `9f62a958` threaded `printerModelId` from `GET /api/printers/{id}/details` through the `CalibrationPrinterCandidate` schema, closing the gap I flagged in the previous session. But the JSX prop in `NewCalibrationProject.tsx:874-877` still hardcoded `printerModelId={null}` with a stale comment saying the field wasn't yet available. That silently defeated the whole enrichment: every printer looked model-unknown to the cascade, `/extended` was the machine catalog source for every case, and custom machine/process profiles were never filtered by model. Vasquez called this out explicitly as the "test-green / user-wrong gap" the three prior PRs died from — the acceptance tests mock at the IPC boundary so they can't see which channel fires.
+
+**Fix (1 line + stale comment removed):** `printerModelId={highlightedCandidate?.printerModelId ?? null}`. Preserves Bishop's `null` vs Guid distinction — coercing to `''` would collapse the "model unknown → permissive fallback" case into the "model known → strict filter" case.
+
+**Matched-predicate test (`tests/calibrationPrinterModelIdWiring.test.tsx`, 2 tests):** same fixture, same mount, same operator action, only `printerModelId` differs between arms. Positive arm asserts `listCalibrationMachineProfilesForModel` is called with `{ profileId, printerModelId: <Guid> }`; matching-predicate control asserts it is NOT called when the field is `null` (and that `/extended` fills the machine list instead). Verified empirically: reverting the JSX to `null` makes the positive arm fail with `expected "spy" to be called 1 times, but got 0 times`; the control still passes. That is the pair the repo rule requires.
+
+**CI gate all green modulo the known-acceptable residuals:**
+
+- `check:provenance`, `verify:target-profiles`, `check:script-reachability`, `check:inert-class-field-seams`, `typecheck`, `lint`, `format` — all pass.
+- `test`: 5473 passed / 5 failed / 7 skipped. All 5 failures are known-acceptable: 2× `snapshotProvenanceGuard` (pfarm1 blob drift, `it.skipIf` in CI), 3× `orcaProfileInstall`-family 5000ms timeouts (pre-existing since before this thread — includes `orcaProfileInstall.test.ts:restores…` × 2 and `calibrationMaliciousInputCorpus.test.ts > symlinkJunctionEscape × orcaProfileInstall`).
+- Acceptance suites: `calibrationProfileSelectionFlow` (9/9), `calibrationRefusedEnvironment` (1/1), `calibrationPrinterModelIdWiring` (2/2) — all green.
+
+**Candid end-to-end blockers between the user and a working calibration run:**
+
+1. **Operator token scope (out-of-band, Bishop's flag).** First `PUT /api/printers/{id}/calibration-setup` needs the token to carry the `Calibration.Update` scope or it returns 403. If a farm was provisioned before that scope was added to the operator role, existing tokens will fail even though the UI works. This is a server-side ops task, not a desktop bug.
+2. **G-code generation path (`startCalibrationGeneration`, `getCalibrationOrchestrationStatus`, `getCalibrationQueueState`, `startCalibrationPrint`) is not exercised by the acceptance suite — those channels return `notImplemented` sentinels in the fixture.** The path is presumed already-working from before the profile-selection redesign — a user who successfully completes the cascade and setup PUT gets handed back to the pre-existing wizard for those steps. I did not re-verify that end-to-end path today; the pre-existing tests around `CalibrationStepWorkflow` and `calibrationActionGate` still pass, but nothing here proves the setup PUT → context refetch → generate → queue → print chain works as a single flow on a real printer. First real-hardware run may surface something.
+3. **Machine-moving-action gate preserved.** `calibrationActionGate.ts:346-360` still requires `input.operatorAcknowledgement === true` (a live main-process bed-clear ledger record). Not touched today; verified with `calibrationActionGate.test.ts` still passing.
+
+**Handoff:** Bishop is now the only person likely to touch this cascade — server-side enrichment cleanup, or if the `startCalibrationGeneration` chain needs work when the first real farm exercises it. Hicks's acceptance suite is stable and covers the profile-selection contract. My decision file at `.squad/decisions/inbox/dallas-calibration-profile-selection-cascade.md` has been extended with the LAST INCH section.
