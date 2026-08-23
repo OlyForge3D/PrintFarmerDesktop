@@ -635,12 +635,22 @@ describe('only an authoritative context may be bound', () => {
     ).not.toBeNull();
     const projected = projectCalibrationPrinterContext(authoritative);
     expect(
-      bindingFromContext(PROFILE_ID, projected, TOOLHEAD_GUID, {
-        filamentProjectId: 'filament-1',
-        provider: 'PrintFarmer',
-        product: 'PLA',
-        sku: 'PLA-BLACK',
-      })?.profileIdentities,
+      bindingFromContext(
+        PROFILE_ID,
+        projected,
+        TOOLHEAD_GUID,
+        {
+          filamentProjectId: 'filament-1',
+          provider: 'PrintFarmer',
+          product: 'PLA',
+          sku: 'PLA-BLACK',
+        },
+        {
+          emergencyStopAvailable: true,
+          thermalProtectionConfirmed: true,
+          ventilationAssessed: true,
+        },
+      )?.profileIdentities,
     ).toEqual(projected.profileIdentities);
   });
 
@@ -856,6 +866,66 @@ describe('printer-context freshness policy', () => {
         Promise.resolve(exact),
       ),
     ).resolves.toBe(true);
+  });
+
+  it('does not report drift when the operator-attested interlock booleans differ from the wire default', async () => {
+    // The three interlock booleans (emergencyStopAvailable, thermal, ventilation)
+    // are operator-owned in the workspace binding: they carry the wizard's
+    // checkbox attestations. PrintFarmer's `CalibrationContextDto` publishes no
+    // such block, so the wire correctly hardcodes them `false`. Before this
+    // fix the drift-detection field-by-field equality compared them, which
+    // meant an operator-attested `true` workspace would read as permanently
+    // drifted against every real context — refusing new-project creation with
+    // `CALIBRATION_PRINTER_CONTEXT_MISMATCH`.
+    //
+    // Assertion: the workspace binding carries `emergencyStopAvailable: true`
+    // (as an operator-run wizard would produce it), the wire produces
+    // `false`, and freshness resolves to `true` regardless — the interlocks
+    // are excluded from drift detection because no server field mirrors them.
+    const workspace = validWorkspace();
+    workspace.domainState.binding.snapshot.safety.emergencyStopAvailable = true;
+    workspace.domainState.binding.snapshot.safety.thermalProtectionConfirmed = true;
+    workspace.domainState.binding.snapshot.safety.ventilationAssessed = true;
+    // The Zod parse in `validWorkspace()` deep-copies, so `binding.snapshot`
+    // and `snapshotHistory[0]` are distinct objects. Both must be mutated in
+    // lockstep or the workspace fails the `binding must match latest snapshot`
+    // shape check (`ipc.ts` `workspaceIssue`), which would fire before the
+    // freshness check even runs.
+    const latestHistorySnapshot = workspace.domainState.snapshotHistory.at(-1);
+    if (latestHistorySnapshot !== undefined) {
+      latestHistorySnapshot.safety.emergencyStopAvailable = true;
+      latestHistorySnapshot.safety.thermalProtectionConfirmed = true;
+      latestHistorySnapshot.safety.ventilationAssessed = true;
+    }
+    const exact = RemoteCalibrationPrinterContext.parse(contextDto());
+    expect(exact.safety?.emergencyStopAvailable).toBe(false);
+    expect(exact.safety?.thermalProtectionConfirmed).toBe(false);
+    expect(exact.safety?.ventilationAssessed).toBe(false);
+    await expect(
+      resolveCalibrationWorkspaceFreshness(request(workspace), null, () =>
+        Promise.resolve(exact),
+      ),
+    ).resolves.toBe(true);
+
+    // Matching-predicate control: mutating a server-owned field (build volume
+    // Z) on the same context yields a genuine drift. If both assertions were
+    // to pass together, drift detection would be trivially permissive; if
+    // both were to fail, the exclusion would be too narrow. Same fixture,
+    // opposite result.
+    const drifted = RemoteCalibrationPrinterContext.parse({
+      ...contextDto(),
+      snapshot: {
+        ...contextDto().snapshot,
+        buildVolume: { x: 220, y: 220, z: 999 },
+      },
+    });
+    await expect(
+      resolveCalibrationWorkspaceFreshness(request(workspace), null, () =>
+        Promise.resolve(drifted),
+      ),
+    ).rejects.toMatchObject({
+      code: 'CALIBRATION_PRINTER_CONTEXT_MISMATCH',
+    });
   });
 
   it('requires every exact profile identity while keeping legacy drafts editable offline', async () => {

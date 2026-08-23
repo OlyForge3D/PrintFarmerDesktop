@@ -1536,8 +1536,17 @@ export function doesCalibrationWorkspacePayloadMatchContext(
   // is nothing to compare against the workspace's recorded safety envelope.
   // This previously returned false outright, which did not detect drift — it
   // simply made every workspace unmatchable, blocking creation and refresh for
-  // all printers. When the server does supply the block, every field is still
-  // compared exactly.
+  // all printers. When the server does supply the block, every server-owned
+  // field is still compared exactly.
+  //
+  // The three interlock booleans (`emergencyStopAvailable`,
+  // `thermalProtectionConfirmed`, `ventilationAssessed`) are **operator-owned**
+  // in the workspace binding: they carry the wizard's checkbox attestations,
+  // which no server field mirrors. They are deliberately not compared here,
+  // because comparing an operator attestation against the wire's hardcoded
+  // `false` default is not drift — it is the difference between "the operator
+  // said so" and "the server never mentioned it", and reporting that as drift
+  // permanently invalidated every workspace against every context.
   //
   // This is drift detection, not authorisation: actions that move the machine
   // are gated in `calibrationActionGate.ts` on canonical effective permissions,
@@ -1555,12 +1564,7 @@ export function doesCalibrationWorkspacePayloadMatchContext(
       remoteSafety.maximumBedTemperatureC ===
         snapshot.safety.maximumBedTemperatureC &&
       remoteSafety.maximumVolumetricRateMm3S ===
-        snapshot.safety.maximumVolumetricRateMm3S &&
-      remoteSafety.emergencyStopAvailable ===
-        snapshot.safety.emergencyStopAvailable &&
-      remoteSafety.thermalProtectionConfirmed ===
-        snapshot.safety.thermalProtectionConfirmed &&
-      remoteSafety.ventilationAssessed === snapshot.safety.ventilationAssessed);
+        snapshot.safety.maximumVolumetricRateMm3S);
   return (
     context.printerId === printer.backendPrinterId &&
     context.configurationId === printer.printerConfigurationId &&

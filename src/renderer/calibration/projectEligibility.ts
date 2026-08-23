@@ -265,11 +265,30 @@ export function profileMatchesProject(
   );
 }
 
+/**
+ * The three physical-interlock confirmations the operator makes at the wizard.
+ *
+ * PrintFarmer publishes none of these — the server cannot know whether an
+ * emergency stop is wired, whether thermal runaway protection is switched on
+ * in Klipper's config, or whether the printer's location is ventilated. The
+ * operator is the authoritative source; the wizard collects a checkbox for
+ * each, and this shape carries them into the binding so the safety context
+ * evaluates a *true* fact about the world instead of the wire's hardcoded
+ * `false` default (which is the correct server-side default: absent evidence
+ * is not a safety assurance).
+ */
+export interface OperatorSafetyAcknowledgements {
+  readonly emergencyStopAvailable: boolean;
+  readonly thermalProtectionConfirmed: boolean;
+  readonly ventilationAssessed: boolean;
+}
+
 export function bindingFromContext(
   profileId: string,
   context: CalibrationPrinterContext,
   selectedToolId: string,
   filament: CalibrationBinding['filament'],
+  safetyAcknowledgements: OperatorSafetyAcknowledgements,
 ): CalibrationBinding | null {
   if (
     !context.isCurrent ||
@@ -286,12 +305,16 @@ export function bindingFromContext(
     context.slicerDistribution !== 'upstream' ||
     context.profileIdentities === null ||
     context.profileIdentities === undefined ||
-    // Machine limits are required because the snapshot records them; the
-    // interlock booleans inside are not consulted here. `permissions` is not
-    // required at all: `CalibrationContextDto` has no such member, so requiring
-    // it made every real context unbindable and blocked project creation
-    // outright rather than gating anything. Authorisation is enforced by the
-    // action interlock against the capability payload's effective permissions.
+    // Machine limits (bed volume, temperatures, flow) are required because the
+    // snapshot records them; those come from the server. The three interlock
+    // booleans inside `safety` are *not* consulted here — they are supplied by
+    // `safetyAcknowledgements` below, minted from the operator's wizard
+    // checkboxes, because PrintFarmer publishes only `false` for those fields
+    // and cannot know them. `permissions` is not required at all:
+    // `CalibrationContextDto` has no such member, so requiring it made every
+    // real context unbindable and blocked project creation outright rather
+    // than gating anything. Authorisation is enforced by the action interlock
+    // against the capability payload's effective permissions.
     context.safety === null
   ) {
     return null;
@@ -322,7 +345,21 @@ export function bindingFromContext(
           material: tool.nozzle.material,
         },
       })),
-      safety: context.safety,
+      // Server-published physical limits carried through, with the operator's
+      // three interlock confirmations replacing the wire's hardcoded `false`
+      // defaults. This is the same layering as the rest of the binding: the
+      // server owns identity and limits, the operator owns physical-world
+      // attestations that only they can make.
+      safety: {
+        buildVolumeMm: context.safety.buildVolumeMm,
+        maximumNozzleTemperatureC: context.safety.maximumNozzleTemperatureC,
+        maximumBedTemperatureC: context.safety.maximumBedTemperatureC,
+        maximumVolumetricRateMm3S: context.safety.maximumVolumetricRateMm3S,
+        emergencyStopAvailable: safetyAcknowledgements.emergencyStopAvailable,
+        thermalProtectionConfirmed:
+          safetyAcknowledgements.thermalProtectionConfirmed,
+        ventilationAssessed: safetyAcknowledgements.ventilationAssessed,
+      },
     },
     selectedToolId: selected.toolId,
     selectedToolheadId: selected.toolheadId,
