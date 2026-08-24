@@ -667,44 +667,6 @@ export function CalibrationStepWorkflow({
     [store],
   );
 
-  // Criterion 14: pick, validate and store asset SHA-256
-  const handlePickAndValidateAsset = useCallback(async () => {
-    const pickRes = await calibrationApi().pickCalibrationAssetFile({
-      allowedExtensions: ['3mf', 'stl'],
-      title: 'Select calibration asset',
-    });
-    if (pickRes.status !== 'ok') return;
-    const validateRes = await calibrationApi().validateCalibrationAssetFile({
-      approvalId: pickRes.approvalId,
-      method: 'sha256',
-    });
-    if (validateRes.status === 'ok') {
-      // Persist SHA-256 with the domain attempt so it survives a workspace
-      // reload (criterion 14a). Prefer the orchestration attempt ID; fall back
-      // to the active domain attempt for the current stage.
-      const attemptId =
-        orchStatus?.attemptId ??
-        [...state.attempts]
-          .filter((a) => a.stageId === stageId)
-          .reverse()
-          .find((a) => a.status === 'inProgress')?.attemptId;
-      if (attemptId) {
-        void store.storeAttemptAssetSha256(attemptId, validateRes.sha256);
-      }
-    }
-  }, [orchStatus, state.attempts, stageId, store]);
-
-  // Criterion 14: open manifest URL through the allowlisted IPC channel only
-  const handleOpenManifestUrl = useCallback(async () => {
-    // Load the manifest to obtain the actual reviewed sourceUrl; never
-    // hardcode a URL that may not be in the allowlist.
-    const manifestRes = await calibrationApi().getCalibrationAssetManifest();
-    if (manifestRes.status !== 'ok') return;
-    const url = manifestRes.entries[0]?.sourceUrl;
-    if (!url) return;
-    void calibrationApi().openCalibrationManifestUrl({ url });
-  }, []);
-
   const stageAttempts = state.attempts.filter(
     (attempt) => attempt.stageId === stageId,
   );
@@ -722,15 +684,6 @@ export function CalibrationStepWorkflow({
       (queueJob?.calibrationAttemptId ?? activeAttempt?.attemptId),
   );
 
-  // Criterion 14a: SHA-256 from durable workspace state so provenance
-  // survives a workspace reload. Key is the orchestration attempt ID when
-  // available; otherwise the active domain attempt for this stage.
-  const displaySha256 =
-    (orchStatus?.attemptId ?? activeAttempt?.attemptId)
-      ? (project.record.workspaceState.assetSha256ByAttemptId?.[
-          orchStatus?.attemptId ?? activeAttempt?.attemptId ?? ''
-        ] ?? null)
-      : null;
   const selectedAttempt = state.attempts.find(
     (attempt) => attempt.attemptId === progress.selectedAttemptId,
   );
@@ -1595,33 +1548,6 @@ export function CalibrationStepWorkflow({
                 createId={store.environment.createId}
                 now={store.environment.now}
               />
-            )}
-
-            {/* Asset manifest storage and navigation — criterion 14 */}
-            {queueJobId !== null && (
-              <section className="cal-step-section" aria-label="Asset manifest">
-                <button
-                  type="button"
-                  className="cal-button"
-                  data-testid="pick-validate-asset"
-                  onClick={() => void handlePickAndValidateAsset()}
-                >
-                  Pick and validate asset file
-                </button>
-                {displaySha256 !== null && (
-                  <p data-testid="validated-asset-sha256">
-                    Asset SHA-256: {displaySha256}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  className="cal-button"
-                  data-testid="open-manifest-url"
-                  onClick={() => void handleOpenManifestUrl()}
-                >
-                  Open calibration manifest
-                </button>
-              </section>
             )}
 
             {/* Bed-clear safety dialog — criteria 7, 12 */}

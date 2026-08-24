@@ -1357,29 +1357,6 @@ export function CalibrationWorkspaceStoreProvider({
     [bumpAndSave, environment],
   );
 
-  /**
-   * Persist the validated asset SHA-256 checksum with the given domain attempt
-   * ID. Used by `handlePickAndValidateAsset` so provenance survives a reload.
-   */
-  const storeAttemptAssetSha256 = useCallback(
-    async (attemptId: string, sha256: string): Promise<void> => {
-      const project = activeProjectRef.current;
-      if (project === null) return;
-      const existing =
-        project.record.workspaceState.assetSha256ByAttemptId ?? {};
-      const payload: CalibrationWorkspacePayload = {
-        ...payloadFor(project),
-        assetSha256ByAttemptId: { ...existing, [attemptId]: sha256 },
-      };
-      await bumpAndSave(
-        replacePayload(project, payload),
-        environment.now(),
-        'Asset SHA-256 saved with attempt.',
-      );
-    },
-    [bumpAndSave, environment],
-  );
-
   const refreshProjectContext =
     useCallback(async (): Promise<CalibrationPrinterContext | null> => {
       const project = activeProjectRef.current;
@@ -1741,7 +1718,6 @@ export function CalibrationWorkspaceStoreProvider({
       setPhysicalMatch,
       addPhoto,
       storePrintObservation,
-      storeAttemptAssetSha256,
       refreshProjectContext,
       announce,
       reportError,
@@ -1790,7 +1766,6 @@ export function CalibrationWorkspaceStoreProvider({
       selectedProfileId,
       selectedStageId,
       setPhysicalMatch,
-      storeAttemptAssetSha256,
       storePrintObservation,
       sync,
       unhydratedProjects,

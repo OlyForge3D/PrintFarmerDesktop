@@ -208,26 +208,6 @@ next.
 - **Rollback:** withdraw the release. By this stage every server-side switch is
   already on, so rollback is a distribution action, not a configuration one.
 
-## External asset manifest gate
-
-Every entry in `assets/calibration-asset-manifest.json` is `enabled: false`
-today, each with a concrete `disabledReason`. This is a deliberate release
-posture, not an oversight.
-
-Flipping any entry to `enabled: true` requires **all** of:
-
-- a reviewed `sourceUrl`,
-- a named `author`,
-- a declared redistributable `license` and an `attribution` string,
-- a checksum policy — a non-null `expectedSha256` — and a passing validation
-  fixture.
-
-`tests/calibrationRolloutRunbook.test.ts` asserts the checksum and license half
-mechanically: no entry can be `enabled: true` without a non-null
-`expectedSha256` and a non-empty `license`. The review half — that the licence
-is genuinely redistributable and the source genuinely approved — is a human
-judgement and is **not** machine-checked. Do not read a green test as approval.
-
 ## Closing rule
 
 Implementation PRs close **child** issues. They never close the epic (#42) and
@@ -247,4 +227,3 @@ implementing part of a child closes that child, not #57.
   a switch, this repository and this document can agree with each other and
   both be wrong. That gap is the cross-repository contract risk tracked in
   #138.
-- **That the asset licences are acceptable.** See above.

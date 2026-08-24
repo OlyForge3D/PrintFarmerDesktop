@@ -240,57 +240,6 @@ const RECORDS = new Map(
       'verificationFailed',
       'ZIP magic bytes; also the fixture that would matter if a decompressor ever appeared',
     ],
-
-    // --- calibration asset manifest ---
-    'asset-control.stl': [
-      null,
-      'calibrationAssetManifest',
-      'control',
-      'ok',
-      'a minimal structurally exact binary STL; the reachability control for every asset cell',
-    ],
-    'asset-deep-nesting.stl': [
-      'deepJson',
-      'calibrationAssetManifest',
-      'malicious',
-      'badMagicBytes',
-      'deeply nested JSON wearing a .stl extension; never parsed as JSON',
-    ],
-    'asset-duplicate-keys.stl': [
-      'duplicateKeys',
-      'calibrationAssetManifest',
-      'malicious',
-      'badMagicBytes',
-      'duplicate-key JSON wearing a .stl extension',
-    ],
-    'asset-wrong-magic.stl': [
-      'wrongMagicBytes',
-      'calibrationAssetManifest',
-      'malicious',
-      'badMagicBytes',
-      'content that is not STL behind a .stl name',
-    ],
-    'asset-extension-mismatch.3mf': [
-      'mimeExtensionMismatch',
-      'calibrationAssetManifest',
-      'malicious',
-      'badExtension',
-      'STL content offered under a .3mf extension the manifest does not declare',
-    ],
-    'asset-gcode-shaped.stl': [
-      'gcodeOrScriptShaped',
-      'calibrationAssetManifest',
-      'malicious',
-      'badMagicBytes',
-      'G-code and shell text behind a .stl name',
-    ],
-    'asset-triangle-count-overflow.stl': [
-      'oversized',
-      'calibrationAssetManifest',
-      'malicious',
-      'badMagicBytes',
-      'declares 0xFFFFFFFF triangles in 84 bytes: an allocation request from a header field',
-    ],
   }),
 );
 
@@ -547,46 +496,6 @@ w(
     filament_type: 'ESCAPED',
   }),
 );
-
-// --- calibration asset fixtures ------------------------------------------
-function binaryStl(triangleCount, actualTriangles = triangleCount) {
-  const buf = Buffer.alloc(80 + 4 + actualTriangles * 50, 0);
-  buf.write('PFD synthetic binary STL corpus fixture', 0, 'ascii');
-  buf.writeUInt32LE(triangleCount, 80);
-  return buf;
-}
-
-w('asset-control.stl', binaryStl(1));
-w('asset-extension-mismatch.3mf', binaryStl(1));
-// 20 bytes: below the 84-byte binary-STL floor and not "solid ", so the
-// content type cannot be detected at all.
-w('asset-wrong-magic.stl', Buffer.alloc(20, 0x41));
-// Header claims 0xFFFFFFFF triangles; the file is one triangle long.
-w('asset-triangle-count-overflow.stl', binaryStl(0xffffffff, 1));
-// G-code shaped, deliberately under 84 bytes.
-w(
-  'asset-gcode-shaped.stl',
-  executableShaped('G28 ; home\nG1 X10 Y10 F3000\nM104 S200\nM84'),
-);
-// A duplicate-key JSON document offered as an .stl, under 84 bytes.
-w('asset-duplicate-keys.stl', '{"a":1,"a":2}\n');
-
-// A deeply nested JSON document offered as an .stl. Padded so that bytes
-// 80..83 are the ASCII "zzzz" the binary-STL reader will interpret as a
-// triangle count, which makes the rejection deterministic.
-{
-  let body = '{"n":'.repeat(40) + '1' + '}'.repeat(40) + '\n';
-  const prefix = '{"pad":"';
-  // Build: prefix + padding so that offsets 80..83 are "zzzz".
-  const padLen = 80 - prefix.length;
-  const head = prefix + 'p'.repeat(padLen);
-  const doc = Buffer.concat([
-    Buffer.from(head, 'ascii'),
-    Buffer.from('zzzz', 'ascii'),
-    Buffer.from('","body":' + body, 'ascii'),
-  ]);
-  w('asset-deep-nesting.stl', doc);
-}
 
 // --- install payloads -----------------------------------------------------
 w(

@@ -64,12 +64,14 @@ at `compliance/printer-calibration-provenance.json`. `THIRD_PARTY_NOTICES.md`,
 CI step formed the surrounding enforcement.
 
 That apparatus was removed on **2026-08-23** together with the printer-
-calibration surface introduced by PR #747, because the desktop no longer plans
-to redistribute third-party calibration content:
+calibration surface introduced by PR #747, because the desktop redistributes no
+third-party calibration content:
 
-- **Calibration models are read from the user's local OrcaSlicer installation**
-  (located by `src/main/orcaProfileDiscovery.ts`, from `resources/calib/` in
-  the discovered install), not shipped by PFD.
+- **The OrcaSlicer worker resolves calibration models from its own OrcaSlicer
+  resources; PFD neither bundles nor transfers them.** The worker image
+  contains `resources/calib/` from the OrcaSlicer distribution it is built on,
+  and applies the per-object overrides at slice time. The desktop names a
+  calibration step and the three profiles, and never sees the model bytes.
 - At the time of removal, the manifest guarded **zero** derived files:
   `derivedRoots` referenced four directories, none of which existed in the
   repository, and every one of the 27 `sourceDecisions` entries had an empty
@@ -104,5 +106,7 @@ newly-bundled licence.
   the `check:provenance` step in `.github/workflows/ci.yml` and
   `.github/workflows/release.yml`, and five `.github/CODEOWNERS` entries whose
   sole subject was the above.
-- Local Orca discovery, which is where calibration models now come from:
-  `src/main/orcaProfileDiscovery.ts`.
+- Where calibration models come from now: the OrcaSlicer worker, from its own
+  `resources/calib/` tree. Model resolution and per-object override
+  application both live server-side; the desktop names a step and three
+  profiles and never handles the model bytes.

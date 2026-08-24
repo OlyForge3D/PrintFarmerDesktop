@@ -39,11 +39,6 @@ const RUNBOOK_PATH = path.join(
   'runbooks',
   'calibration-rollout.md',
 );
-const MANIFEST_PATH = path.join(
-  repoRoot,
-  'assets',
-  'calibration-asset-manifest.json',
-);
 
 const runbook = readFileSync(RUNBOOK_PATH, 'utf8');
 
@@ -316,68 +311,6 @@ describe('calibration rollout runbook — the eight stages', () => {
             `nobody can safely start.`,
         ).toBe(true);
       }
-    }
-  });
-});
-
-describe('external calibration asset manifest gate', () => {
-  interface ManifestEntry {
-    method?: unknown;
-    enabled?: unknown;
-    disabledReason?: unknown;
-    license?: unknown;
-    expectedSha256?: unknown;
-  }
-
-  function entries(): ManifestEntry[] {
-    const parsed = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as {
-      entries?: ManifestEntry[];
-    };
-    return parsed.entries ?? [];
-  }
-
-  it('has at least one entry', () => {
-    // Same guard as above: every rule below is vacuous over an empty manifest.
-    expect(
-      entries(),
-      'The calibration asset manifest has no entries. The gate below cannot ' +
-        'fail, so it guards nothing.',
-    ).not.toHaveLength(0);
-  });
-
-  it('requires a checksum and a declared license on every enabled entry', () => {
-    for (const entry of entries()) {
-      if (entry.enabled !== true) {
-        continue;
-      }
-      expect(
-        typeof entry.expectedSha256 === 'string' &&
-          entry.expectedSha256.length > 0,
-        `Manifest entry "${String(entry.method)}" is enabled with no ` +
-          `expectedSha256. An enabled entry without a checksum policy is an ` +
-          `unpinned third-party asset in a shipped build.`,
-      ).toBe(true);
-      expect(
-        typeof entry.license === 'string' && entry.license.length > 0,
-        `Manifest entry "${String(entry.method)}" is enabled with no declared ` +
-          `license. #57 forbids bundling a model without an independently ` +
-          `approved redistributable license.`,
-      ).toBe(true);
-    }
-  });
-
-  it('requires a concrete reason on every disabled entry', () => {
-    for (const entry of entries()) {
-      if (entry.enabled !== false) {
-        continue;
-      }
-      expect(
-        typeof entry.disabledReason === 'string' &&
-          entry.disabledReason.length > 0,
-        `Manifest entry "${String(entry.method)}" is disabled with no ` +
-          `disabledReason. "Disabled for now" with no reason is how an entry ` +
-          `gets enabled by someone who cannot tell why it was off.`,
-      ).toBe(true);
     }
   });
 });

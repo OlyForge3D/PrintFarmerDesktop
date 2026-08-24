@@ -105,9 +105,9 @@ exercised in CI.
 
 PFD is licensed `AGPL-3.0-only` (see `LICENSE`, `THIRD_PARTY_NOTICES.md`, and
 ADR 0001 at `docs/adr/0001-printer-calibration-source-provenance.md`).
-Calibration models are read from the user's local OrcaSlicer install rather
-than bundled by PFD, so the desktop currently redistributes no third-party
-calibration content.
+Calibration models are resolved by the OrcaSlicer worker from its own
+OrcaSlicer resources; PFD neither bundles nor transfers them, so the desktop
+redistributes no third-party calibration content.
 
 Two standing carve-outs apply to any future work that adapts upstream sources:
 

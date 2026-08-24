@@ -27,12 +27,6 @@ export type CalibrationApi = Pick<
   // --- Queue reconciliation (issue #54) ------------------------------------
   | 'pollCalibrationQueueChanges'
   | 'getCalibrationSubscriptionResources'
-  // --- External calibration asset manifest (issue #54) ---------------------
-  | 'getCalibrationAssetManifest'
-  | 'pickCalibrationAssetFile'
-  | 'validateCalibrationAssetFile'
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  | 'openCalibrationManifestUrl'
   // --- Machine → process → filament profile cascade -----------------------
   //
   // Consumed by the profile-selection cascade in `NewCalibrationProject`.

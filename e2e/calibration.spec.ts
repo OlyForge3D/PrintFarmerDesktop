@@ -1,22 +1,15 @@
 /**
- * Calibration workspace Playwright E2E tests (D-07, A-02, S-04).
+ * Calibration workspace Playwright E2E tests (D-07).
  *
  * Ported from PR #135 e2e/calibration.spec.ts, lines 1–1404.
  * Covers the IPC / preload boundary layer only (no DOM-coupled tests).
  *
  * Coverage areas:
- *   - Security boundary: openCalibrationManifestUrl IPC exists, window.open blocked
  *   - Preload bridge availability (A-02, S-01, S-04)
  *   - CalibrationApi does not expose generic URL primitives (S-04)
  *   - D-07: Generation + orchestration + queue + bed-clear IPC sequences
  *
  * API adaptations vs PR #135 (see docs/pr135-calibration-port.md for rationale):
- *   - openCalibrationExternalUrl({linkId}) → openCalibrationManifestUrl({url})
- *     Merged takes a full https:// URL validated by isManifestSourceUrl()
- *     rather than an opaque linkId resolved server-side. Tests pass manifest
- *     URLs and assert that non-manifest URLs are returned as {status:'error'}.
- *   - validateCalibrationLocalModel → validateCalibrationAssetFile
- *   - openCalibrationLocalModel → pickCalibrationAssetFile
  *   - CalibrationStartGenerationRequest: methodOptions field removed (strict schema
  *     uses `options?: CalibrationMethodOptions` instead).
  *   - CalibrationAcknowledgeBedClearRequest: jobEtag → rowVersion,
@@ -808,17 +801,6 @@ void openTemperatureStage;
 
 // ─── A-02 / S-01 / S-04: Allowlisted external navigation IPC ─────────────────
 
-test('openCalibrationManifestUrl is present on the preload bridge (A-02, S-01)', async () => {
-  // Adaptation: PR135 checked for openCalibrationExternalUrl (linkId-based).
-  // Merged exposes openCalibrationManifestUrl(url) validated by isManifestSourceUrl().
-  const fnType = await page.evaluate(
-    () =>
-      typeof (window as unknown as { printFarmer?: Record<string, unknown> })
-        .printFarmer?.openCalibrationManifestUrl,
-  );
-  expect(fnType).toBe('function');
-});
-
 test('no generic openExternalUrl(url:string) primitive on printFarmer bridge (S-04)', async () => {
   const hasGeneric = await page.evaluate(
     () =>
@@ -840,36 +822,9 @@ test('renderer window.open is blocked by setWindowOpenHandler (S-04)', async () 
   expect(result).toBe(true);
 });
 
-test('openCalibrationManifestUrl rejects malformed URL via Zod schema (S-05)', async () => {
-  // Adaptation: PR135 tested that an invalid linkId was rejected by the preload
-  // schema. In merged, the schema validates `url` as z.string().url().max(2048).
-  // Passing a non-URL string causes the main-process request.parse() to throw,
-  // which propagates as an IPC error and surfaces as a thrown error in the renderer.
-  const threw = await page.evaluate(async () => {
-    try {
-      await (
-        window as unknown as {
-          printFarmer: {
-            openCalibrationManifestUrl: (r: unknown) => Promise<void>;
-          };
-        }
-      ).printFarmer.openCalibrationManifestUrl({
-        url: 'not-a-valid-url-at-all',
-      });
-      return false;
-    } catch {
-      return true;
-    }
-  });
-  expect(threw).toBe(true);
-});
-
 // ─── Basic app mount / preload bridge ─────────────────────────────────────────
 
 test('calibration: preload bridge is an object with calibration IPC methods', async () => {
-  // Adaptation: openCalibrationExternalUrl → openCalibrationManifestUrl,
-  //             validateCalibrationLocalModel → validateCalibrationAssetFile,
-  //             openCalibrationLocalModel → pickCalibrationAssetFile.
   const methods = await page.evaluate(() => {
     const api = (window as unknown as { printFarmer?: Record<string, unknown> })
       .printFarmer;
@@ -879,88 +834,11 @@ test('calibration: preload bridge is an object with calibration IPC methods', as
       'getCalibrationOrchestrationStatus',
       'getCalibrationQueueState',
       'acknowledgeCalibrationBedClear',
-      'openCalibrationManifestUrl',
-      'pickCalibrationAssetFile',
-      'validateCalibrationAssetFile',
     ].filter((key) => typeof api[key] === 'function');
   });
   expect(methods).toContain('startCalibrationGeneration');
   expect(methods).toContain('getCalibrationQueueState');
   expect(methods).toContain('acknowledgeCalibrationBedClear');
-  expect(methods).toContain('openCalibrationManifestUrl');
-});
-
-test('calibration: openCalibrationManifestUrl with manifest URL calls through to shell (A-02)', async () => {
-  // Adaptation: PR135 used linkId:'calibration-source-releases' and expected a
-  // Filament_Calibration_Wizard URL. Merged takes a full URL and validates it
-  // against the shipped asset manifest via isManifestSourceUrl().
-  // The manifest contains https://github.com/OlyForge3D/PrintFarmer — we use
-  // that as the allowed URL and verify shell.openExternal is called with it.
-  const MANIFEST_URL = 'https://github.com/OlyForge3D/PrintFarmer';
-
-  // Stub shell.openExternal WITHOUT calling the original — no side effects in tests.
-  await app.evaluate(({ shell }) => {
-    (shell as { openExternal: (url: string) => Promise<void> }).openExternal = (
-      url: string,
-    ) => {
-      process.env['PRINTFARMER_TEST_LAST_OPENED_URL'] = url;
-      return Promise.resolve();
-    };
-  });
-
-  const result = await page.evaluate(async (manifestUrl) => {
-    try {
-      const response = await (
-        window as unknown as {
-          printFarmer: {
-            openCalibrationManifestUrl: (r: {
-              url: string;
-            }) => Promise<{ status: string }>;
-          };
-        }
-      ).printFarmer.openCalibrationManifestUrl({ url: manifestUrl });
-      return { ok: response.status === 'ok', status: response.status };
-    } catch (e) {
-      return {
-        ok: false,
-        status: 'threw',
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
-  }, MANIFEST_URL);
-
-  expect(result.ok).toBe(true);
-
-  const capturedUrl = await app.evaluate(
-    () => process.env['PRINTFARMER_TEST_LAST_OPENED_URL'] ?? null,
-  );
-  expect(capturedUrl).toBe(MANIFEST_URL);
-  expect(capturedUrl).toMatch(/^https:\/\//);
-});
-
-test('openCalibrationManifestUrl rejects URL not in manifest allowlist (A-02/S-04)', async () => {
-  // Verifies isManifestSourceUrl() enforcement: a valid https:// URL that is
-  // NOT listed as a sourceUrl in the shipped asset manifest must be returned
-  // as {status:'error'}, never opened in the system browser.
-  //
-  // Mutation test target: replacing `isManifestSourceUrl` with `return true`
-  // makes this test fail (the call returns {status:'ok'} and opens the URL).
-  const result = await page.evaluate(async () => {
-    const response = await (
-      window as unknown as {
-        printFarmer: {
-          openCalibrationManifestUrl: (r: {
-            url: string;
-          }) => Promise<{ status: string }>;
-        };
-      }
-    ).printFarmer.openCalibrationManifestUrl({
-      url: 'https://attacker.example.com/evil-calibration-model.stl',
-    });
-    return response.status;
-  });
-  // Must be rejected — non-manifest URLs must never reach the system browser
-  expect(result).toBe('error');
 });
 
 // ─── Calibration IPC — named channels reject bad input (S-01, S-05) ──────────
@@ -1059,11 +937,11 @@ test('calibration: getCalibrationOrchestrationStatus rejects request with missin
 // ─── IPC unhandled-rejection safety (S-03, S-05) ─────────────────────────────
 
 test('calibration: renderer IPC rejection is surfaced as a thrown error, not an unhandled promise (S-05)', async () => {
-  // Adaptation: PR135 used openCalibrationExternalUrl({linkId:'not-in-allowlist'})
-  // which was rejected at the Zod schema level (throws). In merged,
-  // openCalibrationManifestUrl({url:'not-a-url'}) is rejected by the main-process
-  // z.string().url() validation and propagates as a thrown IPC error — same
-  // observable behaviour: threw=true, unhandled=false.
+  // The property being asserted is independent of channel: any Zod-rejected
+  // request must propagate as a thrown error in the renderer, not become an
+  // unhandled promise rejection. `getCalibrationQueueState` with a
+  // syntactically invalid `profileId` is rejected by `z.string().uuid()` and
+  // is the least-coupled surviving probe for that.
   const result = await page.evaluate(async () => {
     let threw = false;
     let unhandled = false;
@@ -1075,10 +953,13 @@ test('calibration: renderer IPC rejection is surfaced as a thrown error, not an 
       await (
         window as unknown as {
           printFarmer: {
-            openCalibrationManifestUrl: (r: unknown) => Promise<void>;
+            getCalibrationQueueState: (r: unknown) => Promise<unknown>;
           };
         }
-      ).printFarmer.openCalibrationManifestUrl({ url: 'not-a-url' });
+      ).printFarmer.getCalibrationQueueState({
+        projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        profileId: 'not-a-uuid',
+      });
     } catch {
       threw = true;
     }

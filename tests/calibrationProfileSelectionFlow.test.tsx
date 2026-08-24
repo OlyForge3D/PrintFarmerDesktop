@@ -382,18 +382,6 @@ function profileSelectionApi(): CalibrationApi {
     getCalibrationSubscriptionResources: vi
       .fn()
       .mockResolvedValue(notImplemented('getCalibrationSubscriptionResources')),
-    getCalibrationAssetManifest: vi.fn().mockResolvedValue({
-      status: 'error',
-      message: 'not implemented in profile-selection acceptance test.',
-    }),
-    pickCalibrationAssetFile: vi
-      .fn()
-      .mockResolvedValue({ status: 'cancelled' }),
-    validateCalibrationAssetFile: vi.fn().mockResolvedValue({
-      status: 'error',
-      message: 'not implemented in profile-selection acceptance test.',
-    }),
-    openCalibrationManifestUrl: vi.fn().mockResolvedValue({ status: 'ok' }),
     // --- Path C: profile-selection channels (Bishop's 6 IPC surface) ------
     //
     // The fixture below is the acceptance-test-side counterpart of the

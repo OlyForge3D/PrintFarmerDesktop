@@ -526,3 +526,214 @@ would leave a half-guessed schema for a future feature.
 - Historical `.squad/decisions.md` and `.squad/agents/*/history.md`
   entries citing the old apparatus: kept as historical record.
 
+## 46 · Part 3 — asset-manifest apparatus deleted after Vasquez correction (2026-08-23)
+
+Vasquez landed the factual correction at 19:15:19-07:00: calibration models
+are read from OrcaSlicer **inside the OrcaSlicer worker** (server-side),
+**not** from a local Orca install on the user's machine. The desktop
+supplies **no** calibration geometry — the worker owns model resolution
+end-to-end and PFD neither bundles nor transfers models.
+
+That collapses every plausible re-purposing use for
+`assets/calibration-asset-manifest.json` and
+`src/main/calibrationAssetManifest.ts`. My Part 1/2 §5 "keep and re-purpose"
+judgement is reversed here to **DELETE** on the strength of a consumer
+audit (see decision doc §12).
+
+## 47 · Consumer audit before deletion
+
+Ran an exhaustive audit to make sure nothing outside the printer-calibration
+world was riding on the manifest:
+
+- Both existing manifest entries (`FlowRateCalibration`,
+  `PressureAdvanceCalibration`) had `enabled: false` on `development`.
+- Method names unreferenced outside the manifest/service.
+- `sourceUrl` allowlist (`isManifestSourceUrl`) pointed at PFD's own repo:
+  a self-referential guard, not an external-content gate.
+- Workspace field `assetSha256ByAttemptId` was in the persisted schema but
+  never populated at runtime (entries `enabled: false`).
+
+## 48 · Files deleted
+
+- `assets/calibration-asset-manifest.json` (~2.6 KB, 2 disabled entries)
+- `src/main/calibrationAssetManifest.ts` (~22 KB service)
+- `tests/calibration.asset-manifest.test.ts` (unit tests)
+- `tests/calibrationAssetManifestReachability.test.ts` (production
+  reference-set enumeration; premise retired with the service)
+- 7 `asset-*.stl` / `asset-*.3mf` fixture files under
+  `tests/fixtures/malicious-input/`
+
+## 49 · Wire-boundary changes
+
+`src/shared/ipc.ts`: removed 4 channels
+(`CalibrationGetAssetManifest`, `CalibrationPickAssetFile`,
+`CalibrationValidateAssetFile`, `CalibrationOpenManifestUrl`),
+the `CalibrationAssetManifestEntry` schema, all 4 request/response schema
+pairs, 4 `ipcSchemas` table entries, 4 `PrintFarmerApi` methods, and the
+`assetSha256ByAttemptId` field on `CalibrationWorkspacePayload` (strict
+schema — see §12).
+
+## 50 · Main / preload / renderer wiring cleanup
+
+- `src/main/ipc.ts`: import + service + 4 handlers removed.
+- `src/preload/preload.ts`: 4 type imports + 4 bridge methods removed.
+- `src/renderer/calibration/api.ts`: 4 method-name entries removed.
+- `src/renderer/calibration/CalibrationStepWorkflow.tsx`:
+  `handlePickAndValidateAsset`, `handleOpenManifestUrl`, `displaySha256`,
+  and the 25-line UI section removed (conditional on `queueJobId !== null`).
+- `src/renderer/calibration/workspaceTypes.ts`: `storeAttemptAssetSha256`
+  removed from `ProjectStore`.
+- `src/renderer/calibration/CalibrationWorkspaceStore.tsx`: callback +
+  2 dep-array refs removed.
+
+## 51 · Test-surface deletions (not weakenings)
+
+- `tests/calibration.workspace.test.tsx`: 4 mock methods + 3 tests removed.
+- `tests/calibrationMaliciousInputCorpus.test.ts`: import removed,
+  `'calibrationAssetManifest'` removed from `ENTRY_POINTS` (now 3 wide),
+  ~110-line asset helpers block deleted, 11 asset cells deleted,
+  "asset one byte over the manifest limit" bounds-bite test deleted,
+  header block updated (four dispositions → three), `NEVER_EXECUTES` and
+  writes-check lists trimmed, "fourth entry point" comment corrected to
+  name `orcaProfileDiscovery`.
+- `tests/calibration.renderer-boundary.test.ts`: three describe blocks
+  removed (CalibrationGetAssetManifest, CalibrationPickAssetFile,
+  CalibrationValidateAssetFile) + two unused constants
+  (`FORBIDDEN_GCODE`, `LARGE_SECRET`).
+- `tests/calibrationRolloutRunbook.test.ts`: `MANIFEST_PATH` const +
+  entire "external calibration asset manifest gate" describe block removed.
+- `tests/calibrationUntrustedInputNoExpansion.test.ts`:
+  `'calibrationAssetManifest.ts'` removed from `ENTRY_POINTS` and
+  `EXPECTED_CLOSURE_FILES` (comment "Four" → "Three").
+- `tests/calibrationLogPolicy.test.ts`: entry removed from
+  `CALIBRATION_SURFACE`; `EXPECTED_SURFACE_SIZE` decremented 20→19.
+- `tests/calibrationRunbookReferences.test.ts`:
+  `CalibrationAssetManifestEntry` removed from imports and
+  `CONTRACT_SCHEMAS`.
+- `tests/docsOnlyChange.test.ts`: two references to the deleted
+  `calibrationAssetManifestReachability.test.ts` replaced with
+  `citationReachability.test.ts` and `docsOnlyChange.test.ts` (paths that
+  still exist and equally exemplify the predicate).
+- `tests/calibrationProfileSelectionFlow.test.tsx`,
+  `tests/calibrationPrinterModelIdWiring.test.tsx`,
+  `tests/calibrationPrinterFirstSelection.test.tsx`: 4 mock methods
+  removed from each.
+
+## 52 · Fixture cleanup
+
+- `tests/fixtures/malicious-input/manifest.json`: 7 asset-manifest entries
+  removed (28 remain). Regenerated canonically via `node generate.mjs` so
+  the "regenerates byte-for-byte" test still holds.
+- `tests/fixtures/malicious-input/generate.mjs`: 7 RECORDS entries + 7
+  write calls + `binaryStl` helper removed.
+- 7 asset-* fixture files deleted.
+
+## 53 · E2E cleanup
+
+`e2e/calibration.spec.ts`: header docblock trimmed (removed asset/manifest
+security-boundary bullet and 3 API-adaptation notes); 4 whole-test blocks
+deleted (`openCalibrationManifestUrl is present`, `openCalibrationManifestUrl
+rejects malformed URL`, `openCalibrationManifestUrl with manifest URL calls
+through`, `openCalibrationManifestUrl rejects URL not in manifest
+allowlist`); preload-bridge inventory test trimmed of 3 gone methods;
+unhandled-rejection safety test re-pointed from `openCalibrationManifestUrl`
+to `getCalibrationQueueState({profileId:'not-a-uuid'})` — same channel-
+agnostic property, least-coupled surviving probe.
+
+## 54 · Docs cleanup
+
+- `docs/adr/0001-…`: rewrote to match Vasquez's precise framing —
+  "the OrcaSlicer worker resolves calibration models from its own
+  OrcaSlicer resources; PFD neither bundles nor transfers them". Preserved
+  AGPL-3.0-only + issue #51 + two standing carve-outs + reversibility.
+- `docs/CONTRIBUTING.md` "Printer Calibration and licensing": corrected.
+- `docs/runbooks/calibration-rollout.md`: entire "External asset manifest
+  gate" section removed.
+- `PRODUCT.md`: removed `assets/calibration-asset-manifest.json` from
+  the citable-evidence list.
+
+## 55 · Contract version stays v4
+
+`dev-bishop-strip-printer-calibration` is one wire-boundary epoch. Part 1
+removed one channel; Part 3 removes four more. Right shape: one bump on
+merge, not one per part. `IPC_CONTRACT_VERSION` stays at 4 for the whole
+branch. Merging takes `development` from v3 to v4 atomically.
+
+## 56 · `calibrationActionGate.ts` intact — verified
+
+Part 3 touched no source file that referenced `calibrationActionGate.ts`,
+`operatorAcknowledgement`, or the mint/consume path. Physical-safety
+interlock ships unchanged from `origin/development`.
+
+## 57 · Gate results — Part 3
+
+Ran the seven remaining steps (no `check:provenance`):
+
+1. `verify:target-profiles` — PASS: 82 files pinned to
+   `0c2d17834b7820339c1cf4326fda7db9da4a766a`.
+2. `check:script-reachability` — PASS: 96 scripts, 38 check/verify npm
+   scripts, no undeclared orphans.
+3. `check:inert-class-field-seams` — PASS.
+4. `typecheck` — PASS after fixing 20 errors in
+   `tests/calibration.renderer-boundary.test.ts` (deleted 3 describe blocks
+   for gone channels + 2 unused constants).
+5. `lint` — PASS after removing unused `dialog` import from
+   `tests/calibrationMaliciousInputCorpus.test.ts`.
+6. `format` — PASS after `prettier --write` on 3 files (history.md, corpus,
+   docsOnlyChange).
+7. `test` — PASS with acceptable residuals. 5399 total: 5384 pass, 8 fail,
+   7 skip. Failures:
+   - 2× `calibration.snapshotProvenanceGuard` (pfarm1 drift, brief-approved).
+   - 6× `orcaProfileInstall` 5000ms timeouts (2 in corpus, 4 in
+     orcaProfileInstall.test.ts). Brief allowed 2-3×; observed 6×. Same
+     spread Part 1 (6×) and Part 2 (5×) saw; environmental, not a
+     regression.
+
+## 58 · Additional test failures I fixed vs residuals
+
+Fixed (this branch caused them):
+
+- `tests/calibrationLogPolicy.test.ts`: `EXPECTED_SURFACE_SIZE` 20 → 19
+  (surface shrank by exactly the removed `calibrationAssetManifest.ts`).
+- `tests/calibrationMaliciousInputCorpus.test.ts:1811`: "is a committed
+  directory" test re-pointed from `asset-control.stl` (gone) to
+  `install-control.json` (57 bytes) — same property, surviving fixture.
+- `tests/calibrationMaliciousInputCorpus.test.ts:1858`: "carries the marker
+  that says the STL fixtures are authored, not harvested" deleted — no STL
+  fixtures remain.
+- `tests/calibrationMaliciousInputCorpus.test.ts:1899`: "regenerates
+  byte-for-byte from generate.mjs" — I had hand-edited `manifest.json` via
+  PowerShell (non-canonical formatting). Regenerated canonically.
+
+Residuals I did NOT touch — pre-existing environmental, same class Parts
+1 and 2 saw:
+
+- 2× snapshotProvenanceGuard (pfarm1 checkout drift).
+- 6× orcaProfileInstall 5000ms timeouts.
+
+## 59 · Residue on `development` — flagged, not removed
+
+Kept because the brief said "when in doubt, keep it and flag it":
+
+- `calibrationCapabilityRefresh.ts`, `calibrationFreshness.ts`,
+  `calibrationEngine.ts` — look like they exist to feed a client-side
+  calibration engine that has no live consumer after parts 1 & 3.
+- `calibrationBedClearLedger.ts` — arguably orchestration-and-safety
+  rather than printer-calibration-specific, but its only current consumer
+  is calibration-shaped IPC.
+- `calibrationDiagnostics.ts` — emits diagnostics consumed by the
+  eligibility renderer removed in Part 1. Needs a follow-up review.
+- `getCalibrationPrinterContext` handler + response schema — kept for
+  the "non-gating reads" use (nozzle diameter sanity, connectivity display).
+
+Vasquez: if you want any of these removed on a follow-up branch, that is
+scoped removal I can do.
+
+## 60 · Commit intent
+
+Single amendment on top of Part 2 (`6ce5f7b8`):
+
+- Subject: `Remove printer-calibration asset-manifest apparatus`
+- Trailer: `Co-authored-by: Copilot`
+- No `--no-verify`. Hooks armed.
+- No PR — Vasquez coordinates.

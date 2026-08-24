@@ -120,16 +120,6 @@ import {
   type CalibrationPollQueueChangesResponse,
   type CalibrationGetSubscriptionResourcesRequest,
   type CalibrationGetSubscriptionResourcesResponse,
-  // --- External calibration asset manifest (issue #54) ---------------------
-  type CalibrationGetAssetManifestResponse,
-  type CalibrationPickAssetFileRequest,
-  type CalibrationPickAssetFileResponse,
-  type CalibrationValidateAssetFileRequest,
-  type CalibrationValidateAssetFileResponse,
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  type CalibrationOpenManifestUrlRequest,
-  type CalibrationOpenManifestUrlResponse,
-  // -------------------------------------------------------------------------
   type CalibrationListOrcaProfilesRequest,
   type CalibrationListOrcaProfilesResponse,
   type CalibrationExportOrcaProfileRequest,
@@ -588,35 +578,6 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
-  // --- External calibration asset manifest (issue #54) ---------------------
-  getCalibrationAssetManifest:
-    async (): Promise<CalibrationGetAssetManifestResponse> =>
-      ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse(
-        await ipcRenderer.invoke(IpcChannel.CalibrationGetAssetManifest),
-      ),
-  pickCalibrationAssetFile: async (
-    request: CalibrationPickAssetFileRequest,
-  ): Promise<CalibrationPickAssetFileResponse> =>
-    ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationPickAssetFile, request),
-    ),
-  validateCalibrationAssetFile: async (
-    request: CalibrationValidateAssetFileRequest,
-  ): Promise<CalibrationValidateAssetFileResponse> =>
-    ipcSchemas[IpcChannel.CalibrationValidateAssetFile].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationValidateAssetFile,
-        request,
-      ),
-    ),
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  openCalibrationManifestUrl: async (
-    request: CalibrationOpenManifestUrlRequest,
-  ): Promise<CalibrationOpenManifestUrlResponse> =>
-    ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationOpenManifestUrl, request),
-    ),
-  // -------------------------------------------------------------------------
   listOrcaProfiles: async (
     request: CalibrationListOrcaProfilesRequest,
   ): Promise<CalibrationListOrcaProfilesResponse> =>

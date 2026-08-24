@@ -39,13 +39,6 @@ export const IpcChannel = {
   // --- Queue reconciliation (issue #54) ------------------------------------
   CalibrationPollQueueChanges: 'calibration:pollQueueChanges',
   CalibrationGetSubscriptionResources: 'calibration:getSubscriptionResources',
-  // --- External calibration asset manifest (issue #54) ---------------------
-  CalibrationPickAssetFile: 'calibration:pickAssetFile',
-  CalibrationValidateAssetFile: 'calibration:validateAssetFile',
-  CalibrationGetAssetManifest: 'calibration:getAssetManifest',
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  CalibrationOpenManifestUrl: 'calibration:openManifestUrl',
-  // -------------------------------------------------------------------------
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
   CalibrationPickLegacyBackupV4: 'calibration:pickLegacyBackupV4',
@@ -3218,13 +3211,6 @@ export const CalibrationWorkspacePayload = z
     autosaveRevision: z.number().int().nonnegative(),
     /** Append-only print lifecycle observations (criterion 13, issue #54). */
     printObservations: z.array(CalibrationPrintObservation).max(200).optional(),
-    /**
-     * SHA-256 of the validated calibration asset file, keyed by domain attempt
-     * ID (criterion 14a, issue #54). Persisted so provenance survives reload.
-     */
-    assetSha256ByAttemptId: z
-      .record(z.string().uuid(), z.string().regex(/^[a-f0-9]{64}$/))
-      .optional(),
   })
   .strict()
   .superRefine((payload, context) => {
@@ -5022,199 +5008,6 @@ export const CalibrationJobProvenance = z
   .passthrough();
 export type CalibrationJobProvenance = z.infer<typeof CalibrationJobProvenance>;
 
-// --- External calibration asset manifest (criterion 14, issue #54) ---------
-
-/**
- * A single entry in the external calibration asset manifest.
- * These entries are reviewed and shipped with the app — never fetched
- * dynamically. Methods whose entry has not passed review remain disabled.
- */
-export const CalibrationAssetManifestEntry = z
-  .object({
-    /** Calibration method this asset supports. */
-    method: z.string().min(1).max(128),
-    /** Whether this method is enabled. False = not yet reviewed. */
-    enabled: z.boolean(),
-    /** If disabled, a concrete human-readable reason. */
-    disabledReason: z.string().max(512).nullable(),
-    /** The authoritative source URL for obtaining this asset. */
-    sourceUrl: z.string().url().max(2048),
-    /** Asset author or attribution string. */
-    author: z.string().max(512),
-    /** Declared license (SPDX identifier or free text). */
-    license: z.string().max(256),
-    /** Attribution text to show when the asset is used. */
-    attribution: z.string().max(1024),
-    /** Expected filename (if stable across versions). */
-    expectedFilename: z.string().max(256).nullable(),
-    /** MIME type or content type string. */
-    contentType: z.string().max(128),
-    /** Expected file extension (without leading dot). */
-    expectedExtension: z.string().max(32),
-    /** SHA-256 hex checksum (if stable and shipped with manifest). */
-    expectedSha256: z.string().max(64).nullable(),
-    /** Minimum file size in bytes. */
-    minSizeBytes: z.number().int().positive(),
-    /** Maximum file size in bytes. */
-    maxSizeBytes: z.number().int().positive(),
-    /** Method-specific geometry/validation bounds. Free-form extra rules. */
-    validationRules: z.record(z.unknown()).optional().default({}),
-  })
-  .passthrough();
-export type CalibrationAssetManifestEntry = z.infer<
-  typeof CalibrationAssetManifestEntry
->;
-
-export const CalibrationGetAssetManifestRequest = z.void();
-export type CalibrationGetAssetManifestRequest = z.infer<
-  typeof CalibrationGetAssetManifestRequest
->;
-
-export const CalibrationGetAssetManifestResponse = z.discriminatedUnion(
-  'status',
-  [
-    z
-      .object({
-        status: z.literal('ok'),
-        schemaVersion: z.string(),
-        entries: z.array(CalibrationAssetManifestEntry).max(100),
-      })
-      .strict(),
-    z.object({ status: z.literal('error'), message: z.string() }).strict(),
-  ],
-);
-export type CalibrationGetAssetManifestResponse = z.infer<
-  typeof CalibrationGetAssetManifestResponse
->;
-
-export const CalibrationPickAssetFileRequest = z
-  .object({
-    /** Restrict to files matching these extensions (without leading dot). */
-    allowedExtensions: z.array(z.string().max(32)).max(10),
-    title: z.string().max(256),
-  })
-  .strict();
-export type CalibrationPickAssetFileRequest = z.infer<
-  typeof CalibrationPickAssetFileRequest
->;
-
-export const CalibrationPickAssetFileResponse = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('ok'),
-      approvalId: z.string().uuid(),
-      /** File size in bytes. */
-      byteSize: z.number().int().positive(),
-      /** Extension without leading dot (e.g. "3mf", "stl"). */
-      extension: z.string().max(32),
-    })
-    .strict(),
-  z.object({ status: z.literal('cancelled') }).strict(),
-  z
-    .object({ status: z.literal('error'), message: z.string().max(512) })
-    .strict(),
-]);
-export type CalibrationPickAssetFileResponse = z.infer<
-  typeof CalibrationPickAssetFileResponse
->;
-
-export const CalibrationValidateAssetFileRequest = z
-  .object({
-    approvalId: z.string().uuid(),
-    /** Method this asset is intended for (for method-specific validation). */
-    method: z.string().min(1).max(128),
-  })
-  .strict();
-export type CalibrationValidateAssetFileRequest = z.infer<
-  typeof CalibrationValidateAssetFileRequest
->;
-
-/**
- * Validation result for an asset file selected by the user.
- * On success, includes the SHA-256 checksum and file metadata.
- * Checksums and provenance are displayed and stored with the attempt.
- */
-export const CalibrationValidateAssetFileResponse = z.discriminatedUnion(
-  'status',
-  [
-    z
-      .object({
-        status: z.literal('ok'),
-        /** SHA-256 hex checksum of the file content. */
-        sha256: z.string().length(64),
-        /** File size in bytes. */
-        byteSize: z.number().int().positive(),
-        /** Resolved file extension (without leading dot). */
-        extension: z.string().max(32),
-        /** Content type as detected from magic bytes. */
-        contentType: z.string().max(128),
-        /** Whether the checksum matches the manifest's expected SHA-256. */
-        checksumVerified: z.boolean(),
-        /** Geometry or method-specific validation results. */
-        validationNotes: z.array(z.string().max(256)).max(20),
-      })
-      .strict(),
-    z
-      .object({
-        status: z.literal('invalid'),
-        /** Typed failure reason. */
-        reason: z.enum([
-          'badExtension',
-          'badMagicBytes',
-          'contentTypeMismatch',
-          'tooSmall',
-          'tooLarge',
-          'geometryOutOfBounds',
-          'checksumMismatch',
-          'methodDisabled',
-          'approvalExpired',
-          'pathRestricted',
-        ]),
-        detail: z.string().max(512),
-      })
-      .strict(),
-    z
-      .object({ status: z.literal('error'), message: z.string().max(512) })
-      .strict(),
-  ],
-);
-export type CalibrationValidateAssetFileResponse = z.infer<
-  typeof CalibrationValidateAssetFileResponse
->;
-
-// --- Print lifecycle append-only observations (criterion 13, issue #54) ----
-
-// --- Allowlisted external navigation for manifest URLs (criterion 14) --------
-
-/**
- * Opens a calibration asset manifest source URL in the system browser.
- * The main process validates the URL against the allowlist before opening.
- * Renderer code must never call window.open, shell.openExternal, or
- * navigate directly — this IPC channel is the sole external-navigation path.
- */
-export const CalibrationOpenManifestUrlRequest = z
-  .object({
-    /** The manifest sourceUrl to open (must be https://). */
-    url: z.string().url().max(2048),
-  })
-  .strict();
-export type CalibrationOpenManifestUrlRequest = z.infer<
-  typeof CalibrationOpenManifestUrlRequest
->;
-
-export const CalibrationOpenManifestUrlResponse = z.discriminatedUnion(
-  'status',
-  [
-    z.object({ status: z.literal('ok') }).strict(),
-    z
-      .object({ status: z.literal('error'), message: z.string().max(512) })
-      .strict(),
-  ],
-);
-export type CalibrationOpenManifestUrlResponse = z.infer<
-  typeof CalibrationOpenManifestUrlResponse
->;
-
 // --- Local OrcaSlicer profile discovery ------------------------------------
 
 export const OrcaProfileSource = z.enum([
@@ -6869,25 +6662,6 @@ export const ipcSchemas = {
     request: CalibrationGetSubscriptionResourcesRequest,
     response: CalibrationGetSubscriptionResourcesResponse,
   },
-  // --- External calibration asset manifest (issue #54) ---------------------
-  [IpcChannel.CalibrationGetAssetManifest]: {
-    request: CalibrationGetAssetManifestRequest,
-    response: CalibrationGetAssetManifestResponse,
-  },
-  [IpcChannel.CalibrationPickAssetFile]: {
-    request: CalibrationPickAssetFileRequest,
-    response: CalibrationPickAssetFileResponse,
-  },
-  [IpcChannel.CalibrationValidateAssetFile]: {
-    request: CalibrationValidateAssetFileRequest,
-    response: CalibrationValidateAssetFileResponse,
-  },
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  [IpcChannel.CalibrationOpenManifestUrl]: {
-    request: CalibrationOpenManifestUrlRequest,
-    response: CalibrationOpenManifestUrlResponse,
-  },
-  // -------------------------------------------------------------------------
   [IpcChannel.CalibrationListOrcaProfiles]: {
     request: CalibrationListOrcaProfilesRequest,
     response: CalibrationListOrcaProfilesResponse,
@@ -7099,19 +6873,6 @@ export interface PrintFarmerApi {
   getCalibrationSubscriptionResources(
     request: CalibrationGetSubscriptionResourcesRequest,
   ): Promise<CalibrationGetSubscriptionResourcesResponse>;
-  // --- External calibration asset manifest (issue #54) ---------------------
-  getCalibrationAssetManifest(): Promise<CalibrationGetAssetManifestResponse>;
-  pickCalibrationAssetFile(
-    request: CalibrationPickAssetFileRequest,
-  ): Promise<CalibrationPickAssetFileResponse>;
-  validateCalibrationAssetFile(
-    request: CalibrationValidateAssetFileRequest,
-  ): Promise<CalibrationValidateAssetFileResponse>;
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  openCalibrationManifestUrl(
-    request: CalibrationOpenManifestUrlRequest,
-  ): Promise<CalibrationOpenManifestUrlResponse>;
-  // -------------------------------------------------------------------------
   listOrcaProfiles(
     request: CalibrationListOrcaProfilesRequest,
   ): Promise<CalibrationListOrcaProfilesResponse>;

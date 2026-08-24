@@ -46,7 +46,6 @@ const mainDir = path.join(repoRoot, 'src', 'main');
  */
 const CALIBRATION_SURFACE: readonly string[] = [
   'calibrationActionGate.ts',
-  'calibrationAssetManifest.ts',
   'calibrationAuthRecovery.ts',
   'calibrationBedClearLedger.ts',
   'calibrationCapabilityRefresh.ts',
@@ -68,7 +67,7 @@ const CALIBRATION_SURFACE: readonly string[] = [
 ];
 
 /** The cardinality the list above is expected to have, pinned so a deletion is loud. */
-const EXPECTED_SURFACE_SIZE = 20;
+const EXPECTED_SURFACE_SIZE = 19;
 
 /**
  * Direct stream writes are the obvious way to evade a console ban, so the two
