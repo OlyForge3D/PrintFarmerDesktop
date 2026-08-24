@@ -325,3 +325,102 @@ Bishop still owes the auth posture for the daily-validation stack so the env-gat
 - **Vasquez:** 10 intended failures + 6 pre-existing OOS. `hicks-calibration-test-gap.md` ready for merge. Reporting back synchronously.
 
 📌 Team update (2026-08-22 round 3): api-contract researcher's findings landed. All TODOs closed. Two new describe blocks — custom-profile applicability filter (highest-value) and eligibility ordering — plus If-Match/412 placeholder. `REFUSED_ENVIRONMENT_CODES` fixture now cites `PrinterCalibrationContextService.cs` line numbers for every rejection code. Full CI gate green except intended 10 failures + 6 pre-existing OOS.
+
+---
+
+## 2026-08-24 -- filament calibration acceptance gate (implementation)
+
+**Assignment:** Vasquez, via team-root spawn. Write acceptance tests that fail
+today and pass only when the operator can genuinely calibrate a spool. Do
+not open a PR; commit + push only.
+
+**Branch:** `dev-hicks-filament-calibration-acceptance` off
+`origin/development` @ `212b65a9` (the strip + profile-cascade merged tip).
+
+**Commits:**
+
+- `66f57462` -- test suite + fixture
+- `b10567b3` -- pr-closes declaration (empty fenced closes block)
+
+**Deliverables:**
+
+- `tests/filamentCalibration.acceptance.test.ts` (2216 lines after prettier):
+  8 acceptance properties x (positive + control) = 16 blocked tests + 3
+  contract-sanity + 4 empirical discrimination proofs = 23 tests.
+- `tests/fixtures/fakeFilamentCalibrationServer.ts` (838 lines): in-memory
+  PrintFarmer, verbatim from PR #1952 merge sha
+  `beeea96a3b8c9c8388c4739b0d21937dff13d66e`, with every DTO citing its
+  server-side origin file. Supports three drift-injection modes for
+  discrimination proofs (`faithful`, `clone-returns-source-id`,
+  `update-mutates-source`).
+- `.github/pr-closes/dev-hicks-filament-calibration-acceptance.md`: empty
+  fenced closes block; asserts "closes nothing" per README.
+
+**Results:**
+
+- 7 tests pass today (contract sanity + discrimination proofs).
+- 16 tests fail today with the exact message
+  `Error: CalibrationHttpClient does not expose <verb>: blocked on
+dev-bishop-filament-calibration-channels landing.`
+- Full CI gate: verify:target-profiles / check:script-reachability /
+  check:inert-class-field-seams / typecheck / lint / format all PASS.
+  Full test suite: 26 failed / 5389 passed / 7 skipped -- 16 mine
+  (intended), 10 known residuals (4 snapshotProvenanceGuard + 6
+  orcaProfileInstall-family). Zero unintended failures.
+
+**Method notes / what I did differently this round.**
+
+- **Client-verb probe**, not name-coupling. The suite scans
+  `CalibrationHttpClient` for candidate name-lists per verb
+  (`cloneFilamentProfile | cloneFilament | ...`) and fails-loud if none
+  match. Bishop can name his methods anything reasonable and my tests
+  bind automatically. No wire-schema coordination needed on method
+  signature; the acceptance is observational.
+- **Server-side observation, not call-arg inspection.** Every assertion
+  reads state on the fake server (was source's sha unchanged; does the
+  wire body have `hasOwnProperty("calibration_project_id")`; did the
+  print-submission table grow) rather than what the client's mock got
+  called with. This is the specific defence against the failure mode I
+  proved earlier (427/430 passing on a dead feature).
+- **`hasOwnProperty` for saga-id absence, not `!== null`.** Upstream's
+  guard is `is not null` so a `null` value would pass their check; the
+  desktop discipline is that the key must be _absent from the wire_.
+  Fake server records `hasOwnProperty` presence separately from value;
+  discrimination proof shows a `null`-valued key trips the assertion.
+- **Empirical discrimination proofs run today** by driving the fake
+  server via raw `fetch`, bypassing the (blocked-on-Bishop)
+  `CalibrationHttpClient`. This proves 3 of the trickiest predicates
+  discriminate, so when Bishop's client lands the tests will discriminate
+  against his wire.
+- **Every positive assertion has a matched-predicate control** returning
+  the opposite result on the opposite data through the _same_ predicate.
+  This is my own discipline caught up: I did it for the printer-calib
+  suite too but here the fake-server discrimination modes let me prove
+  the predicates catch drift instead of just describing that they do.
+
+**Coordination cost paid.**
+
+Bishop shares this worktree. His session's `git checkout` preempted my
+edits three separate times, once mid-atomic-block. Recovered each time by
+guarding every powershell call with a `git checkout
+dev-hicks-filament-calibration-acceptance` at the top and a `git
+branch --show-current` assertion after every destructive step. One
+consequence: my final commit was force-push-with-lease amended after a
+lint pass whose edits landed on Bishop's checked-out branch first and
+had to be re-applied. Nothing was lost -- but it added ~40min of
+recovery work.
+
+**Handover.**
+
+- **Bishop:** the moment your five verbs are exposed under any of the
+  candidate names on `CalibrationHttpClient`, my 16 blocked tests will
+  run against your wire. The verb candidate lists are at the top of
+  `tests/filamentCalibration.acceptance.test.ts` in `bindOperatorFlow`;
+  if none match, the failure message names the verb.
+- **Dallas:** the suite covers `CalibrationHttpClient` and below; UI
+  wizard acceptance is your gate. My fake server + fixture DTOs are
+  reusable as your happy-path mock.
+- **Vasquez:** reporting the 16-blocked, 7-passing split synchronously.
+  Candid answer to "will the owner have a calibrated filament profile
+  when these pass?" -- yes at the wire layer; no for the renderer UX;
+  no for firmware/server-side physical safety envelopes.

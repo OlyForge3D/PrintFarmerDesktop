@@ -283,6 +283,7 @@ interface CachedToken {
   expiresAt: number;
   binding: string;
   generation: number;
+  principalId: string;
 }
 
 interface IssuedToken {
@@ -314,6 +315,15 @@ export interface AuthenticatedProfileContext {
   revision: string;
   generation: number;
   serverBinding: string;
+  /**
+   * Principal ID (the PrintFarmer user's Guid) attested by the last successful
+   * `/api/auth/me` probe. Populated for callers - the slice submit endpoint
+   * in PR #1952 requires it in the request body even though the server also
+   * derives it from the JWT; sending an explicit value makes the request
+   * traceable in logs and lets the server validate the client's view of who
+   * it is against the token's `sub`. Never null once a token is issued.
+   */
+  principalId: string;
   endpoint(relativePath: string): URL;
 }
 
@@ -983,6 +993,7 @@ export class ServerProfileService {
         revision,
         generation: cached.generation,
         serverBinding: serverProfileBinding(stored.id, stored.baseUrl),
+        principalId: cached.principalId,
         endpoint: (relativePath: string) =>
           buildServerEndpoint(stored.baseUrl, relativePath),
       };
@@ -1462,6 +1473,7 @@ export class ServerProfileService {
       expiresAt: authentication.expiresAt,
       binding: authentication.binding,
       generation: authentication.generation,
+      principalId: authentication.principalId,
     });
     return true;
   }

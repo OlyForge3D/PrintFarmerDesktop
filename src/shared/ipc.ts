@@ -62,6 +62,13 @@ export const IpcChannel = {
   CalibrationListFilamentProfilesForMachines:
     'calibration:listFilamentProfilesForMachines',
   CalibrationListCustomProfiles: 'calibration:listCustomProfiles',
+  // --- Filament calibration slice pipeline (owner reframe 2026-08-23) -------
+  CalibrationCloneFilamentProfile: 'calibration:cloneFilamentProfile',
+  CalibrationSubmitCalibrationSlice: 'calibration:submitCalibrationSlice',
+  CalibrationGetSliceJobStatus: 'calibration:getSliceJobStatus',
+  CalibrationSendSliceToPrinter: 'calibration:sendSliceToPrinter',
+  CalibrationUpdateFilamentProfileMeasurement:
+    'calibration:updateFilamentProfileMeasurement',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -4280,6 +4287,39 @@ export const CalibrationApiErrorCode = z.enum([
   'calibrationJobIncompatible',
   /** HTTP 422 filament_check_failed — filament material or nozzle mismatch. */
   'filamentCheckFailed',
+  // --- Filament-calibration slice-pipeline codes (owner reframe 2026-08-23) --
+  /**
+   * HTTP 422 `unsupported_calibration_method` from `POST /api/slice` when a
+   * calibration method wire name is not recognised by upstream PR #1952's
+   * `CalibrationMethod` parser. Distinct from `invalidData` because the
+   * `supportedMethods` list is echoed in the ProblemDetails extension and the
+   * renderer surfaces it verbatim — the fix is "pick one of these", never
+   * "clean up the payload".
+   */
+  'unsupportedCalibrationMethod',
+  /**
+   * HTTP 403 on `POST /api/slicer/profiles/clone` or
+   * `PUT /api/slicer/profiles/custom/{id}` from the
+   * `InteractiveSessionRequirement` authorization gate (upstream
+   * `ProfilesController.cs:1247-1283, 1352-1395`). Distinct from `forbidden`
+   * because the operator can recover — sign in via the app's interactive
+   * session rather than a background token — instead of being told the scope
+   * is missing.
+   */
+  'interactiveSessionRequired',
+  /**
+   * Terminal `Failed` reached during slice-job polling
+   * (`GET /api/slice/{jobId}` returned `status: 'Failed'`). Distinct from a
+   * transient poll-transport error because the server has finished with the
+   * job — no amount of retry against the same job id will change the outcome.
+   */
+  'sliceJobFailed',
+  /**
+   * Slice-job poll driver reached its wall-clock cap without observing a
+   * terminal status. Distinct from `sliceJobFailed` because the server has
+   * *not* declared the job dead — the desktop has given up watching.
+   */
+  'sliceJobTimeout',
 ]);
 export type CalibrationApiErrorCode = z.infer<typeof CalibrationApiErrorCode>;
 
@@ -6367,6 +6407,601 @@ export type CalibrationListCustomProfilesResponse = z.infer<
 // (calibration:setupPrinter removed 2026-08-23 — printer-calibration setup PUT
 // was not part of the filament calibration workflow.)
 
+// ============================================================================
+// Filament calibration slice pipeline (upstream PR #1952, merged 2026-08-24)
+// ============================================================================
+//
+// The five schemas below carry the OrcaSlicer-wiki calibration workflow the
+// owner described on 2026-08-23. Every DTO shape here is quoted verbatim from
+// the head of `OlyForge3D/PrintFarmer@main` after PR #1952 merged — the source
+// files and their content SHAs are recorded in
+// `.squad/decisions/inbox/bishop-filament-calibration-channels.md`, and the
+// tests in `tests/calibrationHttp.filamentCalibration.test.ts` cite them again
+// per fixture so a drift in either direction is visible on inspection.
+//
+// The desktop transfers no calibration geometry over these channels. Upstream's
+// `SliceJobController` resolves the calibration model from the worker's own
+// bundled `resources/calib/` when it sees `calibration.method` — the desktop
+// omits `modelFileUrl` / `model3DId`, so no upload path is needed.
+//
+// None of these channels populate the calibration-projects saga identifiers
+// (`calibrationProjectId`, `calibrationAttemptId`, `calibrationOrchestrationId`)
+// on the submit request. That saga was stripped in PR #750 (merged
+// 2026-08-23) and PR #1952 rejects any of those keys with
+// `calibration_mode_conflicts_with_saga_ids` — that rejection is *the* proof
+// that a calibration slice stays an ordinary slice job eligible for
+// `send-to-printer`.
+// ---------------------------------------------------------------------------
+
+/** Wire values for `CalibrationRequest.method` in upstream PR #1952. */
+export const CalibrationSliceMethod = z.enum([
+  'flow_rate_pass_1',
+  'flow_rate_pass_2',
+  'temperature_tower',
+]);
+export type CalibrationSliceMethod = z.infer<typeof CalibrationSliceMethod>;
+
+/** Slice job status projection (public projection in PR #1952). */
+export const CalibrationSliceJobStatus = z.enum([
+  'Queued',
+  'Processing',
+  'Completed',
+  'Failed',
+  'Cancelled',
+]);
+export type CalibrationSliceJobStatus = z.infer<
+  typeof CalibrationSliceJobStatus
+>;
+
+/**
+ * Terminal-outcome classification produced by the main-process poll driver.
+ * `completed` and `failed` are the two ways a job stops moving on the server;
+ * `null` means the job is still in-flight from the renderer's perspective.
+ * A `cappedOut` snapshot uses `null` here — the driver has stopped looking, not
+ * the server — and pairs with the `sliceJobTimeout` error the renderer sees
+ * when it asks for another poll past the cap.
+ */
+export const CalibrationSliceJobTerminalOutcome = z.enum([
+  'completed',
+  'failed',
+]);
+export type CalibrationSliceJobTerminalOutcome = z.infer<
+  typeof CalibrationSliceJobTerminalOutcome
+>;
+
+// --- calibration:cloneFilamentProfile ---
+//
+// Backing: `POST /api/slicer/profiles/clone`
+// DTO: `CloneSingleProfileRequestDto` (source Guid + profileType +
+//   optional rename + printer compatibility). Response 201
+//   `CloneSingleProfileResponseDto { Id, Name, ProfileType, IsSystem }` per
+//   upstream `ProfilesController.cs:1247-1283`.
+// Auth: `Slicing.Submit` + `InteractiveSessionRequirement`. The interactive
+// gate returns 403; we surface that as `interactiveSessionRequired` so the
+// renderer can prompt for a live sign-in instead of a generic scope error.
+//
+// Every request also renames the clone in the same call — that's the workflow
+// the owner described ("clone… rename it to match the filament they are
+// calibrating"). `name` is required rather than optional because a
+// filament-calibration clone with no name would leave the operator staring at
+// two rows called the same thing during analysis and pick the wrong one.
+
+export const CalibrationCloneFilamentProfileRequest = z
+  .object({
+    /** Selected PrintFarmer server profile Guid. */
+    profileId: z.string().uuid(),
+    /**
+     * Guid of the source filament profile to clone — a system or custom
+     * `guid` from `calibration:listExtendedProfiles` / `listCustomProfiles`.
+     */
+    sourceProfileId: z.string().uuid(),
+    /**
+     * New display name for the clone. Required — see block comment above.
+     * Bounded to the same 512-char cap the other profile-name fields use.
+     */
+    name: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    /**
+     * Optional printer-model Guid to bind the clone to. When omitted the
+     * server leaves the source profile's compatibility as-is; when supplied
+     * the clone becomes single-printer-model compatible.
+     */
+    printerModelId: z.string().uuid().nullable().optional(),
+    /**
+     * Optional list of printer names to record as compatible. When both
+     * `printerModelId` and this are omitted the source's compatibility is
+     * inherited unchanged.
+     */
+    compatiblePrinters: z
+      .array(z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME))
+      .max(CALIBRATION_MAX_MACHINE_FILTER)
+      .nullable()
+      .optional(),
+  })
+  .strict();
+export type CalibrationCloneFilamentProfileRequest = z.infer<
+  typeof CalibrationCloneFilamentProfileRequest
+>;
+
+export const CalibrationCloneFilamentProfileResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        clone: z
+          .object({
+            id: z.string().uuid(),
+            name: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+            /**
+             * `filament` is the only workflow-legal answer, but upstream's
+             * `CloneSingleProfileResponseDto` echoes back the concrete
+             * profile type so we validate rather than assert. A machine-typed
+             * or process-typed clone here would be a wire drift, not a normal
+             * response.
+             */
+            profileType: z.enum(['machine', 'process', 'filament']),
+            /**
+             * PR #1952 hard-codes `IsSystem = false` for the clone — user
+             * clones are always custom. Enforced structurally so a wire
+             * drift into `true` cannot slip past.
+             */
+            isSystem: z.literal(false),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationCloneFilamentProfileResponse = z.infer<
+  typeof CalibrationCloneFilamentProfileResponse
+>;
+
+// --- calibration:submitCalibrationSlice ---
+//
+// Backing: `POST /api/slice`
+// DTO: `SubmitSliceJobRequest` in `SliceJobDtos.cs`. In calibration mode the
+// desktop omits `modelFileUrl` and `model3DId` — the worker resolves the
+// calibration model from `resources/calib/` — and NEVER populates
+// `calibrationProjectId` / `calibrationAttemptId` /
+// `calibrationOrchestrationId`. Upstream rejects any of those with
+// `calibration_mode_conflicts_with_saga_ids` (422).
+//
+// `slicerProfileJson` is a JSON-encoded string on the wire — a `{ machine,
+// process, filament }` name triple. We hold the three names as a typed object
+// on the IPC boundary and let the HTTP client stringify it, so the renderer
+// cannot smuggle arbitrary JSON through this field.
+//
+// Auth: `Slicing.Submit`.
+
+const CALIBRATION_MAX_METHOD_PARAM_COUNT = 32;
+
+/**
+ * Optional numeric parameters for the chosen calibration method. Passthrough
+ * keys are permitted — PR #1952's `CalibrationRequest.Params` is
+ * `Dictionary<string, JsonElement>` and applies method defaults for any key
+ * the caller does not provide. We restrict values to finite numbers because
+ * the only in-use params are numeric (`start_temp`, `flow_ratio_target`, ...)
+ * and permitting anything else would let a caller send arbitrary JSON blobs
+ * that the worker would either ignore or reject.
+ */
+export const CalibrationSliceMethodParams = z
+  .record(z.string().min(1).max(64), z.number().finite())
+  .refine(
+    (record) =>
+      Object.keys(record).length <= CALIBRATION_MAX_METHOD_PARAM_COUNT,
+    { message: 'params carries too many keys' },
+  );
+export type CalibrationSliceMethodParams = z.infer<
+  typeof CalibrationSliceMethodParams
+>;
+
+export const CalibrationSubmitCalibrationSliceRequest = z
+  .object({
+    /** Selected PrintFarmer server profile Guid. */
+    profileId: z.string().uuid(),
+    /**
+     * Printer target — carried on the submit for slice-context purposes and
+     * later reused on `send-to-printer` when the operator commits to actually
+     * printing the calibration piece.
+     */
+    printerId: z.string().uuid(),
+    /**
+     * The three-name profile triple the renderer picked. `filamentProfileName`
+     * is the cloned filament profile's `Name` — that is *the* variable being
+     * calibrated across the workflow.
+     */
+    machineProfileName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    processProfileName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    filamentProfileName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    /** Calibration method wire name — see `CalibrationSliceMethod`. */
+    method: CalibrationSliceMethod,
+    /** Optional numeric overrides for the method's default parameters. */
+    params: CalibrationSliceMethodParams.optional(),
+  })
+  .strict();
+export type CalibrationSubmitCalibrationSliceRequest = z.infer<
+  typeof CalibrationSubmitCalibrationSliceRequest
+>;
+
+/**
+ * `SubmitSliceJobResponse` fields kept public on the desktop side — the
+ * `jobId` is the identifier every subsequent stage needs.
+ */
+export const CalibrationSubmitCalibrationSliceResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        job: z
+          .object({
+            jobId: z.string().uuid(),
+            status: CalibrationSliceJobStatus,
+            queuedAt: z.string().datetime(),
+            /**
+             * Nullable because PR #1952's `SubmitSliceJobResponse.QueuePosition`
+             * is `int?` (server does not always compute a position — a job
+             * accepted straight into `Processing` has no queue position).
+             */
+            queuePosition: z.number().int().nonnegative().nullable(),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationSubmitCalibrationSliceResponse = z.infer<
+  typeof CalibrationSubmitCalibrationSliceResponse
+>;
+
+// --- calibration:getSliceJobStatus ---
+//
+// Backing: `GET /api/slice/{jobId}`
+// DTO: `SliceJobStatusResponse` — the *public* projection returned by the
+// controller (upstream `SliceJobController.MapToPublicStatusResponse`,
+// lines 1215-1258). This is NOT the same shape as the worker's
+// `CompleteSliceJobResponse`: `resultFileUrl` does not exist here — the
+// public projection exposes `artifactsRoute` (the URL fragment for the
+// per-job artifact list) and lets `send-to-printer` handle the actual gcode
+// hand-off. If a renderer wants the sliced file, it uses `send-to-printer`,
+// not a direct fetch — that is by design so a calibration gcode cannot be
+// downloaded, edited, and re-uploaded outside the safety gate.
+//
+// Auth: `Slicing.Submit`.
+//
+// This channel is one-shot. The renderer drives the polling loop, passing the
+// zero-indexed `pollAttempt` and observing `nextPollDelayMs` (null when the
+// snapshot is terminal or the cap has been reached) plus `terminal` and
+// `cappedOut`. The backoff schedule and cap live in the main-process helper
+// `computeSlicePollHint` so the schedule is testable in isolation and the
+// renderer cannot ratchet up the poll rate by lying about its attempt count.
+
+/** Public projection of `SliceJobStatusResponse` from PR #1952. */
+export const CalibrationSliceJobSnapshot = z
+  .object({
+    id: z.string().uuid(),
+    status: CalibrationSliceJobStatus,
+    /**
+     * 0-100 integer. PR #1952 clamps this at the worker before returning it,
+     * but we validate again because the wire schema is an unbounded int on
+     * the C# side and a drift would otherwise reach the renderer.
+     */
+    progressPercent: z.number().int().min(0).max(100),
+    progressMessage: z.string().max(512).nullable(),
+    queuedAt: z.string().datetime(),
+    startedAt: z.string().datetime().nullable(),
+    completedAt: z.string().datetime().nullable(),
+    /**
+     * Free-form failure text when `status === 'Failed'`. Bounded but not
+     * catalogued — a failure hint from the worker like "no calibration model
+     * bundle for temperature_tower" is exactly the kind of prose the operator
+     * needs to see verbatim. Rendered as-is on the renderer side.
+     */
+    errorMessage: z.string().max(2048).nullable(),
+    /**
+     * Admin-only worker-side failure detail (`SliceJobStatusResponse.ErrorDetail`
+     * in `SliceJobDtos.cs` @ `a4f230aa...`). The C# DTO documents this as
+     * "populated only for farm admins. Never returned to non-admin callers,
+     * who only ever see the generic ErrorMessage". For the desktop's operator
+     * identity this is expected to always be null, but the field IS on the
+     * wire in every response, so it must appear in the strict schema or
+     * `.strict()` will reject every non-Failed status snapshot. Bounded at
+     * 4 KiB so a misconfigured admin-privileged response cannot smuggle
+     * unbounded worker diagnostics through the wire.
+     */
+    errorDetail: z.string().max(4096).nullable(),
+    /**
+     * PR #1952 sets this when the worker had to re-arrange the slice plate.
+     * A calibration slice should never see it — a non-null value here is a
+     * signal the caller sent geometry when they should have relied on the
+     * worker's bundled model. The wire value is a `LayoutDegradationReason`
+     * enum name (`JsonStringEnumConverter` on the C# side, see
+     * `SlicerModels.cs`), not a boolean; the previous `z.boolean().nullable()`
+     * contradicted the DTO and would reject every non-null value the real
+     * server produces.
+     */
+    layoutDegradation: z.string().max(64).nullable(),
+    /**
+     * Machine-readable failure classifier. Only populated when the worker
+     * declared a terminal `Failed` — the renderer surfaces the raw code so
+     * an operator can quote it, and the poll driver uses it to pick the
+     * right catalogued message (`sliceJobFailed`).
+     */
+    failureReason: z.string().max(128).nullable(),
+    /** Free-form hint text paired with `failureReason` when present. */
+    failureHint: z.string().max(2048).nullable(),
+    /**
+     * Server-estimated print time in seconds. Only meaningful once the job
+     * has reached `Completed`; before that it may be zero or absent depending
+     * on how far the worker got in slicing.
+     */
+    estimatedPrintTimeSeconds: z.number().int().nonnegative().nullable(),
+    /**
+     * Server-estimated filament usage in grams. PR #1952 serializes this as
+     * `decimal?` on the C# side, which is JSON-encoded as a number — we
+     * accept any finite non-negative float and the renderer rounds for
+     * display. Never used for retention checks, so precision loss on the
+     * boundary is not a correctness concern.
+     */
+    filamentUsedGrams: z.number().finite().nonnegative().nullable(),
+    /** ID of the worker that picked the job up; null when still `Queued`. */
+    workerId: z.string().max(128).nullable(),
+    /**
+     * File name the operator would see in the printer job list. For a
+     * calibration slice this comes from the bundled `resources/calib/`
+     * artifact — a slug like `flow_rate_pass_1.3mf`, not the operator's
+     * filament name — because the worker owns the model.
+     */
+    modelFileName: z.string().max(512),
+    /** Slicer engine enum value as a string. `OrcaSlicer` for this workflow. */
+    slicerEngine: z.string().max(64),
+    /**
+     * Relative URL fragment for the per-job artifact listing endpoint. The
+     * renderer treats this opaquely — the calibration workflow uses
+     * `send-to-printer`, not a direct fetch — but we surface it so operator
+     * tooling and support can chase artifacts by URL when they need to.
+     */
+    artifactsRoute: z.string().max(512).nullable(),
+  })
+  .strict();
+export type CalibrationSliceJobSnapshot = z.infer<
+  typeof CalibrationSliceJobSnapshot
+>;
+
+export const CalibrationGetSliceJobStatusRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    jobId: z.string().uuid(),
+    /**
+     * 0-indexed poll attempt. The very first call passes 0. Each subsequent
+     * call increments by 1. The main-process helper `computeSlicePollHint`
+     * turns this into the next delay and decides when the cap has been
+     * reached — the renderer cannot shorten the schedule by resetting to 0.
+     */
+    pollAttempt: z.number().int().nonnegative().max(10_000),
+  })
+  .strict();
+export type CalibrationGetSliceJobStatusRequest = z.infer<
+  typeof CalibrationGetSliceJobStatusRequest
+>;
+
+export const CalibrationGetSliceJobStatusResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        snapshot: CalibrationSliceJobSnapshot,
+        /**
+         * `completed` / `failed` when the server reported a terminal status,
+         * `null` otherwise. On `failed` the renderer receives a paired error
+         * on the *next* poll attempt — the poll driver refuses further polls
+         * of a failed job and returns `sliceJobFailed` — but the snapshot
+         * itself is still an `ok` result because the server did answer.
+         */
+        terminal: CalibrationSliceJobTerminalOutcome.nullable(),
+        /**
+         * Suggested delay before the renderer calls again with
+         * `pollAttempt + 1`. `null` when either the snapshot is terminal or
+         * the poll driver's cap has been reached. Enforced by the main-side
+         * hint computation, so the renderer cannot poll faster than the
+         * schedule allows.
+         */
+        nextPollDelayMs: z.number().int().positive().max(60_000).nullable(),
+        /**
+         * `true` when the cap has been reached. A subsequent
+         * `getSliceJobStatus` call for the same `jobId` with a higher
+         * `pollAttempt` will return `sliceJobTimeout` — this flag exists so
+         * the renderer can show "no more automatic polling" before the
+         * operator asks for another retry.
+         */
+        cappedOut: z.boolean(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetSliceJobStatusResponse = z.infer<
+  typeof CalibrationGetSliceJobStatusResponse
+>;
+
+// --- calibration:sendSliceToPrinter ---
+//
+// Backing: `POST /api/slice/{jobId}/send-to-printer`
+// DTO: `SendToPrinterRequest { PrinterId, StartPrint }` →
+//   `SendToPrinterResponse { JobId, PrinterId, FileName, PrintStarted, Message }`.
+// Auth: `Queue.Start` (upstream `SlicePrintBridgeController` scope).
+//
+// `startPrint: true` is a **machine-moving action**. It is guarded by
+// `calibrationActionGate.ts` — an `operatorAcknowledgement` minted by main is
+// required before the request is dispatched. Never default it to `true`; the
+// renderer must supply it explicitly per operator click.
+
+export const CalibrationSendSliceToPrinterRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    jobId: z.string().uuid(),
+    printerId: z.string().uuid(),
+    /**
+     * `true` starts the print immediately after transfer; `false` uploads the
+     * gcode to the printer's queue and leaves it idle. Required rather than
+     * defaulted because the two are fundamentally different actions from a
+     * safety perspective — see block comment above.
+     */
+    startPrint: z.boolean(),
+    /**
+     * Live operator acknowledgement minted by `calibrationActionGate.ts`.
+     * Required only when `startPrint` is `true`; the gate is a no-op for
+     * an upload-only transfer. Verified structurally on the main side.
+     */
+    operatorAcknowledgement: z.string().min(1).max(512).nullable(),
+  })
+  .strict();
+export type CalibrationSendSliceToPrinterRequest = z.infer<
+  typeof CalibrationSendSliceToPrinterRequest
+>;
+
+export const CalibrationSendSliceToPrinterResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        result: z
+          .object({
+            jobId: z.string().uuid(),
+            printerId: z.string().uuid(),
+            fileName: z.string().max(512),
+            printStarted: z.boolean(),
+            /** Free-form server confirmation text. */
+            message: z.string().max(2048).nullable(),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationSendSliceToPrinterResponse = z.infer<
+  typeof CalibrationSendSliceToPrinterResponse
+>;
+
+// --- calibration:updateFilamentProfileMeasurement ---
+//
+// Backing: `PUT /api/slicer/profiles/custom/{id}`
+// DTO: `UpdateCustomProfileRequestDto` — replaces `rawJson`, `name`,
+// `description`, or the printer-compatibility fields, only for non-null
+// entries. We take semantic measurements on the desktop side and let the
+// HTTP client synthesise the `rawJson` merge — the renderer never crafts
+// the profile JSON directly, so a key drift stays localised to the merge
+// helper.
+//
+// Auth: `Slicing.Submit` + `InteractiveSessionRequirement` (same 403 path
+// as the clone endpoint).
+//
+// The method-to-key mapping is:
+//   flow_rate_pass_1 / flow_rate_pass_2 → filament_flow_ratio
+//   temperature_tower                   → nozzle_temperature +
+//                                         nozzle_temperature_initial_layer
+// This is enforced structurally by the discriminated union below — a
+// temperature-tower request that only carries `filamentFlowRatio` fails
+// at the IPC boundary.
+
+export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
+  z
+    .object({
+      method: z.literal('flow_rate_pass_1'),
+      /**
+       * `filament_flow_ratio` per OrcaSlicer wiki. Values outside 0.5..1.5
+       * are physically implausible for a first-pass flow calibration and
+       * suggest an analysis error rather than a real reading; we bound to
+       * that range at the IPC boundary.
+       */
+      filamentFlowRatio: z.number().finite().min(0.5).max(1.5),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('flow_rate_pass_2'),
+      filamentFlowRatio: z.number().finite().min(0.5).max(1.5),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('temperature_tower'),
+      /**
+       * Print temperature in °C. Bounded to the physically-plausible band
+       * PrintFarmer already enforces for printer heat safety.
+       */
+      nozzleTemperature: z.number().int().min(150).max(300),
+      /**
+       * Initial-layer temperature in °C. Same band as `nozzleTemperature`.
+       */
+      nozzleTemperatureInitialLayer: z.number().int().min(150).max(300),
+    })
+    .strict(),
+]);
+export type CalibrationFilamentMeasurement = z.infer<
+  typeof CalibrationFilamentMeasurement
+>;
+
+export const CalibrationUpdateFilamentProfileMeasurementRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /** Custom filament profile Guid (the clone from step 1). */
+    customProfileId: z.string().uuid(),
+    measurement: CalibrationFilamentMeasurement,
+  })
+  .strict();
+export type CalibrationUpdateFilamentProfileMeasurementRequest = z.infer<
+  typeof CalibrationUpdateFilamentProfileMeasurementRequest
+>;
+
+export const CalibrationUpdateFilamentProfileMeasurementResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        /**
+         * The 4-field projection the renderer needs to confirm the write
+         * landed. The wire actually returns `CustomProfileDto` (10 fields;
+         * see `CloneProfilesDtos.cs`), and the main-process handler narrows
+         * to this shape before parsing — so widening the renderer surface
+         * to include `rawJson`, timestamps, or the printer-model association
+         * is a deliberate contract change, not a byproduct of the DTO shape.
+         * An earlier version of this docblock claimed the PUT endpoint
+         * returned `CloneSingleProfileResponseDto`; that was false —
+         * `UpdateCustomProfileAsync` is typed `Task<CustomProfileDto>` in
+         * `IProfilesService.cs`.
+         */
+        updated: z
+          .object({
+            id: z.string().uuid(),
+            name: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+            profileType: z.enum(['machine', 'process', 'filament']),
+            isSystem: z.literal(false),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationUpdateFilamentProfileMeasurementResponse = z.infer<
+  typeof CalibrationUpdateFilamentProfileMeasurementResponse
+>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -6711,6 +7346,26 @@ export const ipcSchemas = {
     request: CalibrationListCustomProfilesRequest,
     response: CalibrationListCustomProfilesResponse,
   },
+  [IpcChannel.CalibrationCloneFilamentProfile]: {
+    request: CalibrationCloneFilamentProfileRequest,
+    response: CalibrationCloneFilamentProfileResponse,
+  },
+  [IpcChannel.CalibrationSubmitCalibrationSlice]: {
+    request: CalibrationSubmitCalibrationSliceRequest,
+    response: CalibrationSubmitCalibrationSliceResponse,
+  },
+  [IpcChannel.CalibrationGetSliceJobStatus]: {
+    request: CalibrationGetSliceJobStatusRequest,
+    response: CalibrationGetSliceJobStatusResponse,
+  },
+  [IpcChannel.CalibrationSendSliceToPrinter]: {
+    request: CalibrationSendSliceToPrinterRequest,
+    response: CalibrationSendSliceToPrinterResponse,
+  },
+  [IpcChannel.CalibrationUpdateFilamentProfileMeasurement]: {
+    request: CalibrationUpdateFilamentProfileMeasurementRequest,
+    response: CalibrationUpdateFilamentProfileMeasurementResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -6909,4 +7564,20 @@ export interface PrintFarmerApi {
   listCalibrationCustomProfiles(
     request: CalibrationListCustomProfilesRequest,
   ): Promise<CalibrationListCustomProfilesResponse>;
+  // --- Filament calibration slice pipeline (PR #1952) ---------------------
+  cloneCalibrationFilamentProfile(
+    request: CalibrationCloneFilamentProfileRequest,
+  ): Promise<CalibrationCloneFilamentProfileResponse>;
+  submitCalibrationSlice(
+    request: CalibrationSubmitCalibrationSliceRequest,
+  ): Promise<CalibrationSubmitCalibrationSliceResponse>;
+  getCalibrationSliceJobStatus(
+    request: CalibrationGetSliceJobStatusRequest,
+  ): Promise<CalibrationGetSliceJobStatusResponse>;
+  sendCalibrationSliceToPrinter(
+    request: CalibrationSendSliceToPrinterRequest,
+  ): Promise<CalibrationSendSliceToPrinterResponse>;
+  updateCalibrationFilamentProfileMeasurement(
+    request: CalibrationUpdateFilamentProfileMeasurementRequest,
+  ): Promise<CalibrationUpdateFilamentProfileMeasurementResponse>;
 }

@@ -227,6 +227,22 @@ const ROUTES = {
    */
   printerDetails: (printerId: string) =>
     `/api/printers/${encodeURIComponent(printerId)}/details`,
+  // --- Filament calibration slice pipeline (upstream PR #1952) ---------------
+  // Routes are fixed constants. The renderer cannot influence them; the ID
+  // path parameters flow in through structurally-validated Guids on the IPC
+  // boundary and are URI-encoded here on the way out.
+  /** POST — clone one slicer profile. Auth: interactive session + Slicing.Submit. */
+  cloneProfile: '/api/slicer/profiles/clone',
+  /** POST — submit a slice job (calibration or ordinary). Auth: Slicing.Submit. */
+  sliceJobs: '/api/slice',
+  /** GET — read a slice job's public status projection. Auth: Slicing.Submit. */
+  sliceJob: (jobId: string) => `/api/slice/${encodeURIComponent(jobId)}`,
+  /** POST — send a completed slice job's gcode to its printer. Auth: Queue.Start. */
+  sliceJobSendToPrinter: (jobId: string) =>
+    `/api/slice/${encodeURIComponent(jobId)}/send-to-printer`,
+  /** PUT — mutate a custom slicer profile. Auth: interactive session + Slicing.Submit. */
+  customProfile: (customProfileId: string) =>
+    `/api/slicer/profiles/custom/${encodeURIComponent(customProfileId)}`,
 } as const;
 
 /**
@@ -292,7 +308,26 @@ export type CalibrationHttpErrorCode =
   // returned here, and it is a *diagnosed* code produced by ten other call
   // sites, so an unrecognised rejection was byte-identical to a validated one
   // (#508).
-  | 'unclassifiedValidationFailure';
+  | 'unclassifiedValidationFailure'
+  // --- Filament calibration slice pipeline (PR #1952) ---
+  // 422 `unsupported_calibration_method` from `POST /api/slice`. Kept
+  // distinct from `invalidData` because the response carries
+  // `supportedMethods` and the fix is "pick one of these", not "clean up".
+  | 'unsupportedCalibrationMethod'
+  // 403 from `POST /api/slicer/profiles/clone` or
+  // `PUT /api/slicer/profiles/custom/{id}` when the caller lacks a live
+  // interactive session (upstream `InteractiveSessionRequirement`). Distinct
+  // from the generic `forbidden` because the operator's fix is to sign in via
+  // the app's live session, not chase missing scopes.
+  | 'interactiveSessionRequired'
+  // Terminal `Failed` observed by the poll driver on a slice job. Distinct
+  // from the transport `server` code because the server *has* answered — the
+  // job is dead and retrying the same job id will not change anything.
+  | 'sliceJobFailed'
+  // Poll driver reached its wall-clock cap without observing a terminal
+  // status. The server has not declared the job dead — the desktop has given
+  // up watching.
+  | 'sliceJobTimeout';
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -389,6 +424,10 @@ export class CalibrationHttpError extends Error {
       dispatchRevisionConflict: 'dispatchRevisionConflict',
       calibrationJobIncompatible: 'calibrationJobIncompatible',
       filamentCheckFailed: 'filamentCheckFailed',
+      unsupportedCalibrationMethod: 'unsupportedCalibrationMethod',
+      interactiveSessionRequired: 'interactiveSessionRequired',
+      sliceJobFailed: 'sliceJobFailed',
+      sliceJobTimeout: 'sliceJobTimeout',
     };
     // 'unclassifiedConflict' and 'unclassifiedValidationFailure' are
     // deliberately absent from this map. The shared
@@ -600,6 +639,32 @@ function mapError(
     return new CalibrationHttpError('cancelled', 'Request was cancelled.');
   }
   if (error instanceof TypeError) {
+    // undici's `fetch` throws `TypeError('fetch failed')` with the underlying
+    // network exception attached as `cause` when the round-trip cannot
+    // complete (ECONNREFUSED, TLS negotiation failure, DNS, socket reset,
+    // ...). That is a genuine transport condition and belongs in the
+    // retryable classification.
+    //
+    // A `TypeError` **without** a `cause` from this call site means the
+    // *request* could not be constructed at all — e.g. `RequestInit` was
+    // rejected because a field failed a `WebIDL` type check (a bad `signal`,
+    // an unclonable body, an invalid method). That is a programming error in
+    // *this* process, not a network failure, and conflating the two would
+    // send the caller into an isTransient retry loop against a doomed
+    // request and would present in operator-facing telemetry as if the print
+    // farm was flaky. The distinct message prefix here surfaces the true
+    // cause so the next debugger does not chase a phantom transport fault.
+    // See #TODO(cross-team) if a specific downstream ever needs to
+    // discriminate this without message parsing.
+    if (error.cause === undefined) {
+      return new CalibrationHttpError(
+        'transport',
+        `Request construction failed (client-side programming error, not a network condition): ${error.message}`,
+        null,
+        null,
+        ambiguous,
+      );
+    }
     return new CalibrationHttpError(
       'transport',
       error.message,
@@ -685,6 +750,243 @@ function mapBedClearErrorCode422(
     default:
       return 'unclassifiedValidationFailure';
   }
+}
+
+// --- Filament calibration slice pipeline (PR #1952) response schemas --------
+//
+// Kept next to the transport methods that consume them and NOT under
+// `calibrationWire.ts`, because these schemas encode the *desktop's* narrower
+// view of the PR #1952 DTOs — `isSystem: false` is pinned as a literal for
+// clones (upstream hardcodes that), `slicerEngine` is bounded to 64 chars for
+// the wire, etc. Widening any of these bounds is a contract change owned by
+// this module.
+
+/**
+ * `CloneSingleProfileResponseDto` from `CloneProfilesDtos.cs` — the *clone*
+ * endpoint's 4-field projection. Consumed by `cloneSingleProfile` only.
+ *
+ * (An earlier revision of this schema claimed the PUT-custom endpoint returns
+ * the same projection. That was wrong: `ProfilesService.UpdateCustomProfileAsync`
+ * is typed `Task<CustomProfileDto>` in `IProfilesService.cs`, which is the
+ * richer 10-field DTO in the same header. See `CustomProfileResponseSchema`
+ * below.)
+ */
+const CloneSingleProfileResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(512),
+    profileType: z.enum(['machine', 'process', 'filament']),
+    isSystem: z.literal(false),
+  })
+  .strict();
+
+/**
+ * `CustomProfileDto` from `CloneProfilesDtos.cs` — the *update-custom* endpoint's
+ * 10-field projection. `PUT /api/slicer/profiles/custom/{id}` (via
+ * `IProfilesService.UpdateCustomProfileAsync`) returns this shape, NOT the
+ * 4-field clone projection. Consumed by `updateCustomProfile` only.
+ *
+ * `rawJson` is a serialized string (the OrcaSlicer profile JSON), unbounded on
+ * the C# side but bounded here at 1 MiB — anything larger than that would
+ * already fail the client's `maxResponseBytes` cap.
+ *
+ * `compatiblePrinters` is `IReadOnlyList<string>?` on the C# side — a nullable
+ * list of enum-name-shaped machine variants; each entry is capped at 128 chars
+ * to match what the source profile can carry.
+ */
+const CustomProfileResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(512),
+    profileType: z.enum(['machine', 'process', 'filament']),
+    // `CustomProfileDto.IsSystem` is `bool`, not `false`-literal — the
+    // `custom/` route is only meant to serve non-system profiles in
+    // production, but the invariant lives at the routing/authorization
+    // layer, not on the wire. If an operator or a shallow-clone bug ever
+    // aims this endpoint at a system row, the response can still legally
+    // carry `isSystem: true`, and rejecting that with a schema error would
+    // conflate "programming invariant violated" with "server returned
+    // malformed JSON". Clone-isolation must be observed on the calling
+    // side (compare returned id to the source id) rather than defended
+    // by the parser here.
+    isSystem: z.boolean(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime().nullable(),
+    description: z.string().max(2048).nullable(),
+    rawJson: z
+      .string()
+      .max(1024 * 1024)
+      .nullable(),
+    printerModelId: z.string().uuid().nullable(),
+    compatiblePrinters: z.array(z.string().max(128)).max(256).nullable(),
+  })
+  .strict();
+
+/**
+ * `SubmitSliceJobResponse` from `SliceJobDtos.cs`. `queuePosition` is `int?`
+ * on the C# side — a server that accepts the job straight into `Processing`
+ * (no queue wait) returns null.
+ */
+const SubmitSliceJobResponseSchema = z
+  .object({
+    jobId: z.string().uuid(),
+    status: z.enum([
+      'Queued',
+      'Processing',
+      'Completed',
+      'Failed',
+      'Cancelled',
+    ]),
+    queuedAt: z.string().datetime(),
+    queuePosition: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+/**
+ * `SliceJobStatusResponse` — the *public* projection from
+ * `SliceJobController.MapToPublicStatusResponse` (PR #1952 lines 1215-1258).
+ * Does NOT include `resultFileUrl`; the artifact hand-off is via
+ * `send-to-printer` and the per-job `artifactsRoute`, not a direct download.
+ */
+const SliceJobStatusResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    status: z.enum([
+      'Queued',
+      'Processing',
+      'Completed',
+      'Failed',
+      'Cancelled',
+    ]),
+    progressPercent: z.number().int().min(0).max(100),
+    progressMessage: z.string().max(512).nullable(),
+    queuedAt: z.string().datetime(),
+    startedAt: z.string().datetime().nullable(),
+    completedAt: z.string().datetime().nullable(),
+    errorMessage: z.string().max(2048).nullable(),
+    /**
+     * Admin-only worker-side failure detail (`SliceJobStatusResponse.ErrorDetail`
+     * in `SliceJobDtos.cs` @ `a4f230aa...`) — the DTO documents this as
+     * "populated only for farm admins. Never returned to non-admin callers".
+     * For the desktop's operator identity this is expected to always be null,
+     * but the field IS on the wire in every response (the C# type has it
+     * unconditionally). The schema was previously missing it entirely, which
+     * paired with `.strict()` was rejecting the entire status response with
+     * `Unrecognized key(s) in object: 'errorDetail'`. Bounded at 4 KiB so a
+     * mis-configured admin-privileged response cannot smuggle unbounded
+     * worker diagnostics through the wire.
+     */
+    errorDetail: z.string().max(4096).nullable(),
+    /**
+     * `LayoutDegradationReason?` enum from `SlicerModels.cs` — serialized as
+     * `JsonStringEnumConverter`, so the wire value is the enum member name
+     * (e.g. `"BedCenterUnknown"`) or `null`. Was previously `z.boolean()`,
+     * which contradicted both the DTO type and the fixture's citation and
+     * would reject any non-null value the real server produced.
+     */
+    layoutDegradation: z.string().max(64).nullable(),
+    failureReason: z.string().max(128).nullable(),
+    failureHint: z.string().max(2048).nullable(),
+    estimatedPrintTimeSeconds: z.number().int().nonnegative().nullable(),
+    filamentUsedGrams: z.number().finite().nonnegative().nullable(),
+    workerId: z.string().max(128).nullable(),
+    modelFileName: z.string().max(512),
+    slicerEngine: z.string().max(64),
+    artifactsRoute: z.string().max(512).nullable(),
+  })
+  .strict();
+
+/** `SendToPrinterResponse` from `Responses/SendToPrinterResponse.cs`. */
+const SendToPrinterResponseSchema = z
+  .object({
+    jobId: z.string().uuid(),
+    printerId: z.string().uuid(),
+    fileName: z.string().max(512),
+    printStarted: z.boolean(),
+    message: z.string().max(2048).nullable(),
+  })
+  .strict();
+
+/**
+ * Upgrade an `authorization` error (403) into `interactiveSessionRequired`
+ * when we know the endpoint's only 403 path is the
+ * `InteractiveSessionRequirement` gate. Preserves every other field of the
+ * underlying `CalibrationHttpError` — `serverDetail`, `serverInstance`,
+ * `serverErrorCode`, `status`, `ambiguous`, `retryAfterMs`. A non-403 error
+ * passes through unchanged.
+ */
+function remapInteractiveSession(
+  error: CalibrationHttpError,
+): CalibrationHttpError {
+  if (error.code !== 'authorization' || error.status !== 403) {
+    return error;
+  }
+  return new CalibrationHttpError(
+    'interactiveSessionRequired',
+    'The server requires an interactive session to modify slicer profiles.',
+    error.status,
+    error.retryAfterMs,
+    error.ambiguous,
+    error.serverDetail,
+    error.serverInstance,
+    error.serverErrorCode,
+  );
+}
+
+/**
+ * Wire values of `CalibrationMethod` this client supports (mirrors
+ * `CalibrationMethod.cs` from PR #1952). PA Pattern / PA Line are deliberately
+ * absent (upstream issue #1938). Exported so the remap-to-actionable-message
+ * function below can name them in the operator-facing error text without
+ * relying on the server echoing them back on `supportedMethods` — the client
+ * knows its own supported set at compile time, and it is the operator's fix
+ * ("pick one of these") regardless of whether the server bothered to include
+ * the list.
+ */
+export const CLIENT_SUPPORTED_CALIBRATION_METHODS = [
+  'flow_rate_pass_1',
+  'flow_rate_pass_2',
+  'temperature_tower',
+] as const;
+export type ClientSupportedCalibrationMethod =
+  (typeof CLIENT_SUPPORTED_CALIBRATION_METHODS)[number];
+
+/**
+ * Upgrade an `invalidData` error (422) into `unsupportedCalibrationMethod`
+ * when the server's ProblemDetails `errorCode` extension is
+ * `unsupported_calibration_method`. Preserves every other field of the
+ * underlying error so the response's `supportedMethods` list survives on
+ * `serverDetail` for the operator log.
+ */
+function remapUnsupportedCalibrationMethod(
+  error: CalibrationHttpError,
+): CalibrationHttpError {
+  if (
+    error.code !== 'invalidData' ||
+    error.status !== 422 ||
+    error.serverErrorCode !== 'unsupported_calibration_method'
+  ) {
+    return error;
+  }
+  return new CalibrationHttpError(
+    'unsupportedCalibrationMethod',
+    // Name the wire-supported methods in the catalogued (client-authored)
+    // message so the wizard's error text is actionable ("pick one of these")
+    // instead of a bare "unsupported" refusal that the operator cannot act
+    // on without cross-referencing docs. The list is from the client's own
+    // compile-time constant — the `serverDetail`-carried `supportedMethods`
+    // extension the server sends alongside is kept for the operator log
+    // (see docblock above) but never injected into `.message`, per the
+    // invariant that `.message` is client-authored and never carries
+    // server-controlled text.
+    `The server does not support the requested calibration method for this slicer engine. Supported methods: ${CLIENT_SUPPORTED_CALIBRATION_METHODS.join(', ')}.`,
+    error.status,
+    error.retryAfterMs,
+    error.ambiguous,
+    error.serverDetail,
+    error.serverInstance,
+    error.serverErrorCode,
+  );
 }
 
 // --- Main client class ----------------------------------------------------
@@ -1000,6 +1302,352 @@ export class CalibrationHttpClient {
       signal,
     );
   }
+
+  // --- Filament calibration slice pipeline (PR #1952) -----------------------
+  //
+  // Each method here is a single-shot HTTP call plus a targeted error remap.
+  // The remap upgrades two specific `CalibrationHttpError` codes:
+  //   - a 403 on the clone/PUT profile endpoints becomes
+  //     `interactiveSessionRequired` (upstream `InteractiveSessionRequirement`),
+  //   - a 422 on `POST /api/slice` whose ProblemDetails `errorCode` is
+  //     `unsupported_calibration_method` becomes
+  //     `unsupportedCalibrationMethod`.
+  // Both remaps run only for endpoints where the diagnosis is unambiguous, so
+  // the generic `authorization` / `invalidData` codes remain the right answer
+  // everywhere else.
+  //
+  // The poll-driver terminal-outcome codes (`sliceJobFailed`,
+  // `sliceJobTimeout`) are minted at the IPC-handler layer where the poll
+  // schedule lives — not here, because the transport layer does not decide
+  // when to stop looking.
+
+  /**
+   * `POST /api/slicer/profiles/clone` — clone a single filament profile in the
+   * OrcaSlicer worker's DB. Renames the clone in the same call, per the owner's
+   * workflow ("… rename it to match the filament they are calibrating").
+   *
+   * Upstream `ProfilesController.cs:1247-1283`. Auth: `Slicing.Submit` +
+   * `InteractiveSessionRequirement`. `request.idempotencyKey`, when set,
+   * populates the `Idempotency-Key` header so a re-issued clone is not
+   * double-executed on the server.
+   */
+  async cloneSingleProfile(
+    profileId: string,
+    baseUrl: string,
+    request: {
+      sourceProfileId: string;
+      profileType: 'machine' | 'process' | 'filament';
+      name: string | null;
+      printerModelId?: string | null;
+      compatiblePrinters?: readonly string[] | null;
+      idempotencyKey?: string | null;
+    },
+    signal: AbortSignal,
+  ): Promise<{
+    id: string;
+    name: string;
+    profileType: 'machine' | 'process' | 'filament';
+    isSystem: false;
+  }> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    if (
+      request.idempotencyKey !== undefined &&
+      request.idempotencyKey !== null
+    ) {
+      headers['idempotency-key'] = request.idempotencyKey;
+    }
+    const body = JSON.stringify({
+      sourceProfileId: request.sourceProfileId,
+      profileType: request.profileType,
+      name: request.name,
+      printerModelId: request.printerModelId ?? null,
+      compatiblePrinters:
+        request.compatiblePrinters === undefined ||
+        request.compatiblePrinters === null
+          ? null
+          : [...request.compatiblePrinters],
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.cloneProfile,
+      { method: 'POST', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw remapInteractiveSession(
+          await this.statusError(pending.response, true, pending.timedOut()),
+        );
+      }
+      return await this.parse(pending, CloneSingleProfileResponseSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `POST /api/slice` in calibration mode — omits `modelFileUrl` /
+   * `model3DId` so the worker resolves the calibration model from its own
+   * `resources/calib/`. Populates neither `calibrationProjectId` nor
+   * `calibrationAttemptId` nor `calibrationOrchestrationId` — upstream PR
+   * #1952 rejects any of those with `calibration_mode_conflicts_with_saga_ids`
+   * (422), and that rejection is the proof that a calibration slice remains an
+   * ordinary slice job eligible for `send-to-printer`.
+   *
+   * Saga fields are OMITTED entirely, not set to `null`. Hicks's acceptance
+   * suite specifically inspects key *presence* (`hasOwnProperty`) on the
+   * wire body — a null-valued key still trips the upstream 422 gate.
+   *
+   * Upstream `SliceJobController` + `SliceJobDtos.SubmitSliceJobRequest`. Auth:
+   * `Slicing.Submit`. `request.idempotencyKey`, when set, populates the
+   * `Idempotency-Key` header. A 422 `unsupported_calibration_method` is
+   * remapped to `unsupportedCalibrationMethod` so the renderer can surface
+   * the `supportedMethods` list as an actionable "pick one of these" instead
+   * of a generic invalid-data error.
+   */
+  async submitCalibrationSlice(
+    profileId: string,
+    baseUrl: string,
+    request: {
+      userId: string;
+      printerId: string;
+      slicerProfileJson: string;
+      method: 'flow_rate_pass_1' | 'flow_rate_pass_2' | 'temperature_tower';
+      params?: Record<string, number> | null;
+      idempotencyKey?: string | null;
+    },
+    signal: AbortSignal,
+  ): Promise<{
+    jobId: string;
+    status: 'Queued' | 'Processing' | 'Completed' | 'Failed' | 'Cancelled';
+    queuedAt: string;
+    queuePosition: number | null;
+  }> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    if (
+      request.idempotencyKey !== undefined &&
+      request.idempotencyKey !== null
+    ) {
+      headers['idempotency-key'] = request.idempotencyKey;
+    }
+    // Saga keys are OMITTED from the object literal entirely. Setting them
+    // to `null` still counts as `hasOwnProperty` on the parsed body and
+    // trips the upstream 422 `calibration_mode_conflicts_with_saga_ids`.
+    const body = JSON.stringify({
+      userId: request.userId,
+      printerId: request.printerId,
+      slicerEngine: 'OrcaSlicer',
+      slicerProfileJson: request.slicerProfileJson,
+      calibration: {
+        method: request.method,
+        params: request.params ?? {},
+      },
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.sliceJobs,
+      { method: 'POST', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw remapUnsupportedCalibrationMethod(
+          await this.statusError(pending.response, true, pending.timedOut()),
+        );
+      }
+      return await this.parse(pending, SubmitSliceJobResponseSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `GET /api/slice/{jobId}` — public status projection from PR #1952. Does
+   * NOT include `resultFileUrl`; that field lives on the worker-only
+   * `CompleteSliceJobResponse`. Auth: `Slicing.Submit`.
+   */
+  async getSliceJobStatus(
+    profileId: string,
+    baseUrl: string,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<{
+    id: string;
+    status: 'Queued' | 'Processing' | 'Completed' | 'Failed' | 'Cancelled';
+    progressPercent: number;
+    progressMessage: string | null;
+    queuedAt: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    errorMessage: string | null;
+    errorDetail: string | null;
+    layoutDegradation: string | null;
+    failureReason: string | null;
+    failureHint: string | null;
+    estimatedPrintTimeSeconds: number | null;
+    filamentUsedGrams: number | null;
+    workerId: string | null;
+    modelFileName: string;
+    slicerEngine: string;
+    artifactsRoute: string | null;
+  }> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.sliceJob(jobId),
+      SliceJobStatusResponseSchema,
+      signal,
+    );
+  }
+
+  /**
+   * `POST /api/slice/{jobId}/send-to-printer` — hand a completed slice job to
+   * the printer's queue. Machine-moving action when `startPrint === true`; the
+   * IPC handler layer enforces `calibrationActionGate.ts` before this method
+   * is called. `request.idempotencyKey`, when set, populates the
+   * `Idempotency-Key` header. Auth: `Queue.Start`.
+   */
+  async sendSliceToPrinter(
+    profileId: string,
+    baseUrl: string,
+    jobId: string,
+    request: {
+      printerId: string;
+      startPrint: boolean;
+      idempotencyKey?: string | null;
+    },
+    signal: AbortSignal,
+  ): Promise<{
+    jobId: string;
+    printerId: string;
+    fileName: string;
+    printStarted: boolean;
+    message: string | null;
+  }> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    if (
+      request.idempotencyKey !== undefined &&
+      request.idempotencyKey !== null
+    ) {
+      headers['idempotency-key'] = request.idempotencyKey;
+    }
+    const body = JSON.stringify({
+      printerId: request.printerId,
+      startPrint: request.startPrint,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.sliceJobSendToPrinter(jobId),
+      { method: 'POST', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      return await this.parse(pending, SendToPrinterResponseSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `PUT /api/slicer/profiles/custom/{id}` — mutate a custom slicer profile.
+   * `rawJson` replaces the profile JSON verbatim, so callers wanting to update
+   * only measured filament fields must read-modify-write against the current
+   * profile. The IPC handler drives that cycle; this transport method takes
+   * the already-merged JSON.
+   *
+   * The URL only names a custom profile id, but that is a documented
+   * contract, not a structural guarantee — the IPC handler in
+   * `src/main/ipc.ts` refuses to invoke this method against any profile
+   * whose `isSystem === true` in the current custom-profiles listing. That
+   * is the structural fence protecting source (system) profiles from
+   * accidental mutation.
+   *
+   * Upstream `ProfilesController.cs:1352-1395`. Auth: `Slicing.Submit` +
+   * `InteractiveSessionRequirement`. `request.idempotencyKey`, when set,
+   * populates the `Idempotency-Key` header so a re-issued measurement write
+   * is not applied twice on the server.
+   */
+  async updateCustomProfile(
+    profileId: string,
+    baseUrl: string,
+    customProfileId: string,
+    request: {
+      rawJson?: string | null;
+      name?: string | null;
+      description?: string | null;
+      idempotencyKey?: string | null;
+    },
+    signal: AbortSignal,
+  ): Promise<{
+    id: string;
+    name: string;
+    profileType: 'machine' | 'process' | 'filament';
+    isSystem: boolean;
+    createdAt: string;
+    updatedAt: string | null;
+    description: string | null;
+    rawJson: string | null;
+    printerModelId: string | null;
+    compatiblePrinters: readonly string[] | null;
+  }> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    if (
+      request.idempotencyKey !== undefined &&
+      request.idempotencyKey !== null
+    ) {
+      headers['idempotency-key'] = request.idempotencyKey;
+    }
+    const body = JSON.stringify({
+      rawJson: request.rawJson ?? null,
+      name: request.name ?? null,
+      description: request.description ?? null,
+      printerModelId: null,
+      clearPrinterModelId: false,
+      compatiblePrinters: null,
+      clearCompatiblePrinters: false,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.customProfile(customProfileId),
+      { method: 'PUT', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw remapInteractiveSession(
+          await this.statusError(pending.response, true, pending.timedOut()),
+        );
+      }
+      return await this.parse(pending, CustomProfileResponseSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  // --- End filament calibration slice pipeline ------------------------------
 
   /**
    * Shared body for the two `for-machines` POST endpoints. Both take exactly
