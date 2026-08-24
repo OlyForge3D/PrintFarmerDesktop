@@ -517,6 +517,42 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
       },
     }),
   },
+  {
+    channel: IpcChannel.CalibrationSaveFilamentWizardState,
+    request: (profileId) => ({
+      profileId,
+      state: {
+        schemaVersion: 1,
+        printerId: uuid(3),
+        printerModelId: null,
+        machineName: 'Voron 2.4 350',
+        processName: '0.20mm Standard @Voron 2.4',
+        baseFilamentName: 'PolyLite PLA Blue',
+        baseFilamentGuid: uuid(5),
+        cloneId: uuid(7),
+        cloneName: 'PolyLite PLA Blue (calibration)',
+        completedMethods: [],
+        currentMethod: 'flow_rate_pass_1',
+        inFlightJob: {
+          jobId: uuid(6),
+          method: 'flow_rate_pass_1',
+          submittedAt: '2026-01-01T00:00:00.000Z',
+          pollAttempt: 0,
+          lastStatus: 'Queued',
+        },
+        phase: 'pollingSlice',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationGetFilamentWizardState,
+    request: (profileId) => ({ profileId }),
+  },
+  {
+    channel: IpcChannel.CalibrationClearFilamentWizardState,
+    request: (profileId) => ({ profileId }),
+  },
 ];
 
 /** Reads the `code` a handler refused with, without assuming it threw an Error. */

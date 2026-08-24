@@ -473,6 +473,13 @@ function profileSelectionApi(): CalibrationApi {
       .mockResolvedValue(
         notImplemented('updateCalibrationFilamentProfileMeasurement'),
       ),
+    getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(null),
+    saveFilamentCalibrationWizardState: vi
+      .fn()
+      .mockResolvedValue({ saved: true }),
+    clearFilamentCalibrationWizardState: vi
+      .fn()
+      .mockResolvedValue({ cleared: true }),
   } satisfies CalibrationApi;
 }
 

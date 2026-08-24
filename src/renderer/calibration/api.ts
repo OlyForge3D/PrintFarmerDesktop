@@ -51,6 +51,15 @@ export type CalibrationApi = Pick<
   | 'getCalibrationSliceJobStatus'
   | 'sendCalibrationSliceToPrinter'
   | 'updateCalibrationFilamentProfileMeasurement'
+  // --- Filament calibration wizard restart resilience (issue #754) --------
+  //
+  // Persists which method/step/in-flight slice job the wizard is on so a
+  // restart mid-calibration can resume instead of starting over. See
+  // `filamentWizardState.ts` for the working-state <-> persisted-record
+  // mapping and `calibrationFilamentWizardState.ts` for the store.
+  | 'saveFilamentCalibrationWizardState'
+  | 'getFilamentCalibrationWizardState'
+  | 'clearFilamentCalibrationWizardState'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

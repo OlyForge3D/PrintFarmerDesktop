@@ -155,6 +155,12 @@ import {
   type CalibrationSendSliceToPrinterResponse,
   type CalibrationUpdateFilamentProfileMeasurementRequest,
   type CalibrationUpdateFilamentProfileMeasurementResponse,
+  type CalibrationSaveFilamentWizardStateRequest,
+  type CalibrationSaveFilamentWizardStateResponse,
+  type CalibrationGetFilamentWizardStateRequest,
+  type CalibrationGetFilamentWizardStateResponse,
+  type CalibrationClearFilamentWizardStateRequest,
+  type CalibrationClearFilamentWizardStateResponse,
 } from '@shared/ipc';
 
 /**
@@ -742,6 +748,34 @@ const api: PrintFarmerApi = {
     ].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationUpdateFilamentProfileMeasurement,
+        request,
+      ),
+    ),
+  // --- Filament calibration wizard restart resilience (issue #754) -------
+  saveFilamentCalibrationWizardState: async (
+    request: CalibrationSaveFilamentWizardStateRequest,
+  ): Promise<CalibrationSaveFilamentWizardStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSaveFilamentWizardState].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationSaveFilamentWizardState,
+        request,
+      ),
+    ),
+  getFilamentCalibrationWizardState: async (
+    request: CalibrationGetFilamentWizardStateRequest,
+  ): Promise<CalibrationGetFilamentWizardStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetFilamentWizardState].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetFilamentWizardState,
+        request,
+      ),
+    ),
+  clearFilamentCalibrationWizardState: async (
+    request: CalibrationClearFilamentWizardStateRequest,
+  ): Promise<CalibrationClearFilamentWizardStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationClearFilamentWizardState].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationClearFilamentWizardState,
         request,
       ),
     ),

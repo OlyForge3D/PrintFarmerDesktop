@@ -722,6 +722,15 @@ function makeApi(savedRecord = record()) {
           'updateCalibrationFilamentProfileMeasurement not stubbed in this test',
         ),
       ),
+    getFilamentCalibrationWizardState: vi
+      .fn<CalibrationApi['getFilamentCalibrationWizardState']>()
+      .mockResolvedValue(null),
+    saveFilamentCalibrationWizardState: vi
+      .fn<CalibrationApi['saveFilamentCalibrationWizardState']>()
+      .mockResolvedValue({ saved: true }),
+    clearFilamentCalibrationWizardState: vi
+      .fn<CalibrationApi['clearFilamentCalibrationWizardState']>()
+      .mockResolvedValue({ cleared: true }),
   } satisfies CalibrationApi;
 }
 

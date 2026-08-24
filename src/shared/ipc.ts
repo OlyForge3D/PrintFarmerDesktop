@@ -69,6 +69,10 @@ export const IpcChannel = {
   CalibrationSendSliceToPrinter: 'calibration:sendSliceToPrinter',
   CalibrationUpdateFilamentProfileMeasurement:
     'calibration:updateFilamentProfileMeasurement',
+  // --- Filament calibration wizard restart resilience (issue #754) ---------
+  CalibrationSaveFilamentWizardState: 'calibration:saveFilamentWizardState',
+  CalibrationGetFilamentWizardState: 'calibration:getFilamentWizardState',
+  CalibrationClearFilamentWizardState: 'calibration:clearFilamentWizardState',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -7002,6 +7006,124 @@ export type CalibrationUpdateFilamentProfileMeasurementResponse = z.infer<
   typeof CalibrationUpdateFilamentProfileMeasurementResponse
 >;
 
+// --- Filament calibration wizard restart resilience (issue #754) -----------
+//
+// The wizard's in-flight progress (which method, which step, the in-flight
+// slice `jobId`) previously lived only in renderer memory (PR #753) — an app
+// restart mid-calibration lost that bookkeeping, though never the underlying
+// work: the cloned profile and any written-back measurements are durable on
+// the server, and an in-flight slice job keeps running there too.
+//
+// `saveCalibrationWorkspaceState` does not fit: its schema is bound to the
+// printer-calibration domain (`projectId`/`printerId`, server-derived
+// `completedStepCount`/`totalStepCount`), which #750 deliberately removed
+// from the filament flow (see
+// `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`). This is
+// the additive, filament-shaped alternative: a small channel pair, persisted
+// on disk in the main process with the same atomic write pattern
+// `UpdateStateStore` uses (`src/main/updateState.ts`), keyed by server
+// profile. One record per profile — a profile can have at most one filament
+// calibration wizard in flight, matching the one-wizard-per-profile UI.
+//
+// The wire contract only accepts the four *stable* phases a resume can safely
+// land on (`methodPicker`, `pollingSlice`, `sliceReady`, `awaitingMeasurement`).
+// A phase where a network call is actually in flight when the process dies
+// (submitting a slice, sending to the printer, writing back a measurement) is
+// deliberately unrepresentable here: the renderer maps that transient phase
+// back to its nearest stable predecessor before persisting, so "was the
+// in-flight request applied server-side" is never a question this record has
+// to answer — the operator just retries the step. Enforced structurally by
+// the enum below, not by a comment the renderer could ignore.
+
+export const FilamentWizardStateInFlightJob = z
+  .object({
+    jobId: z.string().min(1).max(256),
+    method: CalibrationSliceMethod,
+    submittedAt: z.string().datetime(),
+    pollAttempt: z.number().int().nonnegative().max(10_000),
+    lastStatus: CalibrationSliceJobStatus,
+  })
+  .strict();
+export type FilamentWizardStateInFlightJob = z.infer<
+  typeof FilamentWizardStateInFlightJob
+>;
+
+/** The phases a restored wizard may resume into. See block comment above. */
+export const FilamentWizardStatePhase = z.enum([
+  'methodPicker',
+  'pollingSlice',
+  'sliceReady',
+  'awaitingMeasurement',
+]);
+export type FilamentWizardStatePhase = z.infer<typeof FilamentWizardStatePhase>;
+
+export const FilamentWizardStateRecord = z
+  .object({
+    schemaVersion: z.literal(1),
+    printerId: z.string().min(1).max(256),
+    printerModelId: z.string().uuid().nullable(),
+    machineName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    processName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    baseFilamentName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    baseFilamentGuid: z.string().uuid(),
+    /** The clone id every write-back names — the identity that carries state across steps. */
+    cloneId: z.string().uuid(),
+    cloneName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    completedMethods: z.array(CalibrationSliceMethod).max(3),
+    currentMethod: CalibrationSliceMethod.nullable(),
+    inFlightJob: FilamentWizardStateInFlightJob.nullable(),
+    phase: FilamentWizardStatePhase,
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type FilamentWizardStateRecord = z.infer<
+  typeof FilamentWizardStateRecord
+>;
+
+export const CalibrationSaveFilamentWizardStateRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    state: FilamentWizardStateRecord,
+  })
+  .strict();
+export type CalibrationSaveFilamentWizardStateRequest = z.infer<
+  typeof CalibrationSaveFilamentWizardStateRequest
+>;
+
+export const CalibrationSaveFilamentWizardStateResponse = z
+  .object({ saved: z.literal(true) })
+  .strict();
+export type CalibrationSaveFilamentWizardStateResponse = z.infer<
+  typeof CalibrationSaveFilamentWizardStateResponse
+>;
+
+export const CalibrationGetFilamentWizardStateRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationGetFilamentWizardStateRequest = z.infer<
+  typeof CalibrationGetFilamentWizardStateRequest
+>;
+
+export const CalibrationGetFilamentWizardStateResponse =
+  FilamentWizardStateRecord.nullable();
+export type CalibrationGetFilamentWizardStateResponse = z.infer<
+  typeof CalibrationGetFilamentWizardStateResponse
+>;
+
+export const CalibrationClearFilamentWizardStateRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationClearFilamentWizardStateRequest = z.infer<
+  typeof CalibrationClearFilamentWizardStateRequest
+>;
+
+export const CalibrationClearFilamentWizardStateResponse = z
+  .object({ cleared: z.boolean() })
+  .strict();
+export type CalibrationClearFilamentWizardStateResponse = z.infer<
+  typeof CalibrationClearFilamentWizardStateResponse
+>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -7366,6 +7488,18 @@ export const ipcSchemas = {
     request: CalibrationUpdateFilamentProfileMeasurementRequest,
     response: CalibrationUpdateFilamentProfileMeasurementResponse,
   },
+  [IpcChannel.CalibrationSaveFilamentWizardState]: {
+    request: CalibrationSaveFilamentWizardStateRequest,
+    response: CalibrationSaveFilamentWizardStateResponse,
+  },
+  [IpcChannel.CalibrationGetFilamentWizardState]: {
+    request: CalibrationGetFilamentWizardStateRequest,
+    response: CalibrationGetFilamentWizardStateResponse,
+  },
+  [IpcChannel.CalibrationClearFilamentWizardState]: {
+    request: CalibrationClearFilamentWizardStateRequest,
+    response: CalibrationClearFilamentWizardStateResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -7580,4 +7714,13 @@ export interface PrintFarmerApi {
   updateCalibrationFilamentProfileMeasurement(
     request: CalibrationUpdateFilamentProfileMeasurementRequest,
   ): Promise<CalibrationUpdateFilamentProfileMeasurementResponse>;
+  saveFilamentCalibrationWizardState(
+    request: CalibrationSaveFilamentWizardStateRequest,
+  ): Promise<CalibrationSaveFilamentWizardStateResponse>;
+  getFilamentCalibrationWizardState(
+    request: CalibrationGetFilamentWizardStateRequest,
+  ): Promise<CalibrationGetFilamentWizardStateResponse>;
+  clearFilamentCalibrationWizardState(
+    request: CalibrationClearFilamentWizardStateRequest,
+  ): Promise<CalibrationClearFilamentWizardStateResponse>;
 }
