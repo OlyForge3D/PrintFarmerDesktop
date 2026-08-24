@@ -737,3 +737,78 @@ Single amendment on top of Part 2 (`6ce5f7b8`):
 - Trailer: `Co-authored-by: Copilot`
 - No `--no-verify`. Hooks armed.
 - No PR — Vasquez coordinates.
+
+
+---
+
+# 46 · Filament calibration IPC channels — resumed session (2026-08-24)
+
+**Branch:** `dev-bishop-filament-calibration-channels` @ `e3927d87`  
+**Requested by:** Vasquez  
+**Prior session state resumed:** `cee26bb2` + 4 WIP commits, 27 lint errors, 5 format failures, missing write-back channel.
+
+## What I delivered
+
+Five additive IPC channels for OrcaSlicer's client-driven filament calibration wiki flow, backed by pfarm1 PR #1952 (`beeea96a`):
+
+- `calibration:cloneFilamentProfile`
+- `calibration:submitCalibrationSlice`
+- `calibration:getSliceJobStatus`
+- `calibration:sendSliceToPrinter`
+- `calibration:updateFilamentProfileMeasurement`
+
+IPC contract version stays at 4 (additive).
+
+## The write-back channel — priority Vasquez called out
+
+Was fully absent when I resumed. Wired end-to-end:
+
+- Zod discriminated-union schema on `measurement.method` — a `temperature_tower` request cannot smuggle a flow value or vice versa; fails at IPC boundary.
+- Handler writes OrcaSlicer's array-of-strings wire format for `filament_flow_ratio`, `nozzle_temperature`, `nozzle_temperature_initial_layer`, preserving multi-extruder tail elements.
+- **Structural fence against source-profile mutation:** three interlocking mechanisms — channel accepts only `customProfileId`; clone response Zod literals `isSystem: false`; handler cross-checks against server's custom-profiles listing and refuses if `current.isSystem === true`.
+
+## Contract with Hicks's acceptance branch matched
+
+Read `dev-hicks-filament-calibration-acceptance` @ `b72ea471` first, matched his shim probes:
+- Method name is `submitCalibrationSlice` (not `submitSliceJob`).
+- HTTP client uses 4-arg signatures with `idempotencyKey?: string | null` INSIDE the request. Only emits `Idempotency-Key` header when caller supplies one.
+- Saga keys structurally omitted from slice-submit body (object-literal absence), not set to `null` — matches Hicks's `hasOwnProperty` discrimination.
+
+## The 27 lint errors were one class
+
+All `@typescript-eslint/no-unsafe-*` from untyped `JSON.parse()` at 6 sites (5 in `tests/calibrationHttp.filamentCalibration.test.ts`, 1 in `src/main/ipc.ts:6513`). Fixed by typed casts (`JSON.parse(...) as Record<string, unknown>`, `const candidate: unknown = JSON.parse(...)`). No disable comments.
+
+## New blocking issue I discovered and fixed
+
+`tests/calibration.ipc.authorization-matrix.test.ts` enumerates profile-scoped calibration channels via `MATRIX` and asserts `MATRIX == profileScopedChannels()` at run time. My five new channels tripped it. Added five MATRIX rows with schema-accepted fixtures. 227/227 tests in that file pass.
+
+## History rewrite
+
+Six-commit history (four WIP-labelled) squashed into three self-describing commits via soft reset + targeted re-adds:
+- `a20943a3` feat(calibration): filament-profile calibration IPC surface (5 channels)
+- `ce1d8d72` test(calibration): filament calibration channel + authorization coverage
+- `e3927d87` chore: add closing-reference declaration (closes nothing)
+
+Force-pushed with `--force-with-lease=dev-bishop-filament-calibration-channels:cee26bb2a2f4…` + `--force-if-includes`. Push guard's `PF_PUSH_ACK` handshake worked as designed — I authored all 6 old commits, squashing was intentional.
+
+## Gate results
+
+All static checks pass. Full suite: 5439 passed / 4 failed / 7 skipped. The 4 failures are the known-acceptable `calibration.snapshotProvenanceGuard` cases against a stale sibling `pfarm1` checkout (Vasquez confirmed as residuals).
+
+## Durable learnings
+
+1. **`.git` in a worktree is a file, not a directory** — cannot write scratch files there. Use the working directory root with a `.tmp.txt` suffix instead.
+2. **`push-guard` refuses even a valid `--force-with-lease` for destructive pushes without explicit ack** — the `PF_PUSH_ACK` env var + `--force-with-lease=branch:oldsha` + `--force-if-includes` triple is the correct dance. Don't `--force`; the guard is there for a reason.
+3. **Bishop's four-arg HTTP client signatures with `idempotencyKey` inside the request** are load-bearing for cross-agent compatibility. Hicks's shim probes by argument shape; a positional operationId would fail the acceptance suite silently by returning a `blocked on bishop landing` error, not a wrong-answer.
+4. **OrcaSlicer wire format is arrays of strings, not scalars** — `[value.toFixed(3)]`, `[String(intTemp)]`. A `1.02` (number) or `"1.02"` (bare string) here silently drifts and breaks Hicks's `filament_flow_ratio[0]` probe.
+5. **The `check:script-reachability` and `check:inert-class-field-seams` gates catch a class of silent failures that lint doesn't** — worth running every time, not just before push.
+
+## Not touched deliberately
+
+- `calibrationActionGate.ts` — verified intact; the operator-acknowledgement flow it mints is unchanged and still guards `sendSliceToPrinter` when `startPrint: true`.
+- No `check:provenance` reintroduced. Vasquez's brief said the apparatus is gone.
+- No PR opened. Vasquez was explicit.
+
+## Decision recorded at
+
+`.squad/decisions/inbox/bishop-filament-calibration-channels.md`
