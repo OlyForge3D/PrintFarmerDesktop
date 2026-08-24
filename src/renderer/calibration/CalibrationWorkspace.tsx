@@ -9,6 +9,7 @@ import {
   CalibrationWorkspaceStoreProvider,
   useCalibrationWorkspaceStore,
 } from './CalibrationWorkspaceStore';
+import { FilamentCalibrationWizard } from './FilamentCalibrationWizard';
 import { NewCalibrationProject } from './NewCalibrationProject';
 import { ProjectOverview } from './ProjectOverview';
 import type { CalibrationWorkspaceProps } from './workspaceTypes';
@@ -95,6 +96,9 @@ function WorkspaceContent(): React.JSX.Element {
       >
         {store.view === 'dashboard' ? <CalibrationDashboard /> : null}
         {store.view === 'newProject' ? <NewCalibrationProject /> : null}
+        {store.view === 'filamentCalibration' ? (
+          <FilamentCalibrationWizard />
+        ) : null}
         {store.view === 'overview' ? <ProjectOverview /> : null}
         {store.view === 'step' && store.activeProject ? (
           <CalibrationStepWorkflow stageId={store.selectedStageId} />

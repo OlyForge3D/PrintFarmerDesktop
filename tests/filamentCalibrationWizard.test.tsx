@@ -1,0 +1,624 @@
+/**
+ * Renderer test for the filament calibration wizard.
+ *
+ * The step-sequencing test at the top is the acceptance-suite equivalent of
+ * `tests/filamentCalibration.acceptance.test.ts:884` — that test proves the
+ * wire mapper reads the updated `filament_flow_ratio` after a step 1
+ * write-back; this test proves the wizard does not undermine that guarantee
+ * by re-cloning the filament between steps. If the wizard buggy-re-cloned,
+ * `updateCalibrationFilamentProfileMeasurement` would end up called with a
+ * NEW `customProfileId` on step 2, and the wire mapper would then read the
+ * source's stale flow ratio. The control assertion is the negative:
+ * `cloneCalibrationFilamentProfile` is called exactly ONCE across two steps.
+ *
+ * Every assertion is on operator-observable outcomes (rendered DOM,
+ * enabled/disabled state) OR on the exact IPC argument sent — never on
+ * internal component shape.
+ */
+
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CalibrationListPrintersResponse,
+  type CalibrationCustomProfileRef,
+  type CalibrationPrinterCandidate,
+  type CalibrationSliceJobSnapshot,
+  type CalibrationSlicerProfileRef,
+} from '@shared/ipc';
+import { CalibrationWorkspace } from '../src/renderer/calibration';
+import type {
+  CalibrationApi,
+  CalibrationEnvironment,
+} from '../src/renderer/calibration/api';
+
+const profileId = '11111111-1111-4111-8111-111111111111';
+const printerIdA = '33333333-3333-4333-8333-333333333301';
+const machineGuid = '22222222-2222-4222-8222-222222222201';
+const processGuid = '22222222-2222-4222-8222-222222222202';
+const filamentGuid = '22222222-2222-4222-8222-222222222203';
+const cloneGuid = '44444444-4444-4444-8444-444444444444';
+const jobIdOne = '55555555-5555-4555-8555-555555555501';
+const jobIdTwo = '55555555-5555-4555-8555-555555555502';
+const now = '2026-08-24T02:29:44.441Z';
+const SAMPLE_MACHINE_NAME = 'K1 Max 0.4';
+const SAMPLE_PROCESS_NAME = '0.20mm Standard';
+const SAMPLE_FILAMENT_NAME = 'Generic PLA';
+
+function systemProfile(
+  name: string,
+  guid: string,
+  displayLabel: string | null = null,
+): CalibrationSlicerProfileRef {
+  return {
+    name,
+    guid,
+    source: 'system' as const,
+    displayLabel,
+    contentSha256: null,
+  };
+}
+
+function noCustomProfiles(): {
+  profiles: readonly CalibrationCustomProfileRef[];
+} {
+  return { profiles: [] };
+}
+
+function printerCandidate(): CalibrationPrinterCandidate {
+  return {
+    printerId: printerIdA,
+    displayName: 'Emulator cell A',
+    printerModel: 'Klipper machine',
+    printerModelId: null,
+    firmwareCompatible: false,
+    orcaProfileId: null,
+    isOnline: true,
+    updatedAt: now,
+    evaluationScope: 'preliminary' as const,
+    rejectionReasonCodes: [],
+    missingInputs: [],
+    eligibility: null,
+  };
+}
+
+function availability() {
+  return {
+    available: true,
+    unavailableReason: null,
+    unavailableDetail: null,
+    negotiatedApiVersion: '2',
+    negotiatedSchemaVersion: '2.0',
+    capabilityFlags: {
+      calibrationApiEnabled: true,
+      calibrationChangeFeedEnabled: true,
+      calibrationOfflineDraftEnabled: true,
+      calibrationPhotoUploadEnabled: true,
+      calibrationGenerationEnabled: true,
+    },
+    grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
+    offlineEditingEnabled: true,
+  } as const;
+}
+
+function notImplemented(name: string) {
+  return {
+    status: 'error' as const,
+    error: {
+      code: 'serverError' as const,
+      message: `${name}: not implemented in wizard test.`,
+      retryable: false,
+      retryAfterSeconds: null,
+      reference: null,
+    },
+  };
+}
+
+function completedSnapshot(id: string): CalibrationSliceJobSnapshot {
+  return {
+    id,
+    status: 'Completed',
+    progressPercent: 100,
+    progressMessage: 'Slicing complete',
+    queuedAt: now,
+    startedAt: now,
+    completedAt: now,
+    errorMessage: null,
+    errorDetail: null,
+    layoutDegradation: null,
+    failureReason: null,
+    failureHint: null,
+    estimatedPrintTimeSeconds: 900,
+    filamentUsedGrams: 12.5,
+    workerId: 'worker-01',
+    modelFileName: 'flow_rate_pass_1.3mf',
+    slicerEngine: 'OrcaSlicer',
+    artifactsRoute: null,
+  };
+}
+
+/**
+ * A fresh API stub that resolves every wire the wizard reads through.
+ * Non-wizard channels use `notImplemented` sentinel so an unexpected touch
+ * is loud in the assertion output rather than a silent `undefined`.
+ */
+function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
+  const base: CalibrationApi = {
+    getCalibrationAvailability: vi.fn().mockResolvedValue(availability()),
+    listCalibrationWorkspaceStates: vi
+      .fn()
+      .mockResolvedValue({ states: [], unhydratedProjects: [] }),
+    getCalibrationWorkspaceState: vi.fn().mockResolvedValue(null),
+    saveCalibrationWorkspaceState: vi.fn(),
+    listCalibrationPrinters: vi.fn().mockResolvedValue(
+      CalibrationListPrintersResponse.parse({
+        printers: [printerCandidate()],
+        printersTruncated: false,
+        printersUnreadable: 0,
+        fetchedAt: now,
+      }),
+    ),
+    getCalibrationPrinterContext: vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'getCalibrationPrinterContext must not be called by the wizard.',
+        ),
+      ),
+    listOrcaProfiles: vi.fn().mockResolvedValue({
+      profiles: [],
+      printerId: null,
+      configurationRevision: null,
+      printersUnreadable: 0,
+      printersTruncated: false,
+    }),
+    listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    resolveCalibrationConflict: vi.fn(),
+    syncCalibrationNow: vi.fn().mockResolvedValue({
+      phase: 'succeeded',
+      profileId,
+      projectId: null,
+      pushedOperations: 0,
+      pulledChanges: 0,
+      conflictCount: 0,
+      cursor: null,
+      error: null,
+    }),
+    openCalibrationPhoto: vi.fn().mockResolvedValue(null),
+    stageCalibrationPhoto: vi.fn(),
+    generateOrcaProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('generateOrcaProfile')),
+    exportOrcaProfile: vi.fn().mockResolvedValue({ status: 'canceled' }),
+    installOrcaProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('installOrcaProfile')),
+    restoreOrcaProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('restoreOrcaProfile')),
+    startCalibrationGeneration: vi
+      .fn()
+      .mockResolvedValue(notImplemented('startCalibrationGeneration')),
+    getCalibrationOrchestrationStatus: vi
+      .fn()
+      .mockResolvedValue(notImplemented('getCalibrationOrchestrationStatus')),
+    getCalibrationQueueState: vi
+      .fn()
+      .mockResolvedValue(notImplemented('getCalibrationQueueState')),
+    acknowledgeCalibrationBedClear: vi
+      .fn()
+      .mockResolvedValue(notImplemented('acknowledgeCalibrationBedClear')),
+    startCalibrationPrint: vi
+      .fn()
+      .mockResolvedValue(notImplemented('startCalibrationPrint')),
+    pollCalibrationQueueChanges: vi
+      .fn()
+      .mockResolvedValue(notImplemented('pollCalibrationQueueChanges')),
+    getCalibrationSubscriptionResources: vi
+      .fn()
+      .mockResolvedValue(notImplemented('getCalibrationSubscriptionResources')),
+    listCalibrationExtendedProfiles: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      machineProfiles: [
+        systemProfile(SAMPLE_MACHINE_NAME, machineGuid, 'Bed 300×300'),
+      ],
+      processProfiles: [
+        systemProfile(SAMPLE_PROCESS_NAME, processGuid, '0.4 nozzle'),
+      ],
+      filamentProfiles: [
+        systemProfile(SAMPLE_FILAMENT_NAME, filamentGuid, 'PLA'),
+      ],
+      fetchedAt: now,
+    }),
+    listCalibrationMachineProfilesForModel: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      profiles: [
+        systemProfile(SAMPLE_MACHINE_NAME, machineGuid, 'Bed 300×300'),
+      ],
+      noModelAlias: false,
+      fetchedAt: now,
+    }),
+    listCalibrationProcessProfilesForMachines: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      profiles: [systemProfile(SAMPLE_PROCESS_NAME, processGuid, '0.4 nozzle')],
+      fetchedAt: now,
+    }),
+    listCalibrationFilamentProfilesForMachines: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      profiles: [systemProfile(SAMPLE_FILAMENT_NAME, filamentGuid, 'PLA')],
+      fetchedAt: now,
+    }),
+    listCalibrationCustomProfiles: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      ...noCustomProfiles(),
+      fetchedAt: now,
+    }),
+    cloneCalibrationFilamentProfile: vi.fn().mockResolvedValue({
+      status: 'ok',
+      clone: {
+        id: cloneGuid,
+        name: 'PLA — Prusament Galaxy Black',
+        profileType: 'filament' as const,
+        isSystem: false as const,
+      },
+    }),
+    submitCalibrationSlice: vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'ok',
+        job: {
+          jobId: jobIdOne,
+          status: 'Queued' as const,
+          queuedAt: now,
+          queuePosition: 1,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 'ok',
+        job: {
+          jobId: jobIdTwo,
+          status: 'Queued' as const,
+          queuedAt: now,
+          queuePosition: 1,
+        },
+      }),
+    getCalibrationSliceJobStatus: vi
+      .fn()
+      .mockImplementation((request: { jobId: string }) =>
+        Promise.resolve({
+          status: 'ok' as const,
+          snapshot: completedSnapshot(request.jobId),
+          terminal: 'completed' as const,
+          nextPollDelayMs: null,
+          cappedOut: false,
+        }),
+      ),
+    sendCalibrationSliceToPrinter: vi.fn().mockResolvedValue({
+      status: 'ok',
+      result: {
+        jobId: jobIdOne,
+        printerId: printerIdA,
+        fileName: 'flow_rate_pass_1.gcode',
+        printStarted: false,
+        message: 'Uploaded to printer queue.',
+      },
+    }),
+    updateCalibrationFilamentProfileMeasurement: vi.fn().mockResolvedValue({
+      status: 'ok',
+      updated: {
+        id: cloneGuid,
+        name: 'PLA — Prusament Galaxy Black',
+        profileType: 'filament' as const,
+        isSystem: false as const,
+      },
+    }),
+  };
+  return { ...base, ...overrides };
+}
+
+function deterministicEnvironment(): CalibrationEnvironment {
+  let sequence = 0;
+  return {
+    createId: () => {
+      sequence += 1;
+      return `bbbbbbbb-bbbb-4bbb-8bbb-${sequence.toString().padStart(12, '0')}`;
+    },
+    now: () => now,
+  };
+}
+
+function mount(api: CalibrationApi) {
+  Object.defineProperty(window, 'printFarmer', {
+    configurable: true,
+    value: api,
+  });
+  render(
+    <CalibrationWorkspace
+      selectedProfileId={profileId}
+      selectedProfileName="Farm server"
+      onManageProfiles={vi.fn()}
+      onFlushReady={() => undefined}
+      environment={deterministicEnvironment()}
+    />,
+  );
+}
+
+async function openWizardAndPickPrinter(): Promise<void> {
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+  );
+  fireEvent.click(
+    await screen.findByRole('radio', { name: /Emulator cell A/ }),
+  );
+  await waitFor(() => {
+    const selector = screen.queryByRole('combobox', {
+      name: /machine profile/i,
+    });
+    if (selector === null) throw new Error('machine selector not present yet');
+    const populated = Array.from(selector.querySelectorAll('option')).some(
+      (option) => option.value.length > 0,
+    );
+    if (!populated) throw new Error('machine selector not populated yet');
+  });
+}
+
+async function pickAllProfilesAndProceedToClone(): Promise<void> {
+  const machineSelector = await screen.findByRole('combobox', {
+    name: /machine profile/i,
+  });
+  fireEvent.change(machineSelector, {
+    target: { value: `system:${SAMPLE_MACHINE_NAME}` },
+  });
+  const processSelector = await screen.findByRole('combobox', {
+    name: /process profile/i,
+  });
+  await waitFor(() => {
+    const populated = Array.from(
+      processSelector.querySelectorAll('option'),
+    ).some((option) => option.value.length > 0);
+    if (!populated) throw new Error('process selector not populated');
+  });
+  fireEvent.change(processSelector, {
+    target: { value: `system:${SAMPLE_PROCESS_NAME}` },
+  });
+  const filamentSelector = await screen.findByRole('combobox', {
+    name: /filament profile/i,
+  });
+  await waitFor(() => {
+    const populated = Array.from(
+      filamentSelector.querySelectorAll('option'),
+    ).some((option) => option.value.length > 0);
+    if (!populated) throw new Error('filament selector not populated');
+  });
+  fireEvent.change(filamentSelector, {
+    target: { value: `system:${SAMPLE_FILAMENT_NAME}` },
+  });
+  const nextButton = await screen.findByRole('button', {
+    name: /Next — name the clone/i,
+  });
+  await waitFor(() => {
+    if (nextButton.hasAttribute('disabled')) {
+      throw new Error('Next button not enabled yet');
+    }
+  });
+  fireEvent.click(nextButton);
+}
+
+async function performCloneStep(): Promise<void> {
+  const cloneButton = await screen.findByRole('button', {
+    name: /Clone this filament profile/i,
+  });
+  fireEvent.click(cloneButton);
+  await screen.findByRole('button', {
+    name: /Start Flow rate — pass 1/i,
+  });
+}
+
+async function runOneMethodEndToEnd(
+  methodButtonName: RegExp,
+  measurementFieldLabel: RegExp,
+  measurementValue: string,
+  extra?: { readonly secondFieldLabel: RegExp; readonly secondValue: string },
+): Promise<void> {
+  fireEvent.click(
+    await screen.findByRole('button', { name: methodButtonName }),
+  );
+  await screen.findByRole('progressbar', { name: /Slice progress/i });
+  const uploadOnly = await screen.findByRole('button', {
+    name: /Upload gcode only/i,
+  });
+  fireEvent.click(uploadOnly);
+  const input = await screen.findByLabelText(measurementFieldLabel);
+  fireEvent.change(input, { target: { value: measurementValue } });
+  if (extra !== undefined) {
+    const second = await screen.findByLabelText(extra.secondFieldLabel);
+    fireEvent.change(second, { target: { value: extra.secondValue } });
+  }
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: /Save measurement and continue/i,
+    }),
+  );
+  // The step advances back to the method picker.
+  await waitFor(() => {
+    if (screen.queryByLabelText(measurementFieldLabel) !== null) {
+      throw new Error('measurement form still present after save');
+    }
+  });
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  globalThis.localStorage?.clear();
+});
+afterEach(() => {
+  vi.useRealTimers();
+  globalThis.localStorage?.clear();
+});
+
+describe('FilamentCalibrationWizard step sequencing', () => {
+  it('never re-clones between calibration steps — step 2 writes back on the same clone id as step 1', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    // Step 1 — flow rate pass 1
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // Step 2 — temperature tower
+    await runOneMethodEndToEnd(
+      /Start Temperature tower/i,
+      /^Nozzle temperature$/i,
+      '215',
+      {
+        secondFieldLabel: /Initial layer nozzle temperature/i,
+        secondValue: '220',
+      },
+    );
+
+    // --- Assertions --------------------------------------------------------
+    // 1. The clone was created exactly once. If the wizard buggy-re-cloned,
+    //    step 2 would consume the second `cloneCalibrationFilamentProfile`
+    //    call, and every subsequent measurement would land on a fresh
+    //    profile — which is the failure the acceptance-suite control at
+    //    `tests/filamentCalibration.acceptance.test.ts:884` proves.
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(1);
+
+    // 2. Both write-backs targeted the SAME `customProfileId`. This is the
+    //    positive form of the step-sequencing invariant.
+    const measurementCalls = (
+      api.updateCalibrationFilamentProfileMeasurement as ReturnType<
+        typeof vi.fn
+      >
+    ).mock.calls;
+    expect(measurementCalls).toHaveLength(2);
+    const firstCall = measurementCalls[0] as [
+      { customProfileId: string; measurement: { method: string } },
+    ];
+    const secondCall = measurementCalls[1] as [
+      { customProfileId: string; measurement: { method: string } },
+    ];
+    expect(firstCall[0].customProfileId).toBe(cloneGuid);
+    expect(secondCall[0].customProfileId).toBe(cloneGuid);
+    expect(firstCall[0].measurement.method).toBe('flow_rate_pass_1');
+    expect(secondCall[0].measurement.method).toBe('temperature_tower');
+  });
+});
+
+describe('FilamentCalibrationWizard startPrint safety gate', () => {
+  it('the "Start print now" button stays disabled until the operator types START to confirm', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+    // Wait through submit → poll → sliceReady.
+    const startPrintButton = await screen.findByRole('button', {
+      name: /Start the calibration print now/i,
+    });
+    expect(startPrintButton).toBeDisabled();
+
+    // Also verify the upload-only path IS enabled from the start — that is the
+    // safe default we WANT the operator to have available.
+    const uploadOnly = await screen.findByRole('button', {
+      name: /Upload gcode only/i,
+    });
+    expect(uploadOnly).not.toBeDisabled();
+
+    // Typing START enables the machine-moving action.
+    fireEvent.change(await screen.findByLabelText(/Confirm start/i), {
+      target: { value: 'START' },
+    });
+    expect(startPrintButton).not.toBeDisabled();
+  });
+});
+
+describe('FilamentCalibrationWizard restart resilience', () => {
+  // The renderer is presentation-only — no `localStorage`, no filesystem.
+  // The workspace-state IPC surface that DOES cross the boundary is bound
+  // to printer-calibration `projectId`/`printerId` and won't accept a
+  // filament clone id, and the brief explicitly forbade inventing a new
+  // channel for this. So this build ships restart resilience as an
+  // in-memory wizard whose clone is durable on the server: closing the
+  // wizard between steps loses the wizard's phase and completion set, and
+  // the operator resumes by picking the previously-created clone as their
+  // base filament next time.
+  //
+  // This test asserts the CURRENT contract — the wizard boots fresh into
+  // step 1 even if a clone from a previous session exists on the server.
+  // It exists so that if a future refactor silently reintroduces
+  // renderer-scoped storage (which the forbidden-imports check would
+  // catch, but obliquely) or partially resumes state from IPC, this
+  // test either passes intentionally or fails loudly.
+  it('always boots fresh into step 1 — restart resilience is a declared gap, not a silent one', async () => {
+    const api = wizardApi();
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+    // Step 1's fieldset is present and interactive. The wizard did NOT skip
+    // step 1 into methodPicker; there is no ambient "resumed" state.
+    expect(
+      await screen.findByRole('group', {
+        name: /Step 1 — machine, process, and base filament/i,
+      }),
+    ).toBeInTheDocument();
+    // Cross-check: neither a clone nor a slice was fetched on mount.
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(0);
+    expect(
+      (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
+});
+
+describe('FilamentCalibrationWizard error surfacing', () => {
+  it('surfaces `unsupportedCalibrationMethod` as actionable operator text rather than a raw code', async () => {
+    const api = wizardApi({
+      submitCalibrationSlice: vi.fn().mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'unsupportedCalibrationMethod',
+          message:
+            'PrintFarmer does not recognise this calibration method on this build.',
+          retryable: false,
+          retryAfterSeconds: null,
+          reference: null,
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    // The wizard is now at the method picker. Clicking pass 1 triggers
+    // `submitCalibrationSlice`, which the stub answers with an
+    // `unsupportedCalibrationMethod` error — the banner should surface
+    // the actionable copy, never the raw code.
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent ?? '').toMatch(/not supported by the server/i);
+    // Control: the error banner must NEVER surface the raw wire code — that
+    // was the anti-pattern the reframe called out.
+    expect(alert.textContent ?? '').not.toMatch(/unsupportedCalibrationMethod/);
+  });
+});

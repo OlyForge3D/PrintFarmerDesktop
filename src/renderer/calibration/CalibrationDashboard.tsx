@@ -95,6 +95,17 @@ export function CalibrationDashboard(): React.JSX.Element {
           <button
             type="button"
             className="cal-button"
+            onClick={() => void store.navigate('filamentCalibration')}
+            disabled={
+              store.profileId === null || store.offline || store.disabled
+            }
+            aria-describedby="new-project-gate"
+          >
+            Calibrate a filament spool
+          </button>
+          <button
+            type="button"
+            className="cal-button"
             onClick={() => setShowImport(true)}
             disabled={store.profileId === null || store.disabled}
             aria-label="Import a legacy calibration backup file"

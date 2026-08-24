@@ -593,7 +593,9 @@ export function CalibrationWorkspaceStoreProvider({
   const navigate = useCallback(
     async (nextView: CalibrationWorkspaceView): Promise<void> => {
       if (
-        !['dashboard', 'newProject'].includes(nextView) &&
+        !['dashboard', 'newProject', 'filamentCalibration'].includes(
+          nextView,
+        ) &&
         activeProjectRef.current === null
       ) {
         setView('dashboard');
