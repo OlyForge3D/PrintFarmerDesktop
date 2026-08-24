@@ -468,6 +468,55 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     channel: IpcChannel.CalibrationListCustomProfiles,
     request: (profileId) => ({ profileId }),
   },
+  // --- Filament calibration slice pipeline (owner reframe 2026-08-23) ------
+  {
+    channel: IpcChannel.CalibrationCloneFilamentProfile,
+    request: (profileId) => ({
+      profileId,
+      sourceProfileId: uuid(9),
+      name: 'PolyLite PLA Blue',
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationSubmitCalibrationSlice,
+    request: (profileId) => ({
+      profileId,
+      printerId: uuid(3),
+      machineProfileName: 'Voron 2.4 350',
+      processProfileName: '0.20mm Standard @Voron 2.4',
+      filamentProfileName: 'PolyLite PLA Blue',
+      method: 'flow_rate_pass_1',
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationGetSliceJobStatus,
+    request: (profileId) => ({
+      profileId,
+      jobId: uuid(6),
+      pollAttempt: 0,
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationSendSliceToPrinter,
+    request: (profileId) => ({
+      profileId,
+      jobId: uuid(6),
+      printerId: uuid(3),
+      startPrint: false,
+      operatorAcknowledgement: null,
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationUpdateFilamentProfileMeasurement,
+    request: (profileId) => ({
+      profileId,
+      customProfileId: uuid(9),
+      measurement: {
+        method: 'flow_rate_pass_1',
+        filamentFlowRatio: 0.98,
+      },
+    }),
+  },
 ];
 
 /** Reads the `code` a handler refused with, without assuming it threw an Error. */
