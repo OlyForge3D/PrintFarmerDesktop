@@ -138,4 +138,41 @@ describe('filament calibration wizard restart-resilience store (issue #754)', ()
       store.write(PROFILE_ID, invalid as unknown as FilamentWizardStateRecord),
     ).rejects.toThrow();
   });
+
+  it('serializes overlapping writes for the same profile instead of racing on a shared temp file', async () => {
+    // Regression coverage for a review finding on issue #754: the renderer
+    // fires saves fire-and-forget on every meaningful state change, so two
+    // writes for the same profile can be in flight at once. Before the fix,
+    // both writes shared one `${filePath}.${pid}.tmp` name and could race on
+    // rename (ENOENT, or a dropped bookmark). Firing many overlapping writes
+    // concurrently must neither throw nor leave a torn/missing file — and
+    // the last write to be *issued* must be what ends up persisted, since
+    // writes for one profile are serialized in call order.
+    const store = await temporaryStore();
+    const attempts = Array.from({ length: 8 }, (_, index) => ({
+      ...sampleRecord(),
+      currentMethod: 'flow_rate_pass_1' as const,
+      inFlightJob: {
+        jobId: `job-${index}`,
+        method: 'flow_rate_pass_1' as const,
+        submittedAt: '2026-01-01T00:00:00.000Z',
+        pollAttempt: index,
+        lastStatus: 'Processing' as const,
+      },
+    }));
+
+    await Promise.all(
+      attempts.map((record) => store.write(PROFILE_ID, record)),
+    );
+
+    const finalRecord = await store.read(PROFILE_ID);
+    expect(finalRecord).not.toBeNull();
+    const lastAttempt = attempts[attempts.length - 1];
+    if (lastAttempt === undefined) throw new Error('unreachable');
+    // Whichever write was issued last (Promise.all preserves call order for
+    // .then chaining through the queue) is the one left on disk.
+    expect(finalRecord?.inFlightJob?.jobId).toBe(
+      lastAttempt.inFlightJob?.jobId,
+    );
+  });
 });

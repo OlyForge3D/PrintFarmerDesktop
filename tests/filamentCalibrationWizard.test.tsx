@@ -700,6 +700,62 @@ describe('FilamentCalibrationWizard restart resilience (issue #754)', () => {
     expect(submitCall.method).toBe('temperature_tower');
   });
 
+  it('resumes polling an in-flight slice job on mount, without resubmitting it', async () => {
+    // Distinct from the methodPicker-resume test above: this is the case
+    // the acceptance criteria calls out explicitly — restart happens while
+    // a slice job is in flight, and the wizard must pick the poll loop back
+    // up against the SAME jobId rather than re-submitting or losing track
+    // of it.
+    const resumedJobId = 'job-resumed-after-restart';
+    const persisted = {
+      schemaVersion: 1 as const,
+      printerId: printerIdA,
+      printerModelId: null,
+      machineName: SAMPLE_MACHINE_NAME,
+      processName: SAMPLE_PROCESS_NAME,
+      baseFilamentName: SAMPLE_FILAMENT_NAME,
+      baseFilamentGuid: filamentGuid,
+      cloneId: cloneGuid,
+      cloneName: 'PLA — Prusament Galaxy Black',
+      completedMethods: [],
+      currentMethod: 'flow_rate_pass_1' as const,
+      inFlightJob: {
+        jobId: resumedJobId,
+        method: 'flow_rate_pass_1' as const,
+        submittedAt: now,
+        pollAttempt: 2,
+        lastStatus: 'Processing' as const,
+      },
+      phase: 'pollingSlice' as const,
+      updatedAt: now,
+    };
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(persisted),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    // The wizard resumed straight into polling — never re-submitted a slice
+    // (submitCalibrationSlice is never called) and instead asked the server
+    // about the SAME job id the persisted record carried.
+    await waitFor(() => {
+      expect(
+        (api.getCalibrationSliceJobStatus as ReturnType<typeof vi.fn>).mock
+          .calls.length,
+      ).toBeGreaterThan(0);
+    });
+    const statusCall = (
+      api.getCalibrationSliceJobStatus as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as { profileId: string; jobId: string };
+    expect(statusCall.profileId).toBe(profileId);
+    expect(statusCall.jobId).toBe(resumedJobId);
+    expect(
+      (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
+
   it('clears the persisted record when the operator explicitly starts over', async () => {
     const api = wizardApi();
     mount(api);
