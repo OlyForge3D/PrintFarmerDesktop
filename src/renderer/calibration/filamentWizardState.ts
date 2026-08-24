@@ -17,49 +17,55 @@
  * first step wrote back. This module is what makes that observable
  * outcome inevitable rather than emergent.
  *
- * ## Restart resilience — declared gap
+ * ## Restart resilience (issue #754)
  *
  * `submitCalibrationSlice` returns a `jobId` and there is no
- * `listSliceJobs` verb. A crash between submit and first poll strands the
- * operator with an unpollable job. To defend against that we WOULD persist
- * the clone id, completion set, and in-flight `jobId` off the renderer.
- *
- * The renderer is presentation-only — no renderer-scoped browser
- * storage, no filesystem, no capability except Zod-validated IPC.
- * That is a repo invariant asserted by
- * `tests/calibration.workspace.test.tsx > keeps the calibration renderer
- * inside the narrow` (the forbidden-imports control).
+ * `listSliceJobs` verb, so a crash between submit and first poll would
+ * strand the operator with an unpollable job if nothing tracked it
+ * anywhere else. PR #753 shipped the wizard with that gap: in-flight
+ * state (phase, current method, in-flight `jobId`, completion set) lived
+ * only in renderer memory, so an app restart mid-calibration lost the
+ * bookmark even though the clone and any written-back measurements are
+ * durable on the server.
  *
  * The existing `saveCalibrationWorkspaceState` IPC surface does NOT fit:
  * its Zod contract requires `projectId`, `printerId`-bound
  * `CalibrationWorkspacePayload`, and derived `completedStepCount /
  * totalStepCount` — all of which are printer-calibration domain concepts
- * that #750 stripped from the feature. Any attempt to encode a filament-
- * clone id inside that payload would require a schema drift Zod refuses
- * at the IPC boundary, and the persistence would then re-appear as
+ * that #750 stripped from the filament feature. Any attempt to encode a
+ * filament-clone id inside that payload would require a schema drift Zod
+ * refuses at the IPC boundary, and the persistence would then re-appear as
  * spurious "workspace" records the printer-calibration UI no longer
  * renders.
  *
- * Vasquez's brief for this task said: **"use the existing workspace-state
- * persistence if it fits, and if it does not, say so rather than working
- * around it."** So this build ships restart resilience as:
+ * So #754 ships an additive, filament-shaped channel pair instead
+ * (`saveFilamentCalibrationWizardState` / `getFilamentCalibrationWizardState`
+ * / `clearFilamentCalibrationWizardState` — see `ipc.ts`), backed by a
+ * simple main-process JSON file per profile
+ * (`calibrationFilamentWizardState.ts`), the same on-disk-store shape as
+ * `UpdateStateStore`. The renderer stays presentation-only — no
+ * renderer-scoped browser storage, no filesystem, no capability except
+ * Zod-validated IPC, still asserted by
+ * `tests/calibration.workspace.test.tsx > keeps the calibration renderer
+ * inside the narrow` — persistence is delegated to main via the new
+ * channels, exactly like every other piece of wizard state.
  *
- *   - **In-memory only** for the wizard's phase, current method, in-flight
- *     jobId, and completion set. Closing the wizard mid-calibration loses
- *     that state.
- *   - **Durable on the server** for the clone itself. A crashed wizard
- *     leaves the clone in place; the operator can resume by starting a
- *     fresh wizard and picking the same clone as their base — or, when
- *     that friction becomes real, we extend either the workspace-state
- *     surface to be filament-clone-aware or add a `listSliceJobs` verb.
- *
- * The gap is called out on the decision record; nothing here works
- * around the renderer-purity invariant.
+ * `FilamentWizardPersistedState` below is the renderer-side mirror of the
+ * wire `FilamentWizardStateRecord` schema. Only four phases are ever
+ * persisted (`methodPicker`, `pollingSlice`, `sliceReady`,
+ * `awaitingMeasurement`) — the phases where nothing is actually in flight
+ * over the network. `mapPhaseForPersistence` folds every transient phase
+ * (`select`, `cloneName`, `cloning`, `submittingSlice`, `sendingToPrinter`,
+ * `writingBack`) onto its nearest stable predecessor before a save, so
+ * "did the in-flight request land before the crash" is never a question
+ * a restored record has to answer — the operator just retries the
+ * interrupted step.
  */
 
 import type {
   CalibrationSliceJobStatus,
   CalibrationSliceMethod,
+  FilamentWizardStateRecord,
 } from '@shared/ipc';
 
 /** The three methods this build supports, in the recommended wiki order. */
@@ -147,26 +153,14 @@ export type FilamentWizardPhase =
   | 'writingBack';
 
 /**
- * Persisted state shape. Currently unused at runtime — see the module
- * docblock. Kept as the target shape any future persistence surface
- * would satisfy.
+ * Renderer-side alias of the wire `FilamentWizardStateRecord` schema
+ * (`ipc.ts`) — kept as a distinct name here so call sites in the wizard
+ * read as "the persisted record" rather than "a Zod-inferred wire type".
+ * Built from `WizardWorkingState` by `buildPersistedState` once `cloneId`
+ * exists, and turned back into a partial working state on mount by
+ * `restoredWorkingState`.
  */
-export interface FilamentWizardPersistedState {
-  readonly schemaVersion: 1;
-  readonly profileId: string;
-  readonly printerId: string;
-  readonly printerModelId: string | null;
-  readonly machineName: string;
-  readonly processName: string;
-  readonly baseFilamentName: string;
-  readonly baseFilamentGuid: string;
-  readonly cloneId: string;
-  readonly cloneName: string;
-  readonly completedMethods: readonly CalibrationSliceMethod[];
-  readonly inFlightJob: FilamentWizardInFlightJob | null;
-  readonly phase: FilamentWizardPhase;
-  readonly currentMethod: CalibrationSliceMethod | null;
-}
+export type FilamentWizardPersistedState = FilamentWizardStateRecord;
 
 export interface FilamentWizardInFlightJob {
   readonly jobId: string;
@@ -174,4 +168,155 @@ export interface FilamentWizardInFlightJob {
   readonly submittedAt: string;
   readonly pollAttempt: number;
   readonly lastStatus: CalibrationSliceJobStatus;
+}
+
+/**
+ * The subset of `WizardWorkingState` (defined in
+ * `FilamentCalibrationWizard.tsx`) that persistence cares about, plus the
+ * profile-selection fields it needs to fold in. Kept as a separate shape
+ * here (rather than importing `WizardWorkingState`) to avoid a circular
+ * import between the component and this state module.
+ */
+export interface FilamentWizardWorkingSnapshot {
+  readonly phase: FilamentWizardPhase;
+  readonly printerId: string | null;
+  readonly printerModelId: string | null;
+  readonly machineName: string | null;
+  readonly processName: string | null;
+  readonly baseFilamentName: string | null;
+  readonly baseFilamentGuid: string | null;
+  readonly cloneId: string | null;
+  readonly cloneName: string;
+  readonly completedMethods: readonly CalibrationSliceMethod[];
+  readonly currentMethod: CalibrationSliceMethod | null;
+  readonly inFlightJob: FilamentWizardInFlightJob | null;
+}
+
+/**
+ * The four phases a restored wizard may resume into. A transient
+ * (in-flight-network) phase folds onto its nearest stable predecessor;
+ * the pre-clone phases (`select`, `cloneName`, `cloning`) have nothing to
+ * resume into yet and return `null`.
+ */
+export function mapPhaseForPersistence(
+  phase: FilamentWizardPhase,
+):
+  | 'methodPicker'
+  | 'pollingSlice'
+  | 'sliceReady'
+  | 'awaitingMeasurement'
+  | null {
+  switch (phase) {
+    case 'select':
+    case 'cloneName':
+    case 'cloning':
+      return null;
+    case 'submittingSlice':
+      return 'methodPicker';
+    case 'sendingToPrinter':
+      return 'sliceReady';
+    case 'writingBack':
+      return 'awaitingMeasurement';
+    case 'methodPicker':
+    case 'pollingSlice':
+    case 'sliceReady':
+    case 'awaitingMeasurement':
+      return phase;
+  }
+}
+
+/**
+ * Builds the record to persist for the current working state, or `null`
+ * when there is nothing worth persisting yet (before the clone exists, or
+ * the profile-selection fields the clone step resolved are not all
+ * populated — which in practice only happens transiently during the
+ * `select`/`cloneName`/`cloning` phases this never gets called for).
+ *
+ * `submittingSlice` folds to `methodPicker` and drops `currentMethod` /
+ * `inFlightJob` — the submit never got a `jobId` back, so there is nothing
+ * about that attempt worth resuming; the operator just picks the method
+ * again.
+ */
+export function buildPersistedState(
+  snapshot: FilamentWizardWorkingSnapshot,
+  nowIso: string,
+): FilamentWizardPersistedState | null {
+  const stablePhase = mapPhaseForPersistence(snapshot.phase);
+  if (
+    stablePhase === null ||
+    snapshot.cloneId === null ||
+    snapshot.printerId === null ||
+    snapshot.machineName === null ||
+    snapshot.processName === null ||
+    snapshot.baseFilamentName === null ||
+    snapshot.baseFilamentGuid === null
+  ) {
+    return null;
+  }
+  const submitNeverLanded = snapshot.phase === 'submittingSlice';
+  return {
+    schemaVersion: 1,
+    printerId: snapshot.printerId,
+    printerModelId: snapshot.printerModelId,
+    machineName: snapshot.machineName,
+    processName: snapshot.processName,
+    baseFilamentName: snapshot.baseFilamentName,
+    baseFilamentGuid: snapshot.baseFilamentGuid,
+    cloneId: snapshot.cloneId,
+    cloneName: snapshot.cloneName,
+    completedMethods: [...snapshot.completedMethods],
+    currentMethod: submitNeverLanded ? null : snapshot.currentMethod,
+    inFlightJob: submitNeverLanded ? null : snapshot.inFlightJob,
+    phase: stablePhase,
+    updatedAt: nowIso,
+  };
+}
+
+/**
+ * The fields `restoredWorkingState` reconstructs from a persisted record
+ * — a partial `WizardWorkingState` the wizard merges over `initialWorking`
+ * on mount, plus the reconstructed `ProfileSelectionSnapshot` the picker
+ * step needs so a subsequent `beginMethod` call still has a
+ * `machineProfileName` / `processProfileName` to submit with.
+ */
+export interface RestoredFilamentWizardState {
+  readonly phase: FilamentWizardPhase;
+  readonly picks: {
+    readonly machineName: string;
+    readonly processName: string;
+    readonly filamentName: string;
+    readonly filamentGuid: string;
+    readonly filamentOrigin: 'custom';
+    readonly readyForClone: true;
+  };
+  readonly printerId: string;
+  readonly printerModelId: string | null;
+  readonly cloneId: string;
+  readonly cloneName: string;
+  readonly completedMethods: readonly CalibrationSliceMethod[];
+  readonly currentMethod: CalibrationSliceMethod | null;
+  readonly inFlightJob: FilamentWizardInFlightJob | null;
+}
+
+export function restoredWorkingState(
+  record: FilamentWizardPersistedState,
+): RestoredFilamentWizardState {
+  return {
+    phase: record.phase,
+    picks: {
+      machineName: record.machineName,
+      processName: record.processName,
+      filamentName: record.baseFilamentName,
+      filamentGuid: record.baseFilamentGuid,
+      filamentOrigin: 'custom',
+      readyForClone: true,
+    },
+    printerId: record.printerId,
+    printerModelId: record.printerModelId,
+    cloneId: record.cloneId,
+    cloneName: record.cloneName,
+    completedMethods: record.completedMethods,
+    currentMethod: record.currentMethod,
+    inFlightJob: record.inFlightJob,
+  };
 }

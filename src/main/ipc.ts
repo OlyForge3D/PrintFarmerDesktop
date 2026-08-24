@@ -86,6 +86,7 @@ import {
   type CalibrationGatedAction,
 } from './calibrationActionGate.js';
 import { CalibrationSelectionCache } from './calibrationSelectionCache.js';
+import { FilamentWizardStateStore } from './calibrationFilamentWizardState.js';
 import { BedClearAcknowledgementLedger } from './calibrationBedClearLedger.js';
 import { CalibrationCapabilityRefresher } from './calibrationCapabilityRefresh.js';
 import {
@@ -541,6 +542,14 @@ export function registerIpcHandlers(
    * a miss just means the value is fetched again.
    */
   const selectionCache = new CalibrationSelectionCache();
+  /**
+   * On-disk restart-resilience bookmark for the filament calibration wizard
+   * (issue #754). See `calibrationFilamentWizardState.ts` for why this is a
+   * main-process JSON store rather than a sidecar table.
+   */
+  const filamentWizardStateStore = new FilamentWizardStateStore(
+    app.getPath('userData'),
+  );
   /**
    * Proof that an operator confirmed a clear bed. Minted only after this process
    * has seen the server report the job as awaiting acknowledgement.
@@ -6654,6 +6663,57 @@ export function registerIpcHandlers(
           IpcChannel.CalibrationUpdateFilamentProfileMeasurement
         ].response.parse({ status: 'error', error: apiError });
       }
+    },
+  );
+
+  // --- Filament calibration wizard restart resilience (issue #754) ---------
+  //
+  // Local-only: these three channels never touch `calibrationHttp` or the
+  // sidecar. They read and write `filamentWizardStateStore`, the on-disk JSON
+  // bookmark described in `calibrationFilamentWizardState.ts`.
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetFilamentWizardState,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetFilamentWizardState].request.parse(
+          rawRequest,
+        );
+      await requireSelectedCalibrationProfile(request.profileId);
+      const state = await filamentWizardStateStore.read(request.profileId);
+      return ipcSchemas[
+        IpcChannel.CalibrationGetFilamentWizardState
+      ].response.parse(state);
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationSaveFilamentWizardState,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSaveFilamentWizardState].request.parse(
+          rawRequest,
+        );
+      await requireSelectedCalibrationProfile(request.profileId);
+      await filamentWizardStateStore.write(request.profileId, request.state);
+      return ipcSchemas[
+        IpcChannel.CalibrationSaveFilamentWizardState
+      ].response.parse({ saved: true });
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationClearFilamentWizardState,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationClearFilamentWizardState
+        ].request.parse(rawRequest);
+      await requireSelectedCalibrationProfile(request.profileId);
+      const cleared = await filamentWizardStateStore.clear(request.profileId);
+      return ipcSchemas[
+        IpcChannel.CalibrationClearFilamentWizardState
+      ].response.parse({ cleared });
     },
   );
 

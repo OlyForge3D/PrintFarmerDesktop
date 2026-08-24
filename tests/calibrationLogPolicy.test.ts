@@ -52,6 +52,7 @@ const CALIBRATION_SURFACE: readonly string[] = [
   'calibrationCorrelation.ts',
   'calibrationDiagnostics.ts',
   'calibrationEngine.ts',
+  'calibrationFilamentWizardState.ts',
   'calibrationFreshness.ts',
   'calibrationHttp.ts',
   'calibrationImportV4.ts',
@@ -68,7 +69,7 @@ const CALIBRATION_SURFACE: readonly string[] = [
 ];
 
 /** The cardinality the list above is expected to have, pinned so a deletion is loud. */
-const EXPECTED_SURFACE_SIZE = 20;
+const EXPECTED_SURFACE_SIZE = 21;
 
 /**
  * Direct stream writes are the obvious way to evade a console ban, so the two

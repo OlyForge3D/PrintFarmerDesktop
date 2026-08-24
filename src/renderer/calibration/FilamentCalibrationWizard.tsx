@@ -18,18 +18,22 @@
  *   The acceptance suite proves this behaviour end-to-end; the
  *   corresponding renderer test proves the wizard never re-clones between
  *   steps.
- * - **Restart resilience — declared gap.** The renderer is presentation-
- *   only (no renderer-scoped web storage, no filesystem, no capability
- *   except Zod IPC).
- *   The existing `saveCalibrationWorkspaceState` surface is bound to
- *   printer-calibration `projectId`/`printerId` and won't accept a
- *   filament clone id; adding a new channel is out of scope for this PR
- *   per the brief. So restart resilience is best-effort: the clone
- *   itself is durable on the server, but wizard-local state (current
- *   method, in-flight `jobId`, completion set) is lost if the operator
- *   closes the app mid-loop. Documented on the decision record; the
- *   fix path is either extending workspace persistence to be filament-
- *   aware or adding a `listSliceJobs` verb.
+ * - **Restart resilience (issue #754).** Once the clone exists, every
+ *   change to phase/method/in-flight job is persisted through
+ *   `saveFilamentCalibrationWizardState` (a filament-shaped IPC channel
+ *   pair, deliberately additive rather than reusing the printer-
+ *   calibration-shaped `saveCalibrationWorkspaceState`). On mount the
+ *   wizard calls `getFilamentCalibrationWizardState` and, if a record
+ *   exists, resumes directly into the saved phase/method/job rather than
+ *   starting over. Transient in-flight-network phases
+ *   (`submittingSlice`/`sendingToPrinter`/`writingBack`) are folded onto
+ *   their nearest stable predecessor before every save (see
+ *   `mapPhaseForPersistence` in `filamentWizardState.ts`), so a restore
+ *   never has to answer "did that request land before the crash" — the
+ *   operator just retries the interrupted step. `restartWizard` clears the
+ *   record explicitly. The renderer stays presentation-only throughout:
+ *   persistence is delegated to main over the same Zod-validated IPC
+ *   boundary as every other wizard action.
  * - **`startPrint` is an explicit operator choice.** The confirmation
  *   dialog names the physical consequence ("This will start a real print
  *   on a machine that heats to 300 °C and moves") and the operator has
@@ -69,7 +73,10 @@ import {
 import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
+  buildPersistedState,
+  restoredWorkingState,
   type FilamentWizardInFlightJob,
+  type FilamentWizardPersistedState,
   type FilamentWizardPhase,
 } from './filamentWizardState';
 
@@ -304,6 +311,97 @@ function FilamentCalibrationWizardInner(
     [],
   );
 
+  // ------------------------------------------------------- restart resilience
+  //
+  // Issue #754: restore any in-flight method/step/jobId from the last save,
+  // then keep saving on every change so a later restart has a fresh
+  // bookmark. `lastPersistedJsonRef` dedupes writes — `working` changes on
+  // every keystroke of unrelated fields (for example `cloneName` while
+  // typing), but the persisted record only needs to change when the
+  // persistable projection of it actually differs. Comparisons ignore
+  // `updatedAt` (a timestamp-only difference is not a state change worth
+  // writing to disk), so both the restore and the save effect key off the
+  // same `stripUpdatedAt` projection.
+  const stripUpdatedAt = (
+    record: FilamentWizardPersistedState,
+  ): Omit<FilamentWizardPersistedState, 'updatedAt'> => {
+    const rest: Partial<FilamentWizardPersistedState> = { ...record };
+    delete rest.updatedAt;
+    return rest as Omit<FilamentWizardPersistedState, 'updatedAt'>;
+  };
+  const lastPersistedJsonRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const record = await calibrationApi().getFilamentCalibrationWizardState(
+          {
+            profileId,
+          },
+        );
+        if (cancelled || unmountedRef.current || record === null) return;
+        const restored = restoredWorkingState(record);
+        lastPersistedJsonRef.current = JSON.stringify(stripUpdatedAt(record));
+        setWorking((current) => ({ ...current, ...restored }));
+        setBanner({
+          kind: 'info',
+          title: 'Resumed filament calibration.',
+          detail: `Continuing calibration of "${restored.cloneName}" where it left off.`,
+          recovery: null,
+          reference: null,
+        });
+      } catch {
+        // Best-effort: a failed restore just leaves the wizard starting
+        // fresh, same as if nothing had ever been persisted.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
+
+  useEffect(() => {
+    const snapshot = buildPersistedState(
+      {
+        phase: working.phase,
+        printerId: working.printerId,
+        printerModelId: working.printerModelId,
+        machineName: working.picks?.machineName ?? null,
+        processName: working.picks?.processName ?? null,
+        baseFilamentName: working.picks?.filamentName ?? null,
+        baseFilamentGuid: working.picks?.filamentGuid ?? null,
+        cloneId: working.cloneId,
+        cloneName: working.cloneName,
+        completedMethods: working.completedMethods,
+        currentMethod: working.currentMethod,
+        inFlightJob: working.inFlightJob,
+      },
+      environment.now(),
+    );
+    if (snapshot === null) return;
+    const comparableJson = JSON.stringify(stripUpdatedAt(snapshot));
+    if (lastPersistedJsonRef.current === comparableJson) return;
+    lastPersistedJsonRef.current = comparableJson;
+    void calibrationApi()
+      .saveFilamentCalibrationWizardState({ profileId, state: snapshot })
+      .catch(() => {
+        // Best-effort: a failed save only degrades resume behaviour on a
+        // future restart, it must never interrupt the active wizard.
+      });
+  }, [
+    environment,
+    profileId,
+    working.cloneId,
+    working.cloneName,
+    working.completedMethods,
+    working.currentMethod,
+    working.inFlightJob,
+    working.phase,
+    working.picks,
+    working.printerId,
+    working.printerModelId,
+  ]);
+
   const loadPrinters = useCallback(async (): Promise<void> => {
     const epoch = ++printerListEpochRef.current;
     setPrinterList((current) => ({ ...current, loading: true, error: null }));
@@ -504,8 +602,9 @@ function FilamentCalibrationWizardInner(
   //   2. The effect depends on `working.inFlightJob?.jobId`, a stable primitive
   //      that changes only when a genuinely new job starts (or the job is
   //      cleared). It does NOT depend on the `inFlightJob` object.
-  //   3. The counter is reset to 0 inside the effect body on entry, so a
-  //      second slice cannot inherit the previous job's attempt count.
+  //   3. The counter is initialised from `job.pollAttempt` inside the effect
+  //      body on entry, so a resumed job keeps its backoff position while a
+  //      fresh slice still starts from 0.
   //
   // The existing `jobId` guard in the `setWorking` reducer still applies —
   // a stale in-flight response cannot mutate a newer job's state — but with
@@ -518,7 +617,7 @@ function FilamentCalibrationWizardInner(
       return;
     }
     const job = working.inFlightJob;
-    pollAttemptRef.current = 0;
+    pollAttemptRef.current = job.pollAttempt;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -552,27 +651,42 @@ function FilamentCalibrationWizardInner(
           terminal: response.terminal,
           nextPollDelayMs: response.nextPollDelayMs,
         });
+        setWorking((current) => {
+          if (current.inFlightJob?.jobId !== job.jobId) return current;
+          const nextJob: FilamentWizardInFlightJob = {
+            ...current.inFlightJob,
+            pollAttempt: attempt + 1,
+            lastStatus: response.snapshot.status,
+          };
+          if (response.terminal === 'completed') {
+            return {
+              ...current,
+              inFlightJob: nextJob,
+              phase: 'sliceReady',
+            };
+          }
+          if (response.terminal === 'failed') {
+            setBanner({
+              kind: 'error',
+              title: 'The slice job failed on the server.',
+              detail:
+                response.snapshot.errorMessage ??
+                'The server reported a slice failure without a message.',
+              recovery: 'Submit a fresh slice job.',
+              reference: null,
+            });
+            return {
+              ...current,
+              inFlightJob: null,
+              phase: 'methodPicker',
+            };
+          }
+          return { ...current, inFlightJob: nextJob };
+        });
         if (response.terminal === 'completed') {
-          setWorking((current) => {
-            if (current.inFlightJob?.jobId !== job.jobId) return current;
-            return { ...current, phase: 'sliceReady' };
-          });
           return;
         }
         if (response.terminal === 'failed') {
-          setBanner({
-            kind: 'error',
-            title: 'The slice job failed on the server.',
-            detail:
-              response.snapshot.errorMessage ??
-              'The server reported a slice failure without a message.',
-            recovery: 'Submit a fresh slice job.',
-            reference: null,
-          });
-          setWorking((current) => {
-            if (current.inFlightJob?.jobId !== job.jobId) return current;
-            return { ...current, inFlightJob: null, phase: 'methodPicker' };
-          });
           return;
         }
         if (
@@ -762,7 +876,15 @@ function FilamentCalibrationWizardInner(
     setBanner(null);
     setSliceJobUi(emptySliceJobUi);
     setConfirmStart('');
-  }, []);
+    lastPersistedJsonRef.current = null;
+    void calibrationApi()
+      .clearFilamentCalibrationWizardState({ profileId })
+      .catch(() => {
+        // Best-effort: if this fails, the stale bookmark only affects a
+        // future restart. The live wizard has already returned to a clean
+        // in-memory state.
+      });
+  }, [profileId]);
 
   // ---------------------------------------------------------------- render
 

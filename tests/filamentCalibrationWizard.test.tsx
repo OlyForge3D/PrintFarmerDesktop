@@ -317,6 +317,13 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
         isSystem: false as const,
       },
     }),
+    getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(null),
+    saveFilamentCalibrationWizardState: vi
+      .fn()
+      .mockResolvedValue({ saved: true }),
+    clearFilamentCalibrationWizardState: vi
+      .fn()
+      .mockResolvedValue({ cleared: true }),
   };
   return { ...base, ...overrides };
 }
@@ -553,43 +560,226 @@ describe('FilamentCalibrationWizard startPrint safety gate', () => {
 });
 
 describe('FilamentCalibrationWizard restart resilience', () => {
-  // The renderer is presentation-only — no `localStorage`, no filesystem.
-  // The workspace-state IPC surface that DOES cross the boundary is bound
-  // to printer-calibration `projectId`/`printerId` and won't accept a
-  // filament clone id, and the brief explicitly forbade inventing a new
-  // channel for this. So this build ships restart resilience as an
-  // in-memory wizard whose clone is durable on the server: closing the
-  // wizard between steps loses the wizard's phase and completion set, and
-  // the operator resumes by picking the previously-created clone as their
-  // base filament next time.
-  //
-  // This test asserts the CURRENT contract — the wizard boots fresh into
-  // step 1 even if a clone from a previous session exists on the server.
-  // It exists so that if a future refactor silently reintroduces
-  // renderer-scoped storage (which the forbidden-imports check would
-  // catch, but obliquely) or partially resumes state from IPC, this
-  // test either passes intentionally or fails loudly.
-  it('always boots fresh into step 1 — restart resilience is a declared gap, not a silent one', async () => {
+  // Once the clone exists, the wizard persists phase/method/in-flight job
+  // through the additive `saveFilamentCalibrationWizardState` channel and
+  // restores it via `getFilamentCalibrationWizardState` on mount — closing
+  // the gap the previous build declared rather than closed. These tests
+  // exercise the persist/restore round trip end-to-end, per the issue's
+  // acceptance criterion.
+  it('boots fresh into step 1 when nothing has been persisted for this profile', async () => {
     const api = wizardApi();
     mount(api);
     fireEvent.click(
       await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
     );
-    // Step 1's fieldset is present and interactive. The wizard did NOT skip
-    // step 1 into methodPicker; there is no ambient "resumed" state.
     expect(
       await screen.findByRole('group', {
         name: /Step 1 — machine, process, and base filament/i,
       }),
     ).toBeInTheDocument();
-    // Cross-check: neither a clone nor a slice was fetched on mount.
     expect(
       (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
         .calls,
     ).toHaveLength(0);
     expect(
+      (api.getFilamentCalibrationWizardState as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(1);
+    expect(
+      (api.getFilamentCalibrationWizardState as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0],
+    ).toEqual({ profileId });
+  });
+
+  it('persists an in-flight slice job while polling, saving through the new IPC channel', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+    await screen.findByRole('progressbar', { name: /Slice progress/i });
+
+    await waitFor(() => {
+      const calls = (
+        api.saveFilamentCalibrationWizardState as ReturnType<typeof vi.fn>
+      ).mock.calls;
+      const sawInFlightJob = calls.some(
+        (call) =>
+          (call[0] as { state: { inFlightJob: unknown } }).state.inFlightJob !==
+          null,
+      );
+      if (!sawInFlightJob) {
+        throw new Error(
+          'expected a save call with a non-null inFlightJob while polling',
+        );
+      }
+    });
+    const savedStates = (
+      api.saveFilamentCalibrationWizardState as ReturnType<typeof vi.fn>
+    ).mock.calls.map(
+      (call) =>
+        (call[0] as { state: { cloneId: string; phase: string } }).state,
+    );
+    expect(savedStates.every((state) => state.cloneId === cloneGuid)).toBe(
+      true,
+    );
+    // pollingSlice is one of the four resumable phases; submittingSlice
+    // (the transient phase the click briefly passed through) is never
+    // saved, since `mapPhaseForPersistence` folds it to `methodPicker` and
+    // clears `inFlightJob` before the network call has a jobId to report.
+    expect(savedStates.map((state) => state.phase)).not.toContain(
+      'submittingSlice',
+    );
+  });
+
+  it('resumes an in-progress calibration on mount from a persisted record, and lets the operator continue with the next method', async () => {
+    const persisted = {
+      schemaVersion: 1 as const,
+      printerId: printerIdA,
+      printerModelId: null,
+      machineName: SAMPLE_MACHINE_NAME,
+      processName: SAMPLE_PROCESS_NAME,
+      baseFilamentName: SAMPLE_FILAMENT_NAME,
+      baseFilamentGuid: filamentGuid,
+      cloneId: cloneGuid,
+      cloneName: 'PLA — Prusament Galaxy Black',
+      completedMethods: ['flow_rate_pass_1'] as const,
+      currentMethod: null,
+      inFlightJob: null,
+      phase: 'methodPicker' as const,
+      updatedAt: now,
+    };
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(persisted),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    // The wizard resumed straight into the method picker — it never
+    // re-rendered step 1's profile-selection fieldset or re-cloned.
+    expect(
+      await screen.findByRole('button', {
+        name: /Start Temperature tower/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', {
+        name: /Step 1 — machine, process, and base filament/i,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(0);
+    expect(
+      await screen.findByText(/Resumed filament calibration/i),
+    ).toBeInTheDocument();
+
+    // Continuing into the next method submits against the SAME resumed
+    // clone and profile-selection names — the whole point of resuming
+    // rather than starting over.
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start Temperature tower/i }),
+    );
+    await waitFor(() => {
+      expect(
+        (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(1);
+    });
+    const submitCall = (api.submitCalibrationSlice as ReturnType<typeof vi.fn>)
+      .mock.calls[0]?.[0] as {
+      machineProfileName: string;
+      processProfileName: string;
+      filamentProfileName: string;
+      method: string;
+    };
+    expect(submitCall.machineProfileName).toBe(SAMPLE_MACHINE_NAME);
+    expect(submitCall.processProfileName).toBe(SAMPLE_PROCESS_NAME);
+    expect(submitCall.filamentProfileName).toBe(persisted.cloneName);
+    expect(submitCall.method).toBe('temperature_tower');
+  });
+
+  it('resumes polling an in-flight slice job on mount, without resubmitting it', async () => {
+    // Distinct from the methodPicker-resume test above: this is the case
+    // the acceptance criteria calls out explicitly — restart happens while
+    // a slice job is in flight, and the wizard must pick the poll loop back
+    // up against the SAME jobId rather than re-submitting or losing track
+    // of it.
+    const resumedJobId = 'job-resumed-after-restart';
+    const persisted = {
+      schemaVersion: 1 as const,
+      printerId: printerIdA,
+      printerModelId: null,
+      machineName: SAMPLE_MACHINE_NAME,
+      processName: SAMPLE_PROCESS_NAME,
+      baseFilamentName: SAMPLE_FILAMENT_NAME,
+      baseFilamentGuid: filamentGuid,
+      cloneId: cloneGuid,
+      cloneName: 'PLA — Prusament Galaxy Black',
+      completedMethods: [],
+      currentMethod: 'flow_rate_pass_1' as const,
+      inFlightJob: {
+        jobId: resumedJobId,
+        method: 'flow_rate_pass_1' as const,
+        submittedAt: now,
+        pollAttempt: 2,
+        lastStatus: 'Processing' as const,
+      },
+      phase: 'pollingSlice' as const,
+      updatedAt: now,
+    };
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(persisted),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    // The wizard resumed straight into polling — never re-submitted a slice
+    // (submitCalibrationSlice is never called) and instead asked the server
+    // about the SAME job id the persisted record carried.
+    await waitFor(() => {
+      expect(
+        (api.getCalibrationSliceJobStatus as ReturnType<typeof vi.fn>).mock
+          .calls.length,
+      ).toBeGreaterThan(0);
+    });
+    const statusCall = (
+      api.getCalibrationSliceJobStatus as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as { profileId: string; jobId: string };
+    expect(statusCall.profileId).toBe(profileId);
+    expect(statusCall.jobId).toBe(resumedJobId);
+    expect(
       (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
     ).toHaveLength(0);
+  });
+
+  it('clears the persisted record when the operator explicitly starts over', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(await screen.findByRole('button', { name: 'Start over' }));
+
+    await waitFor(() => {
+      expect(
+        (api.clearFilamentCalibrationWizardState as ReturnType<typeof vi.fn>)
+          .mock.calls,
+      ).toHaveLength(1);
+    });
+    expect(
+      (api.clearFilamentCalibrationWizardState as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0],
+    ).toEqual({ profileId });
   });
 });
 
