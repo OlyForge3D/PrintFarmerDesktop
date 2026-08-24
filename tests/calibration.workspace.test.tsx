@@ -695,6 +695,33 @@ function makeApi(savedRecord = record()) {
         profiles: [],
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
+    cloneCalibrationFilamentProfile: vi
+      .fn<CalibrationApi['cloneCalibrationFilamentProfile']>()
+      .mockRejectedValue(
+        new Error('cloneCalibrationFilamentProfile not stubbed in this test'),
+      ),
+    submitCalibrationSlice: vi
+      .fn<CalibrationApi['submitCalibrationSlice']>()
+      .mockRejectedValue(
+        new Error('submitCalibrationSlice not stubbed in this test'),
+      ),
+    getCalibrationSliceJobStatus: vi
+      .fn<CalibrationApi['getCalibrationSliceJobStatus']>()
+      .mockRejectedValue(
+        new Error('getCalibrationSliceJobStatus not stubbed in this test'),
+      ),
+    sendCalibrationSliceToPrinter: vi
+      .fn<CalibrationApi['sendCalibrationSliceToPrinter']>()
+      .mockRejectedValue(
+        new Error('sendCalibrationSliceToPrinter not stubbed in this test'),
+      ),
+    updateCalibrationFilamentProfileMeasurement: vi
+      .fn<CalibrationApi['updateCalibrationFilamentProfileMeasurement']>()
+      .mockRejectedValue(
+        new Error(
+          'updateCalibrationFilamentProfileMeasurement not stubbed in this test',
+        ),
+      ),
   } satisfies CalibrationApi;
 }
 

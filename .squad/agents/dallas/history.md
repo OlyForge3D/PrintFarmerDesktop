@@ -243,3 +243,38 @@ Bishop's `9f62a958` threaded `printerModelId` from `GET /api/printers/{id}/detai
 3. **Machine-moving-action gate preserved.** `calibrationActionGate.ts:346-360` still requires `input.operatorAcknowledgement === true` (a live main-process bed-clear ledger record). Not touched today; verified with `calibrationActionGate.test.ts` still passing.
 
 **Handoff:** Bishop is now the only person likely to touch this cascade — server-side enrichment cleanup, or if the `startCalibrationGeneration` chain needs work when the first real farm exercises it. Hicks's acceptance suite is stable and covers the profile-selection contract. My decision file at `.squad/decisions/inbox/dallas-calibration-profile-selection-cascade.md` has been extended with the LAST INCH section.
+
+## 2026-08-24: Filament calibration wizard — implementation
+
+Built the end-to-end filament calibration wizard Vasquez requested on top
+of Bishop's five new IPC channels (PR #752). Full write-up:
+`.squad/decisions/inbox/dallas-filament-calibration-wizard.md`.
+
+Headline: src/renderer/calibration/FilamentCalibrationWizard.tsx`n(and its state model `filamentWizardState.ts`) walks the OrcaSlicer wiki
+loop from picker -> clone -> per-method slice/poll/send/measure/write-back.
+The `ProfileSelectionSection`cascade I built for #747 is reused (extended
+with a new optional`onSelectionChange`callback). Step sequencing is
+proven by`tests/filamentCalibrationWizard.test.tsx`-`cloneCalibrationFilamentProfile`fires exactly once, both write-backs
+target the same`customProfileId`. Bishop's 23-test acceptance suite
+stays green.
+
+Gaps I did NOT paper over: (1) restart resilience is in-memory only -
+the existing `saveCalibrationWorkspaceState` surface is bound to
+printer-calibration `projectId`/`printerId` and won't accept a
+filament clone id; Vasquez's brief said 'say so rather than working
+around it' and I did. Fix path is either extending that surface or
+adding a `listSliceJobs` verb. (2) Non-UUID printer IDs would fail
+Zod on `submitCalibrationSlice` because the wire requires
+`z.string().uuid()` while `CalibrationPrinterCandidate.printerId` is
+only `.min(1).max(256)` - not caused by this PR, but noted.
+
+`startPrint` is a typed 'START' confirmation gate next to a physical-
+consequence sentence, next to a distinct 'Upload gcode only' button.
+Errors surface as catalogued `errorCopy()` copy - raw wire codes and
+Zod field paths never render at the operator.
+
+Repo rules: renderer stays presentation-only (no browser storage, no
+filesystem, no capability except Zod IPC - verified by the
+forbidden-imports control in `calibration.workspace.test.tsx`);
+`calibrationActionGate.ts` untouched; no new IPC channels; no
+`--no-verify`. Coordinator (Vasquez) will open the PR.

@@ -456,6 +456,23 @@ function profileSelectionApi(): CalibrationApi {
       ],
       fetchedAt: now,
     }),
+    cloneCalibrationFilamentProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('cloneCalibrationFilamentProfile')),
+    submitCalibrationSlice: vi
+      .fn()
+      .mockResolvedValue(notImplemented('submitCalibrationSlice')),
+    getCalibrationSliceJobStatus: vi
+      .fn()
+      .mockResolvedValue(notImplemented('getCalibrationSliceJobStatus')),
+    sendCalibrationSliceToPrinter: vi
+      .fn()
+      .mockResolvedValue(notImplemented('sendCalibrationSliceToPrinter')),
+    updateCalibrationFilamentProfileMeasurement: vi
+      .fn()
+      .mockResolvedValue(
+        notImplemented('updateCalibrationFilamentProfileMeasurement'),
+      ),
   } satisfies CalibrationApi;
 }
 
