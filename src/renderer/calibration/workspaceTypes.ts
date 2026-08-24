@@ -36,7 +36,13 @@ export interface CalibrationWorkspaceProps {
 }
 
 export type CalibrationWorkspaceView =
-  'dashboard' | 'newProject' | 'overview' | 'step' | 'report' | 'profile';
+  | 'dashboard'
+  | 'newProject'
+  | 'overview'
+  | 'step'
+  | 'report'
+  | 'profile'
+  | 'filamentCalibration';
 
 export type WorkspacePhoto = CalibrationWorkspacePayload['photos'][number];
 export type WorkspaceStepDraft = NonNullable<

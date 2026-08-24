@@ -38,6 +38,19 @@ export type CalibrationApi = Pick<
   | 'listCalibrationProcessProfilesForMachines'
   | 'listCalibrationFilamentProfilesForMachines'
   | 'listCalibrationCustomProfiles'
+  // --- Filament calibration slice pipeline (Bishop PR #752, PR #1952) -----
+  //
+  // Consumed by the filament calibration wizard. `submitCalibrationSlice`
+  // starts a slice job; `getCalibrationSliceJobStatus` polls it;
+  // `sendCalibrationSliceToPrinter` hands the sliced gcode to the printer
+  // (with `startPrint: true` guarded by an explicit operator ack); and
+  // `updateCalibrationFilamentProfileMeasurement` writes the measured value
+  // back onto the clone.
+  | 'cloneCalibrationFilamentProfile'
+  | 'submitCalibrationSlice'
+  | 'getCalibrationSliceJobStatus'
+  | 'sendCalibrationSliceToPrinter'
+  | 'updateCalibrationFilamentProfileMeasurement'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

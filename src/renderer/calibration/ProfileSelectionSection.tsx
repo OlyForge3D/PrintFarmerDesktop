@@ -11,8 +11,39 @@ import {
   filterCustomMachineOrProcessForModel,
   profileOptionValue,
   resolveChosenMachineName,
+  resolveChosenProfileGuid,
   type DecodedProfileOption,
 } from './profileSelection';
+
+/**
+ * The resolved profile identities the operator picked from the cascade —
+ * emitted through `onSelectionChange` on every change. Consumers use this
+ * shape for the filament calibration wizard's `cloneFilamentProfile` and
+ * `submitCalibrationSlice` calls: `sourceProfileGuid` (the base filament
+ * `guid`) and the three profile `Name` strings the wire mapper uses to key
+ * the slice request.
+ *
+ * All fields are nullable so the callback fires with a partial selection
+ * every time the operator advances (or backs out of) any dropdown — the
+ * caller inspects `readyForClone` to decide whether the picks are complete
+ * enough to proceed.
+ */
+export interface ProfileSelectionSnapshot {
+  readonly machineName: string | null;
+  readonly processName: string | null;
+  readonly filamentName: string | null;
+  /**
+   * Guid of the picked base filament — its `sourceProfileId` for the clone
+   * step. Null for a system pick whose Guid the main process could not
+   * resolve (see the option's `disabled` attribute — the operator will not
+   * be able to pick that row from a live dropdown either).
+   */
+  readonly filamentGuid: string | null;
+  /** Origin of the picked base filament, or null when nothing is picked. */
+  readonly filamentOrigin: 'system' | 'custom' | null;
+  /** True when every field the wizard needs to proceed is populated. */
+  readonly readyForClone: boolean;
+}
 
 /**
  * Props to the profile-selection cascade.
@@ -34,6 +65,13 @@ export interface ProfileSelectionSectionProps {
    */
   readonly printerModelId: string | null;
   readonly disabled: boolean;
+  /**
+   * Fires whenever the operator's picks change. Used by the filament
+   * calibration wizard to gate its "clone this profile" step; the printer-
+   * calibration flow does not consume it. Optional to keep the older
+   * `NewCalibrationProject` caller unchanged.
+   */
+  readonly onSelectionChange?: (snapshot: ProfileSelectionSnapshot) => void;
 }
 
 interface CatalogState {
@@ -91,7 +129,8 @@ function customOptionLabel(profile: CalibrationCustomProfileRef): string {
 export function ProfileSelectionSection(
   props: ProfileSelectionSectionProps,
 ): React.JSX.Element {
-  const { profileId, printerId, printerModelId, disabled } = props;
+  const { profileId, printerId, printerModelId, disabled, onSelectionChange } =
+    props;
 
   const [catalog, setCatalog] = useState<CatalogState>(emptyCatalog);
   const [forMachine, setForMachine] = useState<FilteredForMachine>(
@@ -336,6 +375,70 @@ export function ProfileSelectionSection(
       ),
     [catalog.custom, chosenMachineName],
   );
+
+  // Selection snapshot for the filament calibration wizard. Resolves each
+  // dropdown value back to its canonical `Name` string (system) or the
+  // custom row's `name` (custom); the base filament also resolves its
+  // Guid, which the wizard's clone step needs as `sourceProfileId`.
+  const chosenProcessOption = useMemo(
+    (): DecodedProfileOption | null => decodeProfileOption(chosenProcess),
+    [chosenProcess],
+  );
+  const chosenFilamentOption = useMemo(
+    (): DecodedProfileOption | null => decodeProfileOption(chosenFilament),
+    [chosenFilament],
+  );
+  const chosenProcessName = useMemo(
+    (): string | null =>
+      resolveChosenMachineName(
+        chosenProcessOption,
+        forMachine.systemProcesses,
+        customProfilesOfType(catalog.custom, 'process'),
+      ),
+    [catalog.custom, chosenProcessOption, forMachine.systemProcesses],
+  );
+  const chosenFilamentName = useMemo(
+    (): string | null =>
+      resolveChosenMachineName(
+        chosenFilamentOption,
+        forMachine.systemFilaments,
+        customProfilesOfType(catalog.custom, 'filament'),
+      ),
+    [catalog.custom, chosenFilamentOption, forMachine.systemFilaments],
+  );
+  const chosenFilamentGuid = useMemo(
+    (): string | null =>
+      resolveChosenProfileGuid(
+        chosenFilamentOption,
+        forMachine.systemFilaments,
+        customProfilesOfType(catalog.custom, 'filament'),
+      ),
+    [catalog.custom, chosenFilamentOption, forMachine.systemFilaments],
+  );
+
+  useEffect(() => {
+    if (onSelectionChange === undefined) return;
+    const readyForClone =
+      chosenMachineName !== null &&
+      chosenProcessName !== null &&
+      chosenFilamentName !== null &&
+      chosenFilamentGuid !== null;
+    onSelectionChange({
+      machineName: chosenMachineName,
+      processName: chosenProcessName,
+      filamentName: chosenFilamentName,
+      filamentGuid: chosenFilamentGuid,
+      filamentOrigin: chosenFilamentOption?.origin ?? null,
+      readyForClone,
+    });
+  }, [
+    chosenFilamentGuid,
+    chosenFilamentName,
+    chosenFilamentOption,
+    chosenMachineName,
+    chosenProcessName,
+    onSelectionChange,
+  ]);
 
   return (
     <fieldset
