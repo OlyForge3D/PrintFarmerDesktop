@@ -117,6 +117,15 @@ export const CALIBRATION_LOG_ERROR_CODES = [
   // generic `revisionConflict` so log lines can point at the exact resource
   // whose row moved underneath a calibration-setup PUT.
   'calibrationSetupConflict',
+  // --- Filament calibration slice pipeline (PR #1952) ---
+  // 422 `unsupported_calibration_method` from `POST /api/slice`.
+  'unsupportedCalibrationMethod',
+  // 403 InteractiveSessionRequirement on the clone/PUT profile endpoints.
+  'interactiveSessionRequired',
+  // Terminal `Failed` observed by the slice-job poll driver.
+  'sliceJobFailed',
+  // Poll driver reached its wall-clock cap.
+  'sliceJobTimeout',
   // CalibrationEngineErrorCode
   'NOT_FOUND',
   'UNAVAILABLE',
@@ -309,6 +318,14 @@ const ERROR_MESSAGES: Record<CalibrationLogErrorCode, string> = {
     'The server rejected the request as unprocessable but gave a reason this build does not recognise; the payload has not been shown to be invalid.',
   calibrationSetupConflict:
     'The printer calibration binding changed since the wizard was opened; re-open the wizard to see the current bindings.',
+  unsupportedCalibrationMethod:
+    'The server does not support the requested calibration method for this slicer engine; pick one of the methods it advertises.',
+  interactiveSessionRequired:
+    'The server requires an interactive session to modify slicer profiles; sign in through the app before retrying.',
+  sliceJobFailed:
+    'The slice job finished in a failed state; the server-supplied failure reason and hint are recorded on the main-process log.',
+  sliceJobTimeout:
+    'The slice job did not reach a terminal state within the poll cap; the operator may retry the poll to look again.',
   NOT_FOUND: 'The requested calibration resource was not found locally.',
   UNAVAILABLE: 'Calibration is unavailable for the selected server profile.',
   CAPABILITIES_MISMATCH:

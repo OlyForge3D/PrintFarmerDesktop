@@ -132,6 +132,11 @@ import {
 import type { CalibrationCorrelationOrigin } from './calibrationLog.js';
 import { calibrationCorrelation } from './calibrationCorrelation.js';
 import { calibrationDiagnostics } from './calibrationDiagnostics.js';
+import {
+  computeSlicePollHint,
+  classifySliceJobTerminalOutcome,
+  SLICE_POLL_MAX_ATTEMPTS,
+} from './calibrationSlicePoll.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -6014,6 +6019,630 @@ export function registerIpcHandlers(
   // calibration setup PUT belonged to the printer-eligibility subsystem;
   // the filament-calibration workflow this desktop targets does not persist
   // profile Guids server-side.)
+
+  // --- Filament calibration slice pipeline (PR #1952) -----------------------
+  //
+  // Five handlers, one per stage of the OrcaSlicer-wiki workflow the owner
+  // described: clone → submit slice → poll → send-to-printer → PUT measured
+  // values back. Each handler is a thin bridge onto the transport methods on
+  // `CalibrationHttpClient`; the shape of the correlation-logging + error-
+  // remapping wrapper is identical to `CalibrationListCustomProfiles` above,
+  // deliberately, because that pattern has proven robust for main-side error
+  // classification (see `calibrationHttp.toApiError`).
+  //
+  // The poll-driver helpers live in `calibrationSlicePoll.ts` so the schedule
+  // is testable in isolation and independent of any HTTP mock.
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationCloneFilamentProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationCloneFilamentProfile].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const clone = await calibrationHttp.cloneSingleProfile(
+          selectedId,
+          ctx.profile.baseUrl,
+          {
+            sourceProfileId: request.sourceProfileId,
+            profileType: 'filament',
+            name: request.name,
+            printerModelId: request.printerModelId ?? null,
+            compatiblePrinters: request.compatiblePrinters ?? null,
+            idempotencyKey: correlationId,
+          },
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.custom.cloned',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationCloneFilamentProfile
+        ].response.parse({
+          status: 'ok',
+          clone,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.custom.cloned',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Filament profile clone failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationCloneFilamentProfile
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationSubmitCalibrationSlice,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSubmitCalibrationSlice].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        // Upstream expects `slicerProfileJson` as a JSON-encoded *string* of
+        // { machineProfileName, processProfileName, filamentProfileName }.
+        // We stringify here so the renderer never emits arbitrary JSON through
+        // this field — the wire is always a canonical three-name triple.
+        const slicerProfileJson = JSON.stringify({
+          machineProfileName: request.machineProfileName,
+          processProfileName: request.processProfileName,
+          filamentProfileName: request.filamentProfileName,
+        });
+        const job = await calibrationHttp.submitCalibrationSlice(
+          selectedId,
+          ctx.profile.baseUrl,
+          {
+            userId: ctx.principalId,
+            printerId: request.printerId,
+            slicerProfileJson,
+            method: request.method,
+            ...(request.params !== undefined ? { params: request.params } : {}),
+            idempotencyKey: correlationId,
+          },
+          signal,
+        );
+        // Bind the returned jobId so subsequent poll / send-to-printer handlers
+        // resolve to the same correlation id as the submit that started them.
+        calibrationCorrelation.bind('job', job.jobId, correlationId);
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'slice.submitted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationSubmitCalibrationSlice
+        ].response.parse({
+          status: 'ok',
+          job,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'slice.submitted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration slice submit failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationSubmitCalibrationSlice
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetSliceJobStatus,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetSliceJobStatus].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const { correlationId, origin: correlationOrigin } =
+        calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['job', request.jobId],
+        ]);
+      const startedAt = Date.now();
+
+      // Enforce the poll cap here rather than on the transport layer: if the
+      // renderer has already exceeded the cap on a previous call, refuse this
+      // one with `sliceJobTimeout` before we make an HTTP request.
+      const preHint = computeSlicePollHint(request.pollAttempt - 1);
+      if (
+        request.pollAttempt > 0 &&
+        preHint.cappedOut &&
+        request.pollAttempt >= SLICE_POLL_MAX_ATTEMPTS
+      ) {
+        emitCalibrationLog({
+          level: 'warn',
+          component: 'calibration.http',
+          event: 'slice.polled',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          errorCode: 'sliceJobTimeout',
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSliceJobStatus
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'sliceJobTimeout' as const,
+            message:
+              'Slice job did not reach a terminal status within the poll cap.',
+            retryable: false,
+            retryAfterSeconds: null,
+            reference: correlationId,
+          },
+        });
+      }
+
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const snapshot = await calibrationHttp.getSliceJobStatus(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.jobId,
+          signal,
+        );
+        const terminal = classifySliceJobTerminalOutcome(snapshot.status);
+        // A terminal snapshot ends the loop; `nextPollDelayMs` is null and
+        // the handler layer refuses further polls of a Failed/Cancelled job
+        // with `sliceJobFailed` on the *next* attempt (below).
+        if (terminal === 'failed') {
+          emitCalibrationLog({
+            level: 'warn',
+            component: 'calibration.http',
+            event: 'slice.polled',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'failed',
+            durationMs: Date.now() - startedAt,
+            errorCode: 'sliceJobFailed',
+          });
+        } else {
+          emitCalibrationLog({
+            level: 'info',
+            component: 'calibration.http',
+            event: 'slice.polled',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'ok',
+            durationMs: Date.now() - startedAt,
+          });
+        }
+        const hint = computeSlicePollHint(request.pollAttempt);
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSliceJobStatus
+        ].response.parse({
+          status: 'ok',
+          snapshot,
+          terminal,
+          nextPollDelayMs: terminal !== null ? null : hint.delayMs,
+          cappedOut: hint.cappedOut,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'slice.polled',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Slice job status poll failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSliceJobStatus
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationSendSliceToPrinter,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSendSliceToPrinter].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const { correlationId, origin: correlationOrigin } =
+        calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['job', request.jobId],
+        ]);
+      const startedAt = Date.now();
+
+      // Machine-moving action guard. `startPrint === true` starts a real print
+      // on hardware that heats to 300 °C and moves — the schema requires the
+      // renderer to supply an explicit `operatorAcknowledgement` in that case.
+      // The gate here is structural: no ack, no dispatch. The full ledger
+      // integration in `calibrationActionGate.ts` covers the older bed-clear
+      // dispatch path; this new send-to-printer channel is deliberately its
+      // own guard, because upstream PR #1952 keeps the request out of the
+      // calibration-project saga (no saga IDs, no bed-clear ledger record to
+      // consume).
+      if (request.startPrint && !request.operatorAcknowledgement) {
+        emitCalibrationLog({
+          level: 'warn',
+          component: 'calibration.http',
+          event: 'slice.sendToPrinter',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          errorCode: 'forbidden',
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationSendSliceToPrinter
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'forbidden' as const,
+            message:
+              'Send-to-printer with startPrint requires a live operator acknowledgement.',
+            retryable: false,
+            retryAfterSeconds: null,
+            reference: correlationId,
+          },
+        });
+      }
+
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const result = await calibrationHttp.sendSliceToPrinter(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.jobId,
+          {
+            printerId: request.printerId,
+            startPrint: request.startPrint,
+            idempotencyKey: correlationId,
+          },
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'slice.sendToPrinter',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationSendSliceToPrinter
+        ].response.parse({
+          status: 'ok',
+          result,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'slice.sendToPrinter',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Send-to-printer failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationSendSliceToPrinter
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationUpdateFilamentProfileMeasurement,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        // Read-modify-write cycle. `PUT /api/slicer/profiles/custom/{id}`
+        // replaces `rawJson` verbatim, so a partial-key measurement update
+        // must load the current profile JSON, merge the measured keys onto
+        // it, and PUT the merged blob back. Doing the merge on the main
+        // side keeps the wire-key vocabulary
+        // (`filament_flow_ratio` / `nozzle_temperature` /
+        // `nozzle_temperature_initial_layer`) out of the renderer.
+        const readSignal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const list = await calibrationHttp.getCustomProfiles(
+          selectedId,
+          ctx.profile.baseUrl,
+          readSignal,
+        );
+        const current = list.profiles.find(
+          (p) => p.id === request.customProfileId,
+        );
+        if (current === undefined) {
+          emitCalibrationLog({
+            level: 'warn',
+            component: 'calibration.http',
+            event: 'slice.updateFilamentProfile',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'failed',
+            durationMs: Date.now() - startedAt,
+            errorCode: 'notFound',
+          });
+          return ipcSchemas[
+            IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'notFound' as const,
+              message: 'Cloned filament profile is no longer present.',
+              retryable: false,
+              retryAfterSeconds: null,
+              reference: correlationId,
+            },
+          });
+        }
+        // Structural fence: refuse to write through a system (source)
+        // profile. The `/api/slicer/profiles/custom` listing is the
+        // desktop's authoritative view of what can be mutated, and the
+        // server marks read-only rows with `isSystem: true`. If a buggy
+        // server ever returned a system row here, silently corrupting
+        // shared filament data would be catastrophic — one operator's
+        // spool would rewrite every other operator's baseline. Refuse
+        // outright rather than trust the URL.
+        if (current.isSystem === true) {
+          emitCalibrationLog({
+            level: 'error',
+            component: 'calibration.http',
+            event: 'slice.updateFilamentProfile',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'failed',
+            durationMs: Date.now() - startedAt,
+            errorCode: 'invalidData',
+          });
+          return ipcSchemas[
+            IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'invalidData' as const,
+              message:
+                'Cannot write a measurement to a system filament profile. ' +
+                'Clone the profile first, then update the clone.',
+              retryable: false,
+              retryAfterSeconds: null,
+              reference: correlationId,
+            },
+          });
+        }
+        // Parse the current profile JSON (a bare Orca profile object) and
+        // merge the measured keys onto it. If the current profile has no
+        // rawJson, start from an empty object — the server treats any valid
+        // JSON object as a full replacement.
+        let parsed: Record<string, unknown> = {};
+        if (current.rawJson !== null && current.rawJson.length > 0) {
+          try {
+            const candidate: unknown = JSON.parse(current.rawJson);
+            if (
+              candidate !== null &&
+              typeof candidate === 'object' &&
+              !Array.isArray(candidate)
+            ) {
+              parsed = candidate as Record<string, unknown>;
+            }
+          } catch {
+            // Fall through with an empty object; a malformed rawJson is a
+            // wire drift the server should surface on the PUT, not
+            // something the desktop can recover from silently.
+            parsed = {};
+          }
+        }
+        // OrcaSlicer's wire schema stores per-key vectors as arrays of
+        // strings — even single-extruder profiles carry a 1-element array.
+        // `filament_flow_ratio` is `[<value>.toFixed(3)]`;
+        // `nozzle_temperature` / `nozzle_temperature_initial_layer` are
+        // arrays of stringified integer °C. Writing a bare number is silent
+        // wire drift that OrcaSlicer will accept and mis-interpret.
+        if (
+          request.measurement.method === 'flow_rate_pass_1' ||
+          request.measurement.method === 'flow_rate_pass_2'
+        ) {
+          parsed.filament_flow_ratio = [
+            request.measurement.filamentFlowRatio.toFixed(3),
+          ];
+        } else {
+          // temperature_tower — preserve any tail extruder indices already
+          // present on the profile, so a multi-tool profile is not
+          // truncated by a measurement on tool 0.
+          const existingNozzle = parsed.nozzle_temperature;
+          const tail = Array.isArray(existingNozzle)
+            ? existingNozzle.slice(1).map((v) => String(v))
+            : [];
+          const nozzleHead = String(request.measurement.nozzleTemperature);
+          parsed.nozzle_temperature =
+            tail.length > 0 ? [nozzleHead, ...tail] : [nozzleHead];
+          parsed.nozzle_temperature_initial_layer = [
+            String(request.measurement.nozzleTemperatureInitialLayer),
+          ];
+        }
+        const writeSignal = AbortSignal.timeout(15_000);
+        const updated = await calibrationHttp.updateCustomProfile(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.customProfileId,
+          {
+            rawJson: JSON.stringify(parsed),
+            idempotencyKey: correlationId,
+          },
+          writeSignal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'slice.updateFilamentProfile',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+        ].response.parse({
+          status: 'ok',
+          updated,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'slice.updateFilamentProfile',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Filament profile measurement update failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
   // --- End Printer Calibration transport handlers --------------------------
 
   return async () => {

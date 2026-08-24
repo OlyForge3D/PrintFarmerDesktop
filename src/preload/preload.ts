@@ -145,6 +145,16 @@ import {
   type CalibrationListFilamentProfilesForMachinesResponse,
   type CalibrationListCustomProfilesRequest,
   type CalibrationListCustomProfilesResponse,
+  type CalibrationCloneFilamentProfileRequest,
+  type CalibrationCloneFilamentProfileResponse,
+  type CalibrationSubmitCalibrationSliceRequest,
+  type CalibrationSubmitCalibrationSliceResponse,
+  type CalibrationGetSliceJobStatusRequest,
+  type CalibrationGetSliceJobStatusResponse,
+  type CalibrationSendSliceToPrinterRequest,
+  type CalibrationSendSliceToPrinterResponse,
+  type CalibrationUpdateFilamentProfileMeasurementRequest,
+  type CalibrationUpdateFilamentProfileMeasurementResponse,
 } from '@shared/ipc';
 
 /**
@@ -684,6 +694,54 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationListCustomProfiles].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationListCustomProfiles,
+        request,
+      ),
+    ),
+  // --- Filament calibration slice pipeline (PR #1952) --------------------
+  cloneCalibrationFilamentProfile: async (
+    request: CalibrationCloneFilamentProfileRequest,
+  ): Promise<CalibrationCloneFilamentProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationCloneFilamentProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationCloneFilamentProfile,
+        request,
+      ),
+    ),
+  submitCalibrationSlice: async (
+    request: CalibrationSubmitCalibrationSliceRequest,
+  ): Promise<CalibrationSubmitCalibrationSliceResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSubmitCalibrationSlice].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationSubmitCalibrationSlice,
+        request,
+      ),
+    ),
+  getCalibrationSliceJobStatus: async (
+    request: CalibrationGetSliceJobStatusRequest,
+  ): Promise<CalibrationGetSliceJobStatusResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetSliceJobStatus].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetSliceJobStatus,
+        request,
+      ),
+    ),
+  sendCalibrationSliceToPrinter: async (
+    request: CalibrationSendSliceToPrinterRequest,
+  ): Promise<CalibrationSendSliceToPrinterResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSendSliceToPrinter].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationSendSliceToPrinter,
+        request,
+      ),
+    ),
+  updateCalibrationFilamentProfileMeasurement: async (
+    request: CalibrationUpdateFilamentProfileMeasurementRequest,
+  ): Promise<CalibrationUpdateFilamentProfileMeasurementResponse> =>
+    ipcSchemas[
+      IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+    ].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationUpdateFilamentProfileMeasurement,
         request,
       ),
     ),
