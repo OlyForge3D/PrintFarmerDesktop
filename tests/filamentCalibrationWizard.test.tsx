@@ -16,7 +16,13 @@
  * internal component shape.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationListPrintersResponse,
@@ -553,7 +559,7 @@ describe('FilamentCalibrationWizard startPrint safety gate', () => {
   });
 });
 
-describe('FilamentCalibrationWizard restart resilience (issue #754)', () => {
+describe('FilamentCalibrationWizard restart resilience', () => {
   // Once the clone exists, the wizard persists phase/method/in-flight job
   // through the additive `saveFilamentCalibrationWizardState` channel and
   // restores it via `getFilamentCalibrationWizardState` on mount — closing
@@ -810,5 +816,359 @@ describe('FilamentCalibrationWizard error surfacing', () => {
     // Control: the error banner must NEVER surface the raw wire code — that
     // was the anti-pattern the reframe called out.
     expect(alert.textContent ?? '').not.toMatch(/unsupportedCalibrationMethod/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Polling loop — rate limit, not effect-restart loop
+// ---------------------------------------------------------------------------
+//
+// PR #753 shipped a polling `useEffect` whose dep array included the
+// `working.inFlightJob` object itself. On every non-terminal poll, the
+// effect body constructed a new `inFlightJob` object to increment
+// `pollAttempt` — which changed the dep identity, tore the effect down
+// (cancelling the `setTimeout` that was just scheduled to honour
+// `response.nextPollDelayMs`), re-ran the effect, and fired `void runPoll()`
+// again immediately. The advertised delay became dead code and the wizard
+// polled at IPC round-trip speed. Bishop measured 4 polls in 500 ms against
+// a mock advertising 2000 ms. The driver caps at 240 attempts, so a slice
+// job that legitimately takes minutes exhausted the cap in ~2 seconds and
+// surfaced a spurious `sliceJobTimeout` on every real print.
+//
+// Four wizard tests, two approving reviewers, and Hicks's 23-test acceptance
+// suite all passed over this defect because none of them asserted the
+// poll rate. This test does. It uses fake timers to isolate the schedule,
+// asserts strict call-count-at-time invariants, and threads a positive
+// control (`pollAttempt` increments correctly across a ref boundary) so the
+// counter reset semantic is not silently regressed either.
+
+describe('FilamentCalibrationWizard polling loop', () => {
+  it('honours `nextPollDelayMs` between polls — the effect does not restart on every poll-counter update', async () => {
+    const nextPollDelayMs = 2000;
+    let pollCount = 0;
+    const pollMock = vi.fn().mockImplementation(() => {
+      pollCount += 1;
+      if (pollCount >= 4) {
+        return Promise.resolve({
+          status: 'ok' as const,
+          snapshot: completedSnapshot(jobIdOne),
+          terminal: 'completed' as const,
+          nextPollDelayMs: null,
+          cappedOut: false,
+        });
+      }
+      return Promise.resolve({
+        status: 'ok' as const,
+        snapshot: {
+          ...completedSnapshot(jobIdOne),
+          status: 'Working' as const,
+          completedAt: null,
+          progressPercent: 25 * pollCount,
+        },
+        terminal: null,
+        nextPollDelayMs,
+        cappedOut: false,
+      });
+    });
+    const api = wizardApi({ getCalibrationSliceJobStatus: pollMock });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    // Grab the Start button while real timers are still active — waitFor
+    // uses setTimeout internally, so faked timers block findByRole.
+    const startPass1 = await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+
+    // Fake timers from here on so the polling schedule is observable. Only
+    // fake setTimeout/clearTimeout — leaving `queueMicrotask` and everything
+    // else real avoids stalling React's internal scheduling.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    fireEvent.click(startPass1);
+    // Drain microtasks: submit resolves → phase transitions → effect fires
+    // → first `runPoll()` awaits the mock → resolves. Each `await` yield
+    // advances the promise chain by one step; the loop caps at a small
+    // constant so a regression that stalls the initial poll fails fast
+    // rather than hanging on the drain.
+    for (let i = 0; i < 20; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+      if (pollMock.mock.calls.length > 0) break;
+    }
+
+    // Exactly one poll has fired. Under the buggy code, this assertion fails:
+    // the effect re-mount fires `runPoll` back-to-back as fast as the mock
+    // resolves, entirely inside the microtask queue we just drained — no
+    // `advanceTimersByTime` needed. Discrimination confirmed on this exact
+    // test against the pre-fix wizard: expected 1, received 4 (all four
+    // mock responses consumed inside the same microtask drain, terminating
+    // the loop on the terminal response). Same predicate, same data,
+    // opposite result — that's the control this test needs to be
+    // self-defending against a future regression.
+    expect(pollMock).toHaveBeenCalledTimes(1);
+    const pollArgs = (call: number): { pollAttempt: number } =>
+      pollMock.mock.calls[call]?.[0] as { pollAttempt: number };
+    expect(pollMock.mock.calls[0]?.[0]).toMatchObject({
+      profileId,
+      jobId: jobIdOne,
+      pollAttempt: 0,
+    });
+
+    // Below the advertised delay, no additional poll.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(nextPollDelayMs - 1);
+      await Promise.resolve();
+    });
+    expect(pollMock).toHaveBeenCalledTimes(1);
+
+    // Crossing the threshold, the second poll fires — with `pollAttempt: 1`.
+    // The positive control on the counter: the ref-hoisted counter must
+    // still increment monotonically across polls, or the main-side
+    // `computeSlicePollHint` would misclassify the backoff schedule.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pollMock).toHaveBeenCalledTimes(2);
+    expect(pollArgs(1).pollAttempt).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(nextPollDelayMs);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pollMock).toHaveBeenCalledTimes(3);
+    expect(pollArgs(2).pollAttempt).toBe(2);
+
+    // Fourth poll is terminal; wizard advances to `sliceReady`.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(nextPollDelayMs);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pollMock).toHaveBeenCalledTimes(4);
+    expect(pollArgs(3).pollAttempt).toBe(3);
+
+    vi.useRealTimers();
+    await screen.findByRole('button', {
+      name: /Start the calibration print now/i,
+    });
+  });
+
+  it('surfaces a terminal slice failure to the operator and returns to a recoverable phase', async () => {
+    const pollMock = vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      snapshot: {
+        ...completedSnapshot(jobIdOne),
+        status: 'Failed' as const,
+        completedAt: null,
+        errorMessage:
+          'The worker could not slice the calibration model bundle.',
+      },
+      terminal: 'failed' as const,
+      nextPollDelayMs: null,
+      cappedOut: false,
+    });
+    const api = wizardApi({ getCalibrationSliceJobStatus: pollMock });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+
+    // The banner surfaces the server's failure reason verbatim — the
+    // operator needs to see what went wrong, not "poll returned failed".
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent ?? '').toMatch(/slice job failed on the server/i);
+    expect(alert.textContent ?? '').toMatch(
+      /could not slice the calibration model bundle/i,
+    );
+
+    // Recoverable: the wizard is back at the method picker, and clicking
+    // the same method dispatches a fresh submit. If the wizard stranded in
+    // `pollingSlice` on failure, the operator would have no exit.
+    const restartButton = await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+    expect(restartButton).not.toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendToPrinter — physical-action idempotency and audit-trail attribution
+// ---------------------------------------------------------------------------
+
+describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
+  it('sends `startPrint: true` with a non-null operatorAcknowledgement only after the operator typed START', async () => {
+    const sendMock = vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      result: {
+        jobId: jobIdOne,
+        printerId: printerIdA,
+        fileName: 'flow_rate_pass_1.gcode',
+        printStarted: true,
+        message: 'Print started.',
+      },
+    });
+    const api = wizardApi({ sendCalibrationSliceToPrinter: sendMock });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+    const startButton = await screen.findByRole('button', {
+      name: /Start the calibration print now/i,
+    });
+    expect(startButton).toBeDisabled();
+
+    fireEvent.change(await screen.findByLabelText(/Confirm start/i), {
+      target: { value: 'START' },
+    });
+    await waitFor(() => {
+      if (startButton.hasAttribute('disabled')) {
+        throw new Error('Start button still disabled');
+      }
+    });
+    fireEvent.click(startButton);
+
+    await waitFor(() => {
+      if (sendMock.mock.calls.length < 1) {
+        throw new Error('send not yet called');
+      }
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const call = sendMock.mock.calls[0]?.[0] as {
+      startPrint: boolean;
+      operatorAcknowledgement: string | null;
+    };
+    expect(call.startPrint).toBe(true);
+    // The acknowledgement is `filament-cal:{id}:{iso}` — an identity +
+    // timestamp attributable to this session. Its presence is what lets
+    // the audit trail tie the physical action to a real operator; a null
+    // here would mean an unattributed machine motion, which is what the
+    // upload-only path deliberately produces.
+    expect(call.operatorAcknowledgement).not.toBeNull();
+    expect(call.operatorAcknowledgement).toMatch(
+      /^filament-cal:[0-9a-f-]+:[0-9T:.Z-]+$/,
+    );
+  });
+
+  it('sends `startPrint: false` with a null operatorAcknowledgement on Upload-only', async () => {
+    const sendMock = vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      result: {
+        jobId: jobIdOne,
+        printerId: printerIdA,
+        fileName: 'flow_rate_pass_1.gcode',
+        printStarted: false,
+        message: 'Uploaded to printer queue.',
+      },
+    });
+    const api = wizardApi({ sendCalibrationSliceToPrinter: sendMock });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Upload gcode only/i }),
+    );
+
+    await waitFor(() => {
+      if (sendMock.mock.calls.length < 1) {
+        throw new Error('send not yet called');
+      }
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const call = sendMock.mock.calls[0]?.[0] as {
+      startPrint: boolean;
+      operatorAcknowledgement: string | null;
+    };
+    expect(call.startPrint).toBe(false);
+    // The null here is load-bearing — this is the "no physical action was
+    // confirmed" branch, and attributing a non-null acknowledgement to it
+    // would misrepresent the audit trail. The negation is exactly what
+    // Hicks's wire-level suite covers on the main side; this test proves
+    // the UI that drives it does not smuggle an acknowledgement through.
+    expect(call.operatorAcknowledgement).toBeNull();
+  });
+
+  it('a synchronous double-click on Upload gcode only dispatches sendCalibrationSliceToPrinter exactly once', async () => {
+    // Physical safety: sending calibration gcode with `startPrint: true`
+    // moves a machine that heats to 300 °C. `startPrint: false` is safer
+    // (the printer waits for a manual start) but still uploads gcode. Even
+    // for the safer branch, a double-dispatch would race two idempotency
+    // keys against the wire and depend on the server to notice — an
+    // upstream guarantee for an action that touches a physical device.
+    // The `inFlightRef` guard is the load-bearing local defence; the wire
+    // idempotency key is the last line.
+    let resolveSend: ((value: unknown) => void) | null = null;
+    const sendMock = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    const api = wizardApi({ sendCalibrationSliceToPrinter: sendMock });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1/i,
+      }),
+    );
+    const uploadButton = await screen.findByRole('button', {
+      name: /Upload gcode only/i,
+    });
+    // Two clicks within a single synchronous batch. The first click's
+    // `setBusy(true)` has not committed yet, so the button is still
+    // enabled and its handler still runs on the second click. Without the
+    // ref guard, both handlers dispatch. With it, the second short-circuits.
+    // `act` here batches the two dispatches; the `async` wrapper is not
+    // strictly required (no await inside) but keeps the callback shape
+    // consistent with the follow-up `act` and would tolerate an eventual
+    // internal `await` from React's future concurrent scheduling.
+    act(() => {
+      fireEvent.click(uploadButton);
+      fireEvent.click(uploadButton);
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    // Unblock the pending promise so React can settle for cleanup — wrap in
+    // act so the phase transition it triggers is not surfaced as an
+    // "update outside act" warning.
+    if (resolveSend !== null) {
+      const resolver = resolveSend as (value: unknown) => void;
+      await act(async () => {
+        resolver({
+          status: 'ok' as const,
+          result: {
+            jobId: jobIdOne,
+            printerId: printerIdA,
+            fileName: 'flow_rate_pass_1.gcode',
+            printStarted: false,
+            message: 'Uploaded.',
+          },
+        });
+        await Promise.resolve();
+      });
+    }
   });
 });
