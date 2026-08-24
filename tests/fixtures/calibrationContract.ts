@@ -18,11 +18,9 @@
  * ⚠️ PROVENANCE CLAIM IS UNENFORCED — 2026-08-21 (Hicks / test-gap audit)
  * ----------------------------------------------------------------------
  * Nothing in this repository verifies that the shapes below still match the
- * live PrintFarmer server. `scripts/check-calibration-provenance.mjs` does not
- * cross-check this file against any server blob; there is no drift check.
- * Every test that imports from here is effectively self-referential: it
- * asserts the desktop matches a shape the desktop itself defined and calls
- * that "server parity."
+ * live PrintFarmer server. There is no drift check. Every test that imports
+ * from here is effectively self-referential: it asserts the desktop matches
+ * a shape the desktop itself defined and calls that "server parity."
  *
  * For enforced, drift-checked server contract snapshots — the ones you should
  * reach for when writing a new test — see

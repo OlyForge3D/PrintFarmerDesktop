@@ -2,9 +2,9 @@
 
 ## Printer Calibration source boundary
 
-No source-derived Printer Calibration file is present at provenance manifest
-version 1. The repository records the following reviewed boundary so future
-adaptations cannot lose their attribution:
+No source-derived Printer Calibration file is present in this repository. The
+following upstream reviewed boundary is retained here so any future adaptation
+of these sources begins with the attribution it must preserve:
 
 - Source: `tayloraaron078-tech/Filament_Calibration_Wizard`
 - Canonical tag: `v1.3.2`
@@ -13,10 +13,7 @@ adaptations cannot lose their attribution:
   candidate blobs contain no file-level copyright notice)
 - License: GNU Affero General Public License v3.0 only
 
-The exact tree, license and package blobs, archive digest, per-file decisions,
-and any future destination mappings are maintained in
-`compliance/printer-calibration-provenance.json`. The corresponding license is
-included in `LICENSE`.
+The corresponding license text is included in `LICENSE`.
 
 Revisions before this exact snapshot, unpinned branches or forks, static printer
 data, third-party calibration models, and unverified fixtures or assets are not

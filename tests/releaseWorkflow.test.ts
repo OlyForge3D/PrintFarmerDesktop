@@ -95,7 +95,6 @@ describe('signed release workflow', () => {
     ];
     const ordinarySteps = [
       'Install dependencies',
-      'Calibration provenance',
       'Build Windows sidecar (release)',
       'Add universal macOS Rust targets',
       'Build universal macOS sidecar (release)',

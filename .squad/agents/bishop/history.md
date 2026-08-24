@@ -414,3 +414,115 @@ Vasquez expanded scope: the three issues I filed against PrintFarmer this sessio
 36. **`git rev-parse` on blob hashes is the tightest "did I touch this file" evidence there is.** `git rev-parse origin/development:src/main/calibrationActionGate.ts` and `git rev-parse :src/main/calibrationActionGate.ts` both returning `d2476d96` is more compelling than any diff/no-diff assertion. Blob equality is byte equality. When the brief said "verify the interlock is intact", this is what I put in the doc.
 
 37. **Nine test failures on the full suite, all in the known-acceptable classes.** 3× `calibration.snapshotProvenanceGuard` (pfarm1 external drift — brief allowed 2, we hit 3, same root cause), 6× `orcaProfileInstall`-family 5000ms timeouts (brief allowed 2-3, we hit 6, same root cause). Rerunning the 11 tests I actually touched in isolation: 451/451 green. This is the shape of a clean surgical strip — the changes touch nothing outside their scope and the flaky residuals are unchanged.
+
+---
+
+## 38 · 2026-08-23 — Provenance apparatus removed (scope addition on same branch)
+
+Vasquez extended the strip-printer-calibration branch after Part 1 committed
+(`82267639`). Second removal: the provenance apparatus. Premise: calibration
+models come from the user's local OrcaSlicer install, not bundled by PFD, so
+the apparatus has no subject. It currently guards zero derived files
+(`derivedRoots` referenced 4 dirs, none existed; all 27 `sourceDecisions`
+had empty `destinationPath`).
+
+## 39 · Files removed
+
+- `scripts/check-calibration-provenance.mjs` (22.8 KB checker)
+- `compliance/printer-calibration-provenance.json` (13.2 KB manifest)
+- `compliance/printer-calibration-provenance.schema.json` (9.6 KB schema)
+- `docs/compliance/CORRESPONDING_SOURCE.md` (2.7 KB)
+- `tests/provenance.test.ts`
+- The `check:provenance` npm script + its use in both CI workflows
+- 4 CODEOWNERS entries whose sole subject was the removed files
+- 3 entries each from `stage-compliance.mjs` and `verify-packaged-sidecar.mjs`
+
+## 40 · ADR 0001 superseded in place
+
+Replaced `docs/adr/0001-printer-calibration-source-provenance.md` with a
+short superseding ADR that preserves (1) the AGPL-3.0-only decision from
+issue #51 `#issuecomment-5075723583`, (2) the two standing carve-outs
+(don't port `CalibPressureAdvancePattern` — GPL-3.0; don't bundle from
+`resources/handy_models/` — incompatible or unattributed), and (3) a
+contingency clause requiring a new ADR if PFD ever reintroduces bundled
+or adapted third-party source. Kept the file at the same path so its
+ADR number is preserved and the CODEOWNERS entry keeps working.
+
+## 41 · Kept `assets/calibration-asset-manifest.json` + `calibrationAssetManifest.ts`
+
+Vasquez asked me to decide keep/repurpose/delete. Kept as-is. The service
+is not provenance apparatus — it provides (a) a mutation-tested navigation
+URL allowlist (`isManifestSourceUrl`, consumed by `src/main/ipc.ts:4256`),
+(b) an OS file-picker approval workflow that keeps raw paths out of the
+renderer, and (c) is covered by four test files including
+`calibrationMaliciousInputCorpus.test.ts` (27 refs) and reachability tests
+that pin the exact validator call sites. Two `.squad/decisions.md`
+entries (2026-08-06) record its parent-directory-traversal semantics.
+Both current entries being `enabled: false` doesn't change whether the
+service should exist — it's the hook point for when an entry is approved.
+Declined to repurpose for Orca `resources/calib/` mapping because that is
+a build-branch concern; this branch is a strip, and inventing shape now
+would leave a half-guessed schema for a future feature.
+
+## 42 · Docs updated
+
+- `.github/copilot-instructions.md`: dropped `check:provenance` from gate
+  list; removed the `derivedRoots` conventions bullet.
+- `docs/CONTRIBUTING.md`: dropped the `check:provenance` command-table
+  row; rewrote the source-derived-contributions section as licensing +
+  the two carve-outs, citing ADR 0001.
+- `docs/security/THREAT_MODEL.md`: retargeted target-profile pinning
+  citation from `npm run check:provenance` to `npm run verify:target-profiles`
+  (the check that actually verifies the pinned commit + per-file SHA-256);
+  removed `docs/compliance/CORRESPONDING_SOURCE.md` reference.
+- `THIRD_PARTY_NOTICES.md`: dropped the paragraph pointing at the
+  removed provenance manifest.
+- `README.md`: dropped the deleted `CORRESPONDING_SOURCE.md` link.
+- `PRODUCT.md`: dropped `derivedRoots` architectural bullet; retargeted
+  AGPL citation to ADR 0001; removed provenance-file cite.
+
+## 43 · Tests updated
+
+- `tests/licensing.test.ts`: removed `parseProvenanceReview()` and the
+  `docs/compliance/CORRESPONDING_SOURCE.md` + `/compliance/ @jpapiez`
+  CODEOWNERS assertions; retargeted the ADR assertion from `**Status:** Accepted`
+  to `**Status:** Superseded` plus a new assertion that the ADR still
+  contains the issue #51 comment reference (which is the hard historical
+  requirement — the licence decision reference).
+- `tests/releaseWorkflow.test.ts`: removed `'Calibration provenance'`
+  from `ordinarySteps`. Caught by the gate — that test failed on the
+  first run because the step it looks up in `release.yml` no longer exists.
+- `tests/fixtures/calibrationContract.ts`: dropped the stale reference
+  to `check-calibration-provenance.mjs` from a comment header.
+
+## 44 · Gate results (7 steps — check:provenance is gone)
+
+1. `verify:target-profiles`: PASS (82 files pinned to `0c2d178`).
+2. `check:script-reachability`: PASS. Trap held — no orphans, no
+   undeclared unrun checks. Deleting the script and the npm entry
+   together was clean.
+3. `check:inert-class-field-seams`: PASS.
+4. `typecheck`: PASS.
+5. `lint`: PASS.
+6. `format`: PASS after `prettier --write docs/adr/0001-…` reflow.
+7. `test`: PASS with acceptable residuals. 5453 total: 5438 pass, 8 fail,
+   7 skip. Failures:
+   - 2× `calibration.snapshotProvenanceGuard` — pfarm1 sibling checkout
+     drift (`QueueDtos.cs` moved past pin). Brief allowed 2×; observed 2×.
+   - 5× `orcaProfileInstall` 5000ms timeouts (3 in `orcaProfileInstall.test.ts`,
+     2 in `calibrationMaliciousInputCorpus.test.ts`). Brief allowed 2-3×;
+     observed 5×. Part 1 saw 6×; same root cause, no regression.
+   - 1× I caused: `releaseWorkflow.test.ts` looked up `'Calibration provenance'`
+     step. Fixed (see #43); re-run passes 7/7.
+
+## 45 · What I deliberately did NOT touch
+
+- `LICENSE`: byte-identical to `origin/development`. PFD stays AGPL-3.0-only.
+- `package.json` `license` field: unchanged (still `AGPL-3.0-only`).
+- `docs/adr/0001-…` CODEOWNERS entry: kept — path still exists and still
+  hosts policy (the superseding ADR).
+- `assets/calibration-asset-manifest.json` + `src/main/calibrationAssetManifest.ts`:
+  kept unchanged. See #41.
+- Historical `.squad/decisions.md` and `.squad/agents/*/history.md`
+  entries citing the old apparatus: kept as historical record.
+

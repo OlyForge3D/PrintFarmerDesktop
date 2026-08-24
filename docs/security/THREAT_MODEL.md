@@ -663,7 +663,7 @@ rather than imported values; imported motion values are clamped against those in
 ceilings, and filament temperatures and volumetric flow are capped by the corresponding pinned
 material profile. Bundled profiles are pinned to commit `0c2d178` with a per-file SHA-256
 manifest, verified at package time by `scripts/verify-packaged-sidecar.mjs` and on every pull
-request by `npm run check:provenance` (`.github/workflows/ci.yml:27-28`).
+request by `npm run verify:target-profiles`.
 
 **Coverage. Good.** `native/model-core/tests/retarget_integration.rs` covers clamping directly
 (`every_mandatory_global_and_object_motion_setting_is_clamped`,
@@ -902,13 +902,15 @@ Two specifics raise the stakes:
   SBOM now reports any non-`registry+` source (`nonRegistrySources`), so such a dependency is
   at least visible; at the shipped feature set there are currently none, because `lib3mf` is
   not enabled.
-- The product is **AGPL-3.0-only**. `docs/compliance/CORRESPONDING_SOURCE.md` requires notices
-  to ship under `resources/compliance/`. `THIRD_PARTY_NOTICES.md` retains its hand-authored
-  provenance (bundled slicer, printer-calibration data) and now points at the generated
-  `third-party-licenses.md` for the enumerated dependency licences. A GPL-2.0-**only**
-  dependency would be licence-incompatible with AGPL-3.0-only outbound; the licence gate above
-  now detects one entering the graph, because the SBOM records each component's declared licence
-  and `verify-licenses.mjs` consumes it.
+- The product is **AGPL-3.0-only** (recorded in ADR 0001 and enforced across
+  `LICENSE`, `package.json`, and `native/Cargo.toml`). `THIRD_PARTY_NOTICES.md`
+  retains its hand-authored provenance (bundled slicer, printer-calibration
+  data) and now points at the generated `third-party-licenses.md` for the
+  enumerated dependency licences, both staged under `resources/compliance/`
+  in packaged builds. A GPL-2.0-**only** dependency would be licence-
+  incompatible with AGPL-3.0-only outbound; the licence gate above now detects
+  one entering the graph, because the SBOM records each component's declared
+  licence and `verify-licenses.mjs` consumes it.
 
 → Enumeration: PR B1. Policy, notices and gates: PR B2 (this slice).
 

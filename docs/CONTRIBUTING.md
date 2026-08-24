@@ -28,7 +28,6 @@ Renderer/main/preload (run from the repo root):
 | `npm run typecheck`                     | Strict TypeScript check (no emit)               |
 | `npm run lint`                          | ESLint (type-aware)                             |
 | `npm run format`                        | Prettier check (`format:write` fixes)           |
-| `npm run check:provenance`              | Calibration source/provenance gate              |
 | `npm run check:inert-class-field-seams` | Guards against #270-style inert prototype seams |
 | `npm run test`                          | Vitest unit/component tests                     |
 | `npm run make`                          | Build platform installers                       |
@@ -102,47 +101,27 @@ exercised in CI.
   checks, and then removes the stale tree without following links. It never
   treats an arbitrary unregistered directory as recoverable.
 
-## Printer Calibration source-derived contributions
+## Printer Calibration and licensing
 
-PFD's `AGPL-3.0-only` adoption is approved and recorded in
-`compliance/printer-calibration-provenance.json`. If that approval record is
-removed or changed, CI rejects all source-derived files. Repository
-administrators should require review from the compliance CODEOWNER (`@jpapiez`)
-on the protected target branch.
+PFD is licensed `AGPL-3.0-only` (see `LICENSE`, `THIRD_PARTY_NOTICES.md`, and
+ADR 0001 at `docs/adr/0001-printer-calibration-source-provenance.md`).
+Calibration models are read from the user's local OrcaSlicer install rather
+than bundled by PFD, so the desktop currently redistributes no third-party
+calibration content.
 
-Source-derived files must:
+Two standing carve-outs apply to any future work that adapts upstream sources:
 
-1. Use only the exact source revision pinned in the provenance manifest. Do not
-   consult or copy older revisions, branches, forks, local history, static
-   printer data, fixtures, or unverified assets.
-2. Live below one of the manifest's `derivedRoots`. Native PFD orchestration,
-   UI, persistence, printer ownership, authorization, queueing, and safety code
-   stays outside those roots and must be independently implemented.
-3. Add a `derivedFiles` record with the source path and Git blob, destination
-   SHA-256, original attribution, modification summary, and reviewer decision.
-   Ported tests are derived files and use the `ported-test` classification.
-4. Begin with a notice in the source file using the applicable comment syntax:
+1. **Do not port OrcaSlicer's PA Pattern generator**
+   (`CalibPressureAdvancePattern`, `src/libslic3r/calib.cpp`) — it is
+   `GPL-3.0`, not AGPL, adapted from Andrew Ellis' generator (itself from
+   Sineos' Marlin generator).
+2. **Do not bundle anything from OrcaSlicer's `resources/handy_models/`** —
+   3DBenchy, Stanford Bunny, Voron Cube, calicat, ksr_fdmtest_v4 all carry
+   licences incompatible with `AGPL-3.0-only` or lack attribution.
 
-   ```
-   // PFD-SOURCE-DERIVED: printer-calibration
-   // Source-Commit: <40-character pinned commit>
-   // Source-Path: <path in the pinned source tree>
-   // Source-Blob: <40-character Git blob>
-   // SPDX-License-Identifier: AGPL-3.0-only
-   // PFD-Original-Notice: <one exact manifest notice; repeat as needed>
-   // PFD-Modified-At: <YYYY-MM-DD>
-   // PFD-Modifications: <exact modification summary from the manifest>
-   ```
-
-5. Run `npm run check:provenance` and the independent PFD-specific tests for the
-   changed architecture and behavior.
-
-To advance the source pin, open a dedicated compliance PR. Verify the new
-canonical tag, commit, tree, source archive SHA-256, license and package-metadata
-blobs; audit every newly considered source file and asset; update the ADR,
-manifest, checker pin, and failure fixtures together; and obtain an authorized
-maintainer decision before any file uses the new revision. Never move an
-existing tag or silently update a hash.
+If a future decision reintroduces bundled or adapted third-party source into
+PFD's own distribution, revisit ADR 0001 and record the new premise before
+any such source lands.
 
 ## Pinned target-profile snapshots
 

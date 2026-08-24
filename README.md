@@ -211,6 +211,5 @@ PrintFarmer Desktop is licensed under
 dependency locks, build scripts, attribution, and provenance records for each
 official binary release are available from that release's matching Git tag in
 this repository. See
-[Corresponding Source](./docs/compliance/CORRESPONDING_SOURCE.md) and
 [Third-Party Notices](./THIRD_PARTY_NOTICES.md) for the release and attribution
 policy.
