@@ -485,22 +485,53 @@ function FilamentCalibrationWizardInner(
   );
 
   // ---- Polling loop
+  //
+  // The counter lives in a ref, not in wizard state. Under `useDefineForClassFields`
+  // ES2022 semantics don't matter here; what matters is React effect identity:
+  // if the poll counter were in `working.inFlightJob`, incrementing it after
+  // each poll would change the object identity every tick. Any dep array that
+  // referenced `working.inFlightJob` by object identity would then tear the
+  // effect down on every counter update, cancel the `setTimeout` that was
+  // just scheduled to honour `response.nextPollDelayMs`, re-mount the effect,
+  // and fire `void runPoll()` again immediately. The advertised delay would
+  // become dead code and the loop would free-run at IPC round-trip speed —
+  // which is exactly the defect PR #753 shipped (Bishop measured 4 polls in
+  // 500 ms against a mock advertising 2000 ms).
+  //
+  // The fix has three parts, none of which is optional:
+  //   1. The counter is a `useRef` — mutating it does not re-render or
+  //      re-run the effect.
+  //   2. The effect depends on `working.inFlightJob?.jobId`, a stable primitive
+  //      that changes only when a genuinely new job starts (or the job is
+  //      cleared). It does NOT depend on the `inFlightJob` object.
+  //   3. The counter is reset to 0 inside the effect body on entry, so a
+  //      second slice cannot inherit the previous job's attempt count.
+  //
+  // The existing `jobId` guard in the `setWorking` reducer still applies —
+  // a stale in-flight response cannot mutate a newer job's state — but with
+  // this shape the guard is a safety net rather than the load-bearing
+  // discriminator (the effect re-mounts on jobId change, so `pollJobIdRef`
+  // and the captured `job.jobId` agree by construction).
+  const pollAttemptRef = useRef<number>(0);
   useEffect(() => {
     if (working.phase !== 'pollingSlice' || working.inFlightJob === null) {
       return;
     }
     const job = working.inFlightJob;
+    pollAttemptRef.current = 0;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const runPoll = async (): Promise<void> => {
+      const attempt = pollAttemptRef.current;
       try {
         const response = await calibrationApi().getCalibrationSliceJobStatus({
           profileId,
           jobId: job.jobId,
-          pollAttempt: job.pollAttempt,
+          pollAttempt: attempt,
         });
         if (cancelled || unmountedRef.current) return;
+        pollAttemptRef.current = attempt + 1;
         if (response.status === 'error') {
           setBanner(bannerFromApiError(response.error));
           if (
@@ -521,40 +552,30 @@ function FilamentCalibrationWizardInner(
           terminal: response.terminal,
           nextPollDelayMs: response.nextPollDelayMs,
         });
-        setWorking((current) => {
-          if (current.inFlightJob?.jobId !== job.jobId) return current;
-          const nextJob: FilamentWizardInFlightJob = {
-            ...current.inFlightJob,
-            pollAttempt: current.inFlightJob.pollAttempt + 1,
-            lastStatus: response.snapshot.status,
-          };
-          if (response.terminal === 'completed') {
-            return {
-              ...current,
-              inFlightJob: nextJob,
-              phase: 'sliceReady',
-            };
-          }
-          if (response.terminal === 'failed') {
-            setBanner({
-              kind: 'error',
-              title: 'The slice job failed on the server.',
-              detail:
-                response.snapshot.errorMessage ??
-                'The server reported a slice failure without a message.',
-              recovery: 'Submit a fresh slice job.',
-              reference: null,
-            });
-            return {
-              ...current,
-              inFlightJob: null,
-              phase: 'methodPicker',
-            };
-          }
-          return { ...current, inFlightJob: nextJob };
-        });
+        if (response.terminal === 'completed') {
+          setWorking((current) => {
+            if (current.inFlightJob?.jobId !== job.jobId) return current;
+            return { ...current, phase: 'sliceReady' };
+          });
+          return;
+        }
+        if (response.terminal === 'failed') {
+          setBanner({
+            kind: 'error',
+            title: 'The slice job failed on the server.',
+            detail:
+              response.snapshot.errorMessage ??
+              'The server reported a slice failure without a message.',
+            recovery: 'Submit a fresh slice job.',
+            reference: null,
+          });
+          setWorking((current) => {
+            if (current.inFlightJob?.jobId !== job.jobId) return current;
+            return { ...current, inFlightJob: null, phase: 'methodPicker' };
+          });
+          return;
+        }
         if (
-          response.terminal === null &&
           response.nextPollDelayMs !== null &&
           !cancelled &&
           !unmountedRef.current
@@ -583,14 +604,36 @@ function FilamentCalibrationWizardInner(
       cancelled = true;
       if (timer !== null) clearTimeout(timer);
     };
-  }, [profileId, working.inFlightJob, working.phase]);
+    // See docblock above: depending on `working.inFlightJob?.jobId` (a stable
+    // primitive) rather than the whole `inFlightJob` object is what makes the
+    // `setTimeout(response.nextPollDelayMs)` schedule survive incrementing
+    // the poll counter. exhaustive-deps flags the missing `working.inFlightJob`
+    // object; including it would reintroduce the effect-restart-per-poll defect
+    // this PR fixes. The captured `job` variable inside the effect reads only
+    // `job.jobId`, which the dep array already tracks; every other field on
+    // `inFlightJob` is stable for the life of a single slice job.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId, working.inFlightJob?.jobId, working.phase]);
 
   const [confirmStart, setConfirmStart] = useState<string>('');
 
+  // Physical-action idempotency: sending calibration gcode to a printer with
+  // `startPrint: true` moves a machine that heats to 300 °C and drives a
+  // toolhead. The button-disabled + phase transition + wire idempotency key
+  // are all necessary but each defers to the layer below it. React state
+  // does not commit synchronously, so a synchronous double-click within a
+  // single event tick will pass the `busy` disabled-check twice before the
+  // first setState commits. Defence-in-depth: a synchronous ref guarantees
+  // the second click short-circuits before any await. Idempotency-key
+  // dedup on the wire remains the last line of defence.
+  const sendToPrinterInFlightRef = useRef<boolean>(false);
+
   const sendToPrinter = useCallback(
     async (startPrint: boolean): Promise<void> => {
+      if (sendToPrinterInFlightRef.current) return;
       const { printerId, inFlightJob } = working;
       if (printerId === null || inFlightJob === null) return;
+      sendToPrinterInFlightRef.current = true;
       setBusy(true);
       setBanner(null);
       setWorking((current) => ({ ...current, phase: 'sendingToPrinter' }));
@@ -640,6 +683,7 @@ function FilamentCalibrationWizardInner(
         });
         setWorking((current) => ({ ...current, phase: 'sliceReady' }));
       } finally {
+        sendToPrinterInFlightRef.current = false;
         if (!unmountedRef.current) setBusy(false);
         setConfirmStart('');
       }
