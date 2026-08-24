@@ -99,7 +99,8 @@ pub fn render(mesh: &SceneMesh, size: u32) -> Result<Thumbnail, ThumbnailError> 
         ]
     };
 
-    for (tri_index, tri) in mesh.indices.chunks_exact(3).enumerate() {
+    let (triangle_indices, _) = mesh.indices.as_chunks::<3>();
+    for (tri_index, tri) in triangle_indices.iter().enumerate() {
         let (ia, ib, ic) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
         let (Some(&wa), Some(&wb), Some(&wc)) = (
             mesh.positions.get(ia),
@@ -365,7 +366,13 @@ mod tests {
     }
 
     fn count_opaque(thumb: &Thumbnail) -> usize {
-        thumb.rgba.chunks_exact(4).filter(|px| px[3] == 255).count()
+        thumb
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] == 255)
+            .count()
     }
 
     #[test]

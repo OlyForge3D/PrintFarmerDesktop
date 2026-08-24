@@ -144,7 +144,8 @@ fn parse_binary(data: &[u8]) -> Result<StlMesh, StlError> {
     let mut bounds = Aabb::empty();
     let mut has_colors = false;
 
-    for chunk in body.chunks_exact(BINARY_TRIANGLE_LEN) {
+    let (triangle_chunks, _) = body.as_chunks::<BINARY_TRIANGLE_LEN>();
+    for chunk in triangle_chunks {
         let normal = finite_vec3(read_vec3(&chunk[0..12]), "binary STL facet normal")?;
         let v0 = finite_vec3(read_vec3(&chunk[12..24]), "binary STL vertex")?;
         let v1 = finite_vec3(read_vec3(&chunk[24..36]), "binary STL vertex")?;
