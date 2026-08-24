@@ -266,13 +266,6 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       profiles: [],
       fetchedAt: now,
     }),
-    setupCalibrationPrinter: vi
-      .fn()
-      .mockRejectedValue(
-        new Error(
-          'setupCalibrationPrinter: wiring test does not exercise submit.',
-        ),
-      ),
   } satisfies CalibrationApi;
 }
 

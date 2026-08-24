@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 3 as const;
+export const IPC_CONTRACT_VERSION = 4 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -54,10 +54,13 @@ export const IpcChannel = {
   CalibrationGenerateOrcaProfile: 'calibration:generateOrcaProfile',
   CalibrationInstallOrcaProfile: 'calibration:installOrcaProfile',
   CalibrationRestoreOrcaProfile: 'calibration:restoreOrcaProfile',
-  // --- Path C: profile selection + calibration-setup (Vasquez brief) -------
-  // Six channels for the cascading profile picker and the PUT that persists
-  // Machine/Process/Filament profile Guids on the printer, unblocking the
-  // real calibration eligibility check.
+  // --- Machine → process → filament profile cascade ------------------------
+  // Five channels for the cascading profile picker: step 1 of the filament
+  // calibration workflow ("select the machine profile, the process profile,
+  // then typically a generic filament profile"). The PUT that used to persist
+  // the picks on a printer row belonged to the printer-calibration setup
+  // flow and was removed on 2026-08-23 (see
+  // `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`).
   CalibrationListExtendedProfiles: 'calibration:listExtendedProfiles',
   CalibrationListMachineProfilesForModel:
     'calibration:listMachineProfilesForModel',
@@ -66,7 +69,6 @@ export const IpcChannel = {
   CalibrationListFilamentProfilesForMachines:
     'calibration:listFilamentProfilesForMachines',
   CalibrationListCustomProfiles: 'calibration:listCustomProfiles',
-  CalibrationSetupPrinter: 'calibration:setupPrinter',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -4292,14 +4294,6 @@ export const CalibrationApiErrorCode = z.enum([
   'calibrationJobIncompatible',
   /** HTTP 422 filament_check_failed — filament material or nozzle mismatch. */
   'filamentCheckFailed',
-  // --- Calibration setup PUT (Path C, issue #55) --------------------------
-  /**
-   * HTTP 412 on PUT /api/printers/{id}/calibration-setup — the printer's row
-   * version moved between the wizard opening and the setup PUT. Distinct from
-   * `revisionConflict` so the renderer can point specifically at the
-   * calibration binding row and re-open the wizard rather than silently retry.
-   */
-  'calibrationSetupConflict',
 ]);
 export type CalibrationApiErrorCode = z.infer<typeof CalibrationApiErrorCode>;
 
@@ -6312,11 +6306,15 @@ export const RetargetDisposeResponse = z
   .strict();
 export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 
-// --- Path C: Slicer profile picker + calibration-setup ---------------------
+// --- Machine → process → filament profile cascade -------------------------
 //
-// Six IPC channels that let the operator see the machine/process/filament
-// profiles PrintFarmer offers for a printer, and persist their three-way
-// selection so the server marks the printer calibration-eligible.
+// Five IPC channels that let the operator see the machine/process/filament
+// profiles PrintFarmer offers. This is step 1 of the filament calibration
+// workflow (owner directive 2026-08-23,
+// `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`): the
+// operator picks machine + process + filament as their starting profiles,
+// then works through the OrcaSlicer wiki steps against a client-side
+// filament profile.
 //
 // The renderer sees a unified `{ name, guid?, source, ...display }` shape per
 // profile. Main-process is responsible for:
@@ -6324,9 +6322,11 @@ export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 //   * calling `/api/slicer/profiles/machine/for-model/{modelId}` (system,
 //     name-keyed) or `/for-machines` (server-side applicability filter)
 //   * calling `/api/slicer/profiles/custom` (Guid-keyed, filtered client-side)
-//   * calling `PUT /api/printers/{id}/calibration-setup` with the resolved
-//     Guids the operator picked, gated by `If-Match: <rowVersion>` and
-//     returning a distinct 'calibrationSetupConflict' error on 412.
+//
+// The setup PUT (`calibration:setupPrinter` → `PUT /api/printers/{id}/
+// calibration-setup`) was removed on 2026-08-23: it belonged to the
+// printer-calibration subsystem, which is not what the filament workflow
+// needs.
 //
 // The renderer never sees SHA-256 as a profile identifier: the wire migration
 // documented at §C.2 of `printfarmer-api-contract.md` says system profiles are
@@ -6356,7 +6356,7 @@ export const CalibrationSlicerProfileRef = z
   .object({
     /** Canonical `Name` string. Identity for system profiles on the wire. */
     name: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
-    /** Resolved Guid required by PUT calibration-setup, or null. */
+    /** Resolved Guid used to reference a profile on the wire, or null. */
     guid: z.string().uuid().nullable(),
     /** `'system'` (worker DTO or extended row) or `'custom'` (user-created). */
     source: z.enum(['system', 'custom']),
@@ -6571,66 +6571,8 @@ export type CalibrationListCustomProfilesResponse = z.infer<
   typeof CalibrationListCustomProfilesResponse
 >;
 
-// --- calibration:setupPrinter ---
-
-export const CalibrationSetupPrinterRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    printerId: z.string().uuid(),
-    /**
-     * All three profile Guids must be present. The server accepts null for
-     * any of them (it clears the binding), but the desktop UX requires the
-     * operator to pick all three; a partial submit means the wizard is
-     * incomplete and the renderer must refuse it before this channel is
-     * invoked.
-     */
-    machineProfileId: z.string().uuid(),
-    processProfileId: z.string().uuid(),
-    filamentProfileId: z.string().uuid(),
-    /**
-     * Opaque row-version from a prior `calibration-context` or setup response.
-     * `null` on the very first call (the printer has never had its calibration
-     * bindings set); the server accepts an unconditional PUT in that state.
-     */
-    rowVersion: z.string().max(2048).nullable(),
-    /**
-     * Client-generated idempotency key. Reusing the same key with a different
-     * body yields the same 409 semantics as the rest of the calibration API.
-     */
-    operationId: z.string().uuid(),
-  })
-  .strict();
-export type CalibrationSetupPrinterRequest = z.infer<
-  typeof CalibrationSetupPrinterRequest
->;
-
-export const CalibrationSetupPrinterResponse = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('ok'),
-      printerId: z.string().uuid(),
-      /**
-       * `true` when the server marked the printer eligible immediately after
-       * the PUT. `false` when it still refuses (typically because other
-       * calibration inputs the setup PUT does not touch — toolhead metrology,
-       * safety sign-off — are still outstanding); the renderer follows up
-       * with `calibration-context` to see the residual rejection reasons.
-       * `null` when the server response omitted the field.
-       */
-      eligible: z.boolean().nullable(),
-      machineProfileId: z.string().uuid().nullable(),
-      processProfileId: z.string().uuid().nullable(),
-      filamentProfileId: z.string().uuid().nullable(),
-      /** Server-reported new row version to send on the next mutation. */
-      rowVersion: z.string().max(2048).nullable(),
-      updatedAtUtc: z.string().datetime().nullable(),
-    })
-    .strict(),
-  z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
-]);
-export type CalibrationSetupPrinterResponse = z.infer<
-  typeof CalibrationSetupPrinterResponse
->;
+// (calibration:setupPrinter removed 2026-08-23 — printer-calibration setup PUT
+// was not part of the filament calibration workflow.)
 
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
@@ -6995,10 +6937,6 @@ export const ipcSchemas = {
     request: CalibrationListCustomProfilesRequest,
     response: CalibrationListCustomProfilesResponse,
   },
-  [IpcChannel.CalibrationSetupPrinter]: {
-    request: CalibrationSetupPrinterRequest,
-    response: CalibrationSetupPrinterResponse,
-  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -7194,7 +7132,7 @@ export interface PrintFarmerApi {
   restoreOrcaProfile(
     request: CalibrationRestoreOrcaProfileRequest,
   ): Promise<CalibrationRestoreOrcaProfileResponse>;
-  // --- Path C: Slicer profile picker + calibration-setup -------------------
+  // --- Machine → process → filament profile cascade -----------------------
   listCalibrationExtendedProfiles(
     request: CalibrationListExtendedProfilesRequest,
   ): Promise<CalibrationListExtendedProfilesResponse>;
@@ -7210,7 +7148,4 @@ export interface PrintFarmerApi {
   listCalibrationCustomProfiles(
     request: CalibrationListCustomProfilesRequest,
   ): Promise<CalibrationListCustomProfilesResponse>;
-  setupCalibrationPrinter(
-    request: CalibrationSetupPrinterRequest,
-  ): Promise<CalibrationSetupPrinterResponse>;
 }

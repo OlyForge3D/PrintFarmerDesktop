@@ -409,10 +409,6 @@ function profileSelectionApi(): CalibrationApi {
     //     dropdown has a working option regardless of whether the renderer
     //     falls back to `/extended` when the printer carries no
     //     `printerModelId`.
-    //   - Wires `setupCalibrationPrinter` to succeed with `eligible: false`
-    //     so the flow keeps working without a follow-up context refresh
-    //     (which the fixture rejects — see comment on
-    //     `getCalibrationPrinterContext`).
     listCalibrationExtendedProfiles: vi.fn().mockResolvedValue({
       status: 'ok' as const,
       machineProfiles: [
@@ -471,16 +467,6 @@ function profileSelectionApi(): CalibrationApi {
         ),
       ],
       fetchedAt: now,
-    }),
-    setupCalibrationPrinter: vi.fn().mockResolvedValue({
-      status: 'ok' as const,
-      printerId: 'printer-a',
-      eligible: false,
-      machineProfileId: SYSTEM_MACHINE_GUID,
-      processProfileId: SYSTEM_PROCESS_GUID,
-      filamentProfileId: SYSTEM_FILAMENT_GUID,
-      rowVersion: 'v1',
-      updatedAtUtc: now,
     }),
   } satisfies CalibrationApi;
 }
@@ -766,132 +752,13 @@ describe('CalibrationWorkspace profile-selection flow (owner directive 2026-08-2
     }
   });
 
-  it('choosing all three profiles enables the action that persists the calibration setup', async () => {
-    // THE LOAD-BEARING END-STATE ASSERTION. Vasquez called this out
-    // as the fourth-green-but-broken PR trap.
-    //
-    // The confirmed architecture (api-contract report, Path C):
-    // after picking machine + process + filament, the desktop calls
-    //   PUT /api/printers/{id}/calibration-setup
-    // with a `CalibrationSetupRequestDto` carrying three Guids and an
-    // `If-Match: <opaque row version>` header. That is what fixes the
-    // NULL columns at the source. Then the existing calibration-projects
-    // saga (projects → attempts → generate-job) runs unchanged.
-    //
-    // If `src/main/calibrationWire.ts:1113-1117` hardcodes safety flags
-    // to `false` and `permissions` to `null` (:1124), then
-    // `bindingDiagnostics` (`eligibility.ts:43`, live via `reducer.ts:
-    // 115,726`) refuses the binding and the reducer never allows the
-    // operator to proceed — even if all three profiles are chosen
-    // correctly. Fact Checker independently confirmed this on
-    // 2026-08-22.
-    //
-    // The operator-observable outcome: the "Save calibration setup" /
-    // "Create calibration project" / "Start calibration" / "Generate
-    // calibration" action is ENABLED after all three profiles are
-    // chosen. If it stays disabled, the wire hardcoding trap (or an
-    // equivalent gating defect) is on the live path.
-    mountWorkspace();
-    await openWizardAndPickPrinter();
-
-    const machineSelector = screen.queryByRole('combobox', {
-      name: /machine profile/i,
-    });
-    if (machineSelector === null) {
-      expect.fail(
-        'Machine-profile selector missing; the end-state assertion is ' +
-          'vacuous. Owner directive requires machine selection as step 1.',
-      );
-    }
-    const machineOptions = Array.from(
-      machineSelector.querySelectorAll('option'),
-    ).filter((option) => option.value.length > 0);
-    if (machineOptions.length === 0) {
-      expect.fail('Machine-profile selector has no selectable options.');
-    }
-    await pickMachineAndAwaitProcess(machineSelector, machineOptions[0]!.value);
-
-    const processSelector = screen.queryByRole('combobox', {
-      name: /process profile/i,
-    });
-    if (processSelector === null) {
-      expect.fail(
-        'Process-profile selector missing after machine chosen; ' +
-          'owner directive requires process selection as step 2.',
-      );
-    }
-    const processOptions = Array.from(
-      processSelector.querySelectorAll('option'),
-    ).filter((option) => option.value.length > 0);
-    if (processOptions.length === 0) {
-      expect.fail(
-        'Process-profile selector has no options applicable to the chosen machine.',
-      );
-    }
-    fireEvent.change(processSelector, {
-      target: { value: processOptions[0]!.value },
-    });
-
-    const filamentSelector = screen.queryByRole('combobox', {
-      name: /filament profile/i,
-    });
-    if (filamentSelector === null) {
-      expect.fail(
-        'Filament-profile selector missing after process chosen; ' +
-          'owner directive requires filament selection as step 3.',
-      );
-    }
-    const filamentOptions = Array.from(
-      filamentSelector.querySelectorAll('option'),
-    ).filter((option) => option.value.length > 0);
-    if (filamentOptions.length === 0) {
-      expect.fail(
-        'Filament-profile selector has no options applicable to the chosen machine.',
-      );
-    }
-    fireEvent.change(filamentSelector, {
-      target: { value: filamentOptions[0]!.value },
-    });
-
-    // The proceed action. The name pattern accepts any of the plausible
-    // labels — "Save calibration setup", "Create calibration project",
-    // "Start calibration", "Generate calibration G-code" — so this test
-    // does not pin the exact wording. It DOES pin the enabled state.
-    //
-    // The legacy "Create calibration project" button and the new "Save
-    // calibration setup" button can BOTH be rendered simultaneously (the
-    // former belongs to the surrounding wizard, the latter to the profile-
-    // selection cascade); this is intentional. The test is satisfied when
-    // at least ONE proceed action is enabled, so it queries all matches
-    // and checks any of them is a live lever the operator can pull.
-    const proceedCandidates = screen.queryAllByRole('button', {
-      name: /save calibration|create calibration|start calibration|generate calibration|queue calibration/i,
-    });
-    expect(
-      proceedCandidates.length,
-      'After choosing machine + process + filament profiles, the operator ' +
-        'must see an enabled action that persists the setup (PUT ' +
-        '/api/printers/{id}/calibration-setup) and proceeds. The action ' +
-        'being absent OR disabled means either the profile-selection ' +
-        'flow is not yet implemented, OR the wire hardcoding trap ' +
-        '(calibrationWire.ts:1113-1117 → bindingDiagnostics via ' +
-        'reducer.ts:115,726) is on a live path — the fourth green-but-' +
-        'broken PR risk.',
-    ).toBeGreaterThan(0);
-    const anyEnabled = proceedCandidates.some(
-      (candidate) => !(candidate as HTMLButtonElement).disabled,
-    );
-    expect(
-      anyEnabled,
-      'Proceed action is present but disabled. Most likely cause: ' +
-        '`safety.emergencyStopAvailable / thermalProtectionConfirmed / ' +
-        'ventilationAssessed` are all `false` because ' +
-        'calibrationWire.ts:1113-1117 hardcodes them, and ' +
-        'bindingDiagnostics refuses the binding. Fixing the profile ' +
-        'UI without fixing this trap gets us green-in-CI but dead-' +
-        'for-the-user.',
-    ).toBe(true);
-  });
+  // Retired 2026-08-23 after the owner reframed the feature from "printer
+  // calibration" to "filament calibration" (see
+  // `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`). The
+  // "Save calibration setup" / setup-persistence button was removed with the
+  // `PUT /api/printers/{id}/calibration-setup` pipeline; the profile-selection
+  // cascade is now purely presentational. The remaining cascade-rendering
+  // tests earlier in this file are the active guard.
 
   // Historic scaffolding: a control asserting the machine-profile selector
   // did NOT exist yet. Deleted per the owner directive once the profile-
@@ -1179,53 +1046,5 @@ describe('eligibility ordering: the machine selector is offered BEFORE server el
         'profile-selection to be offered UNGATED; eligibility is ' +
         're-checked AFTER PUT /calibration-setup succeeds, not before.',
     ).toBe(0);
-  });
-});
-
-/**
- * If-Match / 412 conflict on `PUT /api/printers/{id}/calibration-setup`.
- *
- * From the api-contract report §F.1 / §A.1 / §E: the calibration-setup
- * PUT accepts (and expects) an `If-Match: <opaque row version>` header.
- * If the server's row version has advanced since the desktop read it,
- * the PUT returns 412 Precondition Failed. The desktop must NOT
- * silently retry or swallow this — the operator needs to see a real
- * conflict and decide how to resolve.
- *
- * Bishop owns the implementation. This test asserts that a 412
- * response is surfaced as an OPERATOR-VISIBLE conflict, not a silent
- * failure. It fails today for the same reason the whole flow fails:
- * the profile-selection UI does not exist, so there is no PUT to
- * conflict. Once the flow lands, this test becomes the guard against
- * a swallowed-conflict regression.
- *
- * TODO(hicks/bishop): once the PUT channel is declared in
- * `src/shared/ipc.ts` and its mock resolves with 412-shaped errors,
- * wire the fixture to return that error and assert on the
- * operator-visible conflict presentation.
- */
-describe('If-Match / 412 conflict on calibration-setup persistence', () => {
-  it('a 412 Precondition Failed on PUT /api/printers/{id}/calibration-setup is surfaced to the operator as a conflict, not silently retried', async () => {
-    // Placeholder for the once-Bishop-lands-the-PUT test. Today it
-    // fails at the earliest reachable observable outcome: the flow
-    // never gets to the PUT, so the conflict cannot be exercised.
-    // When the flow lands, tighten the assertion to fire the mocked
-    // 412 response and check for a rendered alert / dialog naming
-    // "conflict" or "someone else changed".
-    mountWorkspace();
-    await openWizardAndPickPrinter();
-
-    const machineSelector = screen.queryByRole('combobox', {
-      name: /machine profile/i,
-    });
-    expect(
-      machineSelector,
-      'The 412-conflict test cannot run until the profile-selection ' +
-        'flow reaches the PUT /api/printers/{id}/calibration-setup ' +
-        'step. Machine selector missing → flow is not implemented yet ' +
-        '(see the acceptance tests above). Once implemented, tighten ' +
-        'this assertion to fire a 412-shaped mock response and check ' +
-        'for an operator-visible conflict presentation.',
-    ).not.toBeNull();
   });
 });

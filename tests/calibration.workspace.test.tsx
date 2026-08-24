@@ -715,13 +715,6 @@ function makeApi(savedRecord = record()) {
         profiles: [],
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
-    setupCalibrationPrinter: vi
-      .fn<CalibrationApi['setupCalibrationPrinter']>()
-      .mockRejectedValue(
-        new Error(
-          'setupCalibrationPrinter: legacy workspace suite does not exercise setup.',
-        ),
-      ),
   } satisfies CalibrationApi;
 }
 
@@ -1208,15 +1201,6 @@ describe('CalibrationWorkspace', () => {
     for (const [label, value] of Object.entries(numbers)) {
       fireEvent.change(screen.getByLabelText(label), { target: { value } });
     }
-    fireEvent.click(
-      screen.getByLabelText(/located and can operate the emergency stop/i),
-    );
-    fireEvent.click(
-      screen.getByLabelText(/reviewed the confirmed thermal protection/i),
-    );
-    fireEvent.click(
-      screen.getByLabelText(/reviewed the ventilation assessment/i),
-    );
     fireEvent.click(
       screen.getByLabelText(/machine, build plate, and motion area are clear/i),
     );

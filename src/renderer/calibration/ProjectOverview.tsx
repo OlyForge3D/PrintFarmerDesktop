@@ -212,21 +212,6 @@ export function ProjectOverview(): React.JSX.Element {
       rebaseContext,
       state.binding.selectedToolId,
       state.binding.filament,
-      // Carry the operator's prior interlock confirmations forward. They are
-      // physical attestations about the machine's installation (E-stop wired,
-      // thermal runaway protection configured, ventilation adequate) that do
-      // not change from one snapshot to the next unless the operator
-      // physically modified the printer, so recording them at project
-      // creation and preserving them across rebase is the truthful reading.
-      // Per-print acknowledgement (`machineClear`/bed clear) is enforced
-      // separately by `calibrationActionGate` before every dispatch.
-      {
-        emergencyStopAvailable:
-          state.binding.snapshot.safety.emergencyStopAvailable,
-        thermalProtectionConfirmed:
-          state.binding.snapshot.safety.thermalProtectionConfirmed,
-        ventilationAssessed: state.binding.snapshot.safety.ventilationAssessed,
-      },
     );
     if (binding === null) {
       store.reportError(

@@ -155,8 +155,6 @@ import {
   type CalibrationListFilamentProfilesForMachinesResponse,
   type CalibrationListCustomProfilesRequest,
   type CalibrationListCustomProfilesResponse,
-  type CalibrationSetupPrinterRequest,
-  type CalibrationSetupPrinterResponse,
 } from '@shared/ipc';
 
 /**
@@ -727,12 +725,6 @@ const api: PrintFarmerApi = {
         IpcChannel.CalibrationListCustomProfiles,
         request,
       ),
-    ),
-  setupCalibrationPrinter: async (
-    request: CalibrationSetupPrinterRequest,
-  ): Promise<CalibrationSetupPrinterResponse> =>
-    ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationSetupPrinter, request),
     ),
 };
 

@@ -6118,96 +6118,10 @@ export function registerIpcHandlers(
     },
   );
 
-  // PUT /api/printers/{printerId}/calibration-setup.
-  //
-  // The core of Path C. Persists the three Guids on the printer row so the
-  // server's `calibration-context` endpoint stops emitting the
-  // `*_profile_missing` rejection codes. `If-Match: <rowVersion>` gives
-  // optimistic concurrency; a 412 is surfaced as `calibrationSetupConflict`
-  // and never retried silently. The renderer re-opens the wizard.
-  registerCalibrationHandler(
-    IpcChannel.CalibrationSetupPrinter,
-    async (_event, rawRequest: unknown) => {
-      const request =
-        ipcSchemas[IpcChannel.CalibrationSetupPrinter].request.parse(
-          rawRequest,
-        );
-      const selectedId = await requireSelectedCalibrationProfile(
-        request.profileId,
-      );
-      const correlationId = calibrationCorrelation.beginFlow();
-      const correlationOrigin = 'flowStart' as const;
-      const startedAt = Date.now();
-      try {
-        const signal = AbortSignal.timeout(10_000);
-        const ctx = await profiles.getAuthenticatedContext(selectedId);
-        const result = await calibrationHttp.putCalibrationSetup(
-          selectedId,
-          ctx.profile.baseUrl,
-          request.printerId,
-          {
-            machineProfileId: request.machineProfileId,
-            processProfileId: request.processProfileId,
-            filamentProfileId: request.filamentProfileId,
-          },
-          request.operationId,
-          request.rowVersion,
-          signal,
-        );
-        emitCalibrationLog({
-          level: 'info',
-          component: 'calibration.http',
-          event: 'calibration.setup.applied',
-          correlationId,
-          correlationOrigin,
-          operationId: request.operationId,
-          profileId: selectedId,
-          outcome: 'ok',
-          durationMs: Date.now() - startedAt,
-        });
-        return ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse({
-          status: 'ok',
-          printerId: result.printerId,
-          eligible: result.eligible,
-          machineProfileId: result.machineProfileId,
-          processProfileId: result.processProfileId,
-          filamentProfileId: result.filamentProfileId,
-          rowVersion: result.rowVersion,
-          updatedAtUtc: result.updatedAtUtc,
-        });
-      } catch (error) {
-        emitCalibrationLog({
-          level: 'error',
-          component: 'calibration.http',
-          event: 'calibration.setup.applied',
-          correlationId,
-          correlationOrigin,
-          operationId: request.operationId,
-          profileId: selectedId,
-          outcome: 'failed',
-          durationMs: Date.now() - startedAt,
-          ...describeCalibrationFailure(error),
-        });
-        const apiError =
-          error instanceof CalibrationHttpError
-            ? error.toApiError(correlationId)
-            : {
-                code: 'serverError' as const,
-                message:
-                  error instanceof Error
-                    ? error.message
-                    : 'Calibration setup failed.',
-                retryable: false,
-                retryAfterSeconds: null,
-                reference: correlationId,
-              };
-        return ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse({
-          status: 'error',
-          error: apiError,
-        });
-      }
-    },
-  );
+  // (calibration:setupPrinter handler removed 2026-08-23. The printer-
+  // calibration setup PUT belonged to the printer-eligibility subsystem;
+  // the filament-calibration workflow this desktop targets does not persist
+  // profile Guids server-side.)
   // --- End Printer Calibration transport handlers --------------------------
 
   return async () => {

@@ -20,24 +20,27 @@ import {
 } from '../src/shared/ipc.js';
 
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
-const PRINTER_ID = '22222222-2222-4222-8222-222222222222';
 const PRINTER_MODEL_ID = '33333333-3333-4333-8333-333333333333';
 const MACHINE_GUID = '44444444-4444-4444-8444-444444444444';
 const PROCESS_GUID = '55555555-5555-4555-8555-555555555555';
 const FILAMENT_GUID = '66666666-6666-4666-8666-666666666666';
 const CUSTOM_GUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const OPERATION_ID = '77777777-7777-4777-8777-777777777777';
 
 describe('Path C — IPC contract', () => {
-  it('IPC contract version was bumped to 3 for the Path C channels', () => {
+  it('IPC contract version was bumped to 4 after CalibrationSetupPrinter was retired', () => {
     // A version bump on a wire boundary that has receivers on both sides is
     // NEVER free — every version-pinned test in the repo also has to be
     // touched. If this assertion drifts, run `grep -r IPC_CONTRACT_VERSION`
     // and update every place explicitly, do not paper over it here.
-    expect(IPC_CONTRACT_VERSION).toBe(3);
+    //
+    // v3 → v4 rationale: `calibration:setupPrinter` was a v3 channel; removing
+    // it is a breaking wire change (a renderer built against v3 that calls
+    // `setupCalibrationPrinter` fails against a v4 main). Removal, unlike
+    // additive changes, forces the contract-version bump.
+    expect(IPC_CONTRACT_VERSION).toBe(4);
   });
 
-  it('registers all six Path C channels', () => {
+  it('registers all five surviving cascade channels', () => {
     expect(
       ipcSchemas[IpcChannel.CalibrationListExtendedProfiles],
     ).toBeDefined();
@@ -51,7 +54,6 @@ describe('Path C — IPC contract', () => {
       ipcSchemas[IpcChannel.CalibrationListFilamentProfilesForMachines],
     ).toBeDefined();
     expect(ipcSchemas[IpcChannel.CalibrationListCustomProfiles]).toBeDefined();
-    expect(ipcSchemas[IpcChannel.CalibrationSetupPrinter]).toBeDefined();
   });
 });
 
@@ -189,88 +191,6 @@ describe('CalibrationListCustomProfiles schema', () => {
     });
     if (parsed.status === 'ok') {
       expect(parsed.profiles[0]?.compatiblePrinters).toEqual(['Voron 2.4 350']);
-    }
-  });
-});
-
-describe('CalibrationSetupPrinter schema', () => {
-  it('requires all three profile Guids on the request', () => {
-    const req = ipcSchemas[IpcChannel.CalibrationSetupPrinter].request;
-    // Control: complete request passes.
-    expect(() =>
-      req.parse({
-        profileId: PROFILE_ID,
-        printerId: PRINTER_ID,
-        machineProfileId: MACHINE_GUID,
-        processProfileId: PROCESS_GUID,
-        filamentProfileId: FILAMENT_GUID,
-        rowVersion: 'rv-1',
-        operationId: OPERATION_ID,
-      }),
-    ).not.toThrow();
-    // Missing machineProfileId is rejected — the desktop UX requires the
-    // operator to have picked all three before this channel is invoked.
-    expect(() =>
-      req.parse({
-        profileId: PROFILE_ID,
-        printerId: PRINTER_ID,
-        processProfileId: PROCESS_GUID,
-        filamentProfileId: FILAMENT_GUID,
-        rowVersion: 'rv-1',
-        operationId: OPERATION_ID,
-      }),
-    ).toThrow();
-  });
-
-  it('allows rowVersion to be null (first-ever setup)', () => {
-    const req = ipcSchemas[IpcChannel.CalibrationSetupPrinter].request;
-    expect(() =>
-      req.parse({
-        profileId: PROFILE_ID,
-        printerId: PRINTER_ID,
-        machineProfileId: MACHINE_GUID,
-        processProfileId: PROCESS_GUID,
-        filamentProfileId: FILAMENT_GUID,
-        rowVersion: null,
-        operationId: OPERATION_ID,
-      }),
-    ).not.toThrow();
-  });
-
-  it('parses an ok response with server-supplied rowVersion', () => {
-    const schema = ipcSchemas[IpcChannel.CalibrationSetupPrinter].response;
-    const parsed = schema.parse({
-      status: 'ok',
-      printerId: PRINTER_ID,
-      eligible: true,
-      machineProfileId: MACHINE_GUID,
-      processProfileId: PROCESS_GUID,
-      filamentProfileId: FILAMENT_GUID,
-      rowVersion: 'rv-2',
-      updatedAtUtc: '2026-08-22T22:00:00.000Z',
-    });
-    if (parsed.status === 'ok') {
-      expect(parsed.rowVersion).toBe('rv-2');
-      expect(parsed.eligible).toBe(true);
-    }
-  });
-
-  it('parses an error response with calibrationSetupConflict', () => {
-    const schema = ipcSchemas[IpcChannel.CalibrationSetupPrinter].response;
-    const parsed = schema.parse({
-      status: 'error',
-      error: {
-        code: 'calibrationSetupConflict',
-        message:
-          'Printer calibration binding changed since the wizard was opened.',
-        retryable: false,
-        retryAfterSeconds: null,
-        reference: null,
-      },
-    });
-    expect(parsed.status).toBe('error');
-    if (parsed.status === 'error') {
-      expect(parsed.error.code).toBe('calibrationSetupConflict');
     }
   });
 });

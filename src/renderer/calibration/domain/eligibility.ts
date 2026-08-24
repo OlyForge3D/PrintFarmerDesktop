@@ -4,8 +4,6 @@ import type {
   CalibrationDiagnostic,
   CalibrationState,
   GuardedCalibrationAction,
-  PrinterEligibilityContext,
-  PrinterEligibilityDecision,
   RuntimeCalibrationContext,
 } from './types';
 
@@ -20,24 +18,6 @@ function error(
     message,
     ...(field === undefined ? {} : { field }),
   };
-}
-
-function hasCompleteSafetyContext(binding: CalibrationBinding): boolean {
-  const safety = binding.snapshot.safety;
-  const dimensions = [
-    safety.buildVolumeMm.x,
-    safety.buildVolumeMm.y,
-    safety.buildVolumeMm.z,
-    safety.maximumNozzleTemperatureC,
-    safety.maximumBedTemperatureC,
-    safety.maximumVolumetricRateMm3S,
-  ];
-  return (
-    dimensions.every((value) => Number.isFinite(value) && value > 0) &&
-    safety.emergencyStopAvailable &&
-    safety.thermalProtectionConfirmed &&
-    safety.ventilationAssessed
-  );
 }
 
 export function bindingDiagnostics(
@@ -150,58 +130,7 @@ export function bindingDiagnostics(
       ),
     );
   }
-  if (!hasCompleteSafetyContext(binding)) {
-    reasons.push(
-      error(
-        'INCOMPLETE_SAFETY_CONTEXT',
-        'Positive hardware limits and explicit safety confirmations are required.',
-        'safety',
-      ),
-    );
-  }
   return reasons;
-}
-
-export function evaluatePrinterEligibility(
-  context: PrinterEligibilityContext,
-): PrinterEligibilityDecision {
-  const reasons: CalibrationDiagnostic[] = [];
-  if (context.eligibility === null) {
-    reasons.push(
-      error(
-        'CANONICAL_CALIBRATION_ELIGIBILITY_REQUIRED',
-        'PrintFarmer must supply complete canonical Klipper, OrcaSlicer, upstream eligibility.',
-        'eligibility',
-      ),
-    );
-  }
-  if (context.binding === null) {
-    reasons.push(
-      error(
-        'MISSING_PRINTER_BINDING',
-        'Bind a printer configuration and immutable snapshot before calibration.',
-        'binding',
-      ),
-    );
-  } else {
-    reasons.push(...bindingDiagnostics(context.binding));
-  }
-  const permissions = context.permissions;
-  if (
-    !permissions.readPrinter ||
-    !permissions.writeCalibration ||
-    !permissions.generateCalibration ||
-    !permissions.startPrint
-  ) {
-    reasons.push(
-      error(
-        'INSUFFICIENT_CALIBRATION_PERMISSIONS',
-        'Read, calibration write, generation, and print-start permissions are required.',
-        'permissions',
-      ),
-    );
-  }
-  return { eligible: reasons.length === 0, reasons };
 }
 
 function physicalMatchBlockers(

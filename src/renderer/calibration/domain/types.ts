@@ -1,5 +1,3 @@
-import type { CalibrationPrinterEligibility } from '@shared/ipc';
-
 export const CALIBRATION_STAGE_IDS = [
   'temperature',
   'flowPass1',
@@ -457,20 +455,4 @@ export interface OrcaProfilePatch {
   readonly snapshotId: string;
   readonly entries: readonly OrcaProfilePatchEntry[];
   readonly diagnostics: readonly CalibrationDiagnostic[];
-}
-
-export interface PrinterEligibilityContext {
-  readonly eligibility: CalibrationPrinterEligibility | null;
-  readonly binding: CalibrationBinding | null;
-  readonly permissions: {
-    readonly readPrinter: boolean;
-    readonly writeCalibration: boolean;
-    readonly generateCalibration: boolean;
-    readonly startPrint: boolean;
-  };
-}
-
-export interface PrinterEligibilityDecision {
-  readonly eligible: boolean;
-  readonly reasons: readonly CalibrationDiagnostic[];
 }

@@ -33,20 +33,17 @@ export type CalibrationApi = Pick<
   | 'validateCalibrationAssetFile'
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   | 'openCalibrationManifestUrl'
-  // --- Path C: cascading profile-selection + calibration-setup PUT --------
+  // --- Machine → process → filament profile cascade -----------------------
   //
   // Consumed by the profile-selection cascade in `NewCalibrationProject`.
-  // Bishop landed the six channels as IPC contract v3 (commit 54e0d022);
-  // the renderer needs them to build the machine → process → filament flow
-  // that fixes the NULL `CalibrationMachineProfileId` /
-  // `CalibrationProcessProfileId` / `CalibrationFilamentProfileId` columns
-  // on the printer row (Path C in the API contract).
+  // Step 1 of the filament calibration workflow: pick machine profile, then
+  // a process profile applicable to that machine, then a base filament
+  // profile.
   | 'listCalibrationExtendedProfiles'
   | 'listCalibrationMachineProfilesForModel'
   | 'listCalibrationProcessProfilesForMachines'
   | 'listCalibrationFilamentProfilesForMachines'
   | 'listCalibrationCustomProfiles'
-  | 'setupCalibrationPrinter'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

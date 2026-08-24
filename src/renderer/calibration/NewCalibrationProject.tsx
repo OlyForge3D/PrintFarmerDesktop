@@ -35,9 +35,6 @@ interface FormState {
   readonly shrinkageCompensationYPercent: string;
   readonly shrinkageCompensationZPercent: string;
   readonly physicalMatch: boolean;
-  readonly emergencyStop: boolean;
-  readonly thermalProtection: boolean;
-  readonly ventilation: boolean;
   readonly machineClear: boolean;
 }
 
@@ -61,9 +58,6 @@ const emptyForm: FormState = {
   shrinkageCompensationYPercent: '',
   shrinkageCompensationZPercent: '',
   physicalMatch: false,
-  emergencyStop: false,
-  thermalProtection: false,
-  ventilation: false,
   machineClear: false,
 };
 
@@ -296,28 +290,20 @@ export function NewCalibrationProject(): React.JSX.Element {
       blockers.push(
         'Confirm the installed physical toolhead and nozzle match the selection.',
       );
-    if (
-      !form.emergencyStop ||
-      !form.thermalProtection ||
-      !form.ventilation ||
-      !form.machineClear
-    )
-      blockers.push('Complete every operator safety acknowledgment.');
+    if (!form.machineClear)
+      blockers.push('Confirm the machine is physically clear before starting.');
     return [...new Set(blockers)];
   }, [
     candidateBlockers,
     context,
     contextBlockers,
     form.baseProfileId,
-    form.emergencyStop,
     form.machineClear,
     form.mode,
     form.physicalMatch,
     printerChosen,
     profileBlockers,
-    form.thermalProtection,
     form.toolId,
-    form.ventilation,
     store.availability?.available,
     store.offline,
     store.profileId,
@@ -362,12 +348,6 @@ export function NewCalibrationProject(): React.JSX.Element {
     }
     if (!form.physicalMatch)
       next.physicalMatch = 'Confirm the exact physical tool match.';
-    if (!form.emergencyStop)
-      next.emergencyStop = 'Acknowledge the emergency stop location.';
-    if (!form.thermalProtection)
-      next.thermalProtection = 'Acknowledge the confirmed thermal protection.';
-    if (!form.ventilation)
-      next.ventilation = 'Acknowledge the ventilation assessment.';
     if (!form.machineClear)
       next.machineClear = 'Confirm the machine and bed are clear.';
     if (candidateBlockers.length > 0)
@@ -448,18 +428,6 @@ export function NewCalibrationProject(): React.JSX.Element {
         product: form.product.trim(),
         sku: form.sku.trim(),
         ...(form.spoolId.trim() ? { spoolId: form.spoolId.trim() } : {}),
-      },
-      // The three physical-interlock attestations the operator has just made
-      // in the wizard. Guarded above by `printerReady` and the safety-check
-      // portion of `blockers` (`form.emergencyStop && form.thermalProtection &&
-      // form.ventilation && form.machineClear`), so all three are true here.
-      // `machineClear` is a per-print acknowledgement enforced separately by
-      // `calibrationActionGate` before dispatch; it is not a binding-time
-      // property of the snapshot.
-      {
-        emergencyStopAvailable: form.emergencyStop,
-        thermalProtectionConfirmed: form.thermalProtection,
-        ventilationAssessed: form.ventilation,
       },
     );
     if (binding === null) {
@@ -854,18 +822,12 @@ export function NewCalibrationProject(): React.JSX.Element {
           </fieldset>
 
           {/*
-            Path C — cascading profile selection. Runs against the printer the
-            operator just highlighted, BEFORE server eligibility is checked.
-            Real PrintFarmer printers ship with the calibration profile columns
-            NULL on the row (issue #1851's fix is emulator-only), so
-            `getCalibrationPrinterContext` refuses them with a wall of missing-
-            input codes until this PUT populates the columns. The whole point
-            of the flow is that it is offered UNGATED — the refused printer is
-            exactly the one that needs configuring.
-
-            See `.squad/decisions/inbox/bishop-calibration-path-c-implementation.md`
-            for the API contract this consumes, and Vasquez's directive at
-            `.squad/decisions/inbox/vasquez-calibration-profile-selection-directive.md`.
+            Machine → process → filament profile cascade — step 1 of the
+            filament calibration workflow (owner directive 2026-08-23,
+            `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`).
+            The operator picks machine, process and a base filament profile
+            here; the picks are used client-side by the workflow rather than
+            persisted server-side.
           */}
           {highlightedPrinterId !== null && store.profileId !== null ? (
             <ProfileSelectionSection
@@ -873,14 +835,6 @@ export function NewCalibrationProject(): React.JSX.Element {
               printerId={highlightedPrinterId}
               printerModelId={highlightedCandidate?.printerModelId ?? null}
               disabled={!canLoad || submitting || store.disabled}
-              environment={store.environment}
-              onSetupComplete={(printerId) => {
-                // After the setup PUT succeeds the printer's calibration
-                // columns are populated; the legacy per-printer context fetch
-                // now has real inputs to resolve against, so it is safe (and
-                // useful) to trigger it here to unlock the downstream wizard.
-                void store.selectPrinter(printerId);
-              }}
             />
           ) : null}
 
@@ -964,14 +918,6 @@ export function NewCalibrationProject(): React.JSX.Element {
                     <dd>
                       {context.safety
                         ? `${context.safety.maximumNozzleTemperatureC} C nozzle; ${context.safety.maximumBedTemperatureC} C bed; ${context.safety.maximumVolumetricRateMm3S} mm3/s`
-                        : 'not published by this server'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Safety confirmations</dt>
-                    <dd>
-                      {context.safety
-                        ? `Emergency stop ${context.safety.emergencyStopAvailable ? 'available' : 'not confirmed'}; thermal protection ${context.safety.thermalProtectionConfirmed ? 'confirmed' : 'not confirmed'}; ventilation ${context.safety.ventilationAssessed ? 'assessed' : 'not assessed'}`
                         : 'not published by this server'}
                     </dd>
                   </div>
@@ -1230,25 +1176,10 @@ export function NewCalibrationProject(): React.JSX.Element {
           <fieldset
             disabled={!printerReady || !canLoad || submitting || store.disabled}
           >
-            <legend>Operator safety acknowledgment</legend>
-            <p>
-              Use the current PrintFarmer safety context and physically inspect
-              the machine before proceeding.
-            </p>
+            <legend>Ready-to-print check</legend>
+            <p>Physically inspect the machine before creating the project.</p>
             {(
               [
-                [
-                  'emergencyStop',
-                  'I located and can operate the emergency stop.',
-                ],
-                [
-                  'thermalProtection',
-                  'I reviewed the confirmed thermal protection status.',
-                ],
-                [
-                  'ventilation',
-                  'I reviewed the ventilation assessment for this material.',
-                ],
                 [
                   'machineClear',
                   'The machine, build plate, and motion area are clear.',
@@ -1301,7 +1232,7 @@ export function NewCalibrationProject(): React.JSX.Element {
             </p>
             {readiness.length === 0 ? (
               <p className="cal-success">
-                Identity and safety selections are ready for validation.
+                Identity selections are ready for validation.
               </p>
             ) : (
               <ul className="cal-blocker-list" aria-live="polite">
