@@ -326,7 +326,6 @@ Bishop still owes the auth posture for the daily-validation stack so the env-gat
 
 📌 Team update (2026-08-22 round 3): api-contract researcher's findings landed. All TODOs closed. Two new describe blocks — custom-profile applicability filter (highest-value) and eligibility ordering — plus If-Match/412 placeholder. `REFUSED_ENVIRONMENT_CODES` fixture now cites `PrinterCalibrationContextService.cs` line numbers for every rejection code. Full CI gate green except intended 10 failures + 6 pre-existing OOS.
 
-
 ---
 
 ## 2026-08-24 -- filament calibration acceptance gate (implementation)
@@ -362,7 +361,7 @@ not open a PR; commit + push only.
 - 7 tests pass today (contract sanity + discrimination proofs).
 - 16 tests fail today with the exact message
   `Error: CalibrationHttpClient does not expose <verb>: blocked on
-  dev-bishop-filament-calibration-channels landing.`
+dev-bishop-filament-calibration-channels landing.`
 - Full CI gate: verify:target-profiles / check:script-reachability /
   check:inert-class-field-seams / typecheck / lint / format all PASS.
   Full test suite: 26 failed / 5389 passed / 7 skipped -- 16 mine
@@ -385,7 +384,7 @@ not open a PR; commit + push only.
   proved earlier (427/430 passing on a dead feature).
 - **`hasOwnProperty` for saga-id absence, not `!== null`.** Upstream's
   guard is `is not null` so a `null` value would pass their check; the
-  desktop discipline is that the key must be *absent from the wire*.
+  desktop discipline is that the key must be _absent from the wire_.
   Fake server records `hasOwnProperty` presence separately from value;
   discrimination proof shows a `null`-valued key trips the assertion.
 - **Empirical discrimination proofs run today** by driving the fake
@@ -394,7 +393,7 @@ not open a PR; commit + push only.
   discriminate, so when Bishop's client lands the tests will discriminate
   against his wire.
 - **Every positive assertion has a matched-predicate control** returning
-  the opposite result on the opposite data through the *same* predicate.
+  the opposite result on the opposite data through the _same_ predicate.
   This is my own discipline caught up: I did it for the printer-calib
   suite too but here the fake-server discrimination modes let me prove
   the predicates catch drift instead of just describing that they do.
