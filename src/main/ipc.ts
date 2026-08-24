@@ -6609,7 +6609,21 @@ export function registerIpcHandlers(
           IpcChannel.CalibrationUpdateFilamentProfileMeasurement
         ].response.parse({
           status: 'ok',
-          updated,
+          // Narrow the client's 10-field `CustomProfileDto` projection to the
+          // 4-field `updated` shape the IPC channel exposes to the renderer.
+          // The extra fields (`createdAt`, `updatedAt`, `description`,
+          // `rawJson`, `printerModelId`, `compatiblePrinters`) are real on
+          // the wire — see `CustomProfileDto` in `CloneProfilesDtos.cs` —
+          // but the renderer only needs enough to confirm the write landed
+          // on the correct clone. Widening the renderer surface should be a
+          // deliberate contract change, not a byproduct of the response
+          // schema following the DTO shape.
+          updated: {
+            id: updated.id,
+            name: updated.name,
+            profileType: updated.profileType,
+            isSystem: updated.isSystem,
+          },
         });
       } catch (error) {
         emitCalibrationLog({

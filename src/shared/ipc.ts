@@ -6639,7 +6639,7 @@ export const CalibrationSubmitCalibrationSliceResponse = z.discriminatedUnion(
         job: z
           .object({
             jobId: z.string().uuid(),
-            jobStatus: CalibrationSliceJobStatus,
+            status: CalibrationSliceJobStatus,
             queuedAt: z.string().datetime(),
             /**
              * Nullable because PR #1952's `SubmitSliceJobResponse.QueuePosition`
@@ -6705,12 +6705,28 @@ export const CalibrationSliceJobSnapshot = z
      */
     errorMessage: z.string().max(2048).nullable(),
     /**
-     * PR #1952 sets this when the worker had to re-arrange the slice plate.
-     * A calibration slice should never see it — a `true` value here is a
-     * signal the caller sent geometry when they should have relied on the
-     * worker's bundled model.
+     * Admin-only worker-side failure detail (`SliceJobStatusResponse.ErrorDetail`
+     * in `SliceJobDtos.cs` @ `a4f230aa...`). The C# DTO documents this as
+     * "populated only for farm admins. Never returned to non-admin callers,
+     * who only ever see the generic ErrorMessage". For the desktop's operator
+     * identity this is expected to always be null, but the field IS on the
+     * wire in every response, so it must appear in the strict schema or
+     * `.strict()` will reject every non-Failed status snapshot. Bounded at
+     * 4 KiB so a misconfigured admin-privileged response cannot smuggle
+     * unbounded worker diagnostics through the wire.
      */
-    layoutDegradation: z.boolean().nullable(),
+    errorDetail: z.string().max(4096).nullable(),
+    /**
+     * PR #1952 sets this when the worker had to re-arrange the slice plate.
+     * A calibration slice should never see it — a non-null value here is a
+     * signal the caller sent geometry when they should have relied on the
+     * worker's bundled model. The wire value is a `LayoutDegradationReason`
+     * enum name (`JsonStringEnumConverter` on the C# side, see
+     * `SlicerModels.cs`), not a boolean; the previous `z.boolean().nullable()`
+     * contradicted the DTO and would reject every non-null value the real
+     * server produces.
+     */
+    layoutDegradation: z.string().max(64).nullable(),
     /**
      * Machine-readable failure classifier. Only populated when the worker
      * declared a terminal `Failed` — the renderer surfaces the raw code so
@@ -6957,9 +6973,16 @@ export const CalibrationUpdateFilamentProfileMeasurementResponse =
       .object({
         status: z.literal('ok'),
         /**
-         * Echo of the fields the server accepted, matching upstream's
-         * `CloneSingleProfileResponseDto` shape (the PUT endpoint returns
-         * the updated profile row in the same projection).
+         * The 4-field projection the renderer needs to confirm the write
+         * landed. The wire actually returns `CustomProfileDto` (10 fields;
+         * see `CloneProfilesDtos.cs`), and the main-process handler narrows
+         * to this shape before parsing — so widening the renderer surface
+         * to include `rawJson`, timestamps, or the printer-model association
+         * is a deliberate contract change, not a byproduct of the DTO shape.
+         * An earlier version of this docblock claimed the PUT endpoint
+         * returned `CloneSingleProfileResponseDto`; that was false —
+         * `UpdateCustomProfileAsync` is typed `Task<CustomProfileDto>` in
+         * `IProfilesService.cs`.
          */
         updated: z
           .object({

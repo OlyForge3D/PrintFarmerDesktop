@@ -738,7 +738,6 @@ Single amendment on top of Part 2 (`6ce5f7b8`):
 - No `--no-verify`. Hooks armed.
 - No PR — Vasquez coordinates.
 
-
 ---
 
 # 46 · Filament calibration IPC channels — resumed session (2026-08-24)
@@ -770,6 +769,7 @@ Was fully absent when I resumed. Wired end-to-end:
 ## Contract with Hicks's acceptance branch matched
 
 Read `dev-hicks-filament-calibration-acceptance` @ `b72ea471` first, matched his shim probes:
+
 - Method name is `submitCalibrationSlice` (not `submitSliceJob`).
 - HTTP client uses 4-arg signatures with `idempotencyKey?: string | null` INSIDE the request. Only emits `Idempotency-Key` header when caller supplies one.
 - Saga keys structurally omitted from slice-submit body (object-literal absence), not set to `null` — matches Hicks's `hasOwnProperty` discrimination.
@@ -785,6 +785,7 @@ All `@typescript-eslint/no-unsafe-*` from untyped `JSON.parse()` at 6 sites (5 i
 ## History rewrite
 
 Six-commit history (four WIP-labelled) squashed into three self-describing commits via soft reset + targeted re-adds:
+
 - `a20943a3` feat(calibration): filament-profile calibration IPC surface (5 channels)
 - `ce1d8d72` test(calibration): filament calibration channel + authorization coverage
 - `e3927d87` chore: add closing-reference declaration (closes nothing)
@@ -812,3 +813,69 @@ All static checks pass. Full suite: 5439 passed / 4 failed / 7 skipped. The 4 fa
 ## Decision recorded at
 
 `.squad/decisions/inbox/bishop-filament-calibration-channels.md`
+
+---
+
+# 47 · Filament calibration integration failure — fixed on merged tree (2026-08-24)
+
+Amendment on top of Part 46 (`cf714388`).
+
+## Vasquez's problem
+
+My isolated gate was green. His merge check — my branch + Hicks's acceptance branch — was 16 failed / 7 passed. All 16 threw the same surface error: `RequestInit: Expected signal ("AbortSignal {}") to be an instance of AbortSignal.` Neither branch could have caught this alone.
+
+## Root cause chain — surface, deeper, deepest
+
+**Surface**: vitest's default env for this repo is jsdom. Hicks's acceptance file inherits the default. Under jsdom, `globalThis.AbortController` is jsdom's own class, but `globalThis.fetch`/`Request` remain Node/undici. Undici's `new Request(input, init)` checks `init.signal instanceof AbortSignal` against undici's own identity, so a jsdom-owned signal is rejected as "not an instance of AbortSignal". 77 other main-process tests here already use `// @vitest-environment node` for the same reason; Hicks's file didn't. I can't edit his file per brief.
+
+Reproduced in isolation with a two-line node script under each env: jsdom → throws; node → succeeds. That is the discrimination proof.
+
+**Deeper**: `mapError` was treating `TypeError` from any source as a transport failure. Correct for undici's `TypeError` with `.cause` (real network conditions); wrong for a `TypeError` from `new Request(...)` construction (programming error). Fixed to split them by presence of `.cause` and prefix the client-side error message with a distinctive marker.
+
+**Deepest**: once the AbortSignal error stopped masking, five real DTO drifts in my client showed up. `.strict()` Zod schemas rejected well-formed wire responses. Each was on my side, not the fixture — I verified each by fetching upstream DTOs via github-mcp before touching schemas.
+
+## The five drifts
+
+1. `SubmitSliceJobResponse.JobStatus` doesn't exist — the DTO field is `Status`. Renamed on schema, IPC schema, return type, and client tests.
+2. `SliceJobStatusResponse` missing `errorDetail` (admin-only, always on wire). Added.
+3. `SliceJobStatusResponse.layoutDegradation` was `.boolean().nullable()` — DTO is `LayoutDegradationReason?` enum serialized as string. Fixed to `.string().max(64).nullable()`.
+4. `updateCustomProfile` was parsing against `CloneSingleProfileResponseSchema` (4 fields). Update endpoint returns `CustomProfileDto` (10 fields). Docblock had falsely unified them. Added new `CustomProfileResponseSchema` and pointed the verb at it.
+5. `CustomProfileResponseSchema.isSystem` was `z.literal(false)`. The DTO is `bool`. `update-mutates-source` discrimination mode legitimately emits `isSystem: true` (source profile echoed back), and Hicks's test needs the update call to complete so the subsequent SHA read can prove mutation. Relaxed to `z.boolean()`; clone-isolation invariant now lives at the calling site, not in the parser.
+
+## Sixth issue — architectural
+
+Unsupported-calibration-method error was returning a bare refusal message. Hicks's test asserts the operator-facing string names the wire-supported methods (actionable "pick one of these" hint). Can't inject server-controlled `supportedMethods` into `.message` — invariant on `CalibrationHttpError.serverDetail` forbids it. But the client knows its OWN supported set at compile time. Extracted `CLIENT_SUPPORTED_CALIBRATION_METHODS` const, appended the list to the catalogued message. Client-authored, no server text, actionable.
+
+## IPC boundary narrowing
+
+`updateCustomProfile`'s return type widened from 4 fields to 10. The IPC channel `CalibrationUpdateFilamentProfileMeasurement.response.updated` schema was still 4 fields with `.strict()`. Two choices: widen the channel to 10 (renderer surface grows) or narrow at the boundary (renderer surface stays minimal). Chose to narrow — the renderer only needs enough to confirm the write landed on the correct clone, and widening the contract should be a deliberate change, not a byproduct.
+
+## Merged-tree result
+
+```
+git checkout -B integration-check-filament origin/dev-bishop-filament-calibration-channels
+git merge origin/dev-hicks-filament-calibration-acceptance --no-edit
+npx vitest run tests/filamentCalibration.acceptance.test.ts
+
+Test Files  1 passed (1)
+     Tests  23 passed (23)
+```
+
+23/23. Vasquez's acceptance criterion.
+
+## Full gate
+
+All static checks pass. `npm run test` 5439 passed / 4 failed / 7 skipped — 4 known-acceptable `snapshotProvenanceGuard` cases against stale `pfarm1`.
+
+## Durable learnings
+
+1. **Vitest env realm mismatch is silent under `.strict()`-adjacent framework checks.** Undici enforces its own `AbortSignal` identity; jsdom installs its own; the mismatch shows up as an opaque "not an instance of" error that looks like a transport failure once mapping runs. When an entire test file fails identically on the FIRST fetch/Request line, suspect env before logic. Grep the repo for the pragma pattern — chances are neighbours already had this problem and solved it the same way.
+2. **`mapError`'s `TypeError → transport` branch is a diagnosability trap unless it distinguishes `.cause`-carrying (undici transport) from `.cause`-less (Request construction).** Now split, with a distinctive message prefix for programmer errors.
+3. **`.strict()` on response schemas is right by default, but requires every DTO drift to be caught by review or by an integration test.** I had five drifts sitting in green code because my isolated tests used my own drifted fixtures. Hicks's suite was the discovery mechanism, but the deeper lesson is: schema fixtures should be verified against upstream DTOs at author time, not once integration lights up.
+4. **Discrimination modes on a fake server can violate a client-side invariant on purpose** (e.g., `isSystem: true` under `update-mutates-source`). A response parser is the wrong place to enforce that invariant — it belongs at the calling site as a domain check, not at the wire layer. Trying to enforce it in the parser wedges legitimate discrimination proofs.
+5. **When the client knows a canonical set at compile time, embed it in the catalogued error message.** Server-controlled text can never enter `.message`, but client-authored constants can. That's the shape of an "actionable refusal" the operator can act on without cross-referencing docs.
+6. **github-mcp is the tie-breaker for DTO drift questions.** Fetch the `.cs` file at the pinned SHA, read the field, decide. Faster than arguing, cheaper than iterating.
+
+## Decision recorded at
+
+`.squad/decisions/inbox/bishop-filament-calibration-channels.md` (amendment to prior entry).

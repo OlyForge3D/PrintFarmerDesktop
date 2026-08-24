@@ -639,6 +639,32 @@ function mapError(
     return new CalibrationHttpError('cancelled', 'Request was cancelled.');
   }
   if (error instanceof TypeError) {
+    // undici's `fetch` throws `TypeError('fetch failed')` with the underlying
+    // network exception attached as `cause` when the round-trip cannot
+    // complete (ECONNREFUSED, TLS negotiation failure, DNS, socket reset,
+    // ...). That is a genuine transport condition and belongs in the
+    // retryable classification.
+    //
+    // A `TypeError` **without** a `cause` from this call site means the
+    // *request* could not be constructed at all — e.g. `RequestInit` was
+    // rejected because a field failed a `WebIDL` type check (a bad `signal`,
+    // an unclonable body, an invalid method). That is a programming error in
+    // *this* process, not a network failure, and conflating the two would
+    // send the caller into an isTransient retry loop against a doomed
+    // request and would present in operator-facing telemetry as if the print
+    // farm was flaky. The distinct message prefix here surfaces the true
+    // cause so the next debugger does not chase a phantom transport fault.
+    // See #TODO(cross-team) if a specific downstream ever needs to
+    // discriminate this without message parsing.
+    if (error.cause === undefined) {
+      return new CalibrationHttpError(
+        'transport',
+        `Request construction failed (client-side programming error, not a network condition): ${error.message}`,
+        null,
+        null,
+        ambiguous,
+      );
+    }
     return new CalibrationHttpError(
       'transport',
       error.message,
@@ -736,10 +762,14 @@ function mapBedClearErrorCode422(
 // this module.
 
 /**
- * `CloneSingleProfileResponseDto` from `CloneProfilesDtos.cs`. The PUT-custom
- * endpoint (`ProfilesController.cs:1352-1395`) returns the same projection on
- * a successful mutation, which is why both `cloneSingleProfile` and
- * `updateCustomProfile` parse against this schema.
+ * `CloneSingleProfileResponseDto` from `CloneProfilesDtos.cs` — the *clone*
+ * endpoint's 4-field projection. Consumed by `cloneSingleProfile` only.
+ *
+ * (An earlier revision of this schema claimed the PUT-custom endpoint returns
+ * the same projection. That was wrong: `ProfilesService.UpdateCustomProfileAsync`
+ * is typed `Task<CustomProfileDto>` in `IProfilesService.cs`, which is the
+ * richer 10-field DTO in the same header. See `CustomProfileResponseSchema`
+ * below.)
  */
 const CloneSingleProfileResponseSchema = z
   .object({
@@ -751,6 +781,48 @@ const CloneSingleProfileResponseSchema = z
   .strict();
 
 /**
+ * `CustomProfileDto` from `CloneProfilesDtos.cs` — the *update-custom* endpoint's
+ * 10-field projection. `PUT /api/slicer/profiles/custom/{id}` (via
+ * `IProfilesService.UpdateCustomProfileAsync`) returns this shape, NOT the
+ * 4-field clone projection. Consumed by `updateCustomProfile` only.
+ *
+ * `rawJson` is a serialized string (the OrcaSlicer profile JSON), unbounded on
+ * the C# side but bounded here at 1 MiB — anything larger than that would
+ * already fail the client's `maxResponseBytes` cap.
+ *
+ * `compatiblePrinters` is `IReadOnlyList<string>?` on the C# side — a nullable
+ * list of enum-name-shaped machine variants; each entry is capped at 128 chars
+ * to match what the source profile can carry.
+ */
+const CustomProfileResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(512),
+    profileType: z.enum(['machine', 'process', 'filament']),
+    // `CustomProfileDto.IsSystem` is `bool`, not `false`-literal — the
+    // `custom/` route is only meant to serve non-system profiles in
+    // production, but the invariant lives at the routing/authorization
+    // layer, not on the wire. If an operator or a shallow-clone bug ever
+    // aims this endpoint at a system row, the response can still legally
+    // carry `isSystem: true`, and rejecting that with a schema error would
+    // conflate "programming invariant violated" with "server returned
+    // malformed JSON". Clone-isolation must be observed on the calling
+    // side (compare returned id to the source id) rather than defended
+    // by the parser here.
+    isSystem: z.boolean(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime().nullable(),
+    description: z.string().max(2048).nullable(),
+    rawJson: z
+      .string()
+      .max(1024 * 1024)
+      .nullable(),
+    printerModelId: z.string().uuid().nullable(),
+    compatiblePrinters: z.array(z.string().max(128)).max(256).nullable(),
+  })
+  .strict();
+
+/**
  * `SubmitSliceJobResponse` from `SliceJobDtos.cs`. `queuePosition` is `int?`
  * on the C# side — a server that accepts the job straight into `Processing`
  * (no queue wait) returns null.
@@ -758,7 +830,7 @@ const CloneSingleProfileResponseSchema = z
 const SubmitSliceJobResponseSchema = z
   .object({
     jobId: z.string().uuid(),
-    jobStatus: z.enum([
+    status: z.enum([
       'Queued',
       'Processing',
       'Completed',
@@ -792,7 +864,27 @@ const SliceJobStatusResponseSchema = z
     startedAt: z.string().datetime().nullable(),
     completedAt: z.string().datetime().nullable(),
     errorMessage: z.string().max(2048).nullable(),
-    layoutDegradation: z.boolean().nullable(),
+    /**
+     * Admin-only worker-side failure detail (`SliceJobStatusResponse.ErrorDetail`
+     * in `SliceJobDtos.cs` @ `a4f230aa...`) — the DTO documents this as
+     * "populated only for farm admins. Never returned to non-admin callers".
+     * For the desktop's operator identity this is expected to always be null,
+     * but the field IS on the wire in every response (the C# type has it
+     * unconditionally). The schema was previously missing it entirely, which
+     * paired with `.strict()` was rejecting the entire status response with
+     * `Unrecognized key(s) in object: 'errorDetail'`. Bounded at 4 KiB so a
+     * mis-configured admin-privileged response cannot smuggle unbounded
+     * worker diagnostics through the wire.
+     */
+    errorDetail: z.string().max(4096).nullable(),
+    /**
+     * `LayoutDegradationReason?` enum from `SlicerModels.cs` — serialized as
+     * `JsonStringEnumConverter`, so the wire value is the enum member name
+     * (e.g. `"BedCenterUnknown"`) or `null`. Was previously `z.boolean()`,
+     * which contradicted both the DTO type and the fixture's citation and
+     * would reject any non-null value the real server produced.
+     */
+    layoutDegradation: z.string().max(64).nullable(),
     failureReason: z.string().max(128).nullable(),
     failureHint: z.string().max(2048).nullable(),
     estimatedPrintTimeSeconds: z.number().int().nonnegative().nullable(),
@@ -842,6 +934,24 @@ function remapInteractiveSession(
 }
 
 /**
+ * Wire values of `CalibrationMethod` this client supports (mirrors
+ * `CalibrationMethod.cs` from PR #1952). PA Pattern / PA Line are deliberately
+ * absent (upstream issue #1938). Exported so the remap-to-actionable-message
+ * function below can name them in the operator-facing error text without
+ * relying on the server echoing them back on `supportedMethods` — the client
+ * knows its own supported set at compile time, and it is the operator's fix
+ * ("pick one of these") regardless of whether the server bothered to include
+ * the list.
+ */
+export const CLIENT_SUPPORTED_CALIBRATION_METHODS = [
+  'flow_rate_pass_1',
+  'flow_rate_pass_2',
+  'temperature_tower',
+] as const;
+export type ClientSupportedCalibrationMethod =
+  (typeof CLIENT_SUPPORTED_CALIBRATION_METHODS)[number];
+
+/**
  * Upgrade an `invalidData` error (422) into `unsupportedCalibrationMethod`
  * when the server's ProblemDetails `errorCode` extension is
  * `unsupported_calibration_method`. Preserves every other field of the
@@ -860,7 +970,16 @@ function remapUnsupportedCalibrationMethod(
   }
   return new CalibrationHttpError(
     'unsupportedCalibrationMethod',
-    'The server does not support the requested calibration method for this slicer engine.',
+    // Name the wire-supported methods in the catalogued (client-authored)
+    // message so the wizard's error text is actionable ("pick one of these")
+    // instead of a bare "unsupported" refusal that the operator cannot act
+    // on without cross-referencing docs. The list is from the client's own
+    // compile-time constant — the `serverDetail`-carried `supportedMethods`
+    // extension the server sends alongside is kept for the operator log
+    // (see docblock above) but never injected into `.message`, per the
+    // invariant that `.message` is client-authored and never carries
+    // server-controlled text.
+    `The server does not support the requested calibration method for this slicer engine. Supported methods: ${CLIENT_SUPPORTED_CALIBRATION_METHODS.join(', ')}.`,
     error.status,
     error.retryAfterMs,
     error.ambiguous,
@@ -1304,7 +1423,7 @@ export class CalibrationHttpClient {
     signal: AbortSignal,
   ): Promise<{
     jobId: string;
-    jobStatus: 'Queued' | 'Processing' | 'Completed' | 'Failed' | 'Cancelled';
+    status: 'Queued' | 'Processing' | 'Completed' | 'Failed' | 'Cancelled';
     queuedAt: string;
     queuePosition: number | null;
   }> {
@@ -1369,7 +1488,8 @@ export class CalibrationHttpClient {
     startedAt: string | null;
     completedAt: string | null;
     errorMessage: string | null;
-    layoutDegradation: boolean | null;
+    errorDetail: string | null;
+    layoutDegradation: string | null;
     failureReason: string | null;
     failureHint: string | null;
     estimatedPrintTimeSeconds: number | null;
@@ -1481,7 +1601,13 @@ export class CalibrationHttpClient {
     id: string;
     name: string;
     profileType: 'machine' | 'process' | 'filament';
-    isSystem: false;
+    isSystem: boolean;
+    createdAt: string;
+    updatedAt: string | null;
+    description: string | null;
+    rawJson: string | null;
+    printerModelId: string | null;
+    compatiblePrinters: readonly string[] | null;
   }> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
@@ -1515,7 +1641,7 @@ export class CalibrationHttpClient {
           await this.statusError(pending.response, true, pending.timedOut()),
         );
       }
-      return await this.parse(pending, CloneSingleProfileResponseSchema);
+      return await this.parse(pending, CustomProfileResponseSchema);
     } finally {
       pending.dispose();
     }

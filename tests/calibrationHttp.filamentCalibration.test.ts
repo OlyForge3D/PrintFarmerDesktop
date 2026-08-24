@@ -209,11 +209,11 @@ describe('CalibrationHttpClient.cloneSingleProfile', () => {
 describe('CalibrationHttpClient.submitCalibrationSlice', () => {
   // Verbatim `SubmitSliceJobResponse` from SliceJobDtos.cs @
   // a4f230aad02a997bcfb16c9d6f588520044d4db7:
-  //   JobId Guid, JobStatus SliceJobStatus, QueuedAt DateTime,
+  //   JobId Guid, Status string (SliceJobStatus name), QueuedAt DateTime,
   //   QueuePosition int? (nullable).
   const submitOk = () => ({
     jobId: JOB_ID,
-    jobStatus: 'Queued',
+    status: 'Queued',
     queuedAt: '2026-08-24T14:30:00.000Z',
     queuePosition: 3,
   });
@@ -299,7 +299,7 @@ describe('CalibrationHttpClient.submitCalibrationSlice', () => {
     );
 
     expect(result.jobId).toBe(JOB_ID);
-    expect(result.jobStatus).toBe('Queued');
+    expect(result.status).toBe('Queued');
     expect(result.queuePosition).toBe(3);
   });
 
@@ -366,6 +366,7 @@ describe('CalibrationHttpClient.getSliceJobStatus', () => {
     startedAt: '2026-08-24T14:30:05.000Z',
     completedAt: null,
     errorMessage: null,
+    errorDetail: null,
     layoutDegradation: null,
     failureReason: null,
     failureHint: null,
@@ -504,13 +505,22 @@ describe('CalibrationHttpClient.sendSliceToPrinter', () => {
 // ------------------------------ updateCustomProfile ------------------------
 
 describe('CalibrationHttpClient.updateCustomProfile', () => {
-  // Verbatim `CloneSingleProfileResponseDto` — the PUT returns the updated
-  // profile row in the same projection.
+  // Verbatim `CustomProfileDto` — the PUT endpoint is typed
+  // `Task<CustomProfileDto>` on `IProfilesService.UpdateCustomProfileAsync`
+  // (see `IProfilesService.cs`), not the 4-field clone projection. An
+  // earlier fixture returned only the clone shape and passed only because
+  // the client's schema was wrong in the matching direction.
   const updatedOk = () => ({
     id: CLONE_ID,
     name: 'PolyLite PLA Blue',
     profileType: 'filament',
     isSystem: false,
+    createdAt: '2025-08-24T18:00:00.000Z',
+    updatedAt: '2025-08-24T18:01:23.000Z',
+    description: 'Calibrated for measured flow',
+    rawJson: '{"filament_flow_ratio": 0.98}',
+    printerModelId: null,
+    compatiblePrinters: null,
   });
 
   it('PUTs the rawJson replacement with an idempotency-key header', async () => {
