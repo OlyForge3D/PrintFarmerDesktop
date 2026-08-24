@@ -334,9 +334,11 @@ function FilamentCalibrationWizardInner(
     let cancelled = false;
     void (async () => {
       try {
-        const record = await calibrationApi().getFilamentCalibrationWizardState({
-          profileId,
-        });
+        const record = await calibrationApi().getFilamentCalibrationWizardState(
+          {
+            profileId,
+          },
+        );
         if (cancelled || unmountedRef.current || record === null) return;
         const restored = restoredWorkingState(record);
         lastPersistedJsonRef.current = JSON.stringify(stripUpdatedAt(record));
