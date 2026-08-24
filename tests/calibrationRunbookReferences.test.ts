@@ -116,7 +116,6 @@ import {
   CalibrationPrinterEligibility,
   CalibrationQueueJobState,
   CalibrationStartPrintRequest,
-  CalibrationAssetManifestEntry,
   CalibrationUnavailableReason,
   CalibrationWorkspaceStageId,
   CalibrationOutboxUnavailableReason,
@@ -307,9 +306,6 @@ const CONTRACT_SCHEMAS: readonly ZodTypeAny[] = [
   CalibrationPrinterEligibility,
   CalibrationQueueJobState,
   CalibrationStartPrintRequest,
-  // The asset manifest an operator reads when a gated download is refused:
-  // disabledReason, sourceUrl, expectedSha256.
-  CalibrationAssetManifestEntry,
   // The *server-advertised* capability flags. These are a different vocabulary
   // from CalibrationCapabilityFlags above, and the gap was invisible until a
   // document named one: calibrationWire.ts maps server calibrationSyncEnabled

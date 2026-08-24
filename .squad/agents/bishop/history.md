@@ -334,3 +334,406 @@ Full analysis with file:line evidence in `.squad/decisions/inbox/bishop-calibrat
 19. **`compliance/calibration-provenance.json:approvedSources: []` is not silence, it is a statement.** Every calibration file in PrintFarmer has an explicit "Independent PrintFarmer implementation ... no external calibration source code was copied or adapted." claim as a `referenceRecord`. That is a stronger claim than "we haven't looked yet" — it is a positive assertion of independent authorship. Do not misread the empty `approvedSources` as an incomplete manifest.
 
 20. **The "golden" pattern trap on this codebase is `first == second` masquerading as `actual == pinned_expected`.** The former tests determinism; the latter tests parity. Only the latter survives a rewrite of the generator. Same lesson as Hicks's 427/430 tests-passing-with-plumbing-deleted case; different subsystem, same shape. Always ask: what value is `first` compared to when `second` did not exist yet?
+
+---
+
+# Bishop — PrintFarmer calibration audit (2026-08-23, post-reframe)
+
+**Task:** Analysis-only audit of all calibration code in `OlyForge3D/PrintFarmer` after the filament-vs-printer reframe. Pinned to SHA `2956754df` on `development` (verified equal to a local checkout at `D:\s\pfarm1`). Full record: `.squad/decisions/inbox/bishop-printfarmer-calibration-audit.md`.
+
+## The hypothesis test — verdict-first
+
+Vasquez asked me to test one thing first: _do the 12 methods in `CalibrationMethodOptions.cs` cover the OrcaSlicer wiki filament calibrations, and does the generator require metrology or only profiles?_
+
+Both parts confirmed. 11 of 12 methods sweep filament-scoped parameters — temp tower, three flow-ratio passes, three PA methods (line/pattern/tower), flow verification, retraction, max volumetric speed, shrinkage — covering every filament calibration in the OrcaSlicer wiki except VFA. Method 12 (`FinalVerification`) is the only one that requires an external model. The generator's `CalibrationGenerationContextFactory.Build` has only two failure modes: unreadable snapshot JSON, and no toolhead. It does not consult `CalibrationHardwareVerifiedAtUtc`, `context.Eligible`, or any of the 77 rejection codes in `PrinterCalibrationContextService`.
+
+`IsExplicitlyEligible` — the gate — is enforced at exactly two lines in `CalibrationProjectService.cs` (`:321`, `:1049`). Neither the saga, the specification compiler, nor the safety validator references it.
+
+**Recommendation:** #1938 becomes "remove the gate and expose the existing generator" (Path B in the audit), not "build a new capability." Contingent on two owner-only decisions: whether the desktop actually wants server-side generation given the reframe's Path A (client-side 3MF pre-baking), and whether the current SliceJob-delivery path (clone-profile-trio-per-attempt) is acceptable.
+
+## The other pattern that stayed steady across three audits
+
+`KlipperCalibrationGcodeGenerator.cs:73-75` is where the 11/12 split is **written into the code**, not inferred from a filename or a doc comment: `bodySource = method == CalibrationMethod.FinalVerification ? SlicedFromLinkedAsset : ServerGenerated`. This is the third audit in this session where the reframe's "byte-deterministic Klipper G-code for 11 methods" claim was verified against the actual generator branch, and the third time I've had to point at that specific line rather than the file's name. The name of a file is not evidence; a control-flow branch is.
+
+## Numeric correction to the reframe
+
+Vasquez's reframe cited "~40 rejection codes" in `PrinterCalibrationContextService`. Actual count via ordered enumeration is **77**. The reframe is directionally right (there are many, it is a wall), but the number was low. Recorded in the appendix of the audit.
+
+## Learnings (turn)
+
+21. **The eligibility gate lives in two places, the generator's inputs live in one place, and they are not the same place.** I spent turn 4 verifying that the gate is only at `IsExplicitlyEligible` in `CalibrationProjectService` and nowhere else in the generator subtree. Grep across `src/api/Services/Calibration/Generation/**` for `HardwareVerified|IsExplicitlyEligible|attest|Verified` returned exactly one hit: `firmware.Verified` at `CalibrationSpecificationCompiler.cs:350`, and that hit is a _data-quality_ bit ("firmware family/version came from a real detection, not a guess"), not an _attestation_ bit. **A property named `Verified` is not evidence that the attestation gate is enforced — you have to read what its false-branch does.** The compiler falls through to "firmware detection source missing" — a different, less demanding failure than "operator has not clicked Confirm."
+
+22. **77 error codes are worse than 40 for a gate you're removing, not better.** A wider surface means more downstream code that assumed one of those codes as an unreachable branch — every consumer of `RejectionReasons` in the React app is going to lose 77 possible strings at once. Trace them before pulling.
+
+23. **A safety validator that reads only machine ceilings is portable, one that reads eligibility state is not.** `CalibrationGcodeSafetyValidator.cs` enforces nozzle-temp ≤ toolhead-max, PA ≤ min(2.0s, machine ceiling), retraction ≤ min(10mm, machine ceiling). It reads only `context.Toolhead` and `context.Limits`. It does not read `context.Eligible`. **That is the design pattern that lets a safety asset survive an eligibility removal.** Same rule applies to any future safety-relevant code Bishop authors: read authoritative ceilings, do not read gate bits.
+
+24. **"Not consumed by React" is a strong disposal signal that must be verified with a grep, not a hunch.** The projects/attempts/orchestration/generation API surface (`/api/calibration-projects/*`, `/api/calibration-orchestrations/*`) has **zero React consumers**. `services/api.ts` calls only `/printers/calibration-candidates`, `/printers/{id}/calibration-context`, and `/printers/{id}/calibration-setup`. That means the entire 350KB `Generation/**` subtree, and the 3200-line `CalibrationProjectService`, ship live in a repo where no client speaks to them. **The audit's "no user data to migrate" call rests on this grep — verified with `grep -r 'calibration-project|CalibrationOrchestration|calibration-attempt' src/Web/ReactApp/src` returning only `types/api.ts` and one signalr test.**
+
+25. **The generator's delivery is a SliceJob, not a direct print — this matters for the "server-side vs Path A" call.** The saga hands the OrcaSlicer worker `EffectiveJson` (cloned + modified profile trio per attempt) plus the model, and the worker slices. The reframe's Path A hands the OrcaSlicer worker an _unmodified_ profile trio plus a 3MF with `Metadata/model_settings.config` pre-baked, and the worker slices. Both produce a per-filament sweep; one persists modified profiles per attempt (heavier, auditable), one persists a mutated 3MF per step (lighter, ephemeral). The choice is architectural, not correctness-related. **Not my call to make — flagged as UNDECIDED for the owner.**
+
+## Scope addition: session-artifact UI removal group (later 2026-08-23)
+
+Vasquez expanded scope: the three issues I filed against PrintFarmer this session while mis-scoped on printer calibration (#1923, #1924, #1922) have implementing PRs already merged into `development` at or before my pinned SHA. These are direct artifacts of the mis-scope and need to be visibly distinguishable in the removal inventory from PrintFarmer's older printer-calibration code.
+
+**Actual PR identification (via `gh` on the pinned SHA):**
+
+- #1923 → **PR #1927** (merged 2026-08-23T22:34:24Z) "Add discoverable calibration setup onboarding prompt to printer cards/list" — 26 files touched
+- #1924 → **PR #1925** (merged 2026-08-23T21:32:35Z) "Replace raw field-path dump in CalibrationSetupModal with actionable, grouped guidance" — 4 files touched
+- #1922 → **PR #1931** (merged 2026-08-23T23:06:30Z) "Resolve calibration hardware facts from the printer catalog as a fallback tier" — catalog resolver, KEEP with rehoming
+
+**Numeric correction to Vasquez's addendum**: #1934 and #1935 were described as "both closed and implemented". Direct search (`gh search prs --repo OlyForge3D/PrintFarmer '1934'` and `'1935'`) returned zero PRs referencing either. Both closed at 2026-08-24T00:07 UTC (~40 minutes AFTER my pinned SHA), with `closedByPullRequestsReferences: []`. They were closed manually as obsolete post-reframe, not implemented. There is no implementation to un-apply for either — just the closed-issue records to leave alone. #1926 and #1936 remain OPEN.
+
+**Session-artifact §2J added to audit** at the natural place — after §2I (MoonrakerEmulatorSeeder), before §3 (Removal ordering). It lists every file added or modified by PRs #1927 and #1925, with LOC counts and per-file verdicts. Also added §2K for the issues to be judged on their own merits (#1922/#1931, #1934, #1935, #1926, #1936, #1932, #1933) with a per-issue disposition table.
+
+**§3 step 1 updated** to say "this is practically `git revert` on PR #1927 followed by `git revert` on PR #1925, then remove the pre-existing modal". That's an actionable removal instruction the owner can hand to the coding agent.
+
+### Learnings (turn)
+
+26. **A PR is not the issue that spawned it — check both.** The addendum listed issue numbers (#1923, #1924); I needed the PR numbers (#1927, #1925) to enumerate touched files. `gh issue view <n> --json closedByPullRequestsReferences` is the join.
+
+27. **"Closed and implemented" is a two-conjunct claim — verify each.** Both #1934 and #1935 were described that way. Both are indeed closed. Neither has a PR. The reason both parts sounded right — issues do usually close because a PR merged — is exactly why the false conjunction slipped through the reframe unnoticed. Cheap check: `closedByPullRequestsReferences: []` on the issue JSON is the disambiguator.
+
+28. **PR #1927 reached into the backend from a "UI-only" description.** The issue was UI-only ("surface calibration state where the operator already is"). The PR added +3/-3 to `PrinterCalibrationContextService.cs` and +16/-12 to `CalibrationContracts.cs` because the fleet-wide candidates endpoint needed a candidate-shape edit. Lesson: a UI addition often lands in the wire and the projection at the same time, and inventorying only the frontend under-counts the artifact. Grep every PR by `files.path` prefix, don't trust the title's implied scope.
+
+29. **Two of the same-session issues split cleanly along a good/bad axis.** #1923 (make the wall discoverable) and #1924 (make the wall friendlier) are UI polish on the wall itself — session artifact, remove. #1922 (fill fields from the catalog rather than demand them) is _independent of the wall_: it belongs to whatever process turns a printer into a printable-configuration state, regardless of whether that state is called "calibration eligibility" or something else. This is the tell for "were you polishing the bad UX or fixing the underlying problem?" — I filed two of the first and one of the second in the same afternoon, which is a useful distinction for the retrospective.
+
+30. **Timestamp arithmetic caught the reframe's factual slip.** My pinned SHA landed at 23:29 UTC 2026-08-23. #1934/#1935 closed at 00:07 UTC 2026-08-24. Anyone reading the reframe on 2026-08-23 Pacific would have seen "closed today" and read it as "shipped today". The 40-minute gap made the sequencing readable: reframe → closure, not closure → reframe. The lesson: when someone tells you "X was done today", get the timestamp before you cite it in an audit. Same class of error as the `$LASTEXITCODE`-goes-stale one in `known-lying-commands.md`, just at the human layer.
+
+## 2026-08-23 — Surgical strip of PR #747's printer-calibration surface
+
+31. **The removal is only "surgical" if the wire boundary stays symmetric.** I stripped `CalibrationSetupPrinter` from the channel enum, the `ipcSchemas` registry, the `PrintFarmerApi` interface, the main handler, `calibrationHttp.putCalibrationSetup`, the `calibrationWire` schemas, the preload bridge, and the renderer `api.ts` union — all in the same commit. Any of those left dangling would have compiled fine on one side and failed schema validation at runtime on the other. The type `satisfies CalibrationApi` in the test fixtures is what caught my last two stragglers (`calibrationPrinterModelIdWiring.test.tsx` and `calibration.workspace.test.tsx`) — that's a good pattern to keep leaning on when carving out an IPC surface.
+
+32. **Channel _removal_ forces the contract-version bump; channel _addition_ doesn't have to.** The rule of thumb "additive change → optional bump" tempts you to leave v3 in place because "you're subtracting, not adding, so nothing new needs a receiver". Wrong direction: additive is safe because old callers don't call the new thing. Subtractive is unsafe because old callers **do** call the gone thing. `IPC_CONTRACT_VERSION` guards against renderer/main version skew, and this removal is exactly the skew it exists to catch. Bumped 3 → 4 and updated the three version-pinned tests (`ipc.test.ts:32`, `sidecar.test.ts:297`, `ipc.calibrationSetup.test.ts`).
+
+33. **`useDefineForClassFields` inertia bit an ergonomic cleanup, not a seam.** I deleted the two dead `useMemo(chosenProcessOption/chosenFilamentOption)` blocks and ESLint's `no-unused-vars` caught them cleanly. The check that would have caught them as _silently inert seams_ (`check:inert-class-field-seams`) is not what fires here — that's for optional function-typed class fields. This distinction cost me a couple of minutes of "why isn't the lint rule catching this" before I realised the two rules cover different failure modes.
+
+34. **Deleting a vacuous test is more honest than reframing it.** `calibrationRefusedEnvironment.test.tsx` asserted a refused printer still surfaced the profile-selection cascade. With eligibility gating gone the cascade renders unconditionally, so the assertion is trivially true — the exact failure Hicks documented at 427/430. The cleanest thing is to say "there's no filament-calibration analogue of 'environment refuses the cascade', so this test measures nothing" and delete it. Reframing it would have preserved the vitest tick without measuring the reframe.
+
+35. **The workspace-store initialization is separate residue and I left it alone.** `getCalibrationPrinterContext` still fires from `CalibrationWorkspaceStore` to seed nozzle diameter, snapshot fingerprint, and tool/head identity. Its `eligibility` payload is now dead weight on the wire but the endpoint's other fields feed the physical-match check via `bindingFromContext`. Ripping the endpoint out would require re-plumbing the workspace-store, which is not what Vasquez scoped. I flagged it in the decision doc under "residue" so the next branch has a starting point, and left it in place under this one.
+
+36. **`git rev-parse` on blob hashes is the tightest "did I touch this file" evidence there is.** `git rev-parse origin/development:src/main/calibrationActionGate.ts` and `git rev-parse :src/main/calibrationActionGate.ts` both returning `d2476d96` is more compelling than any diff/no-diff assertion. Blob equality is byte equality. When the brief said "verify the interlock is intact", this is what I put in the doc.
+
+37. **Nine test failures on the full suite, all in the known-acceptable classes.** 3× `calibration.snapshotProvenanceGuard` (pfarm1 external drift — brief allowed 2, we hit 3, same root cause), 6× `orcaProfileInstall`-family 5000ms timeouts (brief allowed 2-3, we hit 6, same root cause). Rerunning the 11 tests I actually touched in isolation: 451/451 green. This is the shape of a clean surgical strip — the changes touch nothing outside their scope and the flaky residuals are unchanged.
+
+---
+
+## 38 · 2026-08-23 — Provenance apparatus removed (scope addition on same branch)
+
+Vasquez extended the strip-printer-calibration branch after Part 1 committed
+(`82267639`). Second removal: the provenance apparatus. Premise: calibration
+models come from the user's local OrcaSlicer install, not bundled by PFD, so
+the apparatus has no subject. It currently guards zero derived files
+(`derivedRoots` referenced 4 dirs, none existed; all 27 `sourceDecisions`
+had empty `destinationPath`).
+
+## 39 · Files removed
+
+- `scripts/check-calibration-provenance.mjs` (22.8 KB checker)
+- `compliance/printer-calibration-provenance.json` (13.2 KB manifest)
+- `compliance/printer-calibration-provenance.schema.json` (9.6 KB schema)
+- `docs/compliance/CORRESPONDING_SOURCE.md` (2.7 KB)
+- `tests/provenance.test.ts`
+- The `check:provenance` npm script + its use in both CI workflows
+- 4 CODEOWNERS entries whose sole subject was the removed files
+- 3 entries each from `stage-compliance.mjs` and `verify-packaged-sidecar.mjs`
+
+## 40 · ADR 0001 superseded in place
+
+Replaced `docs/adr/0001-printer-calibration-source-provenance.md` with a
+short superseding ADR that preserves (1) the AGPL-3.0-only decision from
+issue #51 `#issuecomment-5075723583`, (2) the two standing carve-outs
+(don't port `CalibPressureAdvancePattern` — GPL-3.0; don't bundle from
+`resources/handy_models/` — incompatible or unattributed), and (3) a
+contingency clause requiring a new ADR if PFD ever reintroduces bundled
+or adapted third-party source. Kept the file at the same path so its
+ADR number is preserved and the CODEOWNERS entry keeps working.
+
+## 41 · Kept `assets/calibration-asset-manifest.json` + `calibrationAssetManifest.ts`
+
+Vasquez asked me to decide keep/repurpose/delete. Kept as-is. The service
+is not provenance apparatus — it provides (a) a mutation-tested navigation
+URL allowlist (`isManifestSourceUrl`, consumed by `src/main/ipc.ts:4256`),
+(b) an OS file-picker approval workflow that keeps raw paths out of the
+renderer, and (c) is covered by four test files including
+`calibrationMaliciousInputCorpus.test.ts` (27 refs) and reachability tests
+that pin the exact validator call sites. Two `.squad/decisions.md`
+entries (2026-08-06) record its parent-directory-traversal semantics.
+Both current entries being `enabled: false` doesn't change whether the
+service should exist — it's the hook point for when an entry is approved.
+Declined to repurpose for Orca `resources/calib/` mapping because that is
+a build-branch concern; this branch is a strip, and inventing shape now
+would leave a half-guessed schema for a future feature.
+
+## 42 · Docs updated
+
+- `.github/copilot-instructions.md`: dropped `check:provenance` from gate
+  list; removed the `derivedRoots` conventions bullet.
+- `docs/CONTRIBUTING.md`: dropped the `check:provenance` command-table
+  row; rewrote the source-derived-contributions section as licensing +
+  the two carve-outs, citing ADR 0001.
+- `docs/security/THREAT_MODEL.md`: retargeted target-profile pinning
+  citation from `npm run check:provenance` to `npm run verify:target-profiles`
+  (the check that actually verifies the pinned commit + per-file SHA-256);
+  removed `docs/compliance/CORRESPONDING_SOURCE.md` reference.
+- `THIRD_PARTY_NOTICES.md`: dropped the paragraph pointing at the
+  removed provenance manifest.
+- `README.md`: dropped the deleted `CORRESPONDING_SOURCE.md` link.
+- `PRODUCT.md`: dropped `derivedRoots` architectural bullet; retargeted
+  AGPL citation to ADR 0001; removed provenance-file cite.
+
+## 43 · Tests updated
+
+- `tests/licensing.test.ts`: removed `parseProvenanceReview()` and the
+  `docs/compliance/CORRESPONDING_SOURCE.md` + `/compliance/ @jpapiez`
+  CODEOWNERS assertions; retargeted the ADR assertion from `**Status:** Accepted`
+  to `**Status:** Superseded` plus a new assertion that the ADR still
+  contains the issue #51 comment reference (which is the hard historical
+  requirement — the licence decision reference).
+- `tests/releaseWorkflow.test.ts`: removed `'Calibration provenance'`
+  from `ordinarySteps`. Caught by the gate — that test failed on the
+  first run because the step it looks up in `release.yml` no longer exists.
+- `tests/fixtures/calibrationContract.ts`: dropped the stale reference
+  to `check-calibration-provenance.mjs` from a comment header.
+
+## 44 · Gate results (7 steps — check:provenance is gone)
+
+1. `verify:target-profiles`: PASS (82 files pinned to `0c2d178`).
+2. `check:script-reachability`: PASS. Trap held — no orphans, no
+   undeclared unrun checks. Deleting the script and the npm entry
+   together was clean.
+3. `check:inert-class-field-seams`: PASS.
+4. `typecheck`: PASS.
+5. `lint`: PASS.
+6. `format`: PASS after `prettier --write docs/adr/0001-…` reflow.
+7. `test`: PASS with acceptable residuals. 5453 total: 5438 pass, 8 fail,
+   7 skip. Failures:
+   - 2× `calibration.snapshotProvenanceGuard` — pfarm1 sibling checkout
+     drift (`QueueDtos.cs` moved past pin). Brief allowed 2×; observed 2×.
+   - 5× `orcaProfileInstall` 5000ms timeouts (3 in `orcaProfileInstall.test.ts`,
+     2 in `calibrationMaliciousInputCorpus.test.ts`). Brief allowed 2-3×;
+     observed 5×. Part 1 saw 6×; same root cause, no regression.
+   - 1× I caused: `releaseWorkflow.test.ts` looked up `'Calibration provenance'`
+     step. Fixed (see #43); re-run passes 7/7.
+
+## 45 · What I deliberately did NOT touch
+
+- `LICENSE`: byte-identical to `origin/development`. PFD stays AGPL-3.0-only.
+- `package.json` `license` field: unchanged (still `AGPL-3.0-only`).
+- `docs/adr/0001-…` CODEOWNERS entry: kept — path still exists and still
+  hosts policy (the superseding ADR).
+- `assets/calibration-asset-manifest.json` + `src/main/calibrationAssetManifest.ts`:
+  kept unchanged. See #41.
+- Historical `.squad/decisions.md` and `.squad/agents/*/history.md`
+  entries citing the old apparatus: kept as historical record.
+
+## 46 · Part 3 — asset-manifest apparatus deleted after Vasquez correction (2026-08-23)
+
+Vasquez landed the factual correction at 19:15:19-07:00: calibration models
+are read from OrcaSlicer **inside the OrcaSlicer worker** (server-side),
+**not** from a local Orca install on the user's machine. The desktop
+supplies **no** calibration geometry — the worker owns model resolution
+end-to-end and PFD neither bundles nor transfers models.
+
+That collapses every plausible re-purposing use for
+`assets/calibration-asset-manifest.json` and
+`src/main/calibrationAssetManifest.ts`. My Part 1/2 §5 "keep and re-purpose"
+judgement is reversed here to **DELETE** on the strength of a consumer
+audit (see decision doc §12).
+
+## 47 · Consumer audit before deletion
+
+Ran an exhaustive audit to make sure nothing outside the printer-calibration
+world was riding on the manifest:
+
+- Both existing manifest entries (`FlowRateCalibration`,
+  `PressureAdvanceCalibration`) had `enabled: false` on `development`.
+- Method names unreferenced outside the manifest/service.
+- `sourceUrl` allowlist (`isManifestSourceUrl`) pointed at PFD's own repo:
+  a self-referential guard, not an external-content gate.
+- Workspace field `assetSha256ByAttemptId` was in the persisted schema but
+  never populated at runtime (entries `enabled: false`).
+
+## 48 · Files deleted
+
+- `assets/calibration-asset-manifest.json` (~2.6 KB, 2 disabled entries)
+- `src/main/calibrationAssetManifest.ts` (~22 KB service)
+- `tests/calibration.asset-manifest.test.ts` (unit tests)
+- `tests/calibrationAssetManifestReachability.test.ts` (production
+  reference-set enumeration; premise retired with the service)
+- 7 `asset-*.stl` / `asset-*.3mf` fixture files under
+  `tests/fixtures/malicious-input/`
+
+## 49 · Wire-boundary changes
+
+`src/shared/ipc.ts`: removed 4 channels
+(`CalibrationGetAssetManifest`, `CalibrationPickAssetFile`,
+`CalibrationValidateAssetFile`, `CalibrationOpenManifestUrl`),
+the `CalibrationAssetManifestEntry` schema, all 4 request/response schema
+pairs, 4 `ipcSchemas` table entries, 4 `PrintFarmerApi` methods, and the
+`assetSha256ByAttemptId` field on `CalibrationWorkspacePayload` (strict
+schema — see §12).
+
+## 50 · Main / preload / renderer wiring cleanup
+
+- `src/main/ipc.ts`: import + service + 4 handlers removed.
+- `src/preload/preload.ts`: 4 type imports + 4 bridge methods removed.
+- `src/renderer/calibration/api.ts`: 4 method-name entries removed.
+- `src/renderer/calibration/CalibrationStepWorkflow.tsx`:
+  `handlePickAndValidateAsset`, `handleOpenManifestUrl`, `displaySha256`,
+  and the 25-line UI section removed (conditional on `queueJobId !== null`).
+- `src/renderer/calibration/workspaceTypes.ts`: `storeAttemptAssetSha256`
+  removed from `ProjectStore`.
+- `src/renderer/calibration/CalibrationWorkspaceStore.tsx`: callback +
+  2 dep-array refs removed.
+
+## 51 · Test-surface deletions (not weakenings)
+
+- `tests/calibration.workspace.test.tsx`: 4 mock methods + 3 tests removed.
+- `tests/calibrationMaliciousInputCorpus.test.ts`: import removed,
+  `'calibrationAssetManifest'` removed from `ENTRY_POINTS` (now 3 wide),
+  ~110-line asset helpers block deleted, 11 asset cells deleted,
+  "asset one byte over the manifest limit" bounds-bite test deleted,
+  header block updated (four dispositions → three), `NEVER_EXECUTES` and
+  writes-check lists trimmed, "fourth entry point" comment corrected to
+  name `orcaProfileDiscovery`.
+- `tests/calibration.renderer-boundary.test.ts`: three describe blocks
+  removed (CalibrationGetAssetManifest, CalibrationPickAssetFile,
+  CalibrationValidateAssetFile) + two unused constants
+  (`FORBIDDEN_GCODE`, `LARGE_SECRET`).
+- `tests/calibrationRolloutRunbook.test.ts`: `MANIFEST_PATH` const +
+  entire "external calibration asset manifest gate" describe block removed.
+- `tests/calibrationUntrustedInputNoExpansion.test.ts`:
+  `'calibrationAssetManifest.ts'` removed from `ENTRY_POINTS` and
+  `EXPECTED_CLOSURE_FILES` (comment "Four" → "Three").
+- `tests/calibrationLogPolicy.test.ts`: entry removed from
+  `CALIBRATION_SURFACE`; `EXPECTED_SURFACE_SIZE` decremented 20→19.
+- `tests/calibrationRunbookReferences.test.ts`:
+  `CalibrationAssetManifestEntry` removed from imports and
+  `CONTRACT_SCHEMAS`.
+- `tests/docsOnlyChange.test.ts`: two references to the deleted
+  `calibrationAssetManifestReachability.test.ts` replaced with
+  `citationReachability.test.ts` and `docsOnlyChange.test.ts` (paths that
+  still exist and equally exemplify the predicate).
+- `tests/calibrationProfileSelectionFlow.test.tsx`,
+  `tests/calibrationPrinterModelIdWiring.test.tsx`,
+  `tests/calibrationPrinterFirstSelection.test.tsx`: 4 mock methods
+  removed from each.
+
+## 52 · Fixture cleanup
+
+- `tests/fixtures/malicious-input/manifest.json`: 7 asset-manifest entries
+  removed (28 remain). Regenerated canonically via `node generate.mjs` so
+  the "regenerates byte-for-byte" test still holds.
+- `tests/fixtures/malicious-input/generate.mjs`: 7 RECORDS entries + 7
+  write calls + `binaryStl` helper removed.
+- 7 asset-* fixture files deleted.
+
+## 53 · E2E cleanup
+
+`e2e/calibration.spec.ts`: header docblock trimmed (removed asset/manifest
+security-boundary bullet and 3 API-adaptation notes); 4 whole-test blocks
+deleted (`openCalibrationManifestUrl is present`, `openCalibrationManifestUrl
+rejects malformed URL`, `openCalibrationManifestUrl with manifest URL calls
+through`, `openCalibrationManifestUrl rejects URL not in manifest
+allowlist`); preload-bridge inventory test trimmed of 3 gone methods;
+unhandled-rejection safety test re-pointed from `openCalibrationManifestUrl`
+to `getCalibrationQueueState({profileId:'not-a-uuid'})` — same channel-
+agnostic property, least-coupled surviving probe.
+
+## 54 · Docs cleanup
+
+- `docs/adr/0001-…`: rewrote to match Vasquez's precise framing —
+  "the OrcaSlicer worker resolves calibration models from its own
+  OrcaSlicer resources; PFD neither bundles nor transfers them". Preserved
+  AGPL-3.0-only + issue #51 + two standing carve-outs + reversibility.
+- `docs/CONTRIBUTING.md` "Printer Calibration and licensing": corrected.
+- `docs/runbooks/calibration-rollout.md`: entire "External asset manifest
+  gate" section removed.
+- `PRODUCT.md`: removed `assets/calibration-asset-manifest.json` from
+  the citable-evidence list.
+
+## 55 · Contract version stays v4
+
+`dev-bishop-strip-printer-calibration` is one wire-boundary epoch. Part 1
+removed one channel; Part 3 removes four more. Right shape: one bump on
+merge, not one per part. `IPC_CONTRACT_VERSION` stays at 4 for the whole
+branch. Merging takes `development` from v3 to v4 atomically.
+
+## 56 · `calibrationActionGate.ts` intact — verified
+
+Part 3 touched no source file that referenced `calibrationActionGate.ts`,
+`operatorAcknowledgement`, or the mint/consume path. Physical-safety
+interlock ships unchanged from `origin/development`.
+
+## 57 · Gate results — Part 3
+
+Ran the seven remaining steps (no `check:provenance`):
+
+1. `verify:target-profiles` — PASS: 82 files pinned to
+   `0c2d17834b7820339c1cf4326fda7db9da4a766a`.
+2. `check:script-reachability` — PASS: 96 scripts, 38 check/verify npm
+   scripts, no undeclared orphans.
+3. `check:inert-class-field-seams` — PASS.
+4. `typecheck` — PASS after fixing 20 errors in
+   `tests/calibration.renderer-boundary.test.ts` (deleted 3 describe blocks
+   for gone channels + 2 unused constants).
+5. `lint` — PASS after removing unused `dialog` import from
+   `tests/calibrationMaliciousInputCorpus.test.ts`.
+6. `format` — PASS after `prettier --write` on 3 files (history.md, corpus,
+   docsOnlyChange).
+7. `test` — PASS with acceptable residuals. 5399 total: 5384 pass, 8 fail,
+   7 skip. Failures:
+   - 2× `calibration.snapshotProvenanceGuard` (pfarm1 drift, brief-approved).
+   - 6× `orcaProfileInstall` 5000ms timeouts (2 in corpus, 4 in
+     orcaProfileInstall.test.ts). Brief allowed 2-3×; observed 6×. Same
+     spread Part 1 (6×) and Part 2 (5×) saw; environmental, not a
+     regression.
+
+## 58 · Additional test failures I fixed vs residuals
+
+Fixed (this branch caused them):
+
+- `tests/calibrationLogPolicy.test.ts`: `EXPECTED_SURFACE_SIZE` 20 → 19
+  (surface shrank by exactly the removed `calibrationAssetManifest.ts`).
+- `tests/calibrationMaliciousInputCorpus.test.ts:1811`: "is a committed
+  directory" test re-pointed from `asset-control.stl` (gone) to
+  `install-control.json` (57 bytes) — same property, surviving fixture.
+- `tests/calibrationMaliciousInputCorpus.test.ts:1858`: "carries the marker
+  that says the STL fixtures are authored, not harvested" deleted — no STL
+  fixtures remain.
+- `tests/calibrationMaliciousInputCorpus.test.ts:1899`: "regenerates
+  byte-for-byte from generate.mjs" — I had hand-edited `manifest.json` via
+  PowerShell (non-canonical formatting). Regenerated canonically.
+
+Residuals I did NOT touch — pre-existing environmental, same class Parts
+1 and 2 saw:
+
+- 2× snapshotProvenanceGuard (pfarm1 checkout drift).
+- 6× orcaProfileInstall 5000ms timeouts.
+
+## 59 · Residue on `development` — flagged, not removed
+
+Kept because the brief said "when in doubt, keep it and flag it":
+
+- `calibrationCapabilityRefresh.ts`, `calibrationFreshness.ts`,
+  `calibrationEngine.ts` — look like they exist to feed a client-side
+  calibration engine that has no live consumer after parts 1 & 3.
+- `calibrationBedClearLedger.ts` — arguably orchestration-and-safety
+  rather than printer-calibration-specific, but its only current consumer
+  is calibration-shaped IPC.
+- `calibrationDiagnostics.ts` — emits diagnostics consumed by the
+  eligibility renderer removed in Part 1. Needs a follow-up review.
+- `getCalibrationPrinterContext` handler + response schema — kept for
+  the "non-gating reads" use (nozzle diameter sanity, connectivity display).
+
+Vasquez: if you want any of these removed on a follow-up branch, that is
+scoped removal I can do.
+
+## 60 · Commit intent
+
+Single amendment on top of Part 2 (`6ce5f7b8`):
+
+- Subject: `Remove printer-calibration asset-manifest apparatus`
+- Trailer: `Co-authored-by: Copilot`
+- No `--no-verify`. Hooks armed.
+- No PR — Vasquez coordinates.

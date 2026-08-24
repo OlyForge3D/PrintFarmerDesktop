@@ -1,20 +1,22 @@
 /**
- * CalibrationHttpClient — profile picker + calibration-setup endpoints
- * (Path C: PUT /api/printers/{id}/calibration-setup).
+ * CalibrationHttpClient — profile picker + printer details endpoints.
  *
- * These tests exercise the six methods added to drive the calibration wizard:
- *   - getExtendedProfiles         GET /api/slicer/profiles/extended
- *   - getMachineProfilesForModel  GET /api/slicer/profiles/machine/for-model/{modelId}
+ * These tests exercise the client methods that drive the machine → process →
+ * filament profile cascade (owner directive 2026-08-23,
+ * `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`) plus the
+ * printer-details enrichment used to source `printerModelId`:
+ *   - getExtendedProfiles           GET /api/slicer/profiles/extended
+ *   - getMachineProfilesForModel    GET /api/slicer/profiles/machine/for-model/{modelId}
  *   - getProcessProfilesForMachines POST /api/slicer/profiles/process/for-machines
  *   - getFilamentProfilesForMachines POST /api/slicer/profiles/filament/for-machines
- *   - getCustomProfiles           GET /api/slicer/profiles/custom
- *   - putCalibrationSetup         PUT /api/printers/{printerId}/calibration-setup
+ *   - getCustomProfiles             GET /api/slicer/profiles/custom
+ *   - getPrinterDetails             GET /api/printers/{printerId}/details
  *
  * Fixtures are shaped from verbatim DTOs cited in the research report at
- * `printfarmer-api-contract.md` lines 47-105 (Machine/Process/Filament DTOs),
- * 130-166 (Custom profile React interface), 208-227 (CalibrationSetupRequest).
- * Do NOT reshape them to match the client's expectations; the whole point is
- * that we mapped the client to the server's shape, not the other way around.
+ * `printfarmer-api-contract.md` lines 47-105 (Machine/Process/Filament DTOs)
+ * and 130-166 (Custom profile React interface). Do NOT reshape them to match
+ * the client's expectations; the whole point is that we mapped the client to
+ * the server's shape, not the other way around.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -31,7 +33,6 @@ const PRINTER_MODEL_ID = '33333333-3333-4333-8333-333333333333';
 const MACHINE_GUID = '44444444-4444-4444-8444-444444444444';
 const PROCESS_GUID = '55555555-5555-4555-8555-555555555555';
 const FILAMENT_GUID = '66666666-6666-4666-8666-666666666666';
-const OPERATION_ID = '77777777-7777-4777-8777-777777777777';
 
 function json(
   body: unknown,
@@ -357,172 +358,6 @@ describe('CalibrationHttpClient.getCustomProfiles', () => {
     );
 
     expect(result.profiles).toHaveLength(2);
-  });
-});
-
-describe('CalibrationHttpClient.putCalibrationSetup', () => {
-  // Verbatim from research report lines 208-227: CalibrationSetupRequestDto
-  // Includes the three profile GUIDs. Response is CalibrationSetupResultDto.
-  const setupResult = () => ({
-    printerId: PRINTER_ID,
-    eligible: true,
-    machineProfileId: MACHINE_GUID,
-    processProfileId: PROCESS_GUID,
-    filamentProfileId: FILAMENT_GUID,
-    rowVersion: 'rv-2',
-    updatedAtUtc: '2026-08-22T22:00:00.000Z',
-  });
-
-  it('posts machine/process/filament Guids and Idempotency-Key', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(setupResult()));
-    const client = makeClient(fetchMock);
-
-    const result = await client.putCalibrationSetup(
-      PROFILE_ID,
-      BASE_URL,
-      PRINTER_ID,
-      {
-        machineProfileId: MACHINE_GUID,
-        processProfileId: PROCESS_GUID,
-        filamentProfileId: FILAMENT_GUID,
-      },
-      OPERATION_ID,
-      'rv-1',
-      AbortSignal.timeout(5_000),
-    );
-
-    expect(result.printerId).toBe(PRINTER_ID);
-    expect(result.eligible).toBe(true);
-    expect(result.rowVersion).toBe('rv-2');
-
-    const call = fetchMock.mock.calls[0] as [
-      URL | string,
-      RequestInit | undefined,
-    ];
-    expect(String(call[0])).toBe(
-      `${BASE_URL}/api/printers/${PRINTER_ID}/calibration-setup`,
-    );
-    expect(call[1]?.method).toBe('PUT');
-    const headers = call[1]?.headers as Record<string, string>;
-    expect(headers['idempotency-key']).toBe(OPERATION_ID);
-    expect(headers['if-match']).toBe('rv-1');
-    expect(JSON.parse(call[1]?.body as string)).toEqual({
-      machineProfileId: MACHINE_GUID,
-      processProfileId: PROCESS_GUID,
-      filamentProfileId: FILAMENT_GUID,
-    });
-  });
-
-  it('omits If-Match when rowVersion is null (first-ever setup)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(setupResult()));
-    const client = makeClient(fetchMock);
-
-    await client.putCalibrationSetup(
-      PROFILE_ID,
-      BASE_URL,
-      PRINTER_ID,
-      {
-        machineProfileId: MACHINE_GUID,
-        processProfileId: PROCESS_GUID,
-        filamentProfileId: FILAMENT_GUID,
-      },
-      OPERATION_ID,
-      null,
-      AbortSignal.timeout(5_000),
-    );
-
-    const call = fetchMock.mock.calls[0] as [
-      URL | string,
-      RequestInit | undefined,
-    ];
-    const headers = call[1]?.headers as Record<string, string>;
-    expect(headers['if-match']).toBeUndefined();
-  });
-
-  it('maps 412 to calibrationSetupConflict (not revisionConflict)', async () => {
-    // Control test: prove the code path exists by asserting the 412 branch
-    // returns the calibration-specific error, not the shared revisionConflict
-    // code, since silent retry would clobber a concurrent change.
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          title: 'Precondition Failed',
-          status: 412,
-        }),
-        {
-          status: 412,
-          headers: { 'content-type': 'application/problem+json' },
-        },
-      ),
-    );
-    const client = makeClient(fetchMock);
-
-    await expect(
-      client.putCalibrationSetup(
-        PROFILE_ID,
-        BASE_URL,
-        PRINTER_ID,
-        {
-          machineProfileId: MACHINE_GUID,
-          processProfileId: PROCESS_GUID,
-          filamentProfileId: FILAMENT_GUID,
-        },
-        OPERATION_ID,
-        'stale-rv',
-        AbortSignal.timeout(5_000),
-      ),
-    ).rejects.toBeInstanceOf(CalibrationHttpError);
-
-    await expect(
-      client.putCalibrationSetup(
-        PROFILE_ID,
-        BASE_URL,
-        PRINTER_ID,
-        {
-          machineProfileId: MACHINE_GUID,
-          processProfileId: PROCESS_GUID,
-          filamentProfileId: FILAMENT_GUID,
-        },
-        OPERATION_ID,
-        'stale-rv',
-        AbortSignal.timeout(5_000),
-      ),
-    ).rejects.toMatchObject({ code: 'calibrationSetupConflict' });
-  });
-
-  it('accepts a response with an all-zero machineProfileId (server clears binding)', async () => {
-    // The server MAY return a cleared binding when the caller sent an
-    // all-zero Guid. Our wire schema treats all three Guids as nullable
-    // on the response so we can render "still needs setup" without an
-    // additional round-trip.
-    const fetchMock = vi.fn().mockResolvedValue(
-      json({
-        printerId: PRINTER_ID,
-        eligible: false,
-        machineProfileId: null,
-        processProfileId: null,
-        filamentProfileId: null,
-        rowVersion: 'rv-2',
-      }),
-    );
-    const client = makeClient(fetchMock);
-
-    const result = await client.putCalibrationSetup(
-      PROFILE_ID,
-      BASE_URL,
-      PRINTER_ID,
-      {
-        machineProfileId: MACHINE_GUID,
-        processProfileId: PROCESS_GUID,
-        filamentProfileId: FILAMENT_GUID,
-      },
-      OPERATION_ID,
-      'rv-1',
-      AbortSignal.timeout(5_000),
-    );
-
-    expect(result.eligible).toBe(false);
-    expect(result.machineProfileId).toBeNull();
   });
 });
 

@@ -65,17 +65,16 @@ const repoRoot = path.resolve(
 );
 const mainDir = path.join(repoRoot, 'src', 'main');
 
-/** Four source entry files representing the three input classes in #158. */
+/** Three source entry files representing the three input classes in #158. */
 const ENTRY_POINTS = [
   'calibrationImportV4.ts', // legacy v4 backup files, native picker
   'orcaProfileDiscovery.ts', // upstream-Orca profiles, scanned from disk
   'orcaProfileInstall.ts', // upstream-Orca profiles, install/save targets
-  'calibrationAssetManifest.ts', // external calibration asset files
 ];
 
 /**
  * The exact, complete file membership of the untrusted calibration closure
- * (#507): the four entry points above plus every non-entry file transitively
+ * (#507): the three entry points above plus every non-entry file transitively
  * reachable from them. This is a set-equality expectation, not a floor --
  * losing exactly one member (a file quietly failing to resolve) must fail
  * this assertion by naming the missing file, the same as gaining one
@@ -85,7 +84,6 @@ const ENTRY_POINTS = [
  * test green on its own.
  */
 const EXPECTED_CLOSURE_FILES = [
-  'calibrationAssetManifest.ts',
   'calibrationImportV4.ts',
   'ipc.ts',
   'orcaProfileDiscovery.ts',

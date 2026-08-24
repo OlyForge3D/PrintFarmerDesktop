@@ -3043,24 +3043,19 @@ export type RemoteQueueSubscriptionResources = z.infer<
   typeof RemoteQueueSubscriptionResources
 >;
 
-// --- Slicer profile selection (Path C, calibration-setup) ------------------
+// --- Slicer profile selection (machine → process → filament cascade) -------
 //
-// These schemas mirror the PrintFarmer server DTOs that back the four profile
-// listing endpoints and the `PUT /api/printers/{id}/calibration-setup` route.
-// The wire is name-keyed for system profiles (there is no `Id` on the worker
-// DTOs), Guid-keyed for custom (database-owned) profiles, and Guid-keyed on the
-// PUT itself. Guids for system profiles are obtained from
-// `GET /api/slicer/profiles/extended` (the DB-backed row list that the React
-// `CalibrationSetupModal` uses).
+// These schemas mirror the PrintFarmer server DTOs that back the profile
+// listing endpoints. The wire is name-keyed for system profiles (there is no
+// `Id` on the worker DTOs) and Guid-keyed for custom (database-owned)
+// profiles. Guids for system profiles are obtained from
+// `GET /api/slicer/profiles/extended` (the DB-backed row list).
 //
 // Verbatim citations (OlyForge3D/PrintFarmer @ b0a021000639d5ef69c818c89877520793d9f9e8):
 //   - MachineProfileDto:      src/slicer/Farm.Slicer.Module/Dtos/MachineProfileDto.cs:12-102
 //   - ProcessProfileDto:      src/slicer/Farm.Slicer.Module/Dtos/ProcessProfileDto.cs:12-120
 //   - FilamentProfileDto:     src/slicer/Farm.Slicer.Module/Dtos/FilamentProfileDto.cs:12-95
 //   - CustomProfile:          src/Web/ReactApp/src/services/slicerProfilesService.ts:229-269
-//   - CalibrationSetupRequestDto: src/Web/ReactApp/src/types/api.ts:1486-1504
-//   - CalibrationSetupResultDto:  src/Web/ReactApp/src/types/api.ts:1523-1537
-//   - PUT controller:         src/api/Controllers/PrintersController.cs:5439-5577
 //   - Extended list:          src/slicer/Farm.Slicer.Module.Api/Controllers/Slicing/ProfilesController.cs:144-158
 
 /** Length ceiling for a single profile name string. Name is identity for system profiles. */
@@ -3240,9 +3235,8 @@ export type RemoteFilamentProfile = z.infer<typeof RemoteFilamentProfile>;
 
 /**
  * `ExtendedProfilesResponseDto` — DB-backed list of ALL profiles the server
- * knows about, INCLUDING Guids for system profiles. This is the source we use
- * to resolve a canonical Name to the Guid required by
- * `PUT /api/printers/{id}/calibration-setup`.
+ * knows about, INCLUDING Guids for system profiles. This is the source used
+ * to resolve a canonical Name to a Guid when a downstream caller needs one.
  *
  * Server route: `GET /api/slicer/profiles/extended`
  * Controller:   `ProfilesController.cs:144-158`
@@ -3346,64 +3340,8 @@ export const RemoteCustomProfilesList = z
 export type RemoteCustomProfilesList = z.infer<typeof RemoteCustomProfilesList>;
 
 /**
- * `CalibrationSetupRequestDto` — body of `PUT /api/printers/{id}/calibration-setup`.
- * Guid strings; passing an all-zero Guid clears a binding. Only the three
- * profile bindings are wired here — the report notes the full DTO also carries
- * toolhead metrology, excluded regions and firmware sign-off, but the desktop
- * caller sources those from the operator-visible printer context and the
- * safety checkboxes elsewhere. Passthrough keeps this additive on the wire.
- *
- * Server: `PrintersController.cs:5439-5577` + `api.ts:1486-1504`.
- */
-export const RemoteCalibrationSetupRequest = z
-  .object({
-    machineProfileId: ServerGuid.nullable(),
-    processProfileId: ServerGuid.nullable(),
-    filamentProfileId: ServerGuid.nullable(),
-  })
-  .passthrough();
-export type RemoteCalibrationSetupRequest = z.infer<
-  typeof RemoteCalibrationSetupRequest
->;
-
-/**
- * `CalibrationSetupResultDto` — server's response after the PUT succeeds.
- * The desktop only needs to know it succeeded and to trigger a fresh
- * `calibration-context` fetch to re-check eligibility.
- *
- * Passthrough because the server evolves this record additively; we only
- * strictly require the acknowledgement fields the report cites in §F.1.
- */
-export const RemoteCalibrationSetupResult = z
-  .object({
-    printerId: ServerGuid,
-    eligible: z
-      .boolean()
-      .nullish()
-      .transform((v) => v ?? null),
-    machineProfileId: ServerGuid.nullish().transform((v) => v ?? null),
-    processProfileId: ServerGuid.nullish().transform((v) => v ?? null),
-    filamentProfileId: ServerGuid.nullish().transform((v) => v ?? null),
-    updatedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
-    /**
-     * Server-reported opaque row version. Downstream operations that mutate
-     * the printer's calibration state (a follow-up PUT to change bindings)
-     * must send this back as `If-Match`.
-     */
-    rowVersion: z
-      .string()
-      .max(2048)
-      .nullish()
-      .transform((v) => v ?? null),
-  })
-  .passthrough();
-export type RemoteCalibrationSetupResult = z.infer<
-  typeof RemoteCalibrationSetupResult
->;
-
-/**
- * Partial view of `PrinterDetailsDto` — only the field we need for the Path C
- * cascade.
+ * Partial view of `PrinterDetailsDto` — only the field we need for the
+ * machine-profile cascade.
  *
  * `CalibrationCandidateDto` (`/api/printers/calibration-candidates`) and
  * `CalibrationContextDto` (`/api/printers/{id}/calibration-context`) both

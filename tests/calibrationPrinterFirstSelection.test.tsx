@@ -224,10 +224,6 @@ function makeApi(
     startCalibrationPrint: vi.fn(),
     pollCalibrationQueueChanges: vi.fn(),
     getCalibrationSubscriptionResources: vi.fn(),
-    getCalibrationAssetManifest: vi.fn(),
-    pickCalibrationAssetFile: vi.fn(),
-    validateCalibrationAssetFile: vi.fn(),
-    openCalibrationManifestUrl: vi.fn(),
   };
 }
 

@@ -92,34 +92,6 @@ const complianceResources = [
     source: path.join(repoRoot, 'build', 'third-party-licenses.md'),
   },
   {
-    packagedName: 'CORRESPONDING_SOURCE.md',
-    parent: 'compliance',
-    source: path.join(
-      repoRoot,
-      'docs',
-      'compliance',
-      'CORRESPONDING_SOURCE.md',
-    ),
-  },
-  {
-    packagedName: 'printer-calibration-provenance.json',
-    parent: 'compliance',
-    source: path.join(
-      repoRoot,
-      'compliance',
-      'printer-calibration-provenance.json',
-    ),
-  },
-  {
-    packagedName: 'printer-calibration-provenance.schema.json',
-    parent: 'compliance',
-    source: path.join(
-      repoRoot,
-      'compliance',
-      'printer-calibration-provenance.schema.json',
-    ),
-  },
-  {
     packagedName: 'ELECTRON_LICENSE.txt',
     parent: 'compliance',
     source: path.join(repoRoot, 'node_modules', 'electron', 'dist', 'LICENSE'),

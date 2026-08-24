@@ -39,31 +39,6 @@ const complianceFiles = [
     hint: 'run `npm run notices` first',
   },
   {
-    destination: 'CORRESPONDING_SOURCE.md',
-    source: path.join(
-      repoRoot,
-      'docs',
-      'compliance',
-      'CORRESPONDING_SOURCE.md',
-    ),
-  },
-  {
-    destination: 'printer-calibration-provenance.json',
-    source: path.join(
-      repoRoot,
-      'compliance',
-      'printer-calibration-provenance.json',
-    ),
-  },
-  {
-    destination: 'printer-calibration-provenance.schema.json',
-    source: path.join(
-      repoRoot,
-      'compliance',
-      'printer-calibration-provenance.schema.json',
-    ),
-  },
-  {
     destination: 'ELECTRON_LICENSE.txt',
     source: path.join(electronDist, 'LICENSE'),
   },

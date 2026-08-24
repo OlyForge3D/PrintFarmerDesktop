@@ -9,7 +9,6 @@ import {
   calibrationReducer,
   createCalibrationState,
   decideCalibrationAction,
-  evaluatePrinterEligibility,
   isMethodAvailable,
   linearSweepValue,
   maximumVolumetricRate,
@@ -26,7 +25,6 @@ import {
   type CalibrationObservation,
   type CalibrationStageId,
   type CalibrationState,
-  type PrinterEligibilityContext,
   type RuntimeCalibrationContext,
 } from '../src/renderer/calibration/domain';
 
@@ -388,86 +386,6 @@ describe('calibration workflow catalog and formulas', () => {
 });
 
 describe('printer eligibility and action gates', () => {
-  const eligibleContext: PrinterEligibilityContext = {
-    eligibility: {
-      firmwareFamily: 'Klipper',
-      gcodeDialect: 'Klipper',
-      slicerFamily: 'OrcaSlicer',
-      slicerDistribution: 'upstream',
-      slicerIdentity: 'OrcaSlicer',
-      hardwareContextComplete: true,
-      safetyContextComplete: true,
-      permissionsComplete: true,
-      reasons: [],
-    },
-    binding: binding(),
-    permissions: {
-      readPrinter: true,
-      writeCalibration: true,
-      generateCalibration: true,
-      startPrint: true,
-    },
-  };
-
-  it('depends on explicit capabilities rather than arbitrary names', () => {
-    const contextWithNames = {
-      ...eligibleContext,
-      manufacturer: 'Unsupported-looking manufacturer',
-      model: 'Any model name',
-      backendName: 'Any backend label',
-    };
-    expect(evaluatePrinterEligibility(contextWithNames).eligible).toBe(true);
-    expect(
-      evaluatePrinterEligibility({
-        ...eligibleContext,
-        eligibility: null,
-      }),
-    ).toMatchObject({
-      eligible: false,
-      reasons: [
-        expect.objectContaining({
-          code: 'CANONICAL_CALIBRATION_ELIGIBILITY_REQUIRED',
-        }),
-      ],
-    });
-  });
-
-  it('requires complete safety, permissions, and explicit multi-tool selection', () => {
-    const multiTool = binding();
-    const incomplete: PrinterEligibilityContext = {
-      ...eligibleContext,
-      binding: {
-        ...multiTool,
-        selectedToolId: '',
-        snapshot: {
-          ...multiTool.snapshot,
-          toolheads: [
-            ...multiTool.snapshot.toolheads,
-            {
-              toolId: 'tool-1',
-              toolheadId: 'head-1',
-              nozzle: {
-                nozzleId: 'nozzle-1',
-                diameterMm: 0.6,
-                material: 'brass',
-              },
-              extruderType: 'bowden',
-            },
-          ],
-        },
-      },
-      permissions: { ...eligibleContext.permissions, startPrint: false },
-    };
-    const decision = evaluatePrinterEligibility(incomplete);
-    expect(decision.eligible).toBe(false);
-    expect(decision.reasons.map((reason) => reason.code)).toEqual(
-      expect.arrayContaining([
-        'MULTI_TOOL_SELECTION_REQUIRED',
-        'INSUFFICIENT_CALIBRATION_PERMISSIONS',
-      ]),
-    );
-  });
-
   it('purely blocks offline, stale, mismatched-nozzle, and unsafe print actions', () => {
     const state = initial();
     const decision = decideCalibrationAction(

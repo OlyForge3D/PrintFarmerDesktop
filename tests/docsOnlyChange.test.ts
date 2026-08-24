@@ -116,10 +116,8 @@ describe('the docs-and-tests fast path recognises documentation and tests', () =
 
   it('admits a test file under tests/', () => {
     // PR #620: exactly this shape, plus two documentation files.
-    expect(
-      isDocsOrTestPath('tests/calibrationAssetManifestReachability.test.ts'),
-    ).toBe(true);
     expect(isDocsOrTestPath('tests/citationReachability.test.ts')).toBe(true);
+    expect(isDocsOrTestPath('tests/docsOnlyChange.test.ts')).toBe(true);
   });
 
   it('refuses a test-shaped path outside tests/, such as an e2e spec', () => {
@@ -165,7 +163,7 @@ describe('the docs-and-tests fast path resolves uncertainty toward the full buil
     const verdict = classifyDocsAndTests([
       '.github/PR_CLOSES.md',
       '.squad/decisions.md',
-      'tests/calibrationAssetManifestReachability.test.ts',
+      'tests/citationReachability.test.ts',
     ]);
     expect(verdict.docsAndTests).toBe(true);
     expect(verdict.offenders).toEqual([]);

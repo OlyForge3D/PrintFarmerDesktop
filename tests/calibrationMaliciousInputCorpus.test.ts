@@ -30,11 +30,9 @@
  *     `canonicalizeSaveTarget` throw `OrcaInstallError` with a typed `code`;
  *   - `discoverLocalOrcaFilamentProfilesEntries` **returns `[]` and skips bad
  *     profiles**, so its correct assertion is exclusion from results plus no
- *     writes plus bounded time — not a thrown code;
- *   - `CalibrationAssetManifestService.validateFile` returns
- *     `{ status: 'invalid', reason }` and never throws to the renderer.
+ *     writes plus bounded time — not a thrown code.
  *
- * Each cell declares which of the four dispositions it expects, and the
+ * Each cell declares which of the three dispositions it expects, and the
  * disposition is produced by entry-point-specific code, not a shared helper.
  *
  * **3. A half-built corpus reports coverage it does not have.** The cell
@@ -99,7 +97,6 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { dialog } from 'electron';
 import {
   LegacyBackupProjectOutcome,
   OrcaProfileOperationError,
@@ -123,7 +120,6 @@ import {
   getWindowsOrcaInstallRoot,
   installOrcaProfileWindows,
 } from '../src/main/orcaProfileInstall.js';
-import { CalibrationAssetManifestService } from '../src/main/calibrationAssetManifest.js';
 import { generateProfileIdentity } from '../src/main/orcaProfileGenerator.js';
 import { RemoteCalibrationPrinterContext } from '../src/main/calibrationWire.js';
 
@@ -268,7 +264,6 @@ const ENTRY_POINTS = [
   'calibrationImportV4',
   'orcaProfileDiscovery',
   'orcaProfileInstall',
-  'calibrationAssetManifest',
 ] as const;
 type EntryPoint = (typeof ENTRY_POINTS)[number];
 
@@ -733,117 +728,6 @@ async function installControlAccepted(ctx: CellContext): Promise<void> {
   );
   expect(result.installedHash).toBe(sha256(INSTALL_CONTROL_JSON));
   expect(existsSync(path.join(root, 'pfd-corpus-control.json'))).toBe(true);
-}
-
-// ---------------------------------------------------------------------------
-// Entry point 4 — asset manifest. Returns { status: 'invalid', reason }.
-// ---------------------------------------------------------------------------
-
-const ASSET_METHOD = 'CorpusMethod';
-
-const ASSET_INVALID_REASONS = [
-  'badExtension',
-  'badMagicBytes',
-  'contentTypeMismatch',
-  'tooSmall',
-  'tooLarge',
-  'geometryOutOfBounds',
-  'checksumMismatch',
-  'methodDisabled',
-  'approvalExpired',
-  'pathRestricted',
-] as const;
-
-async function assetService(
-  ctx: CellContext,
-  entryOverrides: Record<string, unknown> = {},
-): Promise<CalibrationAssetManifestService> {
-  const manifestPath = path.join(ctx.sandbox, 'manifest.json');
-  await writeFile(
-    manifestPath,
-    JSON.stringify({
-      schemaVersion: '1',
-      entries: [
-        {
-          method: ASSET_METHOD,
-          enabled: true,
-          disabledReason: null,
-          sourceUrl: 'https://example.invalid/corpus-asset',
-          author: 'PFD corpus (synthetic)',
-          license: 'CC0-1.0',
-          attribution: 'Synthetic fixture authored for this test corpus.',
-          expectedFilename: null,
-          contentType: 'model/stl',
-          expectedExtension: 'stl',
-          expectedSha256: null,
-          minSizeBytes: 134,
-          maxSizeBytes: 1024,
-          validationRules: {},
-          ...entryOverrides,
-        },
-      ],
-    }),
-    'utf8',
-  );
-  return new CalibrationAssetManifestService(manifestPath);
-}
-
-/** Stage a file through the picker exactly as the renderer flow would. */
-async function assetStage(
-  ctx: CellContext,
-  service: CalibrationAssetManifestService,
-  filename: string,
-  bytes: Buffer,
-): Promise<string> {
-  const filePath = path.join(ctx.sandbox, filename);
-  await writeFile(filePath, bytes);
-  return assetStageExisting(service, filePath);
-}
-
-async function assetStageExisting(
-  service: CalibrationAssetManifestService,
-  filePath: string,
-): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked needs the method reference itself; it is never called detached.
-  vi.mocked(dialog.showOpenDialog).mockResolvedValue({
-    canceled: false,
-    filePaths: [filePath],
-  });
-  const picked = await service.pickFile(['stl', '3mf'], 'corpus');
-  expect(picked.status).toBe('ok');
-  return (picked as { approvalId: string }).approvalId;
-}
-
-/** Report the typed invalid reason, proving it is in the declared union. */
-function assetInvalidReason(result: {
-  status: string;
-  reason?: string;
-  detail?: string;
-  message?: string;
-}): Disposition {
-  expect(
-    result.status,
-    `asset validation did not return a typed invalid result: ${JSON.stringify(result)}`,
-  ).toBe('invalid');
-  const reason = String(result.reason);
-  expect(ASSET_INVALID_REASONS as readonly string[]).toContain(reason);
-  return { kind: 'typedInvalidResult', reason };
-}
-
-/** The asset validator must accept the control asset. */
-async function assetControlAccepted(ctx: CellContext): Promise<void> {
-  const service = await assetService(ctx);
-  const approvalId = await assetStage(
-    ctx,
-    service,
-    'control.stl',
-    fixture('asset-control.stl'),
-  );
-  const result = await service.validateFile(approvalId, ASSET_METHOD);
-  expect(
-    result.status,
-    'the control asset was not accepted, so no asset cell below proves anything',
-  ).toBe('ok');
 }
 
 // ---------------------------------------------------------------------------
@@ -1699,279 +1583,6 @@ const CELLS: Cell[] = [
       return disposition;
     },
   },
-
-  // -------------------------------------------------------------------------
-  // calibrationAssetManifest — { status: 'invalid', reason }
-  // -------------------------------------------------------------------------
-  {
-    vector: 'oversized',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'tooLarge' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      // Structurally valid binary STL, above the manifest's maxSizeBytes.
-      const triangles = 100;
-      const big = Buffer.alloc(80 + 4 + triangles * 50, 0);
-      big.writeUInt32LE(triangles, 80);
-      const approvalId = await assetStage(ctx, service, 'big.stl', big);
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'deepJson',
-    entryPoint: 'calibrationAssetManifest',
-    // Note what the reason is: a *structural STL* rejection, not a JSON one.
-    // This entry point never parses the asset as JSON, which is exactly why a
-    // nesting depth cannot be reached. It used to survive as far as the
-    // geometry bounds check; now the content-type discriminator requires the
-    // file to actually be STL-structured, so a JSON document wearing a .stl
-    // extension is refused one step earlier, before any geometry is read.
-    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      const approvalId = await assetStage(
-        ctx,
-        service,
-        'deep.stl',
-        fixture('asset-deep-nesting.stl'),
-      );
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'cyclicInheritance',
-    entryPoint: 'calibrationAssetManifest',
-    excusedBecause:
-      'a calibration asset is a model file, not a profile, and the manifest ' +
-      'entries are a flat reviewed list. Nothing on this path follows a ' +
-      'reference from one document to another, so there is no chain to cycle.',
-    expect: EXCUSE_HOLDS,
-    run: () => {
-      // #517 negative control: this module imports only node: builtins,
-      // electron, and zod — no relative and no `@shared/*` specifier — so the
-      // widened, alias-aware check still, correctly, reports [].
-      expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
-      expect(mainSource('calibrationAssetManifest')).not.toMatch(
-        /\binherits\b|\bextends\b/,
-      );
-      return EXCUSE_HOLDS;
-    },
-  },
-  {
-    vector: 'duplicateKeys',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      const approvalId = await assetStage(
-        ctx,
-        service,
-        'duplicate.stl',
-        fixture('asset-duplicate-keys.stl'),
-      );
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'pathTraversal',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'approvalExpired' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      // Stage a real file so the store is non-empty: the rejection below has to
-      // be the traversal failing to name anything, not an empty map.
-      await assetStage(
-        ctx,
-        service,
-        'staged.stl',
-        fixture('asset-control.stl'),
-      );
-      const secret = path.join(ctx.outside, 'secret.stl');
-      await writeFile(secret, fixture('asset-control.stl'));
-      await ctx.armTreeGuard();
-
-      const disposition = assetInvalidReason(
-        await service.validateFile(
-          `..${path.sep}..${path.sep}outside${path.sep}secret.stl`,
-          ASSET_METHOD,
-        ),
-      );
-      // The renderer cannot name a path at all: the only handle it holds is an
-      // opaque approval id, and an absolute path is just as unknown as a
-      // relative one.
-      for (const attempt of [
-        secret,
-        '../../etc/passwd',
-        'C:\\Windows\\win.ini',
-      ]) {
-        const result = await service.validateFile(attempt, ASSET_METHOD);
-        expect(result.status).toBe('invalid');
-        expect((result as { reason: string }).reason).toBe('approvalExpired');
-      }
-      return disposition;
-    },
-  },
-  {
-    vector: 'symlinkJunctionEscape',
-    entryPoint: 'calibrationAssetManifest',
-    // Two shapes, deliberately kept apart because they are not the same claim.
-    //
-    // (a) The staged file *itself* is a symlink pointing outside. This is now
-    //     a typed refusal. Measured before the fix, the validator called
-    //     `readFile` on the path and read straight through the link without
-    //     comment.
-    //
-    // (b) The staged file is an ordinary file inside a *linked directory* the
-    //     user picked. That is still allowed and is not an escape: this is a
-    //     read-only validator over a path the user themselves chose in the OS
-    //     picker. What has to hold there is that it writes nothing and
-    //     discloses no path back across the IPC boundary, which is asserted
-    //     inline and enforced by the tree comparison around the cell.
-    expect: { kind: 'typedInvalidResult', reason: 'pathRestricted' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      const escapedDir = path.join(ctx.outside, 'asset-escaped');
-      await mkdir(escapedDir, { recursive: true });
-      await writeFile(
-        path.join(escapedDir, 'escaped.stl'),
-        fixture('asset-control.stl'),
-      );
-      const link = path.join(ctx.sandbox, 'linked');
-      const kind = await makeDirReparsePoint(escapedDir, link);
-      expect(['symlink', 'junction']).toContain(kind);
-      await ctx.armTreeGuard();
-
-      // (b) first, because it must still be accepted — that is what proves
-      // the refusal in (a) is about the link and not about the fixture.
-      const viaDir = await assetStageExisting(
-        service,
-        path.join(link, 'escaped.stl'),
-      );
-      const dirResult = await service.validateFile(viaDir, ASSET_METHOD);
-      expect(dirResult.status).toBe('ok');
-      const serialised = JSON.stringify(dirResult);
-      expect(serialised).not.toContain('escaped.stl');
-      expect(serialised).not.toContain(ctx.outside.split('\\').join('\\\\'));
-      expect(Object.keys(dirResult)).not.toContain('filePath');
-
-      // (a) the file symlink.
-      const fileLink = path.join(ctx.sandbox, 'linked-file.stl');
-      await makeReparsePoint(path.join(escapedDir, 'escaped.stl'), fileLink);
-      const viaFile = await assetStageExisting(service, fileLink);
-      return assetInvalidReason(
-        await service.validateFile(viaFile, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'wrongMagicBytes',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      const approvalId = await assetStage(
-        ctx,
-        service,
-        'magic.stl',
-        fixture('asset-wrong-magic.stl'),
-      );
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'mimeExtensionMismatch',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'badExtension' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      // Byte-identical to the control asset, offered under the wrong extension.
-      expect(fixture('asset-extension-mismatch.3mf')).toEqual(
-        fixture('asset-control.stl'),
-      );
-      const approvalId = await assetStage(
-        ctx,
-        service,
-        'mismatch.3mf',
-        fixture('asset-extension-mismatch.3mf'),
-      );
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'unsafeNumerics',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      // Header declares 0xFFFFFFFF triangles in a 134-byte file. The declared
-      // count is attacker-controlled and is never trusted to size anything.
-      // It is now refused by the content-type discriminator, which requires
-      // the declared count to account for exactly the bytes present, rather
-      // than surviving to the geometry bounds check as it did when any file
-      // of 84 bytes or more counted as STL.
-      const approvalId = await assetStage(
-        ctx,
-        service,
-        'overflow.stl',
-        fixture('asset-triangle-count-overflow.stl'),
-      );
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
-  {
-    vector: 'malformedBase64',
-    entryPoint: 'calibrationAssetManifest',
-    excusedBecause:
-      'the asset path decodes nothing. A staged file is read as raw bytes and ' +
-      'compared to magic signatures; there is no encoded payload to malform.',
-    expect: EXCUSE_HOLDS,
-    run: () => {
-      // #517 negative control (see cyclicInheritance cell above): still [].
-      expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
-      expect(mainSource('calibrationAssetManifest')).not.toMatch(
-        /base64|atob\(|data:[a-z]+\//i,
-      );
-      return EXCUSE_HOLDS;
-    },
-  },
-  {
-    vector: 'gcodeOrScriptShaped',
-    entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
-    control: assetControlAccepted,
-    run: async (ctx) => {
-      const service = await assetService(ctx);
-      const approvalId = await assetStage(
-        ctx,
-        service,
-        'gcode.stl',
-        fixture('asset-gcode-shaped.stl'),
-      );
-      return assetInvalidReason(
-        await service.validateFile(approvalId, ASSET_METHOD),
-      );
-    },
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2055,13 +1666,6 @@ describe('first-party import scope (#517)', () => {
     );
     const siblingSource = readFileSync(siblingPath, 'utf8');
     expect(siblingSource).not.toContain(CORPUS_517_CONTROL_TOKEN);
-  });
-
-  it('negative control: a module with zero first-party imports of any kind still asserts empty', () => {
-    // calibrationAssetManifest.ts imports only node: builtins, electron, and
-    // zod — no relative specifier and no `@shared/*` specifier. Proves the
-    // widened rule is not unfalsifiable: it can still report [].
-    expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
   });
 
   it('firstPartyImportsOf sees the @shared/ipc specifier the old relative-only check missed', () => {
@@ -2204,8 +1808,8 @@ describe('the fixtures are synthetic and committed', () => {
   it('is a committed directory, not something generated at import time', () => {
     expect(existsSync(fixturesDir)).toBe(true);
     expect(
-      readFileSync(path.join(fixturesDir, 'asset-control.stl')).length,
-    ).toBe(134);
+      readFileSync(path.join(fixturesDir, 'install-control.json')).length,
+    ).toBe(57);
   });
 
   it('holds nothing large enough to be a real model or a real user profile', () => {
@@ -2248,17 +1852,6 @@ describe('the fixtures are synthetic and committed', () => {
         longest(entry),
         `${String(entry['name'])} carries an unexpectedly long string`,
       ).toBeLessThanOrEqual(160);
-    }
-  });
-
-  it('carries the marker that says the STL fixtures are authored, not harvested', () => {
-    for (const name of [
-      'asset-control.stl',
-      'asset-triangle-count-overflow.stl',
-    ]) {
-      expect(fixture(name).subarray(0, 39).toString('ascii')).toBe(
-        'PFD synthetic binary STL corpus fixture',
-      );
     }
   });
 
@@ -2666,41 +2259,11 @@ describe('the bounds bite where they are declared', () => {
     }
   });
 
-  it('refuses an asset one byte over the manifest limit and not one byte under', async () => {
-    await withSandbox(async (ctx) => {
-      // The control asset, not a synthetic zero-filled one: an all-zero STL is
-      // structurally valid but geometrically degenerate, so it is refused for
-      // a reason that has nothing to do with size and the pair would prove
-      // nothing. Holding the accepted control constant means the bound is the
-      // only thing that differs between the two runs.
-      const stl = fixture('asset-control.stl');
-      const size = stl.byteLength;
-
-      // Sequenced, not interleaved: `assetService` writes the manifest to one
-      // fixed path per sandbox, so constructing both services up front would
-      // leave the second manifest on disk for both validations and the pair
-      // would silently compare a bound against itself.
-      const accepting = await assetService(ctx, { maxSizeBytes: size });
-      const acceptedId = await assetStage(ctx, accepting, 'at.stl', stl);
-      expect(
-        (await accepting.validateFile(acceptedId, ASSET_METHOD)).status,
-      ).toBe('ok');
-
-      const rejecting = await assetService(ctx, { maxSizeBytes: size - 1 });
-      const rejectedId = await assetStage(ctx, rejecting, 'over.stl', stl);
-      expect(
-        assetInvalidReason(
-          await rejecting.validateFile(rejectedId, ASSET_METHOD),
-        ),
-      ).toEqual({ kind: 'typedInvalidResult', reason: 'tooLarge' });
-    });
-  });
-
   it('refuses an Orca profile one byte over the read limit and not one byte under', async () => {
     await withSandbox(async (ctx) => {
-      // The fourth entry point had no boundary pair. Both files are the
-      // accepted control profile padded to an exact byte count, so the only
-      // thing that differs across the boundary is the length.
+      // orcaProfileDiscovery had no boundary pair in the vector matrix. Both
+      // files are the accepted control profile padded to an exact byte count,
+      // so the only thing that differs across the boundary is the length.
       const padded = (bytes: number): string => {
         const shell = (pad: string) =>
           JSON.stringify({
@@ -3004,7 +2567,6 @@ describe('nothing in the corpus is executed', () => {
   const NEVER_EXECUTES = [
     'calibrationImportV4',
     'orcaProfileDiscovery',
-    'calibrationAssetManifest',
     // Reached transitively from the first two. It is the module that inspects
     // untrusted JSON, so it is exactly where an execution primitive would be
     // most dangerous and least visible.
@@ -3054,11 +2616,7 @@ describe('nothing in the corpus is executed', () => {
     // The only entry point that writes at all is install, and it writes exactly
     // one destination computed by computeInstallPath, which refuses anything
     // that is not a bare `.json` name.
-    for (const file of [
-      'calibrationImportV4',
-      'orcaProfileDiscovery',
-      'calibrationAssetManifest',
-    ]) {
+    for (const file of ['calibrationImportV4', 'orcaProfileDiscovery']) {
       expect(mainSource(file)).not.toMatch(
         /\bwriteFile\(|\bappendFile\(|\bcreateWriteStream\(/,
       );

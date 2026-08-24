@@ -231,14 +231,6 @@ export interface CalibrationWorkspaceStoreValue {
   readonly storePrintObservation: (
     observation: CalibrationPrintObservation,
   ) => Promise<void>;
-  /**
-   * Associate a validated asset SHA-256 checksum with a domain attempt ID
-   * (criterion 14a). Persisted so provenance survives a workspace reload.
-   */
-  readonly storeAttemptAssetSha256: (
-    attemptId: string,
-    sha256: string,
-  ) => Promise<void>;
   readonly refreshProjectContext: () => Promise<CalibrationPrinterContext | null>;
   readonly announce: (message: string) => void;
   readonly reportError: (message: string) => void;

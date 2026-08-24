@@ -635,22 +635,12 @@ describe('only an authoritative context may be bound', () => {
     ).not.toBeNull();
     const projected = projectCalibrationPrinterContext(authoritative);
     expect(
-      bindingFromContext(
-        PROFILE_ID,
-        projected,
-        TOOLHEAD_GUID,
-        {
-          filamentProjectId: 'filament-1',
-          provider: 'PrintFarmer',
-          product: 'PLA',
-          sku: 'PLA-BLACK',
-        },
-        {
-          emergencyStopAvailable: true,
-          thermalProtectionConfirmed: true,
-          ventilationAssessed: true,
-        },
-      )?.profileIdentities,
+      bindingFromContext(PROFILE_ID, projected, TOOLHEAD_GUID, {
+        filamentProjectId: 'filament-1',
+        provider: 'PrintFarmer',
+        product: 'PLA',
+        sku: 'PLA-BLACK',
+      })?.profileIdentities,
     ).toEqual(projected.profileIdentities);
   });
 

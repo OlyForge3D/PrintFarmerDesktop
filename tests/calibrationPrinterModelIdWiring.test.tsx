@@ -190,18 +190,6 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
     getCalibrationSubscriptionResources: vi
       .fn()
       .mockResolvedValue(notImplemented('getCalibrationSubscriptionResources')),
-    getCalibrationAssetManifest: vi.fn().mockResolvedValue({
-      status: 'error',
-      message: 'not implemented in printerModelId wiring test.',
-    }),
-    pickCalibrationAssetFile: vi
-      .fn()
-      .mockResolvedValue({ status: 'cancelled' }),
-    validateCalibrationAssetFile: vi.fn().mockResolvedValue({
-      status: 'error',
-      message: 'not implemented in printerModelId wiring test.',
-    }),
-    openCalibrationManifestUrl: vi.fn().mockResolvedValue({ status: 'ok' }),
     // The two calls this test actually reads. Both return the same option
     // set so operator-visible outcome is identical between arms; the
     // difference is only which call fires, which is what the predicate
@@ -266,13 +254,6 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       profiles: [],
       fetchedAt: now,
     }),
-    setupCalibrationPrinter: vi
-      .fn()
-      .mockRejectedValue(
-        new Error(
-          'setupCalibrationPrinter: wiring test does not exercise submit.',
-        ),
-      ),
   } satisfies CalibrationApi;
 }
 

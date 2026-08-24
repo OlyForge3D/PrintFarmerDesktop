@@ -13,7 +13,6 @@ only `test` and `typecheck` is the single most common cause of a red PR here —
 you never looked at.
 
 ```
-npm run check:provenance
 npm run verify:target-profiles
 npm run check:script-reachability
 npm run check:inert-class-field-seams
@@ -143,11 +142,6 @@ events drive targeted work, periodic reconciliation is authoritative.
 - Git hooks (`prepare-commit-msg`, `pre-push`) are armed by `core.hooksPath` via
   the `prepare` script; logic lives in `scripts/*.mjs` so it is unit-tested.
   `npm run hooks:verify` is a required CI step — don't bypass hooks locally.
-- Files under a `derivedRoots` path in
-  `compliance/printer-calibration-provenance.json` are source-derived and need a
-  provenance header plus a manifest record. Run `npm run check:provenance`.
-  Orchestration, UI, persistence, ownership, authorization, queueing, and safety
-  code stays _outside_ those roots and is independently implemented.
 - Never commit credentials or signing material.
 
 ## Squad — Copilot Coding Agent instructions

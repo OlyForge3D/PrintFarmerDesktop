@@ -14,12 +14,6 @@ interface LockfileMetadata {
   };
 }
 
-interface ProvenanceReview {
-  status?: unknown;
-  approvedBy?: unknown;
-  decisionReference?: unknown;
-}
-
 const repoRoot = path.resolve(import.meta.dirname, '..');
 
 function readText(relativePath: string): string {
@@ -40,25 +34,6 @@ function parseLockfile(): LockfileMetadata {
     throw new Error('package-lock.json must contain a JSON object');
   }
   return parsed;
-}
-
-function parseProvenanceReview(): ProvenanceReview {
-  const parsed: unknown = JSON.parse(
-    readText('compliance/printer-calibration-provenance.json'),
-  );
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    !('repository' in parsed) ||
-    typeof parsed.repository !== 'object' ||
-    parsed.repository === null ||
-    !('licenseReview' in parsed.repository) ||
-    typeof parsed.repository.licenseReview !== 'object' ||
-    parsed.repository.licenseReview === null
-  ) {
-    throw new Error('Provenance manifest must contain a license review');
-  }
-  return parsed.repository.licenseReview;
 }
 
 describe('repository licensing metadata', () => {
@@ -82,19 +57,13 @@ describe('repository licensing metadata', () => {
       '057d6117b9ab31747ede3a5684a009cb6079ad11',
     );
     expect(readText('THIRD_PARTY_NOTICES.md')).toContain('Aaron Taylor');
-    expect(readText('docs/compliance/CORRESPONDING_SOURCE.md')).toContain(
-      'releases/tag/<tag>',
+    const adr = readText(
+      'docs/adr/0001-printer-calibration-source-provenance.md',
     );
-    expect(readText('.github/CODEOWNERS')).toContain('/compliance/ @jpapiez');
-    expect(parseProvenanceReview()).toMatchObject({
-      status: 'approved',
-      approvedBy: '@jpapiez',
-      decisionReference:
-        'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51#issuecomment-5075723583',
-    });
-    expect(
-      readText('docs/adr/0001-printer-calibration-source-provenance.md'),
-    ).toContain('**Status:** Accepted');
+    expect(adr).toContain('**Status:** Superseded');
+    expect(adr).toContain(
+      'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51#issuecomment-5075723583',
+    );
   });
 
   it('keeps public Printer Calibration framing native to PFD', () => {

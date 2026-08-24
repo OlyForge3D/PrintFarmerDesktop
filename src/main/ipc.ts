@@ -125,7 +125,6 @@ import {
 } from './calibrationImportV4.js';
 import type { PreflightResult } from './calibrationImportV4.js';
 import { LegacyBackupProjectOutcome } from '@shared/ipc';
-import { CalibrationAssetManifestService } from './calibrationAssetManifest.js';
 import {
   emitCalibrationLog,
   describeCalibrationFailure,
@@ -513,8 +512,6 @@ export function registerIpcHandlers(
       },
     },
   );
-  // Asset manifest service for external calibration assets (issue #54).
-  const calibrationAssetManifest = new CalibrationAssetManifestService();
   // Active sync-abort controller: one controller per outstanding sync.
   const activeSyncControllers = new Map<string, AbortController>();
 
@@ -4168,111 +4165,6 @@ export function registerIpcHandlers(
     },
   );
 
-  // --- External calibration asset manifest (issue #54) ---------------------
-
-  registerCalibrationHandler(
-    IpcChannel.CalibrationGetAssetManifest,
-    async () => {
-      try {
-        const manifest = await calibrationAssetManifest.load();
-        return ipcSchemas[
-          IpcChannel.CalibrationGetAssetManifest
-        ].response.parse(manifest);
-      } catch (error) {
-        return ipcSchemas[
-          IpcChannel.CalibrationGetAssetManifest
-        ].response.parse({
-          status: 'error',
-          message:
-            error instanceof Error ? error.message : 'Manifest load failed.',
-        });
-      }
-    },
-  );
-
-  registerCalibrationHandler(
-    IpcChannel.CalibrationPickAssetFile,
-    async (_event, rawRequest: unknown) => {
-      const request =
-        ipcSchemas[IpcChannel.CalibrationPickAssetFile].request.parse(
-          rawRequest,
-        );
-      try {
-        const result = await calibrationAssetManifest.pickFile(
-          request.allowedExtensions,
-          request.title,
-        );
-        return ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse(
-          result,
-        );
-      } catch (error) {
-        return ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse({
-          status: 'error',
-          message:
-            error instanceof Error ? error.message : 'File picker failed.',
-        });
-      }
-    },
-  );
-
-  registerCalibrationHandler(
-    IpcChannel.CalibrationValidateAssetFile,
-    async (_event, rawRequest: unknown) => {
-      const request =
-        ipcSchemas[IpcChannel.CalibrationValidateAssetFile].request.parse(
-          rawRequest,
-        );
-      try {
-        const result = await calibrationAssetManifest.validateFile(
-          request.approvalId,
-          request.method,
-        );
-        return ipcSchemas[
-          IpcChannel.CalibrationValidateAssetFile
-        ].response.parse(result);
-      } catch (error) {
-        return ipcSchemas[
-          IpcChannel.CalibrationValidateAssetFile
-        ].response.parse({
-          status: 'error',
-          message:
-            error instanceof Error ? error.message : 'Asset validation failed.',
-        });
-      }
-    },
-  );
-
-  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
-  registerCalibrationHandler(
-    IpcChannel.CalibrationOpenManifestUrl,
-    async (_event, rawRequest: unknown) => {
-      const request =
-        ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].request.parse(
-          rawRequest,
-        );
-      // Validate the URL against the source URLs declared in the versioned
-      // asset manifest. Only URLs that actually appear as a reviewed sourceUrl
-      // entry are allowed — this is a genuine allowlist, not a scheme heuristic.
-      const isAllowed = await calibrationAssetManifest.isManifestSourceUrl(
-        request.url,
-      );
-      if (!isAllowed) {
-        return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse(
-          {
-            status: 'error',
-            message:
-              'URL is not in the approved calibration asset manifest source list.',
-          },
-        );
-      }
-      const { shell } = await import('electron');
-      await shell.openExternal(request.url);
-      return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse({
-        status: 'ok',
-      });
-    },
-  );
-
   registerCalibrationHandler(
     IpcChannel.CalibrationListOrcaProfiles,
     async (_event, rawRequest: unknown) => {
@@ -6118,96 +6010,10 @@ export function registerIpcHandlers(
     },
   );
 
-  // PUT /api/printers/{printerId}/calibration-setup.
-  //
-  // The core of Path C. Persists the three Guids on the printer row so the
-  // server's `calibration-context` endpoint stops emitting the
-  // `*_profile_missing` rejection codes. `If-Match: <rowVersion>` gives
-  // optimistic concurrency; a 412 is surfaced as `calibrationSetupConflict`
-  // and never retried silently. The renderer re-opens the wizard.
-  registerCalibrationHandler(
-    IpcChannel.CalibrationSetupPrinter,
-    async (_event, rawRequest: unknown) => {
-      const request =
-        ipcSchemas[IpcChannel.CalibrationSetupPrinter].request.parse(
-          rawRequest,
-        );
-      const selectedId = await requireSelectedCalibrationProfile(
-        request.profileId,
-      );
-      const correlationId = calibrationCorrelation.beginFlow();
-      const correlationOrigin = 'flowStart' as const;
-      const startedAt = Date.now();
-      try {
-        const signal = AbortSignal.timeout(10_000);
-        const ctx = await profiles.getAuthenticatedContext(selectedId);
-        const result = await calibrationHttp.putCalibrationSetup(
-          selectedId,
-          ctx.profile.baseUrl,
-          request.printerId,
-          {
-            machineProfileId: request.machineProfileId,
-            processProfileId: request.processProfileId,
-            filamentProfileId: request.filamentProfileId,
-          },
-          request.operationId,
-          request.rowVersion,
-          signal,
-        );
-        emitCalibrationLog({
-          level: 'info',
-          component: 'calibration.http',
-          event: 'calibration.setup.applied',
-          correlationId,
-          correlationOrigin,
-          operationId: request.operationId,
-          profileId: selectedId,
-          outcome: 'ok',
-          durationMs: Date.now() - startedAt,
-        });
-        return ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse({
-          status: 'ok',
-          printerId: result.printerId,
-          eligible: result.eligible,
-          machineProfileId: result.machineProfileId,
-          processProfileId: result.processProfileId,
-          filamentProfileId: result.filamentProfileId,
-          rowVersion: result.rowVersion,
-          updatedAtUtc: result.updatedAtUtc,
-        });
-      } catch (error) {
-        emitCalibrationLog({
-          level: 'error',
-          component: 'calibration.http',
-          event: 'calibration.setup.applied',
-          correlationId,
-          correlationOrigin,
-          operationId: request.operationId,
-          profileId: selectedId,
-          outcome: 'failed',
-          durationMs: Date.now() - startedAt,
-          ...describeCalibrationFailure(error),
-        });
-        const apiError =
-          error instanceof CalibrationHttpError
-            ? error.toApiError(correlationId)
-            : {
-                code: 'serverError' as const,
-                message:
-                  error instanceof Error
-                    ? error.message
-                    : 'Calibration setup failed.',
-                retryable: false,
-                retryAfterSeconds: null,
-                reference: correlationId,
-              };
-        return ipcSchemas[IpcChannel.CalibrationSetupPrinter].response.parse({
-          status: 'error',
-          error: apiError,
-        });
-      }
-    },
-  );
+  // (calibration:setupPrinter handler removed 2026-08-23. The printer-
+  // calibration setup PUT belonged to the printer-eligibility subsystem;
+  // the filament-calibration workflow this desktop targets does not persist
+  // profile Guids server-side.)
   // --- End Printer Calibration transport handlers --------------------------
 
   return async () => {

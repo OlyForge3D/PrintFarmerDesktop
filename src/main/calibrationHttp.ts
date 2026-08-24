@@ -39,8 +39,6 @@ import type {
   RemoteProcessProfile,
   RemoteFilamentProfile,
   RemoteCustomProfilesList,
-  RemoteCalibrationSetupRequest,
-  RemoteCalibrationSetupResult,
   RemotePrinterDetailsDto,
 } from './calibrationWire.js';
 import {
@@ -66,7 +64,6 @@ import {
   RemoteProcessProfile as ProcessProfileSchema,
   RemoteFilamentProfile as FilamentProfileSchema,
   RemoteCustomProfilesList as CustomProfilesListSchema,
-  RemoteCalibrationSetupResult as CalibrationSetupResultSchema,
   RemotePrinterDetailsDto as PrinterDetailsSchema,
 } from './calibrationWire.js';
 
@@ -208,7 +205,7 @@ const ROUTES = {
     buildRoute(CALIBRATION_QUEUE_ROUTE_TEMPLATES.acknowledgeBedClear, {
       jobId,
     }),
-  // --- Slicer profile selection (Path C, calibration-setup) -------------------
+  // --- Slicer profile selection (machine → process → filament cascade) -------
   /** GET — DB-backed list of ALL profiles (has Guids for system profiles). */
   extendedProfiles: '/api/slicer/profiles/extended',
   /** GET — machine profiles for a catalog printer-model GUID. */
@@ -220,11 +217,8 @@ const ROUTES = {
   filamentProfilesForMachines: '/api/slicer/profiles/filament/for-machines',
   /** GET — the current user's custom profiles. */
   customProfiles: '/api/slicer/profiles/custom',
-  /** PUT — persist the three calibration profile Guids on the printer. */
-  calibrationSetup: (printerId: string) =>
-    `/api/printers/${encodeURIComponent(printerId)}/calibration-setup`,
   /**
-   * GET — printer details, used by Path C only to source the catalog
+   * GET — printer details, used only to source the catalog
    * `PrinterModel` Guid that `CalibrationCandidateDto` omits from the wire.
    *
    * The full response is `PrinterDetailsDto`
@@ -298,14 +292,7 @@ export type CalibrationHttpErrorCode =
   // returned here, and it is a *diagnosed* code produced by ten other call
   // sites, so an unrecognised rejection was byte-identical to a validated one
   // (#508).
-  | 'unclassifiedValidationFailure'
-  // --- Path C: calibration-setup persistence ---
-  // Distinct from the general `revisionConflict` so the renderer can point the
-  // operator to the specific printer whose row moved underneath a
-  // `PUT /api/printers/{id}/calibration-setup` and prompt a re-read of the
-  // calibration context before retrying — silent retry would race the next
-  // operator who edited the printer.
-  | 'calibrationSetupConflict';
+  | 'unclassifiedValidationFailure';
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -859,17 +846,16 @@ export class CalibrationHttpClient {
     }
   }
 
-  // --- Slicer profile listing + calibration-setup (Path C) ------------------
+  // --- Slicer profile listing (machine → process → filament cascade) --------
 
   /**
    * `GET /api/slicer/profiles/extended` — the DB-backed catalog.
    *
    * This is the ONLY listing endpoint that returns Guids for system profiles.
    * Every other listing route (`/for-model`, `/for-machines`, `/custom`) returns
-   * either name-keyed worker DTOs or Guid-keyed custom rows. Since
-   * `PUT /api/printers/{id}/calibration-setup` requires Guids for all three
-   * profile bindings, the desktop MUST resolve the operator's Name selection
-   * against this list before submitting the setup PUT.
+   * either name-keyed worker DTOs or Guid-keyed custom rows. When a downstream
+   * caller needs a Guid for a system profile identified by name, it resolves
+   * that name against this list.
    *
    * Server: `ProfilesController.cs:144-158`. Requires `Slicing.Submit`.
    */
@@ -980,90 +966,11 @@ export class CalibrationHttpClient {
   }
 
   /**
-   * `PUT /api/printers/{printerId}/calibration-setup` — persist the three
-   * profile Guids on the printer row and (optionally) toolhead metrology,
-   * excluded regions and firmware sign-off. This is the only production path
-   * that populates `CalibrationMachineProfileId` / `ProcessProfileId` /
-   * `FilamentProfileId` for a real printer.
-   *
-   * Optimistic concurrency: `If-Match: <rowVersion>` when the caller has one.
-   * A 412 is surfaced as `calibrationSetupConflict` — the caller must re-read
-   * `calibration-context` and re-drive the wizard; silent retry would clobber
-   * whatever change moved the row.
-   *
-   * Server: `PrintersController.cs:5439-5577`. Requires `Calibration.Update`.
-   *
-   * `operationId` is a client-generated idempotency key; the server dedupes
-   * against it exactly as it does for other calibration mutations.
-   */
-  async putCalibrationSetup(
-    profileId: string,
-    baseUrl: string,
-    printerId: string,
-    body: RemoteCalibrationSetupRequest,
-    operationId: string,
-    ifMatch: string | null,
-    signal: AbortSignal,
-  ): Promise<RemoteCalibrationSetupResult> {
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'idempotency-key': operationId,
-    };
-    if (ifMatch !== null) headers['if-match'] = ifMatch;
-
-    const pending = await this.request(
-      profileId,
-      baseUrl,
-      ROUTES.calibrationSetup(printerId),
-      { method: 'PUT', headers, body: JSON.stringify(body) },
-      signal,
-      // A PUT that transitions a printer's calibration binding is ambiguous on
-      // transport failure — we cannot know whether the server committed the
-      // update. The caller re-reads `calibration-context` before showing the
-      // wizard again, so ambiguity is safe here.
-      true,
-    );
-    try {
-      if (pending.response.status === 412) {
-        // Re-map the generic revision conflict to a calibration-setup-specific
-        // code so the renderer can point at the exact resource whose row moved.
-        // Discard the body first — the server response is a ProblemDetails
-        // envelope we do not need beyond the status code.
-        const err = await this.statusError(
-          pending.response,
-          true,
-          pending.timedOut(),
-        );
-        throw new CalibrationHttpError(
-          'calibrationSetupConflict',
-          'Printer calibration binding changed since the wizard was opened. Re-open the wizard to see the current bindings.',
-          err.status,
-          err.retryAfterMs,
-          err.ambiguous,
-          err.serverDetail,
-          err.serverInstance,
-          err.serverErrorCode,
-        );
-      }
-      if (!pending.response.ok) {
-        throw await this.statusError(
-          pending.response,
-          true,
-          pending.timedOut(),
-        );
-      }
-      return await this.parse(pending, CalibrationSetupResultSchema);
-    } finally {
-      pending.dispose();
-    }
-  }
-
-  /**
    * `GET /api/printers/{printerId}/details` — used only to source the catalog
    * `PrinterModel` Guid that the calibration-candidates list omits from the
    * wire.
    *
-   * Path C's `/for-model/{modelId}` endpoint needs a real Guid to return the
+   * The `/for-model/{modelId}` endpoint needs a real Guid to return the
    * system machine profiles applicable to a printer; without one the cascade
    * degrades to the catalog-wide `/extended` list and shows profiles for every
    * model instead of just the operator's. Every other server field on the

@@ -3,7 +3,7 @@ import type {
   CalibrationCustomProfileRef,
   CalibrationSlicerProfileRef,
 } from '@shared/ipc';
-import { calibrationApi, type CalibrationEnvironment } from './api';
+import { calibrationApi } from './api';
 import {
   customProfilesOfType,
   decodeProfileOption,
@@ -11,21 +11,16 @@ import {
   filterCustomMachineOrProcessForModel,
   profileOptionValue,
   resolveChosenMachineName,
-  resolveChosenProfileGuid,
   type DecodedProfileOption,
 } from './profileSelection';
 
 /**
  * Props to the profile-selection cascade.
  *
- * The cascade is presentation-driven: it fetches the profile catalogue for the
- * highlighted printer, lets the operator pick a machine → process → filament,
- * and invokes `setupCalibrationPrinter` to fix the printer row's NULL
- * `CalibrationMachineProfileId` / `ProcessProfileId` / `FilamentProfileId`
- * columns at the source (Path C in the API contract). Once the PUT succeeds
- * the parent is told, so it can refresh the printer context and unlock the
- * legacy wizard flow that continues from there (safety gates, toolhead
- * metrology, baseline values, generation).
+ * Step 1 of the filament calibration workflow (owner directive 2026-08-23,
+ * `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`): the
+ * operator picks machine, process and a base filament profile from the lists
+ * PrintFarmer offers for the highlighted printer.
  */
 export interface ProfileSelectionSectionProps {
   readonly profileId: string;
@@ -39,13 +34,6 @@ export interface ProfileSelectionSectionProps {
    */
   readonly printerModelId: string | null;
   readonly disabled: boolean;
-  readonly environment: CalibrationEnvironment;
-  /**
-   * Invoked once the setup PUT succeeds. The parent uses this to refresh the
-   * printer context — the server has now populated the NULL columns and the
-   * per-printer eligibility check finally resolves against real inputs.
-   */
-  readonly onSetupComplete: (printerId: string) => void;
 }
 
 interface CatalogState {
@@ -84,20 +72,6 @@ const emptyFilteredForMachine: FilteredForMachine = {
   systemFilaments: [],
 };
 
-interface SetupSubmissionState {
-  readonly submitting: boolean;
-  readonly error: string | null;
-  readonly conflict: boolean;
-  readonly noticeMessage: string | null;
-}
-
-const emptySubmission: SetupSubmissionState = {
-  submitting: false,
-  error: null,
-  conflict: false,
-  noticeMessage: null,
-};
-
 /**
  * Format a profile row's display text so the origin ("system" / "custom") is
  * visible inline as well as on the `<optgroup>` label. The refused-environment
@@ -117,14 +91,7 @@ function customOptionLabel(profile: CalibrationCustomProfileRef): string {
 export function ProfileSelectionSection(
   props: ProfileSelectionSectionProps,
 ): React.JSX.Element {
-  const {
-    profileId,
-    printerId,
-    printerModelId,
-    disabled,
-    environment,
-    onSetupComplete,
-  } = props;
+  const { profileId, printerId, printerModelId, disabled } = props;
 
   const [catalog, setCatalog] = useState<CatalogState>(emptyCatalog);
   const [forMachine, setForMachine] = useState<FilteredForMachine>(
@@ -133,9 +100,6 @@ export function ProfileSelectionSection(
   const [chosenMachine, setChosenMachine] = useState<string>('');
   const [chosenProcess, setChosenProcess] = useState<string>('');
   const [chosenFilament, setChosenFilament] = useState<string>('');
-  const [submission, setSubmission] =
-    useState<SetupSubmissionState>(emptySubmission);
-  const [rowVersion, setRowVersion] = useState<string | null>(null);
 
   const catalogEpochRef = useRef(0);
   const forMachineEpochRef = useRef(0);
@@ -238,8 +202,6 @@ export function ProfileSelectionSection(
     setChosenProcess('');
     setChosenFilament('');
     setForMachine(emptyFilteredForMachine);
-    setSubmission(emptySubmission);
-    setRowVersion(null);
     // printerId is deliberately in the deps — the callback closes over
     // profileId/printerId/printerModelId so a new printer produces a new
     // callback identity, which fires this effect.
@@ -375,149 +337,11 @@ export function ProfileSelectionSection(
     [catalog.custom, chosenMachineName],
   );
 
-  const machineProfileGuid = useMemo(
-    (): string | null =>
-      resolveChosenProfileGuid(
-        chosenMachineOption,
-        catalog.systemMachines,
-        customProfilesOfType(catalog.custom, 'machine'),
-      ),
-    [catalog.custom, catalog.systemMachines, chosenMachineOption],
-  );
-
-  const chosenProcessOption = useMemo(
-    (): DecodedProfileOption | null => decodeProfileOption(chosenProcess),
-    [chosenProcess],
-  );
-
-  const processProfileGuid = useMemo(
-    (): string | null =>
-      resolveChosenProfileGuid(
-        chosenProcessOption,
-        forMachine.systemProcesses,
-        customProfilesOfType(catalog.custom, 'process'),
-      ),
-    [catalog.custom, chosenProcessOption, forMachine.systemProcesses],
-  );
-
-  const chosenFilamentOption = useMemo(
-    (): DecodedProfileOption | null => decodeProfileOption(chosenFilament),
-    [chosenFilament],
-  );
-
-  const filamentProfileGuid = useMemo(
-    (): string | null =>
-      resolveChosenProfileGuid(
-        chosenFilamentOption,
-        forMachine.systemFilaments,
-        customProfilesOfType(catalog.custom, 'filament'),
-      ),
-    [catalog.custom, chosenFilamentOption, forMachine.systemFilaments],
-  );
-
-  const canSubmit =
-    !disabled &&
-    !submission.submitting &&
-    catalog.loaded &&
-    catalog.error === null &&
-    machineProfileGuid !== null &&
-    processProfileGuid !== null &&
-    filamentProfileGuid !== null;
-
-  const submitSetup = useCallback(async (): Promise<void> => {
-    if (
-      machineProfileGuid === null ||
-      processProfileGuid === null ||
-      filamentProfileGuid === null
-    ) {
-      return;
-    }
-    setSubmission({
-      submitting: true,
-      error: null,
-      conflict: false,
-      noticeMessage: null,
-    });
-    try {
-      const response = await calibrationApi().setupCalibrationPrinter({
-        profileId,
-        printerId,
-        machineProfileId: machineProfileGuid,
-        processProfileId: processProfileGuid,
-        filamentProfileId: filamentProfileGuid,
-        rowVersion,
-        operationId: environment.createId(),
-      });
-      if (unmountedRef.current) return;
-      if (response.status === 'error') {
-        if (response.error.code === 'calibrationSetupConflict') {
-          // A concurrent operator (or an import) has changed this printer's
-          // calibration setup since we last read it. Silently retrying would
-          // clobber the change; instead the wizard clears the picks, reloads
-          // the catalogue, and surfaces the conflict.
-          setSubmission({
-            submitting: false,
-            error: null,
-            conflict: true,
-            noticeMessage:
-              "Someone else changed this printer's calibration setup while you were choosing profiles. Review the current setup and try again.",
-          });
-          setChosenMachine('');
-          setChosenProcess('');
-          setChosenFilament('');
-          setRowVersion(null);
-          void loadCatalog();
-          return;
-        }
-        setSubmission({
-          submitting: false,
-          error: `Calibration setup failed: ${response.error.message}`,
-          conflict: false,
-          noticeMessage: null,
-        });
-        return;
-      }
-      setRowVersion(response.rowVersion);
-      setSubmission({
-        submitting: false,
-        error: null,
-        conflict: false,
-        noticeMessage:
-          response.eligible === true
-            ? 'Calibration setup saved. This printer is now eligible for calibration.'
-            : 'Calibration setup saved. Continue with the printer configuration below.',
-      });
-      onSetupComplete(printerId);
-    } catch (error) {
-      if (unmountedRef.current) return;
-      const message =
-        error instanceof Error && error.message.length > 0
-          ? error.message
-          : 'Failed to save the calibration setup.';
-      setSubmission({
-        submitting: false,
-        error: message,
-        conflict: false,
-        noticeMessage: null,
-      });
-    }
-  }, [
-    environment,
-    filamentProfileGuid,
-    loadCatalog,
-    machineProfileGuid,
-    onSetupComplete,
-    printerId,
-    processProfileGuid,
-    profileId,
-    rowVersion,
-  ]);
-
   return (
     <fieldset
       className="cal-step-fieldset"
       disabled={disabled}
-      aria-busy={catalog.loading || submission.submitting}
+      aria-busy={catalog.loading}
     >
       <legend>
         Choose machine profile, process profile, and filament profile
@@ -690,35 +514,6 @@ export function ProfileSelectionSection(
           </select>
         </label>
       ) : null}
-
-      {submission.conflict ? (
-        <div className="cal-alert" role="alert">
-          <p>{submission.noticeMessage}</p>
-        </div>
-      ) : null}
-      {submission.error !== null ? (
-        <div className="cal-alert" role="alert">
-          <p>{submission.error}</p>
-        </div>
-      ) : null}
-      {submission.noticeMessage !== null && !submission.conflict ? (
-        <p role="status" className="cal-notice">
-          {submission.noticeMessage}
-        </p>
-      ) : null}
-
-      <div className="cal-step-actions">
-        <button
-          type="button"
-          className="cal-button cal-button--primary"
-          disabled={!canSubmit}
-          onClick={() => void submitSetup()}
-        >
-          {submission.submitting
-            ? 'Saving calibration setup'
-            : 'Save calibration setup'}
-        </button>
-      </div>
     </fieldset>
   );
 }

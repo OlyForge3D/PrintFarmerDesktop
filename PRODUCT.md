@@ -38,7 +38,6 @@ Durable constraints future work must preserve:
 - Model identity is the SHA-256 of content and is kept separate from the physical files that carry it. Filesystems are treated as eventually consistent: watcher events drive targeted work, periodic reconciliation is authoritative.
 - Four trust boundaries in decreasing privilege: main, preload, renderer, and a separately signed Rust sidecar that owns SQLite (WAL), scanning and watching, streaming hashing, mesh parsing, and the scene cache. The renderer gets no Node, no `ipcRenderer`, and no filesystem or network primitive.
 - Renderer capability is added only by declaring a Zod-validated channel in `src/shared/ipc.ts`, with main validating request and response. The desktop IPC contract and the sidecar RPC handshake version independently.
-- Calibration source-derived files live under the `derivedRoots` of `compliance/printer-calibration-provenance.json` and require a provenance header plus a manifest record. Orchestration, UI, persistence, ownership, authorization, queueing, and safety code stays outside those roots and is independently implemented.
 - The app never claims to have verified a physical change it cannot observe, and never presents a safety action as celebratory.
 - Credentials are encrypted in the OS vault; credentials and signing material are never committed.
 - Inputs are rejected with actionable blockers rather than best-effort repair: geometry-only or pre-sliced 3MFs, unsupported producers, malformed archives, and imported references carrying local executable post-processing commands. Preserved paint metadata is reported as render-unverified.
@@ -51,7 +50,7 @@ Explicitly undecided: Snapmaker U1 hardware acceptance is not complete, and awai
 
 Named PrintFarmer Desktop, by OlyForge3D, and positioned as a companion to the PrintFarmer server rather than a standalone product.
 
-Free and open source permanently: AGPL-3.0-only is a product commitment, not a placeholder, and no paid or hosted tier is planned. Corresponding-source obligations are documented in `docs/compliance/CORRESPONDING_SOURCE.md` and future work must not introduce anything that cannot ship under that licence.
+Free and open source permanently: AGPL-3.0-only is a product commitment, not a placeholder, and no paid or hosted tier is planned. The licence decision is recorded in ADR 0001 (`docs/adr/0001-printer-calibration-source-provenance.md`) and future work must not introduce anything that cannot ship under that licence.
 
 Voice is precise, calm, and trustworthy. The product should feel like a focused professional instrument: technically fluent without being cryptic, cautious without becoming obstructive, and direct about uncertainty.
 
@@ -65,7 +64,7 @@ Do not resemble a decorative SaaS dashboard, an embedded website, a consumer set
 
 Pre-release. Version 0.1.0-beta.4, working software, real printers in-house, and no public users.
 
-Real and citable: the shipped application itself; `docs/printer-calibration-user-guide.md` and `docs/printer-calibration-admin-guide.md`; `docs/ARCHITECTURE.md`; `docs/security/THREAT_MODEL.md`; `docs/release-validation.md`, which records the packaged Windows/macOS release matrix, WebGL2 capability reporting, SwiftShader fallback, and the accessibility gate; `compliance/printer-calibration-provenance.json`; and `assets/calibration-asset-manifest.json`.
+Real and citable: the shipped application itself; `docs/printer-calibration-user-guide.md` and `docs/printer-calibration-admin-guide.md`; `docs/ARCHITECTURE.md`; `docs/security/THREAT_MODEL.md`; and `docs/release-validation.md`, which records the packaged Windows/macOS release matrix, WebGL2 capability reporting, SwiftShader fallback, and the accessibility gate.
 
 Future work must not fabricate what does not exist: there are no customers, testimonials, case studies, press mentions, install counts, uptime or performance benchmarks, pricing, or third-party endorsements. Snapmaker U1 hardware acceptance has not been completed, so no claim may imply a verified physical print.
 
