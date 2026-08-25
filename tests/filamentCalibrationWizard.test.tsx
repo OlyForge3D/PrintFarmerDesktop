@@ -289,6 +289,10 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockResolvedValue({ cleared: true }),
+    resolveCalibrationConflict: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
+    listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
   };
   return { ...base, ...overrides };
 }

@@ -283,6 +283,18 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationResolveConflict,
+    request: (profileId) => ({
+      profileId,
+      conflictId: uuid(6),
+      resolution: 'acceptServer',
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationListConflicts,
+    request: (profileId) => ({ profileId, projectId: uuid(4) }),
+  },
+  {
     channel: IpcChannel.CalibrationListExtendedProfiles,
     request: (profileId) => ({ profileId }),
   },

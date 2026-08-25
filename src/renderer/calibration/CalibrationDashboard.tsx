@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
+import { CalibrationConflictsDialog } from './CalibrationConflictsDialog';
 
 const availabilityCopy = {
   serverVersionTooLow:
@@ -42,6 +43,7 @@ const availabilityCopy = {
  */
 export function CalibrationDashboard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
+  const [conflictsOpen, setConflictsOpen] = useState(false);
   const unavailableReason = store.availability?.unavailableReason;
   const creationBlocked =
     store.profileId === null ||
@@ -89,6 +91,14 @@ export function CalibrationDashboard(): React.JSX.Element {
           </button>
           <button
             type="button"
+            className="cal-button"
+            onClick={() => setConflictsOpen(true)}
+            disabled={store.profileId === null}
+          >
+            Review conflicts
+          </button>
+          <button
+            type="button"
             className="cal-button cal-button--primary"
             onClick={() => void store.navigate('filamentCalibration')}
             disabled={creationBlocked}
@@ -98,6 +108,15 @@ export function CalibrationDashboard(): React.JSX.Element {
           </button>
         </div>
       </header>
+
+      {conflictsOpen && store.profileId !== null ? (
+        <CalibrationConflictsDialog
+          profileId={store.profileId}
+          profileName={store.profileName || 'this profile'}
+          onClose={() => setConflictsOpen(false)}
+          onResolved={() => void store.refresh()}
+        />
+      ) : null}
 
       <p
         id="filament-cal-gate"

@@ -605,6 +605,12 @@ function makeApi(savedRecord = record()) {
     clearFilamentCalibrationWizardState: vi
       .fn<CalibrationApi['clearFilamentCalibrationWizardState']>()
       .mockResolvedValue({ cleared: true }),
+    resolveCalibrationConflict: vi
+      .fn<CalibrationApi['resolveCalibrationConflict']>()
+      .mockRejectedValue(new Error('not implemented in test mock')),
+    listCalibrationConflicts: vi
+      .fn<CalibrationApi['listCalibrationConflicts']>()
+      .mockResolvedValue({ conflicts: [] }),
   } satisfies CalibrationApi;
   // Saga stubs removed in #756 — added outside satisfies so describe.skip blocks compile.
   return Object.assign(base, {

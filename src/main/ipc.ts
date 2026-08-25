@@ -2332,6 +2332,75 @@ export function registerIpcHandlers(
     },
   );
 
+  // --- Conflict resolution (issue #762) -------------------------------------
+  //
+  // Restores the renderer-facing half of conflict resolution that PR #757
+  // removed along with the old printer-calibration saga dashboard. The
+  // main-process/sidecar/Rust resolve logic was never removed --
+  // `calibrationSidecarAdapter.resolveCalibrationConflict` and
+  // `.listCalibrationConflicts` (`calibrationService.ts`) already implement
+  // both operations; these handlers add profile fencing and re-expose them as
+  // IPC channels. Resolving a conflict mutates server state, so it is also
+  // gated on `calibration:update` via `gateCalibrationPermission` before
+  // dispatch (the same gate `CalibrationSyncNow` uses) -- listing conflicts is
+  // a read and is not gated. Per-kind resolution policy (which resolutions are
+  // valid for which conflict kind) is enforced in the sidecar's store, not
+  // here (see the docstring on `SidecarCalibrationAdapter.resolveCalibrationConflict`).
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationResolveConflict,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationResolveConflict].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      // Resolving a conflict mutates server state (accepts a server revision,
+      // records a new local revision, or applies a manual merge), so it is
+      // gated the same way `sync` is -- before anything is dispatched.
+      const permission = gateCalibrationPermission(
+        'resolveConflict',
+        selectedId,
+      );
+      if (!permission.allowed) {
+        throw Object.assign(
+          new Error(
+            permission.message ?? 'Resolving this conflict is not permitted.',
+          ),
+          { code: 'CALIBRATION_FORBIDDEN' },
+        );
+      }
+      const response =
+        await calibrationSidecarAdapter.resolveCalibrationConflict(request);
+      return ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
+        response,
+      );
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListConflicts,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListConflicts].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const conflicts =
+        await calibrationSidecarAdapter.listCalibrationConflicts(
+          selectedId,
+          request.projectId ?? null,
+        );
+      return ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse({
+        conflicts,
+      });
+    },
+  );
+
   // Generation, queue, bed-clear, and print start require all mutations to be
   // synchronized and printer context to be freshly validated before proceeding.
 

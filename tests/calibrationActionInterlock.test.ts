@@ -118,6 +118,19 @@ const sidecar = {
   countCalibrationPendingOps: () => Promise.resolve(0),
   isCalibrationPrinterContextFresh: () => Promise.resolve(true),
   listCalibrationConflicts: () => Promise.resolve([]),
+  resolveCalibrationConflict: vi.fn(() =>
+    Promise.resolve({
+      conflictId: CALIBRATION_FIXTURE_IDS.printerId,
+      profileId: PROFILE_ID,
+      projectId: CALIBRATION_FIXTURE_IDS.printerId,
+      kind: 'projectMetadata',
+      resolution: 'acceptServer',
+      resolvedAt: CALIBRATION_FIXTURE_IDS.now,
+      createdAt: CALIBRATION_FIXTURE_IDS.now,
+      availableResolutions: ['acceptServer'],
+      supersededObservations: [],
+    }),
+  ),
   listCalibrationPendingOperations: () => Promise.resolve([]),
   getCalibrationCursorState: () =>
     Promise.resolve({ cursor: null, updatedAt: null }),
@@ -245,6 +258,7 @@ beforeEach(() => {
   // negotiation of whichever test ran before it — and would pass against a gate
   // that never checked.
   calibrationDiagnostics.reset();
+  sidecar.resolveCalibrationConflict.mockClear();
 });
 
 describe('outbox application is gated too', () => {
@@ -308,6 +322,34 @@ describe('outbox application is gated too', () => {
       );
     },
   );
+});
+
+describe('conflict resolution is gated too', () => {
+  it('refuses to resolve a conflict without a write permission and dispatches nothing', async () => {
+    server({ permissions: ['calibration:read'] });
+    registered = handlers();
+    await negotiate();
+    await expect(
+      invoke(IpcChannel.CalibrationResolveConflict, {
+        profileId: PROFILE_ID,
+        conflictId: CALIBRATION_FIXTURE_IDS.printerId,
+        resolution: 'acceptServer',
+      }),
+    ).rejects.toThrow('calibration:update');
+    expect(sidecar.resolveCalibrationConflict).not.toHaveBeenCalled();
+  });
+
+  it('dispatches once a write permission is held', async () => {
+    server({ permissions: CANONICAL_PERMISSIONS });
+    registered = handlers();
+    await negotiate();
+    await invoke(IpcChannel.CalibrationResolveConflict, {
+      profileId: PROFILE_ID,
+      conflictId: CALIBRATION_FIXTURE_IDS.printerId,
+      resolution: 'acceptServer',
+    });
+    expect(sidecar.resolveCalibrationConflict).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('discovery needs only the read permission', () => {

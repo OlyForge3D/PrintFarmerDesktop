@@ -80,6 +80,14 @@ export type CalibrationGatedAction =
   | 'updateProject'
   /** Apply the local outbox to the server. */
   | 'sync'
+  /**
+   * Resolve a conflict returned by the server's revision check. Mutates
+   * server state (accepts a server revision, records a new local revision, or
+   * applies a manual field merge) but is not scoped to one printer, so it is
+   * gated the same way as `sync` rather than through the printer-context
+   * binding checks.
+   */
+  | 'resolveConflict'
   /** Request profile generation. Server-side compute; moves no machine. */
   | 'generate'
   /** Enqueue a calibration print via `POST /api/job-queue`. */
@@ -112,6 +120,9 @@ const REQUIRED_PERMISSIONS: Readonly<
   createProject: [CALIBRATION_PERMISSIONS.create],
   updateProject: [CALIBRATION_PERMISSIONS.update],
   sync: [CALIBRATION_PERMISSIONS.update],
+  // Conflict resolution is an update to the calibration project/step/draft the
+  // conflict names -- the same permission `sync` requires to push the outbox.
+  resolveConflict: [CALIBRATION_PERMISSIONS.update],
   // Generation both records against the calibration project and submits a
   // slicing job; the server requires both, so both are required here.
   generate: [

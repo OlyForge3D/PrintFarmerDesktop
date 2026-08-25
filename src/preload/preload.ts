@@ -87,6 +87,10 @@ import {
   type CalibrationSyncNowResponse,
   type CalibrationGetDiagnosticsRequest,
   type CalibrationGetDiagnosticsResponse,
+  type CalibrationResolveConflictRequest,
+  type CalibrationResolveConflictResponse,
+  type CalibrationListConflictsRequest,
+  type CalibrationListConflictsResponse,
   type CalibrationPollQueueChangesRequest,
   type CalibrationPollQueueChangesResponse,
   type CalibrationGetSubscriptionResourcesRequest,
@@ -405,6 +409,18 @@ const api: PrintFarmerApi = {
   ): Promise<CalibrationGetDiagnosticsResponse> =>
     ipcSchemas[IpcChannel.CalibrationGetDiagnostics].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationGetDiagnostics, request),
+    ),
+  resolveCalibrationConflict: async (
+    request: CalibrationResolveConflictRequest,
+  ): Promise<CalibrationResolveConflictResponse> =>
+    ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationResolveConflict, request),
+    ),
+  listCalibrationConflicts: async (
+    request: CalibrationListConflictsRequest,
+  ): Promise<CalibrationListConflictsResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationListConflicts, request),
     ),
   pollCalibrationQueueChanges: async (
     request: CalibrationPollQueueChangesRequest,

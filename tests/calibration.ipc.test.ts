@@ -23,6 +23,10 @@ import {
   CalibrationAttempt,
   StagedPhoto,
   CalibrationConflict,
+  CalibrationResolveConflictRequest,
+  CalibrationResolveConflictResponse,
+  CalibrationListConflictsRequest,
+  CalibrationListConflictsResponse,
   CalibrationSyncStatus,
   CalibrationApiError,
   CalibrationDraftFields,
@@ -659,6 +663,217 @@ describe('CalibrationConflict schema (resolution strategies)', () => {
 });
 
 // ==========================================================================
+// CalibrationResolveConflictRequest/Response, CalibrationListConflictsRequest/Response
+// (issue #762 — restored renderer-facing conflict resolution IPC)
+// ==========================================================================
+
+describe('CalibrationResolveConflictRequest/Response schemas', () => {
+  it('parses a request without mergedFields', () => {
+    const result = CalibrationResolveConflictRequest.parse({
+      profileId: PROFILE_UUID,
+      conflictId: ATTEMPT_UUID,
+      resolution: 'acceptServer',
+    });
+    expect(result.resolution).toBe('acceptServer');
+    expect(result.mergedFields).toBeUndefined();
+  });
+
+  it('parses a manualFieldMerge request with mergedFields', () => {
+    const result = CalibrationResolveConflictRequest.parse({
+      profileId: PROFILE_UUID,
+      conflictId: ATTEMPT_UUID,
+      resolution: 'manualFieldMerge',
+      mergedFields: { displayName: 'Merged value' },
+    });
+    expect(result.mergedFields).toEqual({ displayName: 'Merged value' });
+  });
+
+  it('rejects more than 20 mergedFields entries', () => {
+    const mergedFields = Object.fromEntries(
+      Array.from({ length: 21 }, (_, i) => [`field${i}`, 'value']),
+    );
+    expect(() =>
+      CalibrationResolveConflictRequest.parse({
+        profileId: PROFILE_UUID,
+        conflictId: ATTEMPT_UUID,
+        resolution: 'manualFieldMerge',
+        mergedFields,
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a mergedFields value longer than 4096 characters', () => {
+    expect(() =>
+      CalibrationResolveConflictRequest.parse({
+        profileId: PROFILE_UUID,
+        conflictId: ATTEMPT_UUID,
+        resolution: 'manualFieldMerge',
+        mergedFields: { displayName: 'x'.repeat(4097) },
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a mergedFields key longer than 200 characters', () => {
+    // `z.record(valueSchema)` only bounds values, not keys -- this asserts the
+    // key schema itself enforces the limit, not just field-count/value-length.
+    expect(() =>
+      CalibrationResolveConflictRequest.parse({
+        profileId: PROFILE_UUID,
+        conflictId: ATTEMPT_UUID,
+        resolution: 'manualFieldMerge',
+        mergedFields: { ['k'.repeat(201)]: 'value' },
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an unknown top-level field (strict request)', () => {
+    expect(() =>
+      CalibrationResolveConflictRequest.parse({
+        profileId: PROFILE_UUID,
+        conflictId: ATTEMPT_UUID,
+        resolution: 'acceptServer',
+        extraField: 'not allowed',
+      }),
+    ).toThrow();
+  });
+
+  it('parses a response with an empty supersededObservations array', () => {
+    const result = CalibrationResolveConflictResponse.parse({
+      conflict: {
+        conflictId: ATTEMPT_UUID,
+        profileId: PROFILE_UUID,
+        projectId: PROJECT_UUID,
+        kind: 'stepDraft',
+        entityId: STEP_UUID,
+        localPayloadSummary: null,
+        serverPayloadSummary: null,
+        serverRevision: 6,
+        availableResolutions: ['acceptServer'],
+        resolvedAt: NOW,
+        resolution: 'acceptServer',
+        createdAt: NOW,
+      },
+      supersededObservations: [],
+    });
+    expect(result.supersededObservations).toEqual([]);
+  });
+
+  it('parses a response with non-UUID observation/attempt/step identifiers (issue #194)', () => {
+    const result = CalibrationResolveConflictResponse.parse({
+      conflict: {
+        conflictId: ATTEMPT_UUID,
+        profileId: PROFILE_UUID,
+        projectId: PROJECT_UUID,
+        kind: 'stepDraft',
+        entityId: STEP_UUID,
+        localPayloadSummary: null,
+        serverPayloadSummary: null,
+        serverRevision: 6,
+        availableResolutions: ['acceptServer'],
+        resolvedAt: NOW,
+        resolution: 'acceptServer',
+        createdAt: NOW,
+      },
+      supersededObservations: [
+        {
+          observationId: 'conflict-observation-01',
+          attemptId: 'conflict-attempt-01',
+          stepId: 'conflict-step-01',
+          parameterKey: 'flowRate',
+          boundSnapshotRevision: 3,
+        },
+      ],
+    });
+    expect(result.supersededObservations).toHaveLength(1);
+  });
+
+  it('requires supersededObservations rather than defaulting it', () => {
+    expect(() =>
+      CalibrationResolveConflictResponse.parse({
+        conflict: {
+          conflictId: ATTEMPT_UUID,
+          profileId: PROFILE_UUID,
+          projectId: PROJECT_UUID,
+          kind: 'stepDraft',
+          entityId: STEP_UUID,
+          localPayloadSummary: null,
+          serverPayloadSummary: null,
+          serverRevision: 6,
+          availableResolutions: ['acceptServer'],
+          resolvedAt: NOW,
+          resolution: 'acceptServer',
+          createdAt: NOW,
+        },
+      }),
+    ).toThrow();
+  });
+});
+
+describe('CalibrationListConflictsRequest/Response schemas', () => {
+  it('parses a request scoped to a single project', () => {
+    const result = CalibrationListConflictsRequest.parse({
+      profileId: PROFILE_UUID,
+      projectId: PROJECT_UUID,
+    });
+    expect(result.projectId).toBe(PROJECT_UUID);
+  });
+
+  it('parses a request with projectId omitted (all projects for the profile)', () => {
+    const result = CalibrationListConflictsRequest.parse({
+      profileId: PROFILE_UUID,
+    });
+    expect(result.projectId).toBeUndefined();
+  });
+
+  it('parses a request with an explicit null projectId', () => {
+    const result = CalibrationListConflictsRequest.parse({
+      profileId: PROFILE_UUID,
+      projectId: null,
+    });
+    expect(result.projectId).toBeNull();
+  });
+
+  it('rejects a request missing profileId', () => {
+    expect(() =>
+      CalibrationListConflictsRequest.parse({ projectId: PROJECT_UUID }),
+    ).toThrow();
+  });
+
+  it('rejects a non-UUID profileId', () => {
+    expect(() =>
+      CalibrationListConflictsRequest.parse({ profileId: 'not-a-uuid' }),
+    ).toThrow();
+  });
+
+  it('parses a response with an empty conflicts array', () => {
+    const result = CalibrationListConflictsResponse.parse({ conflicts: [] });
+    expect(result.conflicts).toEqual([]);
+  });
+
+  it('parses a response with a populated conflicts array', () => {
+    const result = CalibrationListConflictsResponse.parse({
+      conflicts: [
+        {
+          conflictId: ATTEMPT_UUID,
+          profileId: PROFILE_UUID,
+          projectId: PROJECT_UUID,
+          kind: 'projectMetadata',
+          entityId: PROJECT_UUID,
+          localPayloadSummary: null,
+          serverPayloadSummary: null,
+          serverRevision: 2,
+          availableResolutions: ['acceptServer', 'keepLocalAsNewRevision'],
+          resolvedAt: null,
+          resolution: null,
+          createdAt: NOW,
+        },
+      ],
+    });
+    expect(result.conflicts).toHaveLength(1);
+  });
+});
+
+// ==========================================================================
 // CalibrationSyncStatus
 // ==========================================================================
 
@@ -747,6 +962,8 @@ describe('ipcSchemas calibration channel registry', () => {
     IpcChannel.CalibrationSyncNow,
     IpcChannel.CalibrationListOrcaProfiles,
     IpcChannel.CalibrationExportOrcaProfile,
+    IpcChannel.CalibrationResolveConflict,
+    IpcChannel.CalibrationListConflicts,
   ] as const;
 
   for (const channel of calibrationChannels) {
