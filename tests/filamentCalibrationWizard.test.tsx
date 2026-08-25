@@ -198,6 +198,7 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       filamentProfiles: [
         systemProfile(SAMPLE_FILAMENT_NAME, filamentGuid, 'PLA'),
       ],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationMachineProfilesForModel: vi.fn().mockResolvedValue({
@@ -206,16 +207,19 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
         systemProfile(SAMPLE_MACHINE_NAME, machineGuid, 'Bed 300×300'),
       ],
       noModelAlias: false,
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationProcessProfilesForMachines: vi.fn().mockResolvedValue({
       status: 'ok' as const,
       profiles: [systemProfile(SAMPLE_PROCESS_NAME, processGuid, '0.4 nozzle')],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationFilamentProfilesForMachines: vi.fn().mockResolvedValue({
       status: 'ok' as const,
       profiles: [systemProfile(SAMPLE_FILAMENT_NAME, filamentGuid, 'PLA')],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationCustomProfiles: vi.fn().mockResolvedValue({

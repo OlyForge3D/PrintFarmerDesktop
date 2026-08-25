@@ -198,6 +198,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
           contentSha256: null,
         },
       ],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationMachineProfilesForModel: vi.fn().mockResolvedValue({
@@ -212,6 +213,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
         },
       ],
       noModelAlias: false,
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationProcessProfilesForMachines: vi.fn().mockResolvedValue({
@@ -225,6 +227,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
           contentSha256: null,
         },
       ],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationFilamentProfilesForMachines: vi.fn().mockResolvedValue({
@@ -238,6 +241,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
           contentSha256: null,
         },
       ],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationCustomProfiles: vi.fn().mockResolvedValue({

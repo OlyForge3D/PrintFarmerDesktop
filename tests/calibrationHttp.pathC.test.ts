@@ -55,11 +55,14 @@ function stableTokens(): CalibrationTokenProvider {
   };
 }
 
-function makeClient(fetchMock: typeof globalThis.fetch) {
+function makeClient(
+  fetchMock: typeof globalThis.fetch,
+  maxResponseBytes = 1024 * 1024,
+) {
   return new CalibrationHttpClient(stableTokens(), {
     fetch: fetchMock,
     timeoutMs: 10_000,
-    maxResponseBytes: 1024 * 1024,
+    maxResponseBytes,
     now: () => Date.now(),
     random: () => 0.5,
     sleep: () => Promise.resolve(),
@@ -147,6 +150,82 @@ describe('CalibrationHttpClient.getExtendedProfiles', () => {
     ];
     expect(String(call[0])).toBe(`${BASE_URL}/api/slicer/profiles/extended`);
     expect(call[1]?.method ?? 'GET').toBe('GET');
+  });
+});
+
+describe('CalibrationHttpClient.getExtendedProfiles — issue #767 (1024-row truncation)', () => {
+  // A single machine profile row, name-varied by index so a profile at
+  // position >1024 has a distinct, assertable identity.
+  const machineRow = (index: number) => ({
+    id: `77770000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    name: `Machine Profile ${index}`,
+    profileType: 'machine' as const,
+    isSystem: true,
+    printerModelId: null,
+    contentSha256: null,
+  });
+
+  // Matched control-arm fixture (used by both the "under the cap" and the
+  // "past the old 1024 cap" assertions below) so the two cases exercise
+  // identical code paths and differ only in list length — proving the cut
+  // is gone rather than that the small list happened to fit anyway.
+  const rows = (count: number) =>
+    Array.from({ length: count }, (_, i) => machineRow(i));
+
+  it('control arm: a fixture well under the old 1024 cap resolves every row (500 profiles)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ profiles: rows(500) }));
+    const client = makeClient(fetchMock);
+
+    const result = await client.getExtendedProfiles(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.profiles).toHaveLength(500);
+    expect(result.profiles[499]?.name).toBe('Machine Profile 499');
+    expect(result.truncated).toBe(false);
+  });
+
+  it('a profile past the old 1024-row cut is still present and resolvable (1500 profiles)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ profiles: rows(1500) }));
+    const client = makeClient(fetchMock, 4 * 1024 * 1024);
+
+    const result = await client.getExtendedProfiles(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5_000),
+    );
+
+    // Every row survived — the 1024-row cut that used to apply to /extended
+    // is gone. Position 1200 (>1024) is asserted explicitly because it is
+    // exactly the row this issue reported as silently dropped.
+    expect(result.profiles).toHaveLength(1500);
+    const pastOldCap = result.profiles.find(
+      (p) => p.name === 'Machine Profile 1200',
+    );
+    expect(pastOldCap).toBeDefined();
+    expect(pastOldCap?.id).toBe(machineRow(1200).id);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('reports truncated: true (and still caps the list) once the wire exceeds the new, much higher ceiling', async () => {
+    // One row past EXTENDED_PROFILE_CEILING (10_000) so the cut is provably
+    // observable rather than silently absent, mirroring the
+    // `printersTruncated` precedent for `/calibration-candidates`.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json({ profiles: rows(10_001) }));
+    const client = makeClient(fetchMock, 8 * 1024 * 1024);
+
+    const result = await client.getExtendedProfiles(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result.profiles).toHaveLength(10_000);
+    expect(result.truncated).toBe(true);
   });
 });
 

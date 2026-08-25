@@ -367,6 +367,7 @@ function profileSelectionApi(): CalibrationApi {
       filamentProfiles: [
         systemProfile('Generic PLA', SYSTEM_FILAMENT_GUID, 'PLA'),
       ],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationMachineProfilesForModel: vi.fn().mockResolvedValue({
@@ -375,6 +376,7 @@ function profileSelectionApi(): CalibrationApi {
         systemProfile(SAMPLE_MACHINE_NAME, SYSTEM_MACHINE_GUID, 'Bed 300×300'),
       ],
       noModelAlias: false,
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationProcessProfilesForMachines: vi.fn().mockResolvedValue({
@@ -382,11 +384,13 @@ function profileSelectionApi(): CalibrationApi {
       profiles: [
         systemProfile('0.20mm Standard', SYSTEM_PROCESS_GUID, '0.4 nozzle'),
       ],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationFilamentProfilesForMachines: vi.fn().mockResolvedValue({
       status: 'ok' as const,
       profiles: [systemProfile('Generic PLA', SYSTEM_FILAMENT_GUID, 'PLA')],
+      profilesTruncated: false,
       fetchedAt: now,
     }),
     listCalibrationCustomProfiles: vi.fn().mockResolvedValue({

@@ -5640,6 +5640,13 @@ export const CalibrationListExtendedProfilesResponse = z.discriminatedUnion(
         filamentProfiles: z
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
+        /**
+         * True when `/extended` had more rows than this client's catalog
+         * ceiling and some were dropped. Mirrors `printersTruncated` on the
+         * calibration-candidates contract: derived from the raw wire length
+         * before slicing, never trusted from the payload.
+         */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
@@ -5681,6 +5688,13 @@ export const CalibrationListMachineProfilesForModelResponse =
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
         noModelAlias: z.boolean(),
+        /**
+         * True when the `/extended` join used to resolve these Guids had
+         * more rows than this client's catalog ceiling and some were
+         * dropped. `false` (never omitted) when no `/extended` fetch ran,
+         * e.g. the no-model-alias short-circuit below.
+         */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
@@ -5715,6 +5729,8 @@ export const CalibrationListProcessProfilesForMachinesResponse =
         profiles: z
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
+        /** See `profilesTruncated` on `CalibrationListMachineProfilesForModelResponse`. */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
@@ -5749,6 +5765,8 @@ export const CalibrationListFilamentProfilesForMachinesResponse =
         profiles: z
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
+        /** See `profilesTruncated` on `CalibrationListMachineProfilesForModelResponse`. */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),

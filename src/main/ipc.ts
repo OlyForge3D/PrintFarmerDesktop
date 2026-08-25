@@ -3292,6 +3292,7 @@ export function registerIpcHandlers(
           machineProfiles,
           processProfiles,
           filamentProfiles,
+          profilesTruncated: remote.truncated,
           fetchedAt: new Date().toISOString(),
         });
       } catch (error) {
@@ -3380,6 +3381,7 @@ export function registerIpcHandlers(
               status: 'ok',
               profiles: [],
               noModelAlias: true,
+              profilesTruncated: false,
               fetchedAt: new Date().toISOString(),
             });
           }
@@ -3391,6 +3393,7 @@ export function registerIpcHandlers(
         // running them serially lets the second short-circuit when the first
         // is empty.
         const guidByName = new Map<string, string>();
+        let profilesTruncated = false;
         if (raw.length > 0) {
           const extendedSignal = AbortSignal.timeout(10_000);
           const extended = await calibrationHttp.getExtendedProfiles(
@@ -3398,6 +3401,7 @@ export function registerIpcHandlers(
             ctx.profile.baseUrl,
             extendedSignal,
           );
+          profilesTruncated = extended.truncated;
           for (const row of extended.profiles) {
             if (row.profileType === 'machine') {
               guidByName.set(row.name, row.id);
@@ -3430,6 +3434,7 @@ export function registerIpcHandlers(
           status: 'ok',
           profiles: projected,
           noModelAlias: false,
+          profilesTruncated,
           fetchedAt: new Date().toISOString(),
         });
       } catch (error) {
@@ -3492,6 +3497,7 @@ export function registerIpcHandlers(
           signal,
         );
         const guidByName = new Map<string, string>();
+        let profilesTruncated = false;
         if (raw.length > 0) {
           const extendedSignal = AbortSignal.timeout(10_000);
           const extended = await calibrationHttp.getExtendedProfiles(
@@ -3499,6 +3505,7 @@ export function registerIpcHandlers(
             ctx.profile.baseUrl,
             extendedSignal,
           );
+          profilesTruncated = extended.truncated;
           for (const row of extended.profiles) {
             if (row.profileType === 'process') {
               guidByName.set(row.name, row.id);
@@ -3527,6 +3534,7 @@ export function registerIpcHandlers(
         ].response.parse({
           status: 'ok',
           profiles: projected,
+          profilesTruncated,
           fetchedAt: new Date().toISOString(),
         });
       } catch (error) {
@@ -3588,6 +3596,7 @@ export function registerIpcHandlers(
           signal,
         );
         const guidByName = new Map<string, string>();
+        let profilesTruncated = false;
         if (raw.length > 0) {
           const extendedSignal = AbortSignal.timeout(10_000);
           const extended = await calibrationHttp.getExtendedProfiles(
@@ -3595,6 +3604,7 @@ export function registerIpcHandlers(
             ctx.profile.baseUrl,
             extendedSignal,
           );
+          profilesTruncated = extended.truncated;
           for (const row of extended.profiles) {
             if (row.profileType === 'filament') {
               guidByName.set(row.name, row.id);
@@ -3626,6 +3636,7 @@ export function registerIpcHandlers(
         ].response.parse({
           status: 'ok',
           profiles: projected,
+          profilesTruncated,
           fetchedAt: new Date().toISOString(),
         });
       } catch (error) {

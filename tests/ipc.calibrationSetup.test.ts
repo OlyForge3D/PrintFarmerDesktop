@@ -95,6 +95,7 @@ describe('CalibrationListExtendedProfiles schema', () => {
           contentSha256: null,
         },
       ],
+      profilesTruncated: false,
       fetchedAt: '2026-08-22T22:00:00.000Z',
     });
     expect(parsed.status).toBe('ok');
@@ -120,6 +121,7 @@ describe('CalibrationListExtendedProfiles schema', () => {
         ],
         processProfiles: [],
         filamentProfiles: [],
+        profilesTruncated: false,
         fetchedAt: '2026-08-22T22:00:00.000Z',
       }),
     ).toThrow();
@@ -134,6 +136,7 @@ describe('CalibrationListMachineProfilesForModel schema', () => {
       status: 'ok',
       profiles: [],
       noModelAlias: true,
+      profilesTruncated: false,
       fetchedAt: '2026-08-22T22:00:00.000Z',
     });
     if (parsed.status === 'ok') {
