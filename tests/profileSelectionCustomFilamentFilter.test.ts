@@ -40,21 +40,33 @@
  * in the expected direction (then the mutation was reverted — no mutation
  * ships in this diff):
  *
- *   MUTANT A — "return everything": body replaced with `return profiles;`.
- *     Result: arm 2 (mismatch-excluded) and arm 3 (null-excluded) both
- *     failed, because the mismatched and null-compat profiles were no longer
- *     filtered out. Arm 1 (matched-included) and arm 4 (empty-name) still
- *     passed by coincidence, which is exactly why arms 2/3/4 are required —
- *     arm 1 alone cannot discriminate this mutant.
+ *   MUTANT A — "return everything": the whole body (including the
+ *     `chosenMachineName === ''` early return) replaced with
+ *     `return profiles;`. Result: arm 2 (mismatch-excluded), arm 3
+ *     (null-excluded), arm 4 (empty-name), and the paired test all failed,
+ *     because nothing was filtered out regardless of input. Only arm 1
+ *     (matched-included) still passed — trivially, since the matching
+ *     profile is included either way — which is exactly why arm 1 alone
+ *     cannot discriminate this mutant.
  *   MUTANT B — "return nothing": body replaced with `return [];`.
- *     Result: arm 1 (matched-included) failed, because the matching profile
- *     was dropped. Arms 2, 3, and 4 still passed by coincidence (an
- *     always-empty result trivially satisfies "excluded"/"empty"), which is
- *     exactly why arm 1 is required — arms 2-4 alone cannot discriminate
- *     this mutant.
+ *     Result: arm 1 (matched-included) and the paired test's matched-name
+ *     assertion both failed, because the matching profile was dropped.
+ *     Arms 2, 3, and 4 still passed by coincidence (an always-empty result
+ *     trivially satisfies "excluded"/"empty"), which is exactly why arm 1
+ *     is required — arms 2-4 alone cannot discriminate this mutant.
+ *   MUTANT C — "first-element only": `.includes(chosenMachineName)`
+ *     replaced with `[0] === chosenMachineName`. All fixtures now put the
+ *     chosen/mismatched machine name at a NON-zero index of a multi-entry
+ *     `compatiblePrinters` array specifically to catch this: with the
+ *     original single-element fixtures this mutant passed every arm
+ *     undetected (a real "test-green / implementation-wrong" gap caught in
+ *     review). With the multi-entry fixtures, arm 1 and the paired test's
+ *     matched-name assertion both failed, because the match was no longer
+ *     at index 0.
  *
  * Every arm below is therefore load-bearing: no single arm passes against
- * both mutants, but the full set fails at least one arm against each.
+ * any of the three mutants, but the full set fails at least one arm against
+ * each.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -79,9 +91,12 @@ const OTHER_MACHINE = 'Prusa MK4';
 
 describe('filterCustomFilamentsForMachine', () => {
   it('arm 1 (matched-included): a custom filament whose compatiblePrinters includes the chosen machine IS returned', () => {
+    // The chosen machine is deliberately NOT at index 0 — a broken
+    // implementation that checks only `compatiblePrinters[0]` (instead of
+    // membership across the whole array) must fail this arm.
     const matched = customFilament({
       id: '11111111-1111-4111-8111-111111111111',
-      compatiblePrinters: [CHOSEN_MACHINE],
+      compatiblePrinters: ['Elegoo Neptune 4', OTHER_MACHINE, CHOSEN_MACHINE],
     });
 
     const result = filterCustomFilamentsForMachine([matched], CHOSEN_MACHINE);
@@ -89,10 +104,10 @@ describe('filterCustomFilamentsForMachine', () => {
     expect(result).toEqual([matched]);
   });
 
-  it('arm 2 (mismatch-excluded): a custom filament whose compatiblePrinters names only a different machine is NOT returned', () => {
+  it('arm 2 (mismatch-excluded): a custom filament whose compatiblePrinters names only other machines is NOT returned', () => {
     const forOtherMachine = customFilament({
       id: '22222222-2222-4222-8222-222222222222',
-      compatiblePrinters: [OTHER_MACHINE],
+      compatiblePrinters: ['Elegoo Neptune 4', OTHER_MACHINE],
     });
 
     const result = filterCustomFilamentsForMachine(
@@ -120,7 +135,7 @@ describe('filterCustomFilamentsForMachine', () => {
   it('arm 4 (identity-unknown): an empty chosenMachineName returns no custom filaments, even ones that would otherwise match', () => {
     const wouldOtherwiseMatch = customFilament({
       id: '44444444-4444-4444-8444-444444444444',
-      compatiblePrinters: [CHOSEN_MACHINE],
+      compatiblePrinters: [OTHER_MACHINE, CHOSEN_MACHINE],
     });
 
     const result = filterCustomFilamentsForMachine([wouldOtherwiseMatch], '');
@@ -132,7 +147,7 @@ describe('filterCustomFilamentsForMachine', () => {
     const candidates: readonly CalibrationCustomProfileRef[] = [
       customFilament({
         id: '55555555-5555-4555-8555-555555555555',
-        compatiblePrinters: [CHOSEN_MACHINE],
+        compatiblePrinters: ['Elegoo Neptune 4', CHOSEN_MACHINE],
       }),
     ];
 
