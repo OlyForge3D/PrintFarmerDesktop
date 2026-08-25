@@ -21,7 +21,6 @@ import { IpcChannel } from '@shared/ipc';
 import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
 import {
   CALIBRATION_FIXTURE_IDS,
-  calibrationActionBindingFixture,
   calibrationContextDto,
 } from './fixtures/calibrationContract.js';
 
@@ -319,33 +318,6 @@ function invoke(channel: string, request?: unknown): Promise<unknown> {
   return Promise.resolve(handler(undefined, request));
 }
 
-const generationRequest = (): Record<string, unknown> => ({
-  profileId: PROFILE_ID,
-  projectId: PROJECT_ID,
-  attemptId: ATTEMPT_ID,
-  method: 'FlowRate',
-  definitionVersion: '1.0',
-  options: {},
-  operationId: OPERATION_ID,
-  baseRevision: null,
-  binding: calibrationActionBindingFixture(),
-});
-
-const bedClearRequest = (): Record<string, unknown> => ({
-  profileId: PROFILE_ID,
-  projectId: PROJECT_ID,
-  calibrationAttemptId: ATTEMPT_ID,
-  calibrationOrchestrationId: ORCHESTRATION_ID,
-  jobId: JOB_ID,
-  operationId: OPERATION_ID,
-  printerId: CALIBRATION_FIXTURE_IDS.printerId,
-  rowVersion: QUEUE_JOB.rowVersion,
-  jobRevision: QUEUE_JOB.revision,
-  dispatchStateRowVersion: QUEUE_JOB.dispatchStateRowVersion,
-  dispatchStateRevision: QUEUE_JOB.dispatchStateRevision,
-  expectedPrinterConfigRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
-});
-
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -486,119 +458,10 @@ describe('a rejected token is recovered, not treated as a refusal', () => {
   });
 });
 
-// Skipped under #756: the saga's CalibrationStartGeneration channel was removed with the printer-calibration saga in this PR.
-describe.skip('a mutation that meets a rejected token is never re-sent', () => {
-  it('does not replay a generation request after a 401', async () => {
-    const tokens = tokenService();
-    const { calls } = server({ rejectFragment: 'generate-job' });
-    registered = handlers(tokens.service);
-    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
-
-    const response = (await invoke(
-      'calibration:startGeneration',
-      generationRequest(),
-    )) as { status: string; error?: { message: string } };
-
-    expect(response.status).toBe('error');
-    // One POST, and only one. Re-issuing it under a token that may resolve to a
-    // different principal is an action the operator never authorised.
-    expect(countingGenerate(calls)).toBe(1);
-  });
-
-  it('does not replay a bed-clear dispatch after a 401', async () => {
-    const tokens = tokenService();
-    const { calls } = server({
-      rejectFragment: 'acknowledge-bed-clear-and-start',
-    });
-    registered = handlers(tokens.service);
-    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
-
-    const response = (await invoke(
-      'calibration:acknowledgeBedClear',
-      bedClearRequest(),
-    )) as { status: string };
-
-    expect(response.status).toBe('error');
-    expect(
-      calls.filter((call) => call.includes('acknowledge-bed-clear-and-start')),
-    ).toHaveLength(1);
-  });
-
-  it('discards the evidence a rejected session was gated against', async () => {
-    const tokens = tokenService();
-    const { calls } = server({
-      rejectFragment: 'acknowledge-bed-clear-and-start',
-    });
-    registered = handlers(tokens.service);
-    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
-    await invoke('calibration:acknowledgeBedClear', bedClearRequest());
-
-    const jobReadsBefore = calls.filter((call) =>
-      call.startsWith('GET'),
-    ).length;
-
-    // A second attempt cannot ride on anything the first one established: the
-    // acknowledgement ledger and the capability snapshot were both discarded,
-    // so the job is read again from the server.
-    await invoke('calibration:acknowledgeBedClear', bedClearRequest());
-    expect(
-      calls.filter((call) => call.startsWith('GET')).length,
-    ).toBeGreaterThan(jobReadsBefore);
-  });
-
-  it('never replays a mutation or exchanges credentials after a 403', async () => {
-    const tokens = tokenService();
-    const { calls } = server({
-      rejectFragment: 'acknowledge-bed-clear-and-start',
-      rejectStatus: 403,
-    });
-    registered = handlers(tokens.service);
-    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
-    const capabilityReadsBefore = countingExchangeReads(calls);
-
-    const response = (await invoke(
-      'calibration:acknowledgeBedClear',
-      bedClearRequest(),
-    )) as { status: string };
-
-    expect(response.status).toBe('error');
-    expect(
-      calls.filter((call) => call.includes('acknowledge-bed-clear-and-start')),
-    ).toHaveLength(1);
-    expect(tokens.state.exchanges).toBe(0);
-    expect(countingExchangeReads(calls) - capabilityReadsBefore).toBe(1);
-  });
-
-  it('a 403 exact-job read never mints the ledger or reaches dispatch', async () => {
-    const tokens = tokenService();
-    const { calls } = server({
-      rejectFragment: `/api/job-queue/${JOB_ID}`,
-      rejectStatus: 403,
-    });
-    registered = handlers(tokens.service);
-    await invoke(IpcChannel.CalibrationGetAvailability, undefined);
-
-    const response = (await invoke(
-      'calibration:acknowledgeBedClear',
-      bedClearRequest(),
-    )) as { status: string };
-
-    expect(response.status).toBe('error');
-    expect(
-      calls.filter((call) => call.includes('acknowledge-bed-clear-and-start')),
-    ).toHaveLength(0);
-    expect(tokens.state.exchanges).toBe(0);
-  });
-});
-
 /** Capability reads, which is what recovery performs after an exchange. */
 function countingExchangeReads(calls: readonly string[]): number {
   return calls.filter((call) => call.includes('/api/calibration/capabilities'))
     .length;
-}
-
-function countingGenerate(calls: readonly string[]): number {
-  return calls.filter((call) => call.includes('generate-job')).length;
 }
 
 beforeEach(() => {

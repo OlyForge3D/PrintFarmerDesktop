@@ -3003,9 +3003,9 @@ export function registerIpcHandlers(
           rawRequest,
         );
       // Retrieve the cached generated profile that was produced by a prior
-      // CalibrationGenerateOrcaProfile call with this operationId. The renderer
-      // cannot supply arbitrary profile bytes; they must originate from the
-      // main-process generation step.
+      // generation step for this operationId. The renderer cannot supply
+      // arbitrary profile bytes; they must originate from the main-process
+      // generation step.
       const cached = getCachedProfile(request.operationId);
       if (!cached) {
         return ipcSchemas[
