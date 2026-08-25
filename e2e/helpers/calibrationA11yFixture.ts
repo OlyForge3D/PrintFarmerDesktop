@@ -1,5 +1,6 @@
 /**
- * Deterministic calibration fixtures for the packaged-bundle accessibility spec.
+ * Deterministic filament-calibration fixtures for the packaged-bundle
+ * accessibility and journey specs.
  *
  * The packaged binary ships with `RunAsNode: false` (see `forge.config.ts`), so
  * Playwright's Electron launcher cannot drive it and the CDP attach used by
@@ -13,6 +14,16 @@
  * Every scenario is applied to a single long-lived Electron app by replacing
  * the handlers and reloading the renderer, so the workspace store remounts and
  * observes the scenario from startup.
+ *
+ * **Post-#756 scope.** The printer-calibration saga was reaped in #756. Under
+ * Path D the calibration workspace is a filament-spool wizard behind a
+ * dashboard with a single primary CTA. The helpers below stub only the IPC
+ * channels the filament dashboard + wizard actually consume:
+ * `serverProfiles:list`, `catalog:listModels`, `calibration:getAvailability`,
+ * `calibration:listPrinters`, and the wizard state read (empty). Saga
+ * workspace-state, printer-context, orca-profile-list, workspace-save,
+ * and generation/queue/orchestration/bed-clear stubs were removed with the
+ * subjects they targeted.
  */
 import AxeBuilder from '@axe-core/playwright';
 import type { Result } from 'axe-core';
@@ -29,7 +40,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { CalibrationGetQueueStateResponse, IpcSchemas } from '@shared/ipc';
+import type { IpcSchemas } from '@shared/ipc';
 import type { z } from 'zod';
 
 /**
@@ -48,33 +59,6 @@ type StubbedChannel = keyof IpcSchemas;
 type StubResponse<C extends StubbedChannel> = z.infer<
   IpcSchemas[C]['response']
 >;
-
-/**
- * The workspace-state record the fixture hands to the renderer.
- *
- * Derived from the list channel's response rather than restated, so the record
- * builder below cannot drift from the contract the renderer actually consumes.
- */
-type CalibrationWorkspaceRecord =
-  StubResponse<'calibration:listWorkspaceStates'>['states'][number];
-
-/**
- * Sub-shapes of the record, each derived from the contract above rather than
- * restated. Every one of these was `Record<string, unknown>` before, which is
- * assignable to nothing and checked against nothing -- a fixture could omit a
- * required field and the only thing that noticed was the surface failing to
- * render, at which point the axe scan reports zero violations against an empty
- * container.
- */
-type WorkspaceState = CalibrationWorkspaceRecord['workspaceState'];
-type DomainState = WorkspaceState['domainState'];
-type SnapshotFixture = DomainState['snapshotHistory'][number];
-type WorkspaceStages = DomainState['stages'];
-type WorkspaceAttempt = DomainState['attempts'][number];
-type WorkspaceHistoryEvent = DomainState['history'][number];
-type WorkflowDrafts = WorkspaceState['workflowDrafts'];
-type CalibrationStage = WorkspaceStages[keyof WorkspaceStages];
-type WorkflowDraft = WorkflowDrafts[keyof WorkflowDrafts];
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -100,356 +84,35 @@ const MATERIAL_IMPACTS = new Set(['moderate', 'serious', 'critical']);
 export const CAL = {
   now: '2026-07-29T10:00:00.000Z',
   profileId: 'f1111111-f111-4111-8111-111111111111',
-  projectId: 'f2222222-f222-4222-8222-222222222222',
   printerId: 'f3333333-f333-4333-8333-333333333333',
-  attemptId: 'f4444444-f444-4444-8444-444444444444',
-  verificationAttemptId: 'f9999999-f999-4999-8999-999999999999',
-  verificationObservationId: 'fa999999-fa99-4a99-8a99-a99999999999',
-  verificationEventId: 'fb999999-fb99-4b99-8b99-b99999999999',
-  orchestrationId: 'f5555555-f555-4555-8555-555555555555',
-  jobId: 'f6666666-f666-4666-8666-666666666666',
-  filamentId: 'f7777777-f777-4777-8777-777777777777',
-  gcodeId: 'f8888888-f888-4888-8888-888888888888',
-  eventId: 'e1111111-e111-4111-8111-111111111111',
-  orcaProfileId: 'orca-a11y-base',
-  snapshotId: 'snapshot-a11y-7',
-  configurationRevision: 7,
-  toolId: 'tool-a11y-a',
-  toolheadId: 'head-a11y-a',
-  nozzleId: 'nozzle-a11y-a',
-  nozzleDiameterMm: 0.4,
-  contentHash: 'a'.repeat(64),
-  displayName: 'A11y PLA Calibration',
+  altPrinterId: 'f3333333-f333-4333-8333-333333333334',
+  printerModelId: 'a2222222-a222-4222-8222-222222222222',
+  displayName: 'A11y Fixture Printer',
+  altDisplayName: 'A11y Fixture Printer B',
 } as const;
 
 export type AvailabilityScenario =
   'ok' | 'missingScopes' | 'missingCapabilityFlags' | 'operatorDisabled';
 
-export type OrchestrationScenario = 'succeeded' | 'failed';
-
-/**
- * `unknownOutcomeRefetchFailure` reproduces the only state in which the panel
- * renders a retry affordance at all (issue #224/#225): the first
- * `getQueueState` succeeds with an unresolved outcome, a poll then reports a
- * gap, and the gap-triggered refetch fails. `CalibrationQueueDispatchPanel`
- * sets `fetchError` solely from `refetchJobState`'s failure branches, and a
- * *poll* failure is swallowed — so failing the poll reaches nothing.
- */
-export type QueueScenario =
-  'none' | 'assigned' | 'unknownOutcome' | 'unknownOutcomeRefetchFailure';
+export type PrinterListScenario = 'populated' | 'empty';
 
 export interface CalibrationScenario {
   /** Availability request rejects, which is the store's offline signal. */
   readonly offline?: boolean;
   readonly availability?: AvailabilityScenario;
-  readonly staleContext?: boolean;
-  readonly hasConflicts?: boolean;
-  /** Seeds an in-progress temperature attempt so generation is reachable. */
-  readonly withAttempt?: boolean;
   /**
-   * Seeds a clean completed final verification, which is what unblocks the
-   * OrcaSlicer profile generate / install / restore actions.
+   * `populated` seeds two printers so the wizard's Step 1 picker renders
+   * options and the ProfileSelectionSection can mount. `empty` returns no
+   * printers so the "No PrintFarmer printers are available" hint renders —
+   * this is the negative discriminator for the printer-list contract that
+   * used to be enforced by the retired candidate endpoint.
    */
-  readonly verified?: boolean;
-  readonly orchestration?: OrchestrationScenario;
-  readonly queue?: QueueScenario;
-  /** Transactional install fails, so the operator must roll back. */
-  readonly installFails?: boolean;
+  readonly printerList?: PrinterListScenario;
 }
 
 interface FixtureArgs {
   readonly scenario: CalibrationScenario;
-  readonly record: CalibrationWorkspaceRecord;
   readonly ids: typeof CAL;
-  readonly expiry: string;
-}
-
-function emptyStage(stageId: CalibrationStage['stageId']): CalibrationStage {
-  return { stageId, status: 'notStarted', attemptIds: [] };
-}
-
-function emptyObservation(): WorkflowDraft['observation'] {
-  return {
-    primary: '',
-    quality: '',
-    notes: '',
-    passed: false,
-    nominalXmm: '',
-    nominalYmm: '',
-    nominalZmm: '',
-    measuredXmm: '',
-    measuredYmm: '',
-    measuredZmm: '',
-  };
-}
-
-function emptyDraft(): WorkflowDraft {
-  return {
-    method: null,
-    observation: emptyObservation(),
-    confidence: null,
-    reason: '',
-    photoAttemptId: null,
-    photoCaption: '',
-    photoOrder: 1,
-  };
-}
-
-function snapshotFixture(): SnapshotFixture {
-  return {
-    snapshotId: CAL.snapshotId,
-    snapshotRevision: CAL.configurationRevision,
-    capturedAt: CAL.now,
-    configurationRevision: CAL.configurationRevision,
-    toolheads: [
-      {
-        toolId: CAL.toolId,
-        toolheadId: CAL.toolheadId,
-        nozzle: {
-          nozzleId: CAL.nozzleId,
-          diameterMm: CAL.nozzleDiameterMm,
-          material: 'brass',
-        },
-        extruderType: 'directDrive',
-      },
-    ],
-    safety: {
-      buildVolumeMm: { x: 250, y: 250, z: 250 },
-      maximumNozzleTemperatureC: 300,
-      maximumBedTemperatureC: 110,
-      maximumVolumetricRateMm3S: 35,
-      emergencyStopAvailable: true,
-      thermalProtectionConfirmed: true,
-      ventilationAssessed: true,
-    },
-  };
-}
-
-/**
- * Builds the workspace record the renderer hydrates. `withAttempt` seeds an
- * in-progress temperature attempt, which is what makes the generation and
- * queue handoff controls reachable at all.
- */
-export function buildCalibrationRecord(
-  scenario: CalibrationScenario,
-): CalibrationWorkspaceRecord {
-  const snapshot = snapshotFixture();
-  const binding = {
-    printer: {
-      backendProfileId: CAL.profileId,
-      backendPrinterId: CAL.printerId,
-      printerConfigurationId: 'config-a11y-1',
-      printerConfigurationRevision: CAL.configurationRevision,
-    },
-    snapshot,
-    selectedToolId: CAL.toolId,
-    selectedToolheadId: CAL.toolheadId,
-    selectedNozzleId: CAL.nozzleId,
-    filament: {
-      filamentProjectId: CAL.filamentId,
-      provider: 'A11y Materials Co',
-      product: 'A11y PLA Pro',
-      sku: 'A11Y-PLA',
-      spoolId: 'spool-a11y-1',
-    },
-  };
-  const withAttempt = scenario.withAttempt === true;
-  const verified = scenario.verified === true;
-  const attemptScope = {
-    backendProfileId: CAL.profileId,
-    backendPrinterId: CAL.printerId,
-    printerConfigurationId: 'config-a11y-1',
-    printerConfigurationRevision: CAL.configurationRevision,
-    snapshotId: CAL.snapshotId,
-    snapshotRevision: CAL.configurationRevision,
-    toolId: CAL.toolId,
-    toolheadId: CAL.toolheadId,
-    nozzleId: CAL.nozzleId,
-    filamentProjectId: CAL.filamentId,
-    filamentProvider: 'A11y Materials Co',
-    filamentProduct: 'A11y PLA Pro',
-    filamentSku: 'A11Y-PLA',
-    spoolId: 'spool-a11y-1',
-  };
-  const stages: WorkspaceStages = {
-    temperature: withAttempt
-      ? {
-          stageId: 'temperature',
-          status: 'inProgress',
-          attemptIds: [CAL.attemptId],
-        }
-      : emptyStage('temperature'),
-    flowPass1: emptyStage('flowPass1'),
-    flowPass2: emptyStage('flowPass2'),
-    pressureAdvance: emptyStage('pressureAdvance'),
-    flowVerification: emptyStage('flowVerification'),
-    retraction: emptyStage('retraction'),
-    maximumVolumetricSpeed: emptyStage('maximumVolumetricSpeed'),
-    shrinkage: emptyStage('shrinkage'),
-    finalVerification: verified
-      ? {
-          stageId: 'finalVerification',
-          status: 'completed',
-          attemptIds: [CAL.verificationAttemptId],
-          selectedAttemptId: CAL.verificationAttemptId,
-        }
-      : emptyStage('finalVerification'),
-  };
-  const attempts: WorkspaceAttempt[] = [];
-  if (withAttempt) {
-    attempts.push({
-      attemptId: CAL.attemptId,
-      stageId: 'temperature',
-      method: 'temperatureTower',
-      scope: attemptScope,
-      ordinal: 1,
-      status: 'inProgress',
-      startedAt: CAL.now,
-      observations: [],
-      diagnostics: [],
-    });
-  }
-  if (verified) {
-    attempts.push({
-      attemptId: CAL.verificationAttemptId,
-      stageId: 'finalVerification',
-      method: 'verificationPrint',
-      scope: attemptScope,
-      ordinal: 1,
-      status: 'completed',
-      startedAt: CAL.now,
-      completedAt: CAL.now,
-      selectedObservationId: CAL.verificationObservationId,
-      confidence: 'high',
-      recommendation: {
-        summary: 'Final verification passed with no defects.',
-        rationale:
-          'The verification coupon printed clean, so the calibrated values are safe to apply.',
-        values: [],
-      },
-      observations: [
-        {
-          observationId: CAL.verificationObservationId,
-          attemptId: CAL.verificationAttemptId,
-          observedAt: CAL.now,
-          notes: 'Verification coupon printed clean.',
-          stageId: 'finalVerification',
-          passed: true,
-          defectCount: 0,
-        },
-      ],
-      diagnostics: [],
-    });
-  }
-  const history: WorkspaceHistoryEvent[] = [];
-  if (withAttempt) {
-    history.push({
-      eventId: CAL.eventId,
-      timestamp: CAL.now,
-      type: 'beginAttempt',
-      attemptId: CAL.attemptId,
-      stageId: 'temperature',
-      method: 'temperatureTower',
-    });
-  }
-  if (verified) {
-    history.push({
-      eventId: CAL.verificationEventId,
-      timestamp: CAL.now,
-      type: 'beginAttempt',
-      attemptId: CAL.verificationAttemptId,
-      stageId: 'finalVerification',
-      method: 'verificationPrint',
-    });
-  }
-
-  const workflowDrafts: WorkflowDrafts = {
-    temperature: { ...emptyDraft(), method: 'temperatureTower' },
-    flowPass1: emptyDraft(),
-    flowPass2: emptyDraft(),
-    pressureAdvance: emptyDraft(),
-    flowVerification: emptyDraft(),
-    retraction: emptyDraft(),
-    maximumVolumetricSpeed: emptyDraft(),
-    shrinkage: emptyDraft(),
-    finalVerification: emptyDraft(),
-  };
-
-  return {
-    profileId: CAL.profileId,
-    projectId: CAL.projectId,
-    displayName: CAL.displayName,
-    description: 'Accessibility fixture workspace',
-    printerId: CAL.printerId,
-    status: 'inProgress',
-    completedStepCount: verified ? 1 : 0,
-    totalStepCount: 9,
-    isSynced: true,
-    isPrinterContextFresh: scenario.staleContext !== true,
-    hasConflicts: scenario.hasConflicts === true,
-    remoteProjectId: null,
-    baseRevision: 1,
-    createdAt: CAL.now,
-    updatedAt: CAL.now,
-    workspaceState: {
-      schemaVersion: 1,
-      domainState: {
-        schemaVersion: 1,
-        projectId: CAL.projectId,
-        createdAt: CAL.now,
-        mode: 'expert',
-        baseline: {
-          nozzleTemperatureC: 220,
-          flowRatio: 1.0,
-          pressureAdvance: 0.03,
-          retractionLengthMm: 0.6,
-          maximumVolumetricRateMm3S: 12,
-          shrinkageCompensationXPercent: 0,
-          shrinkageCompensationYPercent: 0,
-          shrinkageCompensationZPercent: 0,
-        },
-        binding,
-        snapshotHistory: [snapshot],
-        currentStageId: 'temperature',
-        stages,
-        attempts,
-        history,
-        diagnostics: [],
-      },
-      metadata: {
-        displayName: CAL.displayName,
-        description: 'Accessibility fixture workspace',
-      },
-      stepDrafts: {},
-      workflowDrafts,
-      photos: [],
-      physicalMatch: {
-        snapshotId: CAL.snapshotId,
-        toolId: CAL.toolId,
-        toolheadId: CAL.toolheadId,
-        nozzleId: CAL.nozzleId,
-        nozzleDiameterMm: CAL.nozzleDiameterMm,
-        confirmedAt: CAL.now,
-      },
-      selectedBaseProfile: {
-        orcaProfileId: CAL.orcaProfileId,
-        displayName: 'A11y Base Profile',
-        source: 'printFarmer',
-        upstreamVerified: true,
-        printerId: CAL.printerId,
-        configurationRevision: CAL.configurationRevision,
-        snapshotId: CAL.snapshotId,
-        toolId: CAL.toolId,
-        toolheadId: CAL.toolheadId,
-        nozzleId: CAL.nozzleId,
-        nozzleDiameterMm: CAL.nozzleDiameterMm,
-        profileRevision: 'rev-a11y-7',
-        contentHash: CAL.contentHash,
-      },
-      selectedBaseProfileId: CAL.orcaProfileId,
-      autosaveRevision: 4,
-    },
-  };
 }
 
 export async function launchCalibrationApp(): Promise<{
@@ -493,14 +156,9 @@ export async function applyCalibrationScenario(
   page: Page,
   scenario: CalibrationScenario,
 ): Promise<void> {
-  const args: FixtureArgs = {
-    scenario,
-    record: buildCalibrationRecord(scenario),
-    ids: CAL,
-    expiry: new Date(Date.now() + 600_000).toISOString(),
-  };
+  const args: FixtureArgs = { scenario, ids: CAL };
 
-  await app.evaluate(({ ipcMain }, { scenario, record, ids, expiry }) => {
+  await app.evaluate(({ ipcMain }, { scenario, ids }) => {
     const handle = <C extends StubbedChannel>(
       channel: C,
       handler: (...a: never[]) => StubResponse<C> | Promise<StubResponse<C>>,
@@ -593,340 +251,59 @@ export async function applyCalibrationScenario(
       };
     });
 
+    // Filament wizard reads its persisted state on mount; return `null`
+    // (channel schema allows a nullable record) so the wizard always
+    // starts fresh in fixtures. A previous persisted record is out of
+    // scope for the a11y and journey specs — the restart-resilience
+    // paths are covered by vitest unit tests.
+    handle('calibration:getFilamentWizardState', () => null);
+
+    // Workspace-state hydration lives on the calibration store from the
+    // pre-#756 saga era. Under Path D the shipped dashboard does not
+    // consume any of the returned state, but the store still fetches on
+    // mount — an empty list is the safe stub that keeps the store's
+    // error surface quiet without seeding a saga-flavoured record the
+    // filament flow neither wants nor renders.
     handle('calibration:listWorkspaceStates', () => ({
-      states: [record],
+      states: [],
       unhydratedProjects: [],
     }));
-    handle('calibration:getWorkspaceState', () => record);
-    handle('calibration:saveWorkspaceState', () => ({
-      state: record,
-      queued: true,
-    }));
 
-    handle('calibration:getPrinterContext', () => ({
-      printerId: ids.printerId,
-      displayName: 'A11y Fixture Printer',
-      printerModel: null,
-      rejectionReasonCodes: [],
-      missingInputs: [],
-      firmware: {
-        firmware: 'Klipper',
-        gcodeDialect: 'Klipper',
-        firmwareVersion: '0.12',
-        klipperConfigHash: null,
-      },
-      orcaProfileId: ids.orcaProfileId,
-      orcaProfileDisplayName: 'A11y Base Profile',
-      bedWidthMm: 250,
-      bedDepthMm: 250,
-      nozzleDiameterMm: ids.nozzleDiameterMm,
-      // A selected context is the server's authoritative verdict.
-      evaluationScope: 'full' as const,
-      snapshotAt: ids.now,
-      isCurrent: scenario.staleContext !== true,
-      configurationId: 'config-a11y-1',
-      configurationRevision: ids.configurationRevision,
-      snapshotId: ids.snapshotId,
-      snapshotRevision: ids.configurationRevision,
-      slicerIdentity: 'OrcaSlicer',
-      slicerDistribution: 'upstream',
-      profileRevision: 'rev-a11y-7',
-      contentHash: ids.contentHash,
-      toolheads: [
-        {
-          toolId: ids.toolId,
-          toolheadId: ids.toolheadId,
-          extruderType: 'directDrive',
-          nozzle: {
-            id: ids.nozzleId,
-            diameterMm: ids.nozzleDiameterMm,
-            material: 'brass',
-          },
-        },
-      ],
-      safety: {
-        buildVolumeMm: { x: 250, y: 250, z: 250 },
-        maximumNozzleTemperatureC: 300,
-        maximumBedTemperatureC: 110,
-        maximumVolumetricRateMm3S: 35,
-        emergencyStopAvailable: true,
-        thermalProtectionConfirmed: true,
-        ventilationAssessed: true,
-      },
-      permissions: {
-        readPrinter: true,
-        writeCalibration: scenario.availability !== 'missingScopes',
-        generateCalibration: scenario.availability !== 'missingScopes',
-        startPrint: scenario.availability !== 'missingScopes',
-      },
-    }));
-
-    handle('calibration:listPrinters', () => ({
-      printers: [
-        {
-          printerId: ids.printerId,
-          displayName: 'A11y Fixture Printer',
-          printerModel: 'A11y Reference Klipper',
-          printerModelId: null,
-          firmwareCompatible: true,
-          orcaProfileId: ids.orcaProfileId,
-          isOnline: scenario.offline !== true,
-          updatedAt: ids.now,
-          // Basic screening only; the candidate list does not resolve profiles.
-          evaluationScope: 'preliminary' as const,
-          rejectionReasonCodes: [],
-          missingInputs: [],
-          eligibility: {
-            firmwareFamily: 'Klipper',
-            gcodeDialect: 'Klipper',
-            slicerFamily: 'OrcaSlicer',
-            slicerDistribution: 'upstream',
-            slicerIdentity: 'OrcaSlicer',
-            hardwareContextComplete: true,
-            safetyContextComplete: true,
-            permissionsComplete: true,
-            reasons: [],
-          },
-        },
-      ],
-      printersTruncated: false,
-      printersUnreadable: 0,
-      fetchedAt: ids.now,
-    }));
-
-    handle('calibration:listOrcaProfiles', () => ({
-      profiles: [
-        {
-          orcaProfileId: ids.orcaProfileId,
-          displayName: 'A11y Base Profile',
-          vendor: null,
-          material: null,
-          source: 'printFarmer',
-          upstreamVerified: true,
-          printerId: ids.printerId,
-          configurationRevision: ids.configurationRevision,
-          snapshotId: ids.snapshotId,
-          toolId: ids.toolId,
-          toolheadId: ids.toolheadId,
-          nozzleId: ids.nozzleId,
-          nozzleDiameterMm: ids.nozzleDiameterMm,
-          profileRevision: 'rev-a11y-7',
-          contentHash: ids.contentHash,
-          exportable: true,
-        },
-      ],
-      // Echoed so the renderer's printer/revision fence has something to match
-      // against, exactly as the production handler does.
-      printerId: ids.printerId,
-      configurationRevision: ids.configurationRevision,
-      discovery: {
-        kind: 'ok',
-        message: 'Server profile discovery completed.',
-        serverCode: null,
-      },
-      printersUnreadable: 0,
-      printersTruncated: false,
-      localProfiles: [],
-      localDiscovery: {
-        kind: 'ok',
-        message: 'Local OrcaSlicer profile scan completed.',
-      },
-    }));
-
-    handle('calibration:startGeneration', () => ({
-      status: 'submitted',
-      orchestrationId: ids.orchestrationId,
-    }));
-
-    const failed = scenario.orchestration === 'failed';
-    handle('calibration:getOrchestrationStatus', () => ({
-      status: 'ok',
-      orchestration: {
-        id: ids.orchestrationId,
-        projectId: ids.projectId,
-        attemptId: ids.attemptId,
-        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
-        status: failed ? 'Failed' : 'Succeeded',
-        currentStep: failed ? 'SlicingFailed' : 'Completed',
-        revision: 2,
-        retryCount: failed ? 2 : 0,
-        nextRetryAtUtc: null,
-        stepStartedAtUtc: ids.now,
-        lastErrorCode: failed ? 'SLICER_EXIT_NONZERO' : null,
-        problems: failed
+    const printerListScenario = scenario.printerList ?? 'populated';
+    handle('calibration:listPrinters', () => {
+      const printers =
+        printerListScenario === 'populated'
           ? [
               {
-                code: 'SLICER_EXIT_NONZERO',
-                field: null,
-                message: 'The slicer exited before producing G-code.',
+                printerId: ids.printerId,
+                displayName: ids.displayName,
+                printerModel: 'A11y Reference Klipper',
+                printerModelId: ids.printerModelId,
+                isOnline: scenario.offline !== true,
+              },
+              {
+                printerId: ids.altPrinterId,
+                displayName: ids.altDisplayName,
+                // Model unknown — exercises the wider-pool fallback the
+                // retired candidate contract used to protect (see
+                // `profileSelection.ts:49-53`).
+                printerModel: null,
+                printerModelId: null,
+                isOnline: scenario.offline !== true,
               },
             ]
-          : [],
-        model3DId: null,
-        sliceJobId: null,
-        workerId: null,
-        sourceArtifactId: null,
-        finalArtifactId: null,
-        gcodeFileId: failed ? null : ids.gcodeId,
-        specificationSha256: null,
-        planManifestSha256: null,
-        gcodeSha256: null,
-        manifestSha256: null,
-        generatorVersion: 'a11y-gen-1.0',
-        slicerContainerDigest: null,
-        slicerBinarySha256: null,
-        statusRoute: `/api/calibration-orchestrations/${ids.orchestrationId}`,
-        createdAtUtc: ids.now,
-        updatedAtUtc: ids.now,
-        completedAtUtc: failed ? ids.now : ids.now,
-      },
-    }));
-
-    const queueKind = scenario.queue ?? 'none';
-    const unresolvedOutcome =
-      queueKind === 'unknownOutcome' ||
-      queueKind === 'unknownOutcomeRefetchFailure';
-    // The refetch-failure scenario must let the FIRST fetch through, or
-    // `queueState` is never populated and the panel renders nothing to
-    // co-render with. Gating on a call count races with any prefetch and with
-    // the mount-time poll, so gate on the mechanism itself: fail only once a
-    // gap has been served AND at least one fetch has succeeded. That is
-    // exactly the reachable path (gap -> refetch -> failure) and is
-    // order-independent.
-    let okServed = 0;
-    let gapServed = false;
-    handle('calibration:getQueueState', () => {
-      if (queueKind === 'none') {
-        return {
-          status: 'error',
-          error: {
-            code: 'jobNotFound',
-            message: 'No queued job for this project.',
-            retryable: false,
-            retryAfterSeconds: null,
-            reference: null,
-          },
-        } satisfies CalibrationGetQueueStateResponse;
-      }
-      if (
-        queueKind === 'unknownOutcomeRefetchFailure' &&
-        gapServed &&
-        okServed > 0
-      ) {
-        return {
-          status: 'error',
-          error: {
-            code: 'serverError',
-            message: 'Network timeout',
-            retryable: true,
-            retryAfterSeconds: null,
-            reference: null,
-          },
-        } satisfies CalibrationGetQueueStateResponse;
-      }
-      okServed += 1;
+          : [];
       return {
-        status: 'ok',
-        job: {
-          jobId: ids.jobId,
-          jobKind: 'FilamentCalibration',
-          rowVersion: 'W/"a11y-etag"',
-          jobRevision: 1,
-          dispatchStateRowVersion: 'W/"a11y-dispatch"',
-          dispatchStateRevision: 1,
-          status: unresolvedOutcome ? 'Starting' : 'Assigned',
-          dispatchAttemptOutcome: unresolvedOutcome ? 'Unknown' : null,
-          bedClearState: 'None',
-          gcodeFileId: ids.gcodeId,
-          assignedPrinterId: ids.printerId,
-          assignedPrinterName: 'A11y Fixture Printer',
-          acknowledgementExpiresAt: expiry,
-          calibrationProjectId: ids.projectId,
-          calibrationAttemptId: ids.attemptId,
-          calibrationOrchestrationId: ids.orchestrationId,
-          pinnedPrinterConfigRevision: ids.configurationRevision,
-          bedClearCommandId: null,
-          bedClearIdempotencyKeySha256: null,
-          bedClearExpiresAtUtc: null,
-          priority: 50,
-          queuePosition: 1,
-          updatedAt: ids.now,
-        },
-      } satisfies CalibrationGetQueueStateResponse;
-    });
-
-    handle('calibration:acknowledgeBedClear', () => ({
-      status: 'ok',
-      jobRowVersion: 'W/"a11y-etag-2"',
-      dispatchStateRowVersion: 'W/"a11y-dispatch-2"',
-    }));
-
-    handle('calibration:startPrint', () => ({
-      status: 'ok',
-      jobId: ids.jobId,
-      rowVersion: 'W/"a11y-etag"',
-      dispatchStateRowVersion: 'W/"a11y-dispatch"',
-      replayed: false,
-    }));
-
-    // A gap is the panel's only trigger for a refetch after the initial fetch
-    // (`:173 gapDetected -> onGapDetected() -> refetchJobState()`).
-    handle('calibration:pollQueueChanges', () => {
-      const gap = queueKind === 'unknownOutcomeRefetchFailure' && okServed > 0;
-      if (gap) gapServed = true;
-      return {
-        status: 'ok',
-        afterSequence: 0,
-        nextSequence: 0,
-        hasMore: false,
-        gapDetected: gap,
-        events: [],
+        printers,
+        printersTruncated: false,
+        printersUnreadable: 0,
+        fetchedAt: ids.now,
       };
     });
-
-    handle('calibration:getSubscriptionResources', () => ({
-      status: 'ok',
-      printerIds: [ids.printerId],
-      jobIds: [ids.jobId],
-      projectIds: [ids.projectId],
-    }));
-
-    handle('calibration:generateOrcaProfile', () => ({
-      status: 'ok',
-      displayName: 'A11y calibrated PLA',
-      safeFilename: 'a11y-calibrated-pla.json',
-      profileJsonHash: 'c'.repeat(64),
-      patchedFieldCount: 4,
-      warnings: [],
-    }));
-
-    handle('calibration:installOrcaProfile', () =>
-      scenario.installFails === true
-        ? {
-            status: 'error',
-            error: {
-              code: 'verificationFailed',
-              message: 'The OrcaSlicer profile directory rejected the write.',
-              retryable: false,
-            },
-          }
-        : {
-            status: 'ok',
-            installedHash: 'd'.repeat(64),
-            backupHash: 'e'.repeat(64),
-          },
-    );
-
-    handle('calibration:restoreOrcaProfile', () => ({
-      status: 'ok',
-      restoredHash: 'e'.repeat(64),
-    }));
-
-    handle('calibration:openPhoto', () => ({
-      approvalId: 'fb000000-fb00-4b00-8b00-bb0000000000',
-    }));
   }, args);
 
+  // Seed a library source root so the onboarding modal does not block the
+  // Filament Calibration nav button on reload.
   await page.evaluate(() => {
     localStorage.setItem(
       'printfarmer.library.sourceRoots.v1',
@@ -949,13 +326,18 @@ export async function applyCalibrationScenario(
   await page.reload();
   await page.waitForLoadState('domcontentloaded');
   await expect(
-    page.getByRole('button', { name: 'Printer Calibration' }),
+    page.getByRole('button', { name: 'Filament Calibration' }),
   ).toBeEnabled({ timeout: 20_000 });
 }
 
+/**
+ * Navigates to the Filament Calibration dashboard and waits for it to render.
+ * Idempotent — if the dashboard heading is already visible, returns
+ * immediately.
+ */
 export async function openCalibrationWorkspace(page: Page): Promise<void> {
   const dashboardHeading = page.getByRole('heading', {
-    name: 'Printer Calibration',
+    name: 'Filament Calibration',
     level: 1,
   });
   if (!(await dashboardHeading.isVisible())) {
@@ -965,72 +347,33 @@ export async function openCalibrationWorkspace(page: Page): Promise<void> {
     if (await backToDashboard.isVisible()) {
       await backToDashboard.click();
     } else {
-      await page.getByRole('button', { name: 'Printer Calibration' }).click();
+      await page.getByRole('button', { name: 'Filament Calibration' }).click();
     }
   }
   await expect(
-    page.getByRole('main', { name: 'Printer calibration workspace' }),
+    page.getByRole('main', { name: 'Filament calibration workspace' }),
   ).toBeVisible({ timeout: 15_000 });
   await expect(dashboardHeading).toBeVisible({ timeout: 15_000 });
 }
 
-export async function openFixtureProject(page: Page): Promise<void> {
-  const projectHeading = page.getByRole('heading', {
-    name: CAL.displayName,
-    level: 1,
-  });
-  if (await projectHeading.isVisible()) {
-    return;
-  }
+/**
+ * Opens the Filament Calibration Wizard from the dashboard and waits for
+ * Step 1 to render. Requires a scenario with `availability: 'ok'` and
+ * `offline: false` (default) — otherwise the primary CTA is disabled and
+ * this helper would time out on an unclickable button, which is the correct
+ * failure for a test that expects to reach the wizard.
+ */
+export async function openFilamentCalibrationWizard(page: Page): Promise<void> {
   await openCalibrationWorkspace(page);
-  const projectButton = page
-    .getByRole('button', { name: new RegExp(CAL.displayName) })
-    .first();
-  await expect(projectButton).toBeVisible({ timeout: 15_000 });
-  await projectButton.click();
-  await expect(projectHeading).toBeVisible({ timeout: 15_000 });
-}
-
-export async function openTemperatureStage(page: Page): Promise<void> {
-  const stageHeading = page.getByRole('heading', {
-    name: 'Temperature',
-    level: 1,
-  });
-  if (await stageHeading.isVisible()) {
-    return;
-  }
-  await openFixtureProject(page);
-  await page.getByRole('button', { name: /Open Temperature,/i }).click();
-  await expect(stageHeading).toBeVisible({ timeout: 15_000 });
-}
-
-export async function openReportView(page: Page): Promise<void> {
-  const reportHeading = page.getByRole('heading', {
-    name: CAL.displayName,
-    level: 1,
-  });
-  await openFixtureProject(page);
-  await page.getByRole('button', { name: 'Calibration card' }).click();
-  await expect(
-    page.getByRole('article', { name: CAL.displayName }),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(reportHeading).toBeVisible();
-}
-
-export async function openProfileView(page: Page): Promise<void> {
-  const profileHeading = page.getByRole('heading', {
-    name: 'OrcaSlicer profile patch preview',
-    level: 1,
-  });
-  if (await profileHeading.isVisible()) {
-    return;
-  }
-  await openFixtureProject(page);
   await page
-    .getByRole('navigation', { name: 'Calibration views' })
-    .getByRole('button', { name: 'Profile patch' })
+    .getByRole('button', { name: 'Calibrate a filament spool' })
     .click();
-  await expect(profileHeading).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page.getByRole('heading', {
+      name: 'Filament calibration wizard',
+      level: 1,
+    }),
+  ).toBeVisible({ timeout: 15_000 });
 }
 
 /**
@@ -1148,24 +491,6 @@ export async function focusedDescription(page: Page): Promise<string> {
  * A traversal that ends where it started, or that never reaches the named
  * element, is a dead end — this reports which named element it could not
  * reach and where focus ended up.
- *
- * **What `expectedContainer` does not do.** It is checked once, after
- * `target === document.activeElement`, so it asserts a structural fact — the
- * element reached is inside that container — and *not* that focus stayed
- * inside during the traversal. It cannot detect focus escaping and returning,
- * because it never runs while focus is in transit.
- *
- * This comment previously claimed containment was asserted "separately" as a
- * guard against focus escaping the surface. That was wrong, and the review of
- * #174 caught it. The check is not strengthened to run per press because
- * three of its four call sites *deliberately* begin outside `<main>` and cross
- * the sibling navigation landmark to get there — per-press containment would
- * fail them for doing the thing they are testing. **The check is correct; the
- * claim about it was not, so the claim is what changed.**
- *
- * A false constraint in a comment gets cited later as a rule by someone who
- * was not here, which is the reason this is a paragraph rather than a
- * deletion.
  */
 export async function expectTabReaches(
   page: Page,
@@ -1206,27 +531,4 @@ export async function focusIsInside(container: Locator): Promise<boolean> {
     (node) =>
       document.activeElement !== null && node.contains(document.activeElement),
   );
-}
-
-/**
- * Presses `key` and asserts focus moved to `target`, and that it actually
- * moved: a traversal that ends where it started is a dead end, not a pass.
- */
-export async function expectFocusMoves(
-  page: Page,
-  key: string,
-  target: Locator,
-  description: string,
-): Promise<void> {
-  const before = await focusedDescription(page);
-  await page.keyboard.press(key);
-  await expect(
-    target,
-    `${key} did not move focus to ${description} (focus was ${before})`,
-  ).toBeFocused({ timeout: 10_000 });
-  const after = await focusedDescription(page);
-  expect(
-    after,
-    `${key} left focus on ${before}; a traversal that does not move proves nothing`,
-  ).not.toBe(before);
 }

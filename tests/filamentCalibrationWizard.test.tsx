@@ -76,14 +76,7 @@ function printerCandidate(): CalibrationPrinterCandidate {
     displayName: 'Emulator cell A',
     printerModel: 'Klipper machine',
     printerModelId: null,
-    firmwareCompatible: false,
-    orcaProfileId: null,
     isOnline: true,
-    updatedAt: now,
-    evaluationScope: 'preliminary' as const,
-    rejectionReasonCodes: [],
-    missingInputs: [],
-    eligibility: null,
   };
 }
 
@@ -177,8 +170,6 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       printersUnreadable: 0,
       printersTruncated: false,
     }),
-    listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
-    resolveCalibrationConflict: vi.fn(),
     syncCalibrationNow: vi.fn().mockResolvedValue({
       phase: 'succeeded',
       profileId,
@@ -189,33 +180,7 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       cursor: null,
       error: null,
     }),
-    openCalibrationPhoto: vi.fn().mockResolvedValue(null),
-    stageCalibrationPhoto: vi.fn(),
-    generateOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('generateOrcaProfile')),
     exportOrcaProfile: vi.fn().mockResolvedValue({ status: 'canceled' }),
-    installOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('installOrcaProfile')),
-    restoreOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('restoreOrcaProfile')),
-    startCalibrationGeneration: vi
-      .fn()
-      .mockResolvedValue(notImplemented('startCalibrationGeneration')),
-    getCalibrationOrchestrationStatus: vi
-      .fn()
-      .mockResolvedValue(notImplemented('getCalibrationOrchestrationStatus')),
-    getCalibrationQueueState: vi
-      .fn()
-      .mockResolvedValue(notImplemented('getCalibrationQueueState')),
-    acknowledgeCalibrationBedClear: vi
-      .fn()
-      .mockResolvedValue(notImplemented('acknowledgeCalibrationBedClear')),
-    startCalibrationPrint: vi
-      .fn()
-      .mockResolvedValue(notImplemented('startCalibrationPrint')),
     pollCalibrationQueueChanges: vi
       .fn()
       .mockResolvedValue(notImplemented('pollCalibrationQueueChanges')),

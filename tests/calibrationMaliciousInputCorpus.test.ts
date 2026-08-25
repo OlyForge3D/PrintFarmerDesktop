@@ -101,11 +101,27 @@ import {
   LegacyBackupProjectOutcome,
   OrcaProfileOperationError,
 } from '@shared/ipc';
-import {
-  MAX_BACKUP_FILE_BYTES,
-  mapImportError,
-  runLegacyBackupPreflight,
-} from '../src/main/calibrationImportV4.js';
+// Skipped under #756: calibrationImportV4.ts was deleted with the printer-calibration saga.
+// The stubs below satisfy the type checker so the remaining Orca corpus can still compile.
+const MAX_BACKUP_FILE_BYTES = 0;
+const mapImportError = (
+  _error: unknown, // eslint-disable-line @typescript-eslint/no-unused-vars
+): { code: string } => ({ code: 'serverError' });
+interface StubLegacyPreflight {
+  readonly importableCount: number;
+  readonly warnings: readonly string[];
+  readonly projectOutcomes: readonly {
+    readonly name: string;
+    readonly outcome: string;
+    readonly issues: readonly string[];
+    readonly photoCount: number;
+  }[];
+}
+const runLegacyBackupPreflight = (
+  _path: string, // eslint-disable-line @typescript-eslint/no-unused-vars
+): Promise<StubLegacyPreflight> => {
+  throw new Error('removed in #756');
+};
 import {
   MAX_FILE_BYTES,
   discoverLocalOrcaFilamentProfilesEntries,
@@ -261,11 +277,20 @@ const VECTORS_SETTLED_ELSEWHERE: readonly string[] = [
 ];
 
 const ENTRY_POINTS = [
-  'calibrationImportV4',
+  // 'calibrationImportV4' — removed with the printer-calibration saga in #756.
   'orcaProfileDiscovery',
   'orcaProfileInstall',
 ] as const;
 type EntryPoint = (typeof ENTRY_POINTS)[number];
+
+/**
+ * The `calibrationImportV4` entry point was reaped under #756. Its Cell
+ * entries are still declared below so the historical corpus record stays
+ * intact, but they are filtered out before every test iteration and are
+ * intentionally *not* part of `EntryPoint`. This wider alias is used only in
+ * the Cell declarations so those entries still typecheck.
+ */
+type LegacyOrCurrentEntryPoint = EntryPoint | 'calibrationImportV4';
 
 /**
  * The four shapes a rejection takes across these entry points. Collapsing these
@@ -300,7 +325,7 @@ interface CellContext {
 
 interface Cell {
   readonly vector: Vector;
-  readonly entryPoint: EntryPoint;
+  readonly entryPoint: LegacyOrCurrentEntryPoint;
   /**
    * Present only on excused cells. The string is the reason the pair cannot
    * occur; `run` still has to prove that reason is true today.
@@ -1600,7 +1625,13 @@ function cellTitle(cell: Cell): string {
 }
 
 describe('malicious-input corpus (#158)', () => {
-  for (const cell of CELLS) {
+  // `calibrationImportV4` cells are filtered out under #756 — the entry point
+  // was reaped with the printer-calibration saga. The rest of the corpus still
+  // covers the Orca discovery/install entry points.
+  const ACTIVE_CELLS = CELLS.filter(
+    (c) => c.entryPoint !== 'calibrationImportV4',
+  );
+  for (const cell of ACTIVE_CELLS) {
     const runner =
       cell.onlyOn === undefined
         ? it
@@ -1708,7 +1739,12 @@ describe('first-party import scope (#517)', () => {
 
 describe('the corpus is complete', () => {
   it('declares every (vector × entry point) pair exactly once', () => {
-    const declared = CELLS.map((c) => `${c.vector}::${c.entryPoint}`).sort();
+    const activeCells = CELLS.filter(
+      (c) => c.entryPoint !== 'calibrationImportV4',
+    );
+    const declared = activeCells
+      .map((c) => `${c.vector}::${c.entryPoint}`)
+      .sort();
     const required = VECTORS.flatMap((v) =>
       ENTRY_POINTS.map((e) => `${v}::${e}`),
     ).sort();
@@ -1957,6 +1993,11 @@ describe('the fixtures are synthetic and committed', () => {
     };
 
     for (const entry of manifest.fixtures) {
+      // The calibrationImportV4 entry point was reaped under #756. Its
+      // fixtures are still on disk (removing them is orthogonal to the
+      // Filament Calibration rework) but they no longer participate in the
+      // matrix; skip validation for them here.
+      if (entry.entryPoint === 'calibrationImportV4') continue;
       expect(
         ['control', 'malicious'],
         `${entry.name} has an unknown role`,
@@ -2024,7 +2065,10 @@ async function withSandbox(
 }
 
 describe('the bounds bite where they are declared', () => {
-  it('refuses a v4 backup one byte over the size limit and not one byte under', async () => {
+  it.skip('refuses a v4 backup one byte over the size limit and not one byte under', async () => {
+    // Skipped under #756: `runLegacyBackupPreflight` was removed with the
+    // printer-calibration saga. Restore against the filament equivalent when
+    // one exists.
     await withSandbox(async (ctx) => {
       const atLimit = path.join(ctx.sandbox, 'at-limit.json');
       const overLimit = path.join(ctx.sandbox, 'over-limit.json');
@@ -2054,7 +2098,9 @@ describe('the bounds bite where they are declared', () => {
     });
   });
 
-  it('refuses v4 nesting one level over the depth limit and not one level under', async () => {
+  it.skip('refuses v4 nesting one level over the depth limit and not one level under', async () => {
+    // Skipped under #756: `runLegacyBackupPreflight` was removed with the
+    // printer-calibration saga.
     await withSandbox(async (ctx) => {
       // measureJsonDepth counts the root object as depth 0, so a backup whose
       // deepest value sits at exactly MAX_JSON_NESTING_DEPTH must survive.
@@ -2296,7 +2342,10 @@ describe('the bounds bite where they are declared', () => {
 // Hostile content that is accepted as inert data, and why that is not a hole
 // ---------------------------------------------------------------------------
 
-describe('hostile content that is carried but never acted on', () => {
+describe.skip('hostile content that is carried but never acted on', () => {
+  // Skipped under #756: `runLegacyBackupPreflight` was removed with the
+  // printer-calibration saga. If the filament flow adopts a v4 backup import
+  // in the future, restore this coverage against its preflight.
   it('accepts a hostile embedded profile as opaque text without resolving any of it', async () => {
     await withSandbox(async (ctx) => {
       // `generatedProfile.exactJson` is the one place a v4 backup carries a
@@ -2565,9 +2614,9 @@ const EXECUTION_PRIMITIVE =
 
 describe('nothing in the corpus is executed', () => {
   const NEVER_EXECUTES = [
-    'calibrationImportV4',
+    // 'calibrationImportV4' — removed under #756 with the printer-calibration saga.
     'orcaProfileDiscovery',
-    // Reached transitively from the first two. It is the module that inspects
+    // Reached transitively from the entry points. It is the module that inspects
     // untrusted JSON, so it is exactly where an execution primitive would be
     // most dangerous and least visible.
     'untrustedJson',
@@ -2616,7 +2665,7 @@ describe('nothing in the corpus is executed', () => {
     // The only entry point that writes at all is install, and it writes exactly
     // one destination computed by computeInstallPath, which refuses anything
     // that is not a bare `.json` name.
-    for (const file of ['calibrationImportV4', 'orcaProfileDiscovery']) {
+    for (const file of ['orcaProfileDiscovery']) {
       expect(mainSource(file)).not.toMatch(
         /\bwriteFile\(|\bappendFile\(|\bcreateWriteStream\(/,
       );

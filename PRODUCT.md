@@ -64,7 +64,7 @@ Do not resemble a decorative SaaS dashboard, an embedded website, a consumer set
 
 Pre-release. Version 0.1.0-beta.4, working software, real printers in-house, and no public users.
 
-Real and citable: the shipped application itself; `docs/printer-calibration-user-guide.md` and `docs/printer-calibration-admin-guide.md`; `docs/ARCHITECTURE.md`; `docs/security/THREAT_MODEL.md`; and `docs/release-validation.md`, which records the packaged Windows/macOS release matrix, WebGL2 capability reporting, SwiftShader fallback, and the accessibility gate.
+Real and citable: the shipped application itself; `docs/ARCHITECTURE.md`; `docs/security/THREAT_MODEL.md`; and `docs/release-validation.md`, which records the packaged Windows/macOS release matrix, WebGL2 capability reporting, SwiftShader fallback, and the accessibility gate.
 
 Future work must not fabricate what does not exist: there are no customers, testimonials, case studies, press mentions, install counts, uptime or performance benchmarks, pricing, or third-party endorsements. Snapmaker U1 hardware acceptance has not been completed, so no claim may imply a verified physical print.
 

@@ -29,7 +29,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SidecarCalibrationAdapter } from '../src/main/calibrationService.js';
 import type { SidecarClient } from '../src/main/sidecar.js';
-import { CalibrationConflict, IpcChannel, ipcSchemas } from '@shared/ipc';
+import { CalibrationConflict } from '@shared/ipc';
 
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
@@ -42,9 +42,10 @@ const EPOCH_SECONDS = '1785881744';
 const EPOCH_AS_ISO = '2026-08-04T22:15:44.000Z';
 /** A distinct, earlier instant -- used to prove createdAt and resolvedAt are
  * threaded through independently rather than one being copied from the other
- * (issue #525). */
-const EARLIER_EPOCH_SECONDS = '1785800000';
-const EARLIER_EPOCH_AS_ISO = '2026-08-03T23:33:20.000Z';
+ * (issue #525). Retained for reference after resolveCalibrationConflict was
+ * reaped with the saga in #756. */
+// const EARLIER_EPOCH_SECONDS = '1785800000';
+// const EARLIER_EPOCH_AS_ISO = '2026-08-03T23:33:20.000Z';
 
 /**
  * The control the rest of the file rests on. If the contract ever stops
@@ -104,6 +105,8 @@ function resolvingSidecar(
       }),
   } as unknown as SidecarClient;
 }
+// Retain but silence for the reap of resolveCalibrationConflict (#756).
+void resolvingSidecar;
 
 describe('#363 sidecar epoch timestamps are converted at the adapter boundary', () => {
   it('emits a listed conflict whose createdAt the IPC contract accepts', async () => {
@@ -187,77 +190,5 @@ describe('#363 sidecar epoch timestamps are converted at the adapter boundary', 
     await expect(
       adapter.listCalibrationConflicts(PROFILE_ID, PROJECT_ID),
     ).rejects.toThrow(/createdAt/);
-  });
-
-  it('converts resolvedAt on the resolve channel and satisfies the response contract', async () => {
-    UNCONVERTED_IS_REJECTED();
-
-    const adapter = new SidecarCalibrationAdapter(
-      resolvingSidecar(EPOCH_SECONDS, EPOCH_SECONDS),
-    );
-
-    const response = await adapter.resolveCalibrationConflict({
-      profileId: PROFILE_ID,
-      conflictId: CONFLICT_ID,
-      resolution: 'acceptServer',
-    });
-
-    expect(response.conflict.resolvedAt).toBe(EPOCH_AS_ISO);
-
-    // Against the real channel schema, which is what the handler now parses
-    // with -- so this spec and production read the same declaration.
-    const parsed =
-      ipcSchemas[IpcChannel.CalibrationResolveConflict].response.safeParse(
-        response,
-      );
-    expect(
-      parsed.success,
-      `the resolve response violates its own channel contract: ${
-        parsed.success ? '' : JSON.stringify(parsed.error?.issues)
-      }`,
-    ).toBe(true);
-  });
-
-  /**
-   * #525 — `createdAt` must not be fabricated from `resolvedAt`.
-   *
-   * The store's resolution DTO now carries its own `created_at` (the
-   * conflict's detection instant), threaded independently from
-   * `resolved_at`. Before this fix, the adapter reused `resolvedAtIso` for
-   * both fields, which is indistinguishable from a correct value by any
-   * check that inspects the value rather than its provenance -- so this test
-   * supplies a `createdAt` genuinely distinct from `resolvedAt` and asserts
-   * neither collapses into the other.
-   */
-  it('reports the conflict-detection instant independently of the resolution instant', async () => {
-    const adapter = new SidecarCalibrationAdapter(
-      resolvingSidecar(EPOCH_SECONDS, EARLIER_EPOCH_SECONDS),
-    );
-
-    const response = await adapter.resolveCalibrationConflict({
-      profileId: PROFILE_ID,
-      conflictId: CONFLICT_ID,
-      resolution: 'acceptServer',
-    });
-
-    expect(response.conflict.createdAt).toBe(EARLIER_EPOCH_AS_ISO);
-    expect(response.conflict.resolvedAt).toBe(EPOCH_AS_ISO);
-    expect(
-      response.conflict.createdAt,
-      'createdAt must not be fabricated from resolvedAt: a conflict that sat ' +
-        'unresolved for any length of time must report distinct instants for ' +
-        'when it was detected versus when it was resolved',
-    ).not.toBe(response.conflict.resolvedAt);
-
-    const parsed =
-      ipcSchemas[IpcChannel.CalibrationResolveConflict].response.safeParse(
-        response,
-      );
-    expect(
-      parsed.success,
-      `the resolve response violates its own channel contract: ${
-        parsed.success ? '' : JSON.stringify(parsed.error?.issues)
-      }`,
-    ).toBe(true);
   });
 });

@@ -5,123 +5,29 @@
  * Both were found in review of the discovery-contract fix. Each is a case where
  * a value that is legal on the wire met a stricter expectation downstream, and
  * neither had a fixture that exercised it.
+ *
+ * The candidate-observation timestamp scenarios that originally lived here
+ * tested the old `CalibrationCandidateDto` shape from
+ * `/api/printers/calibration-candidates`. That route was retired by
+ * `OlyForge3D/PrintFarmer#1943` alongside the eligibility gate, and the
+ * candidate list now projects `CompletePrinterDto` — which has no
+ * `observedAtUtc`/`lastSeenAtUtc` and therefore cannot produce the
+ * one-bad-timestamp discarding the farm regression. The remaining OrcaProfile
+ * and context aggregate cases are still meaningful and stay here.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
-  CalibrationPrinterCandidate,
   OrcaProfileEntry,
   resolveOrcaBaseProfileLookupName,
 } from '@shared/ipc';
 import {
-  RemoteCalibrationPrinters,
-  projectCalibrationEligibility,
-  isExplicitCalibrationEligibilityComplete,
   projectPrintFarmerOrcaProfile,
   projectPrintFarmerOrcaProfileResult,
 } from '../src/main/calibrationWire.js';
 
 const PRINTER_GUID = 'aaaaaaaa-1111-4111-8111-222222222222';
 const FILAMENT_GUID = 'cccccccc-1111-4111-8111-222222222222';
-
-/**
- * A `CalibrationCandidateDto` for an enabled printer PrintFarmer has never
- * reached: `ObservedAtUtc` and `LastSeenAtUtc` are both `DateTime?` and both
- * absent. This is contract-legal server output.
- */
-function neverObservedCandidateDto(overrides: Record<string, unknown> = {}) {
-  return {
-    id: PRINTER_GUID,
-    name: 'Never observed printer',
-    enabled: true,
-    inMaintenance: false,
-    configurationRevision: 1,
-    reachability: 'unknown',
-    operationalState: 'unknown',
-    isStale: false,
-    firmware: {
-      family: 'Klipper',
-      gcodeDialect: 'Klipper',
-      detectionSource: 'moonraker',
-      version: null,
-      verified: true,
-    },
-    slicer: {
-      engine: 'OrcaSlicer',
-      distribution: 'upstream',
-      version: '2.4.2',
-      profileFormat: 'orca-json',
-    },
-    eligible: true,
-    missingInputs: [],
-    rejectionReasons: [],
-    ...overrides,
-  };
-}
-
-describe('a printer with no observation timestamps', () => {
-  it('normalises to a null updatedAt rather than failing to parse', () => {
-    const { printers } = RemoteCalibrationPrinters.parse([
-      neverObservedCandidateDto(),
-    ]);
-    expect(printers).toHaveLength(1);
-    expect(printers[0]!.updatedAt).toBeNull();
-  });
-
-  it('survives the IPC boundary instead of failing the whole list', () => {
-    // This is the actual regression: the renderer response is parsed as a
-    // unit, so one unparseable candidate threw and discarded every printer —
-    // the same empty-discovery symptom this contract fix exists to remove,
-    // arriving through a different field.
-    const { printers } = RemoteCalibrationPrinters.parse([
-      neverObservedCandidateDto(),
-      neverObservedCandidateDto({
-        id: 'bbbbbbbb-1111-4111-8111-222222222222',
-        name: 'Recently seen printer',
-        reachability: 'online',
-        observedAtUtc: '2026-08-11T12:00:00Z',
-      }),
-    ]);
-
-    const projected = printers.map((printer) => ({
-      printerId: printer.printerId,
-      displayName: printer.displayName,
-      printerModel: printer.printerModel,
-      firmwareCompatible: isExplicitCalibrationEligibilityComplete(printer),
-      orcaProfileId: printer.orcaProfileId,
-      isOnline: printer.isOnline,
-      updatedAt: printer.updatedAt,
-      rejectionReasonCodes: [],
-      missingInputs: [],
-      eligibility: projectCalibrationEligibility(printer),
-    }));
-
-    const parsed = projected.map((candidate) =>
-      CalibrationPrinterCandidate.parse(candidate),
-    );
-
-    expect(parsed).toHaveLength(2);
-    expect(parsed[0]!.updatedAt).toBeNull();
-    expect(parsed[1]!.updatedAt).toBe('2026-08-11T12:00:00.000Z');
-  });
-
-  it('still refuses a timestamp that is present but not an instant', () => {
-    // Accepting absence must not become accepting nonsense. The candidate is
-    // still refused — it is simply refused on its own now, rather than taking
-    // the rest of the farm with it, so the assertion is that it does not
-    // appear rather than that everything threw.
-    const { printers, unreadable } = RemoteCalibrationPrinters.parse([
-      neverObservedCandidateDto({ observedAtUtc: 'yesterday' }),
-      neverObservedCandidateDto({
-        id: 'cccccccc-1111-4111-8111-222222222222',
-      }),
-    ]);
-
-    expect(printers).toHaveLength(1);
-    expect(printers[0]!.printerId).toBe('cccccccc-1111-4111-8111-222222222222');
-    expect(unreadable).toBe(1);
-  });
-});
 
 describe('base profile lookup name resolution', () => {
   it('uses the Orca name for a PrintFarmer profile, never its server GUID', () => {
@@ -205,41 +111,13 @@ describe('OrcaProfileEntry carries both identities', () => {
 });
 
 describe('a value the wire accepts but the renderer contract refuses', () => {
-  it('classifies an unrepresentable instant as unreadable, not as readable', () => {
-    // `ServerInstant` accepts anything Date.parse finds finite, and an
-    // out-of-range instant renders as an ECMAScript expanded year
-    // (`+010000-01-01T00:00:00.000Z`). That is a real instant but not one
-    // `z.string().datetime()` accepts, so the record used to be classified
-    // readable here and then fail the IPC boundary, where the response is one
-    // parsed value — emptying the farm while reporting nothing lost.
-    for (const instant of [
-      '+010000-01-01T00:00:00.000Z',
-      '10000-01-01',
-      'January 1, 12345',
-    ]) {
-      const { printers, unreadable } = RemoteCalibrationPrinters.parse([
-        neverObservedCandidateDto({ observedAtUtc: instant }),
-        neverObservedCandidateDto({
-          id: 'dddddddd-1111-4111-8111-222222222222',
-        }),
-      ]);
-
-      expect(printers, instant).toHaveLength(1);
-      expect(printers[0]!.printerId, instant).toBe(
-        'dddddddd-1111-4111-8111-222222222222',
-      );
-      expect(unreadable, instant).toBe(1);
-    }
-  });
-
-  it('keeps ordinary instants working, so the guard is a bound not a blanket', () => {
-    const { printers, unreadable } = RemoteCalibrationPrinters.parse([
-      neverObservedCandidateDto({ observedAtUtc: '2026-08-11T12:00:00Z' }),
-    ]);
-
-    expect(unreadable).toBe(0);
-    expect(printers[0]!.updatedAt).toBe('2026-08-11T12:00:00.000Z');
-  });
+  // The candidate-instant scenarios that lived here targeted the retired
+  // `CalibrationCandidateDto` wire schema and its `observedAtUtc` guard. The
+  // Path D shape (`CompletePrinterDto`) does not carry an observation
+  // timestamp, so the wire schema has no such field to guard. Coverage of
+  // out-of-range instants remains on the context aggregate below.
+  it.skip('classifies an unrepresentable instant as unreadable, not as readable', () => {});
+  it.skip('keeps ordinary instants working, so the guard is a bound not a blanket', () => {});
 });
 
 describe('one printer context cannot reject the whole profiles request', () => {
@@ -312,6 +190,12 @@ describe('one printer context cannot reject the whole profiles request', () => {
   const eligibleCandidate = {
     printerId: PRINTER_GUID,
     isOnline: true,
+    // Path D: `isExplicitCalibrationEligibilityComplete` checks these two
+    // fields directly (`isEnabled && !inMaintenance`) rather than the
+    // firmware/slicer/eligibility identity carriers the old candidate DTO
+    // exposed. The identity block below is retained as documentary shape.
+    isEnabled: true,
+    inMaintenance: false,
     eligibility: {
       firmwareFamily: 'Klipper',
       gcodeDialect: 'Klipper',

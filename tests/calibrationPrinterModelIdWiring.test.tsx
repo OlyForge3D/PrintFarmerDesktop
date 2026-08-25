@@ -1,24 +1,22 @@
 /**
- * Matched-predicate wiring test for `NewCalibrationProject`'s
- * `printerModelId` prop into `ProfileSelectionSection`.
+ * Matched-predicate wiring test for `ProfileSelectionSection`'s
+ * `printerModelId` prop as seen through the filament calibration wizard.
  *
  * WHY THIS EXISTS
  *
- * Between Bishop's commit `9f62a958` and Dallas's fix on top of it, the
- * candidate DTO carries `printerModelId` end-to-end but the JSX prop was
- * hardcoded `printerModelId={null}` for one iteration cycle. The
- * acceptance-flow test suite in `calibrationProfileSelectionFlow.test.tsx`
- * mounts the workspace, mocks the six Path C channels, and asserts the
- * cascade is functional — but because it stubs both `/extended` and
- * `/for-model` at the API boundary with the same options, it cannot see the
+ * The candidate DTO carries `printerModelId` end-to-end and the wizard threads
+ * it into `ProfileSelectionSection` at `FilamentCalibrationWizard.tsx:1113`.
+ * The wire-level acceptance suite in
+ * `tests/filamentCalibrationWizard.test.tsx` mounts the wizard and stubs both
+ * `/extended` and `/for-model` with the same options, so it cannot see the
  * difference between "the renderer took the `/for-model` path" and "the
- * renderer took the `/extended` fallback because the printerModelId was
- * lost." Every acceptance test stays green either way.
+ * renderer fell back to `/extended` because the printerModelId was lost or
+ * became `null`." Every acceptance test stays green either way.
  *
- * That is exactly the failure mode Vasquez called out (`test-green /
- * user-wrong gap`) which let three earlier PRs merge on a dead feature. The
- * matched pair below closes it by asserting on which mock was called,
- * on the same predicate, with only `printerModelId` differing between arms.
+ * That is the exact `test-green / user-wrong gap` Vasquez has repeatedly
+ * called out. The matched pair below closes it by asserting on which mock
+ * was called, on the same predicate, with only `printerModelId` differing
+ * between arms.
  *
  * WHAT IT ASSERTS
  *
@@ -26,16 +24,30 @@
  *    Candidate carries `printerModelId: <guid>`.
  *    Predicate: `listCalibrationMachineProfilesForModel.mock.calls[0][0]`
  *    is `{ profileId, printerModelId: <that guid> }`.
+ *    `listCalibrationExtendedProfiles` is NOT called for the machine list.
  *
- *  ARM B — matching-predicate control:
+ *  ARM B — matching-predicate control (the permissive-fallback contract):
  *    Same fixture, same mount, same operator action, only
  *    `printerModelId` set to `null`.
  *    Predicate: `listCalibrationMachineProfilesForModel` was NOT called.
+ *    `listCalibrationExtendedProfiles` IS called — the wider pool is shown
+ *    rather than an empty selector. This is the exact empty-list failure
+ *    the retired `/calibration-candidates` contract existed to prevent and
+ *    that `profileSelection.ts:49-53` still guards against.
  *
  * Same instrument, opposite result on the same data — the repo rule for
  * every predicate that ships. Passing both proves the wiring; passing
  * arm A alone (as the buggy code did) leaves the fallback path
  * indistinguishable from success.
+ *
+ * ## Ported under #756
+ *
+ * This suite originally mounted the printer-calibration saga's
+ * "New calibration project" wizard. That wizard was reaped along with the
+ * rest of the saga, but `ProfileSelectionSection` — the component under
+ * test — survived and is now hosted by the filament calibration wizard.
+ * The wiring contract is unchanged; only the host is different, so the
+ * suite is ported rather than deleted.
  */
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -57,6 +69,8 @@ const machineGuid = '44444444-4444-4444-8444-444444444401';
 const processGuid = '44444444-4444-4444-8444-444444444402';
 const filamentGuid = '44444444-4444-4444-8444-444444444403';
 const sampleMachineName = 'K1 Max 0.4';
+const sampleProcessName = '0.20mm Standard';
+const sampleFilamentName = 'Generic PLA';
 const now = '2026-08-23T02:29:44.441Z';
 
 function candidateWithModel(
@@ -67,18 +81,7 @@ function candidateWithModel(
     displayName: 'Emulator cell A',
     printerModel: 'Klipper machine',
     printerModelId: modelId,
-    firmwareCompatible: false,
-    orcaProfileId: null,
     isOnline: true,
-    updatedAt: now,
-    evaluationScope: 'preliminary' as const,
-    rejectionReasonCodes: [
-      'machine_profile_missing',
-      'process_profile_missing',
-      'filament_profile_missing',
-    ],
-    missingInputs: [],
-    eligibility: null,
   };
 }
 
@@ -134,8 +137,8 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       .fn()
       .mockRejectedValue(
         new Error(
-          'getCalibrationPrinterContext: profile-selection flow must not ' +
-            'require per-printer server eligibility.',
+          'getCalibrationPrinterContext: filament wizard must not require ' +
+            'per-printer server eligibility.',
         ),
       ),
     listOrcaProfiles: vi.fn().mockResolvedValue({
@@ -145,8 +148,6 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       printersUnreadable: 0,
       printersTruncated: false,
     }),
-    listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
-    resolveCalibrationConflict: vi.fn(),
     syncCalibrationNow: vi.fn().mockResolvedValue({
       phase: 'succeeded',
       profileId,
@@ -157,33 +158,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       cursor: null,
       error: null,
     }),
-    openCalibrationPhoto: vi.fn().mockResolvedValue(null),
-    stageCalibrationPhoto: vi.fn(),
-    generateOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('generateOrcaProfile')),
     exportOrcaProfile: vi.fn().mockResolvedValue({ status: 'canceled' }),
-    installOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('installOrcaProfile')),
-    restoreOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('restoreOrcaProfile')),
-    startCalibrationGeneration: vi
-      .fn()
-      .mockResolvedValue(notImplemented('startCalibrationGeneration')),
-    getCalibrationOrchestrationStatus: vi
-      .fn()
-      .mockResolvedValue(notImplemented('getCalibrationOrchestrationStatus')),
-    getCalibrationQueueState: vi
-      .fn()
-      .mockResolvedValue(notImplemented('getCalibrationQueueState')),
-    acknowledgeCalibrationBedClear: vi
-      .fn()
-      .mockResolvedValue(notImplemented('acknowledgeCalibrationBedClear')),
-    startCalibrationPrint: vi
-      .fn()
-      .mockResolvedValue(notImplemented('startCalibrationPrint')),
     pollCalibrationQueueChanges: vi
       .fn()
       .mockResolvedValue(notImplemented('pollCalibrationQueueChanges')),
@@ -207,7 +182,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       ],
       processProfiles: [
         {
-          name: '0.20mm Standard',
+          name: sampleProcessName,
           guid: processGuid,
           source: 'system' as const,
           displayLabel: '0.4 nozzle',
@@ -216,7 +191,7 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       ],
       filamentProfiles: [
         {
-          name: 'Generic PLA',
+          name: sampleFilamentName,
           guid: filamentGuid,
           source: 'system' as const,
           displayLabel: 'PLA',
@@ -241,12 +216,28 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
     }),
     listCalibrationProcessProfilesForMachines: vi.fn().mockResolvedValue({
       status: 'ok' as const,
-      profiles: [],
+      profiles: [
+        {
+          name: sampleProcessName,
+          guid: processGuid,
+          source: 'system' as const,
+          displayLabel: '0.4 nozzle',
+          contentSha256: null,
+        },
+      ],
       fetchedAt: now,
     }),
     listCalibrationFilamentProfilesForMachines: vi.fn().mockResolvedValue({
       status: 'ok' as const,
-      profiles: [],
+      profiles: [
+        {
+          name: sampleFilamentName,
+          guid: filamentGuid,
+          source: 'system' as const,
+          displayLabel: 'PLA',
+          contentSha256: null,
+        },
+      ],
       fetchedAt: now,
     }),
     listCalibrationCustomProfiles: vi.fn().mockResolvedValue({
@@ -311,8 +302,10 @@ function mountWith(candidate: CalibrationPrinterCandidate) {
 }
 
 async function openWizardAndPickPrinter(): Promise<void> {
+  // The filament wizard is entered from the calibration dashboard's single
+  // primary CTA — same host that the saga wizard used to occupy.
   fireEvent.click(
-    await screen.findByRole('button', { name: 'New calibration project' }),
+    await screen.findByRole('button', { name: /Calibrate a filament spool/i }),
   );
   fireEvent.click(
     await screen.findByRole('radio', { name: /Emulator cell A/ }),
@@ -323,7 +316,7 @@ async function openWizardAndPickPrinter(): Promise<void> {
     const selector = screen.queryByRole('combobox', {
       name: /machine profile/i,
     });
-    if (selector === null) return;
+    if (selector === null) throw new Error('machine selector not present yet');
     const populated = Array.from(selector.querySelectorAll('option')).some(
       (option) => option.value.length > 0,
     );
@@ -351,7 +344,7 @@ describe('printerModelId is threaded from candidate into ProfileSelectionSection
     });
   });
 
-  it('does NOT call listCalibrationMachineProfilesForModel when the candidate carries printerModelId: null (matching-predicate control)', async () => {
+  it('does NOT call listCalibrationMachineProfilesForModel when the candidate carries printerModelId: null (matching-predicate control, permissive fallback)', async () => {
     const { api } = mountWith(candidateWithModel(null));
     await openWizardAndPickPrinter();
 
@@ -363,10 +356,27 @@ describe('printerModelId is threaded from candidate into ProfileSelectionSection
     // branch fires the correct arm for each value.
     expect(forModel).not.toHaveBeenCalled();
 
-    // Sanity: the `/extended` fallback IS the source of machine options
-    // when we're on the null branch, so the operator still gets a working
-    // selector — same user-visible outcome, different source of truth.
+    // The permissive-fallback contract Vasquez called out: with the
+    // candidate contract retired, `printerModelId: null` MUST fall back to
+    // the wider pool rather than showing an empty selector. This is the
+    // exact empty-list failure the retired `/calibration-candidates` route
+    // used to guard against, and is now guarded here (see
+    // `profileSelection.ts:49-53`).
     const extended = vi.mocked(api.listCalibrationExtendedProfiles);
     expect(extended).toHaveBeenCalledWith({ profileId });
+    // And the operator does see a populated machine selector — the
+    // observable side of the same guarantee. The waiter in
+    // `openWizardAndPickPrinter` above already blocks on this, so reaching
+    // this line at all proves it.
+    const selector = await screen.findByRole('combobox', {
+      name: /machine profile/i,
+    });
+    const options = Array.from(selector.querySelectorAll('option')).filter(
+      (option) => option.value.length > 0,
+    );
+    expect(
+      options.length,
+      'null printerModelId collapsed the machine selector to an empty list',
+    ).toBeGreaterThan(0);
   });
 });

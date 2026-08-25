@@ -11,17 +11,15 @@ import {
 } from './refusalMessages';
 
 /**
- * Why this printer cannot be calibrated, in the server's own terms.
+ * Why this printer cannot be calibrated, in the terms the desktop still knows.
  *
- * PrintFarmer refuses a printer by naming every unmet precondition, and those
- * codes reach the renderer intact. They used to stop here: an ineligible
- * candidate produced one sentence saying canonical eligibility was incomplete,
- * which is equally true of a printer that is merely offline, one whose firmware
- * was never identified and one whose slicer engine was never set. The operator
- * saw a refusal with no field to go and populate, and support saw a report with
- * nothing in it. The codes are read out instead, and the generic sentence is
- * kept only for the case that produces none — a candidate that was never
- * selected.
+ * Under Path D there is no server-side eligibility screen: `GET /api/printers`
+ * — the plain printers list that replaced the removed calibration-candidates
+ * route — returns every configured printer, and the main-process handler has
+ * already filtered out disabled and in-maintenance hardware before the
+ * candidate reaches this function. What remains for the wizard to check is
+ * whether the operator has selected a printer at all, and whether that
+ * printer is currently reachable.
  */
 export function candidateEligibilityBlockers(
   candidate: CalibrationPrinterCandidate | undefined,
@@ -29,35 +27,9 @@ export function candidateEligibilityBlockers(
   if (candidate === undefined) {
     return ['Select a printer returned by PrintFarmer.'];
   }
-  if (candidate.eligibility !== null) {
-    // Eligibility and refusal are mutually exclusive by schema, so an eligible
-    // candidate has no reasons to read out. Offline is still checked: the
-    // candidate screen can pass before the printer is reachable.
-    return candidate.isOnline
-      ? []
-      : ['The printer is offline, so current context cannot be verified.'];
-  }
-  const blockers = candidate.rejectionReasonCodes.map(
-    describeRejectionReasonCode,
-  );
-  const missing = describeMissingInputs(candidate.missingInputs);
-  if (missing !== null) blockers.push(missing);
-  if (blockers.length === 0) {
-    // Unreachable through the IPC handler, which guarantees at least one code
-    // for every refused printer. Retained because this function is also given
-    // candidates by tests and by any future caller that builds one by hand, and
-    // an empty blocker list would read as "eligible" — the one meaning it must
-    // never have.
-    blockers.push(
-      'PrintFarmer did not provide complete canonical Klipper, OrcaSlicer, upstream eligibility for this printer.',
-    );
-  }
-  if (!candidate.isOnline) {
-    blockers.push(
-      'The printer is offline, so current context cannot be verified.',
-    );
-  }
-  return [...new Set(blockers)];
+  return candidate.isOnline
+    ? []
+    : ['The printer is offline, so current context cannot be verified.'];
 }
 
 export function contextEligibilityBlockers(
@@ -88,9 +60,6 @@ export function contextEligibilityBlockers(
   );
   const missing = describeMissingInputs(context.missingInputs ?? []);
   if (missing !== null) blockers.push(missing);
-  if (candidate.eligibility === null) {
-    blockers.push('Canonical PrintFarmer printer eligibility is missing.');
-  }
   if (!candidate.isOnline) {
     blockers.push('The selected printer is offline.');
   }

@@ -27,7 +27,7 @@ const FILAMENT_GUID = '66666666-6666-4666-8666-666666666666';
 const CUSTOM_GUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('Path C — IPC contract', () => {
-  it('IPC contract version was bumped to 4 after CalibrationSetupPrinter was retired', () => {
+  it('IPC contract version was bumped to 5 after the printer-calibration saga was reaped', () => {
     // A version bump on a wire boundary that has receivers on both sides is
     // NEVER free — every version-pinned test in the repo also has to be
     // touched. If this assertion drifts, run `grep -r IPC_CONTRACT_VERSION`
@@ -37,7 +37,12 @@ describe('Path C — IPC contract', () => {
     // it is a breaking wire change (a renderer built against v3 that calls
     // `setupCalibrationPrinter` fails against a v4 main). Removal, unlike
     // additive changes, forces the contract-version bump.
-    expect(IPC_CONTRACT_VERSION).toBe(4);
+    //
+    // v4 → v5 rationale: #756 removed the printer-calibration saga's 19
+    // renderer↔main channels (list/get/save/attempts/photos/conflicts/
+    // orchestration/queue/import). A renderer built against v4 that calls any
+    // of them fails against v5 main; that is a breaking wire change.
+    expect(IPC_CONTRACT_VERSION).toBe(5);
   });
 
   it('registers all five surviving cascade channels', () => {

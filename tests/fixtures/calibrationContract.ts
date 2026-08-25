@@ -52,6 +52,16 @@ export function calibrationCandidateDto(
   return {
     id: CALIBRATION_FIXTURE_IDS.printerId,
     name: 'Voron 2.4 in bay three',
+    // Under Path D the candidate list projects `CompletePrinterDto`, which
+    // spells this `isEnabled`. The pre-Path-D `enabled` alias is kept as
+    // passthrough noise because context DTOs still extend the older shape.
+    isEnabled: true,
+    // `CompletePrinterDto.ModelId` (Guid?) is already on the wire under
+    // Path D — no `/details` enrichment needed. Kept null so a fixture that
+    // does not carry a model resolves through the null-branch fallback in
+    // `profileSelection.ts`.
+    modelId: null,
+    modelName: null,
     enabled: true,
     inMaintenance: false,
     backend: 'Moonraker',
@@ -62,6 +72,7 @@ export function calibrationCandidateDto(
     observedAtUtc: CALIBRATION_FIXTURE_IDS.now,
     lastSeenAtUtc: CALIBRATION_FIXTURE_IDS.now,
     isStale: false,
+    isOnline: true,
     toolheads: [],
     firmware: {
       family: 'Klipper',

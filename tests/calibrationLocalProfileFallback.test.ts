@@ -19,7 +19,6 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { listLocalOrcaFilamentProfiles } from '../src/main/orcaProfileDiscovery.js';
-import { CalibrationPrinterCandidate } from '@shared/ipc';
 
 let sandbox: string;
 
@@ -131,65 +130,15 @@ describe('unbound local OrcaSlicer profile listing', () => {
   });
 });
 
-describe('ineligible printers carry their reasons across IPC', () => {
-  const base = {
-    printerId: 'aaaaaaaa-1111-4111-8111-222222222222',
-    displayName: 'Rack A cell 3',
-    printerModel: null,
-    orcaProfileId: null,
-    isOnline: true,
-    updatedAt: '2026-08-11T12:00:00.000Z',
-  };
-
-  it('accepts an ineligible printer with server reason codes', () => {
-    const parsed = CalibrationPrinterCandidate.parse({
-      ...base,
-      firmwareCompatible: false,
-      eligibility: null,
-      rejectionReasonCodes: ['firmware_family_not_klipper'],
-      // `missingInputs` holds field paths, not reason codes: the server's
-      // RejectMissing helper adds the *field* it could not read.
-      missingInputs: ['firmware.family'],
-    });
-
-    // Without these fields the printer could be listed but never explained.
-    expect(parsed.rejectionReasonCodes).toEqual([
-      'firmware_family_not_klipper',
-    ]);
-    expect(parsed.missingInputs).toEqual(['firmware.family']);
-  });
-
-  it('refuses a printer that is both eligible and rejected', () => {
-    // Contradictory input must not reach the renderer, which would otherwise
-    // render the same printer as ready and as refused at once.
-    expect(() =>
-      CalibrationPrinterCandidate.parse({
-        ...base,
-        firmwareCompatible: true,
-        eligibility: {
-          firmwareFamily: 'Klipper',
-          gcodeDialect: 'Klipper',
-          slicerFamily: 'OrcaSlicer',
-          slicerDistribution: 'upstream',
-          slicerIdentity: 'OrcaSlicer',
-          hardwareContextComplete: true,
-          safetyContextComplete: true,
-          permissionsComplete: true,
-          reasons: [],
-        },
-        rejectionReasonCodes: ['firmware_family_not_klipper'],
-        missingInputs: [],
-      }),
-    ).toThrow();
-  });
-
-  it('defaults both lists to empty so older callers stay valid', () => {
-    const parsed = CalibrationPrinterCandidate.parse({
-      ...base,
-      firmwareCompatible: false,
-      eligibility: null,
-    });
-    expect(parsed.rejectionReasonCodes).toEqual([]);
-    expect(parsed.missingInputs).toEqual([]);
-  });
+describe.skip('ineligible printers carry their reasons across IPC (Path D: eligibility gate retired)', () => {
+  // The `/api/printers/calibration-candidates` route and its eligibility
+  // metadata (`rejectionReasonCodes`, `missingInputs`, `eligibility`,
+  // `firmwareCompatible`) were removed by `OlyForge3D/PrintFarmer#1943`.
+  // The candidate list now projects `CompletePrinterDto` from
+  // `GET /api/printers`, which carries no rejection reasons — every printer
+  // is a candidate. Kept as `describe.skip` so the intent is discoverable if
+  // the shape ever returns.
+  it('accepts an ineligible printer with server reason codes', () => {});
+  it('refuses a printer that is both eligible and rejected', () => {});
+  it('defaults both lists to empty so older callers stay valid', () => {});
 });

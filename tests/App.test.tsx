@@ -1785,7 +1785,7 @@ describe('<App />', () => {
     render(<App />);
 
     const calibrationSwitch = screen.getByRole('button', {
-      name: 'Printer Calibration',
+      name: 'Filament Calibration',
     });
     await screen.findByRole('dialog', { name: 'Set up your model library' });
     // The onboarding nudge does not own the shell, so it must NOT lock the
@@ -1799,7 +1799,7 @@ describe('<App />', () => {
     fireEvent.click(calibrationSwitch);
 
     const calibrationHeading = await screen.findByRole('heading', {
-      name: 'Printer Calibration',
+      name: 'Filament Calibration',
     });
     await waitFor(() => expect(calibrationHeading).toHaveFocus());
     expect(
@@ -1833,7 +1833,14 @@ describe('<App />', () => {
     await waitFor(() => expect(libraryHeading).toHaveFocus());
   });
 
-  it('keeps calibration mounted and announces when its leave flush fails', async () => {
+  it.skip('keeps calibration mounted and announces when its leave flush fails', async () => {
+    // Skipped under #756: the saga's "New calibration project" surface (with
+    // its "App leave flush project" affordance, editable Project name field,
+    // and workspace-state save-on-leave flush) was removed with the printer-
+    // calibration saga in this PR. Filament calibration's wizard has its own
+    // in-memory state and does not participate in this leave-flush contract.
+    // Kept as `skip` rather than deleted so the flush contract can be restored
+    // if server-orchestrated filament runs eventually gain a save-on-leave step.
     const profileId = '11111111-1111-4111-8111-111111111111';
     const profile = serverProfile(profileId, 'Farm server');
     const saved = appCalibrationRecord(profileId);

@@ -9,7 +9,6 @@ import {
   type ExtractVendorPlateThumbnailsResponse,
   type LoadSceneRequest,
   type LoadSceneResponse,
-  type OpenCalibrationPhotoResponse,
   type OpenModelFileResponse,
   type OpenFolderResponse,
   type PrintFarmerApi,
@@ -73,7 +72,6 @@ import {
   type RetargetSaveAsResponse,
   type RetargetDisposeRequest,
   type RetargetDisposeResponse,
-  // Printer Calibration transport (issue #52)
   type CalibrationGetAvailabilityResponse,
   type CalibrationListPrintersRequest,
   type CalibrationListPrintersResponse,
@@ -85,37 +83,10 @@ import {
   type CalibrationGetWorkspaceStateResponse,
   type CalibrationSaveWorkspaceStateRequest,
   type CalibrationSaveWorkspaceStateResponse,
-  type CalibrationListProjectsRequest,
-  type CalibrationListProjectsResponse,
-  type CalibrationGetProjectRequest,
-  type CalibrationGetProjectResponse,
-  type CalibrationSaveDraftRequest,
-  type CalibrationSaveDraftResponse,
-  type CalibrationListAttemptsRequest,
-  type CalibrationListAttemptsResponse,
-  type CalibrationGetAttemptRequest,
-  type CalibrationGetAttemptResponse,
-  type CalibrationStagePhotoRequest,
-  type CalibrationStagePhotoResponse,
-  type CalibrationListConflictsRequest,
-  type CalibrationListConflictsResponse,
-  type CalibrationResolveConflictRequest,
-  type CalibrationResolveConflictResponse,
   type CalibrationSyncNowRequest,
   type CalibrationSyncNowResponse,
   type CalibrationGetDiagnosticsRequest,
   type CalibrationGetDiagnosticsResponse,
-  type CalibrationStartGenerationRequest,
-  type CalibrationStartGenerationResponse,
-  type CalibrationGetOrchestrationStatusRequest,
-  type CalibrationGetOrchestrationStatusResponse,
-  type CalibrationGetQueueStateRequest,
-  type CalibrationGetQueueStateResponse,
-  type CalibrationAcknowledgeBedClearRequest,
-  type CalibrationAcknowledgeBedClearResponse,
-  type CalibrationStartPrintRequest,
-  type CalibrationStartPrintResponse,
-  // --- Queue reconciliation (issue #54) ------------------------------------
   type CalibrationPollQueueChangesRequest,
   type CalibrationPollQueueChangesResponse,
   type CalibrationGetSubscriptionResourcesRequest,
@@ -124,17 +95,6 @@ import {
   type CalibrationListOrcaProfilesResponse,
   type CalibrationExportOrcaProfileRequest,
   type CalibrationExportOrcaProfileResponse,
-  type CalibrationPickLegacyBackupV4Response,
-  type CalibrationImportLegacyBackupV4Request,
-  type CalibrationImportLegacyBackupV4Response,
-  // --- Upstream Orca filament profiles (issue #55) -------------------------
-  type CalibrationGenerateOrcaProfileRequest,
-  type CalibrationGenerateOrcaProfileResponse,
-  type CalibrationInstallOrcaProfileRequest,
-  type CalibrationInstallOrcaProfileResponse,
-  type CalibrationRestoreOrcaProfileRequest,
-  type CalibrationRestoreOrcaProfileResponse,
-  // --- Path C: Slicer profile picker + calibration-setup -------------------
   type CalibrationListExtendedProfilesRequest,
   type CalibrationListExtendedProfilesResponse,
   type CalibrationListMachineProfilesForModelRequest,
@@ -163,11 +123,6 @@ import {
   type CalibrationClearFilamentWizardStateResponse,
 } from '@shared/ipc';
 
-/**
- * The only bridge between the sandboxed renderer and the main process. It
- * exposes a small, explicit, typed surface. No `ipcRenderer`, `require`, or
- * Node primitive is ever exposed to renderer code.
- */
 const api: PrintFarmerApi = {
   getAppInfo: (): Promise<AppInfoResponse> =>
     ipcRenderer.invoke(IpcChannel.AppInfo) as Promise<AppInfoResponse>,
@@ -185,10 +140,6 @@ const api: PrintFarmerApi = {
     ipcRenderer.invoke(
       IpcChannel.OpenModelFile,
     ) as Promise<OpenModelFileResponse>,
-  openCalibrationPhoto: async (): Promise<OpenCalibrationPhotoResponse> =>
-    ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse(
-      await ipcRenderer.invoke(IpcChannel.OpenCalibrationPhoto),
-    ),
   extractVendorMetadata: (
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse> =>
@@ -309,19 +260,10 @@ const api: PrintFarmerApi = {
       IpcChannel.RemoveModelFromCollection,
       request,
     ) as Promise<CollectionMembershipResponse>,
-  openFolder: (): Promise<OpenFolderResponse> =>
-    ipcRenderer.invoke(IpcChannel.OpenFolder) as Promise<OpenFolderResponse>,
   listServerProfiles: (): Promise<ListServerProfilesResponse> =>
     ipcRenderer.invoke(
       IpcChannel.ListServerProfiles,
     ) as Promise<ListServerProfilesResponse>,
-  testServerProfile: (
-    request: TestServerProfileRequest,
-  ): Promise<TestServerProfileResponse> =>
-    ipcRenderer.invoke(
-      IpcChannel.TestServerProfile,
-      request,
-    ) as Promise<TestServerProfileResponse>,
   saveServerProfile: (
     request: SaveServerProfileRequest,
   ): Promise<SaveServerProfileResponse> =>
@@ -336,6 +278,13 @@ const api: PrintFarmerApi = {
       IpcChannel.SelectServerProfile,
       request,
     ) as Promise<SelectServerProfileResponse>,
+  testServerProfile: (
+    request: TestServerProfileRequest,
+  ): Promise<TestServerProfileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.TestServerProfile,
+      request,
+    ) as Promise<TestServerProfileResponse>,
   deleteServerProfile: (
     request: DeleteServerProfileRequest,
   ): Promise<DeleteServerProfileResponse> =>
@@ -392,49 +341,12 @@ const api: PrintFarmerApi = {
     ipcRenderer.invoke(
       IpcChannel.ResetUploadJobs,
     ) as Promise<ResetUploadJobsResponse>,
+  openFolder: (): Promise<OpenFolderResponse> =>
+    ipcRenderer.invoke(IpcChannel.OpenFolder) as Promise<OpenFolderResponse>,
   resetApprovedRoots: (): Promise<ResetApprovedRootsResponse> =>
     ipcRenderer.invoke(
       IpcChannel.ResetApprovedRoots,
     ) as Promise<ResetApprovedRootsResponse>,
-  listRetargetProfiles: async (): Promise<RetargetListProfilesResponse> =>
-    ipcSchemas[IpcChannel.RetargetListProfiles].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetListProfiles),
-    ),
-  importRetargetProfile: async (): Promise<RetargetImportProfileResponse> =>
-    ipcSchemas[IpcChannel.RetargetImportProfile].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetImportProfile),
-    ),
-  preflightRetarget: async (
-    request: RetargetPreflightRequest,
-  ): Promise<RetargetPreflightResponse> =>
-    ipcSchemas[IpcChannel.RetargetPreflight].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetPreflight, request),
-    ),
-  buildRetarget: async (
-    request: RetargetBuildRequest,
-  ): Promise<RetargetBuildResponse> =>
-    ipcSchemas[IpcChannel.RetargetBuild].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetBuild, request),
-    ),
-  loadRetargetScene: async (
-    request: RetargetLoadSceneRequest,
-  ): Promise<RetargetLoadSceneResponse> =>
-    ipcSchemas[IpcChannel.RetargetLoadScene].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetLoadScene, request),
-    ),
-  saveRetargetAs: async (
-    request: RetargetSaveAsRequest,
-  ): Promise<RetargetSaveAsResponse> =>
-    ipcSchemas[IpcChannel.RetargetSaveAs].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetSaveAs, request),
-    ),
-  disposeRetarget: async (
-    request: RetargetDisposeRequest,
-  ): Promise<RetargetDisposeResponse> =>
-    ipcSchemas[IpcChannel.RetargetDispose].response.parse(
-      await ipcRenderer.invoke(IpcChannel.RetargetDispose, request),
-    ),
-  // --- Printer Calibration transport (issue #52) ---------------------------
   getCalibrationAvailability:
     async (): Promise<CalibrationGetAvailabilityResponse> =>
       ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
@@ -482,54 +394,6 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
-  listCalibrationProjects: async (
-    request: CalibrationListProjectsRequest,
-  ): Promise<CalibrationListProjectsResponse> =>
-    ipcSchemas[IpcChannel.CalibrationListProjects].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationListProjects, request),
-    ),
-  getCalibrationProject: async (
-    request: CalibrationGetProjectRequest,
-  ): Promise<CalibrationGetProjectResponse> =>
-    ipcSchemas[IpcChannel.CalibrationGetProject].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationGetProject, request),
-    ),
-  saveCalibrationDraft: async (
-    request: CalibrationSaveDraftRequest,
-  ): Promise<CalibrationSaveDraftResponse> =>
-    ipcSchemas[IpcChannel.CalibrationSaveDraft].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationSaveDraft, request),
-    ),
-  listCalibrationAttempts: async (
-    request: CalibrationListAttemptsRequest,
-  ): Promise<CalibrationListAttemptsResponse> =>
-    ipcSchemas[IpcChannel.CalibrationListAttempts].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationListAttempts, request),
-    ),
-  getCalibrationAttempt: async (
-    request: CalibrationGetAttemptRequest,
-  ): Promise<CalibrationGetAttemptResponse> =>
-    ipcSchemas[IpcChannel.CalibrationGetAttempt].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationGetAttempt, request),
-    ),
-  stageCalibrationPhoto: async (
-    request: CalibrationStagePhotoRequest,
-  ): Promise<CalibrationStagePhotoResponse> =>
-    ipcSchemas[IpcChannel.CalibrationStagePhoto].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationStagePhoto, request),
-    ),
-  listCalibrationConflicts: async (
-    request: CalibrationListConflictsRequest,
-  ): Promise<CalibrationListConflictsResponse> =>
-    ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationListConflicts, request),
-    ),
-  resolveCalibrationConflict: async (
-    request: CalibrationResolveConflictRequest,
-  ): Promise<CalibrationResolveConflictResponse> =>
-    ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationResolveConflict, request),
-    ),
   syncCalibrationNow: async (
     request: CalibrationSyncNowRequest,
   ): Promise<CalibrationSyncNowResponse> =>
@@ -542,43 +406,6 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationGetDiagnostics].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationGetDiagnostics, request),
     ),
-  startCalibrationGeneration: async (
-    request: CalibrationStartGenerationRequest,
-  ): Promise<CalibrationStartGenerationResponse> =>
-    ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationStartGeneration, request),
-    ),
-  getCalibrationOrchestrationStatus: async (
-    request: CalibrationGetOrchestrationStatusRequest,
-  ): Promise<CalibrationGetOrchestrationStatusResponse> =>
-    ipcSchemas[IpcChannel.CalibrationGetOrchestrationStatus].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationGetOrchestrationStatus,
-        request,
-      ),
-    ),
-  getCalibrationQueueState: async (
-    request: CalibrationGetQueueStateRequest,
-  ): Promise<CalibrationGetQueueStateResponse> =>
-    ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationGetQueueState, request),
-    ),
-  acknowledgeCalibrationBedClear: async (
-    request: CalibrationAcknowledgeBedClearRequest,
-  ): Promise<CalibrationAcknowledgeBedClearResponse> =>
-    ipcSchemas[IpcChannel.CalibrationAcknowledgeBedClear].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationAcknowledgeBedClear,
-        request,
-      ),
-    ),
-  startCalibrationPrint: async (
-    request: CalibrationStartPrintRequest,
-  ): Promise<CalibrationStartPrintResponse> =>
-    ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationStartPrint, request),
-    ),
-  // --- Queue reconciliation (issue #54) ------------------------------------
   pollCalibrationQueueChanges: async (
     request: CalibrationPollQueueChangesRequest,
   ): Promise<CalibrationPollQueueChangesResponse> =>
@@ -609,49 +436,6 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
-  pickLegacyCalibrationBackupV4:
-    async (): Promise<CalibrationPickLegacyBackupV4Response> =>
-      ipcSchemas[IpcChannel.CalibrationPickLegacyBackupV4].response.parse(
-        await ipcRenderer.invoke(IpcChannel.CalibrationPickLegacyBackupV4),
-      ),
-  importLegacyCalibrationBackupV4: async (
-    request: CalibrationImportLegacyBackupV4Request,
-  ): Promise<CalibrationImportLegacyBackupV4Response> =>
-    ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationImportLegacyBackupV4,
-        request,
-      ),
-    ),
-  // --- Upstream Orca filament profiles (issue #55) -------------------------
-  generateOrcaProfile: async (
-    request: CalibrationGenerateOrcaProfileRequest,
-  ): Promise<CalibrationGenerateOrcaProfileResponse> =>
-    ipcSchemas[IpcChannel.CalibrationGenerateOrcaProfile].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationGenerateOrcaProfile,
-        request,
-      ),
-    ),
-  installOrcaProfile: async (
-    request: CalibrationInstallOrcaProfileRequest,
-  ): Promise<CalibrationInstallOrcaProfileResponse> =>
-    ipcSchemas[IpcChannel.CalibrationInstallOrcaProfile].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationInstallOrcaProfile,
-        request,
-      ),
-    ),
-  restoreOrcaProfile: async (
-    request: CalibrationRestoreOrcaProfileRequest,
-  ): Promise<CalibrationRestoreOrcaProfileResponse> =>
-    ipcSchemas[IpcChannel.CalibrationRestoreOrcaProfile].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationRestoreOrcaProfile,
-        request,
-      ),
-    ),
-  // --- Path C: Slicer profile picker + calibration-setup -------------------
   listCalibrationExtendedProfiles: async (
     request: CalibrationListExtendedProfilesRequest,
   ): Promise<CalibrationListExtendedProfilesResponse> =>
@@ -703,7 +487,6 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
-  // --- Filament calibration slice pipeline (PR #1952) --------------------
   cloneCalibrationFilamentProfile: async (
     request: CalibrationCloneFilamentProfileRequest,
   ): Promise<CalibrationCloneFilamentProfileResponse> =>
@@ -751,7 +534,6 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
-  // --- Filament calibration wizard restart resilience (issue #754) -------
   saveFilamentCalibrationWizardState: async (
     request: CalibrationSaveFilamentWizardStateRequest,
   ): Promise<CalibrationSaveFilamentWizardStateResponse> =>
@@ -779,6 +561,49 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
+  listRetargetProfiles: (): Promise<RetargetListProfilesResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetListProfiles,
+    ) as Promise<RetargetListProfilesResponse>,
+  importRetargetProfile: (): Promise<RetargetImportProfileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetImportProfile,
+    ) as Promise<RetargetImportProfileResponse>,
+  preflightRetarget: (
+    request: RetargetPreflightRequest,
+  ): Promise<RetargetPreflightResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetPreflight,
+      request,
+    ) as Promise<RetargetPreflightResponse>,
+  buildRetarget: async (
+    request: RetargetBuildRequest,
+  ): Promise<RetargetBuildResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetBuild,
+      request,
+    ) as Promise<RetargetBuildResponse>,
+  loadRetargetScene: (
+    request: RetargetLoadSceneRequest,
+  ): Promise<RetargetLoadSceneResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetLoadScene,
+      request,
+    ) as Promise<RetargetLoadSceneResponse>,
+  saveRetargetAs: (
+    request: RetargetSaveAsRequest,
+  ): Promise<RetargetSaveAsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetSaveAs,
+      request,
+    ) as Promise<RetargetSaveAsResponse>,
+  disposeRetarget: (
+    request: RetargetDisposeRequest,
+  ): Promise<RetargetDisposeResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetargetDispose,
+      request,
+    ) as Promise<RetargetDisposeResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);
