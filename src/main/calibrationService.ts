@@ -418,6 +418,10 @@ export function mapCalibrationConflictKind(
       return 'stepDraft';
     case 'CalibrationAttempt':
       return 'outcomeSelection';
+    // Pending cleanup (issue #762, item 3): PrintFarmer Path D's D3b
+    // (`OlyForge3D/PrintFarmer#1989`) deletes the `PrinterConfigurationSnapshot`
+    // entity this arm classifies conflicts for. Do not prune or rewrite this
+    // arm until D3b actually lands -- it is still live and reachable today.
     case 'CalibrationPrinterSnapshot':
       return 'staleprinterSnapshot';
     default:

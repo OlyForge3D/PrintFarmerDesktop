@@ -1,0 +1,314 @@
+.cal-conflicts-backdrop {
+  position: fixed;
+  z-index: 49;
+  inset: 40px 0 24px;
+  background: color-mix(in srgb, var(--viewer) 82%, transparent);
+}
+
+.cal-conflicts-dialog {
+  position: fixed;
+  z-index: 50;
+  top: 56px;
+  bottom: 40px;
+  left: 50%;
+  display: flex;
+  width: min(1100px, calc(100% - 56px));
+  min-height: 500px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: 0 22px 70px rgb(0 0 0 / 55%);
+  background: var(--sidebar);
+  color: var(--text);
+  transform: translateX(-50%);
+}
+
+.cal-conflicts-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--titlebar);
+}
+
+.cal-conflicts-header h2,
+.cal-conflicts-header p,
+.cal-conflicts-detail h3,
+.cal-conflicts-detail header p {
+  margin: 0;
+}
+
+.cal-conflicts-header h2 {
+  font-size: 18px;
+}
+
+.cal-conflicts-header p:last-child,
+.cal-conflicts-detail header p:last-child {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cal-conflicts-close {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.cal-conflicts-content {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(280px, 0.7fr) minmax(480px, 1.3fr);
+  flex: 1;
+  overflow: hidden;
+}
+
+.cal-conflicts-list-pane,
+.cal-conflicts-detail-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cal-conflicts-list-pane {
+  padding: 14px;
+  border-right: 1px solid var(--border);
+  background: var(--canvas);
+}
+
+.cal-conflicts-list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.cal-conflicts-list-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cal-conflicts-list-header span,
+.cal-conflicts-option span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cal-conflicts-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.cal-conflicts-option {
+  display: grid;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  cursor: pointer;
+  gap: 4px;
+}
+
+.cal-conflicts-option:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.cal-conflicts-option.selected {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-soft);
+}
+
+.cal-conflicts-option .cal-conflicts-status-text {
+  color: var(--warning);
+  font-weight: 650;
+}
+
+.cal-conflicts-resolution-report {
+  flex: none;
+  max-height: 160px;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--warning) 10%, var(--sidebar));
+  color: var(--text);
+}
+
+.cal-conflicts-resolution-report p,
+.cal-conflicts-resolution-report ul {
+  margin: 4px 0 0;
+}
+
+.cal-conflicts-resolution-report p,
+.cal-conflicts-resolution-report li {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cal-conflicts-resolution-report ul {
+  padding-inline-start: 18px;
+}
+
+.cal-conflicts-state {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+  gap: 5px;
+}
+
+.cal-conflicts-state h3,
+.cal-conflicts-state p {
+  margin: 0;
+}
+
+.cal-conflicts-detail {
+  padding: 18px;
+}
+
+.cal-conflicts-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.cal-conflicts-comparison section {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--canvas);
+}
+
+.cal-conflicts-comparison h4 {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.cal-conflicts-comparison pre {
+  min-height: 82px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: var(--muted);
+  font: 11px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cal-conflicts-resolution,
+.cal-conflicts-resolution fieldset,
+.cal-conflicts-manual {
+  display: grid;
+  gap: 8px;
+}
+
+.cal-conflicts-resolution fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.cal-conflicts-resolution legend {
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cal-conflicts-choice {
+  display: flex;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  gap: 8px;
+}
+
+.cal-conflicts-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cal-conflicts-manual {
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--canvas);
+}
+
+.cal-conflicts-manual h4,
+.cal-conflicts-manual p {
+  margin: 0;
+}
+
+.cal-conflicts-manual label {
+  display: grid;
+  color: var(--muted);
+  font-size: 11px;
+  gap: 4px;
+}
+
+.cal-conflicts-manual input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--viewer);
+  color: var(--text);
+}
+
+.cal-conflicts-dialog :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 850px) {
+  .cal-conflicts-dialog {
+    top: 48px;
+    bottom: 32px;
+    width: calc(100% - 24px);
+    min-height: 0;
+  }
+
+  .cal-conflicts-content {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .cal-conflicts-list-pane,
+  .cal-conflicts-detail-pane {
+    overflow: visible;
+  }
+
+  .cal-conflicts-list-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cal-conflicts-comparison {
+    grid-template-columns: 1fr;
+  }
+}

@@ -48,6 +48,13 @@ export type CalibrationApi = Pick<
   | 'saveFilamentCalibrationWizardState'
   | 'getFilamentCalibrationWizardState'
   | 'clearFilamentCalibrationWizardState'
+  // --- Conflict resolution (issue #762) -------------------------------------
+  //
+  // Consumed by `CalibrationConflictsDialog`, the renderer-facing conflict
+  // resolution surface restored after PR #757 removed the old saga
+  // dashboard's equivalent channels.
+  | 'resolveCalibrationConflict'
+  | 'listCalibrationConflicts'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

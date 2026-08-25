@@ -22,6 +22,11 @@ export const IpcChannel = {
   CalibrationSaveWorkspaceState: 'calibration:saveWorkspaceState',
   CalibrationSyncNow: 'calibration:syncNow',
   CalibrationGetDiagnostics: 'calibration:getDiagnostics',
+  // --- Conflict resolution (restored by issue #762 after PR #757 removed
+  // the renderer-facing channels; the sidecar/main-process resolve logic was
+  // never removed) -----------------------------------------------------------
+  CalibrationResolveConflict: 'calibration:resolveConflict',
+  CalibrationListConflicts: 'calibration:listConflicts',
   // --- Queue reconciliation (issue #54) ------------------------------------
   CalibrationPollQueueChanges: 'calibration:pollQueueChanges',
   CalibrationGetSubscriptionResources: 'calibration:getSubscriptionResources',
@@ -4021,6 +4026,33 @@ export type CalibrationResolveConflictResponse = z.infer<
   typeof CalibrationResolveConflictResponse
 >;
 
+/**
+ * List unresolved calibration conflicts for a profile (issue #762).
+ *
+ * `projectId` is optional and, when omitted, lists conflicts across every
+ * project the profile owns -- this mirrors
+ * `SidecarCalibrationAdapter.listCalibrationConflicts(profileId, projectId)`,
+ * whose `projectId` parameter is already `string | null`.
+ */
+export const CalibrationListConflictsRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid().nullable().optional(),
+  })
+  .strict();
+export type CalibrationListConflictsRequest = z.infer<
+  typeof CalibrationListConflictsRequest
+>;
+
+export const CalibrationListConflictsResponse = z
+  .object({
+    conflicts: z.array(CalibrationConflict).max(500),
+  })
+  .strict();
+export type CalibrationListConflictsResponse = z.infer<
+  typeof CalibrationListConflictsResponse
+>;
+
 // --- Generation and G-code queue ------------------------------------------
 
 /**
@@ -6723,6 +6755,14 @@ export const ipcSchemas = {
     request: CalibrationGetDiagnosticsRequest,
     response: CalibrationGetDiagnosticsResponse,
   },
+  [IpcChannel.CalibrationResolveConflict]: {
+    request: CalibrationResolveConflictRequest,
+    response: CalibrationResolveConflictResponse,
+  },
+  [IpcChannel.CalibrationListConflicts]: {
+    request: CalibrationListConflictsRequest,
+    response: CalibrationListConflictsResponse,
+  },
   // --- Queue reconciliation (issue #54) ------------------------------------
   [IpcChannel.CalibrationPollQueueChanges]: {
     request: CalibrationPollQueueChangesRequest,
@@ -6907,6 +6947,12 @@ export interface PrintFarmerApi {
   getCalibrationDiagnostics(
     request: CalibrationGetDiagnosticsRequest,
   ): Promise<CalibrationGetDiagnosticsResponse>;
+  resolveCalibrationConflict(
+    request: CalibrationResolveConflictRequest,
+  ): Promise<CalibrationResolveConflictResponse>;
+  listCalibrationConflicts(
+    request: CalibrationListConflictsRequest,
+  ): Promise<CalibrationListConflictsResponse>;
   // --- Queue reconciliation (issue #54) ------------------------------------
   pollCalibrationQueueChanges(
     request: CalibrationPollQueueChangesRequest,

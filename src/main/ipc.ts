@@ -2332,6 +2332,55 @@ export function registerIpcHandlers(
     },
   );
 
+  // --- Conflict resolution (issue #762) -------------------------------------
+  //
+  // Restores the renderer-facing half of conflict resolution that PR #757
+  // removed along with the old printer-calibration saga dashboard. The
+  // main-process/sidecar/Rust resolve logic was never removed --
+  // `calibrationSidecarAdapter.resolveCalibrationConflict` and
+  // `.listCalibrationConflicts` (`calibrationService.ts`) already implement
+  // both operations; these handlers only add profile fencing and re-expose
+  // them as IPC channels. Per-kind resolution policy is enforced in the
+  // sidecar's store, not here (see the docstring on
+  // `SidecarCalibrationAdapter.resolveCalibrationConflict`).
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationResolveConflict,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationResolveConflict].request.parse(
+          rawRequest,
+        );
+      await requireSelectedCalibrationProfile(request.profileId);
+      const response =
+        await calibrationSidecarAdapter.resolveCalibrationConflict(request);
+      return ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
+        response,
+      );
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListConflicts,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListConflicts].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const conflicts =
+        await calibrationSidecarAdapter.listCalibrationConflicts(
+          selectedId,
+          request.projectId ?? null,
+        );
+      return ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse({
+        conflicts,
+      });
+    },
+  );
+
   // Generation, queue, bed-clear, and print start require all mutations to be
   // synchronized and printer context to be freshly validated before proceeding.
 
