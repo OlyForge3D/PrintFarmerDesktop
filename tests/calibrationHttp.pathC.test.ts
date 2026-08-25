@@ -210,8 +210,8 @@ describe('CalibrationHttpClient.getExtendedProfiles — issue #767 (1024-row tru
   });
 
   it('reports truncated: true (and still caps the list) once the wire exceeds the new, much higher ceiling', async () => {
-    // One row past EXTENDED_PROFILE_CEILING (10_000) so the cut is provably
-    // observable rather than silently absent, mirroring the
+    // One row past CALIBRATION_MAX_PROFILE_LIST (10_000) so the cut is
+    // provably observable rather than silently absent, mirroring the
     // `printersTruncated` precedent for `/calibration-candidates`.
     const fetchMock = vi
       .fn()

@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  CALIBRATION_MAX_PROFILE_LIST,
   IPC_CONTRACT_VERSION,
   IpcChannel,
   ipcSchemas,
@@ -27,7 +28,7 @@ const FILAMENT_GUID = '66666666-6666-4666-8666-666666666666';
 const CUSTOM_GUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('Path C — IPC contract', () => {
-  it('IPC contract version was bumped to 5 after the printer-calibration saga was reaped', () => {
+  it('IPC contract version was bumped to 6 for the #767 profilesTruncated field', () => {
     // A version bump on a wire boundary that has receivers on both sides is
     // NEVER free — every version-pinned test in the repo also has to be
     // touched. If this assertion drifts, run `grep -r IPC_CONTRACT_VERSION`
@@ -42,7 +43,17 @@ describe('Path C — IPC contract', () => {
     // renderer↔main channels (list/get/save/attempts/photos/conflicts/
     // orchestration/queue/import). A renderer built against v4 that calls any
     // of them fails against v5 main; that is a breaking wire change.
-    expect(IPC_CONTRACT_VERSION).toBe(5);
+    //
+    // v5 → v6 rationale: #767 added a new required `profilesTruncated`
+    // field to four `.strict()` response schemas
+    // (CalibrationListExtendedProfiles, CalibrationListMachineProfilesForModel,
+    // CalibrationListProcessProfilesForMachines,
+    // CalibrationListFilamentProfilesForMachines). A renderer built against
+    // v5 strict-parsing a v6 main's response (missing field) — or a v6
+    // renderer parsing a v5 main's response (extra field a strict schema
+    // requires) — fails; that is a breaking wire change even though it is
+    // purely additive at the type level.
+    expect(IPC_CONTRACT_VERSION).toBe(6);
   });
 
   it('registers all five surviving cascade channels', () => {
@@ -125,6 +136,44 @@ describe('CalibrationListExtendedProfiles schema', () => {
         fetchedAt: '2026-08-22T22:00:00.000Z',
       }),
     ).toThrow();
+  });
+
+  it('accepts a machineProfiles bucket at exactly CALIBRATION_MAX_PROFILE_LIST rows — regression for #767 (the IPC .max() cap must track the wire ceiling, not disagree with it)', () => {
+    // #767 fix review found the wire-layer ceiling (formerly a bespoke
+    // EXTENDED_PROFILE_CEILING, now the shared CALIBRATION_MAX_PROFILE_LIST)
+    // had been raised to 10,000 without raising the IPC schema's own,
+    // independently-defined `.max()` cap, which was still 2048. A catalog
+    // with 2049-10000 profiles in one bucket parsed fine off the wire
+    // (correctly reporting profilesTruncated: false) and then threw an
+    // ordinary ZodError here, turning a legitimately large, untruncated
+    // catalog into a hard error instead of a successfully delivered list.
+    // Both ceilings now share the one exported CALIBRATION_MAX_PROFILE_LIST
+    // constant; this proves the IPC schema doesn't reject a full-size,
+    // untruncated bucket.
+    const schema =
+      ipcSchemas[IpcChannel.CalibrationListExtendedProfiles].response;
+    const machineProfiles = Array.from(
+      { length: CALIBRATION_MAX_PROFILE_LIST },
+      (_, i) => ({
+        name: `Machine Profile ${i}`,
+        guid: MACHINE_GUID,
+        source: 'system' as const,
+        displayLabel: null,
+        contentSha256: null,
+      }),
+    );
+    const parsed = schema.parse({
+      status: 'ok',
+      machineProfiles,
+      processProfiles: [],
+      filamentProfiles: [],
+      profilesTruncated: false,
+      fetchedAt: '2026-08-22T22:00:00.000Z',
+    });
+    expect(parsed.status).toBe('ok');
+    if (parsed.status === 'ok') {
+      expect(parsed.machineProfiles).toHaveLength(CALIBRATION_MAX_PROFILE_LIST);
+    }
   });
 });
 

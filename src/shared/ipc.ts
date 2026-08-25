@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 5 as const;
+export const IPC_CONTRACT_VERSION = 6 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -5580,8 +5580,19 @@ export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 
 /** Longest single profile name string carried over the desktop IPC boundary. */
 const CALIBRATION_MAX_PROFILE_NAME = 512;
-/** Cap on the number of profiles the main process forwards to the renderer. */
-const CALIBRATION_MAX_PROFILE_LIST = 2048;
+/**
+ * Cap on the number of profiles the main process forwards to the renderer,
+ * per profile-type bucket. Shared by the wire schema
+ * (`RemoteExtendedProfilesResponse` in `calibrationWire.ts`, which imports
+ * this constant directly rather than defining its own) and this IPC schema
+ * deliberately — see #767, where the wire ceiling was raised independently
+ * of this one and a catalog with more than 2048 machine (or process, or
+ * filament) profiles parsed fine off the filament) profiles parsed fine off the
+ * network and then threw here on the way to the renderer, turning a
+ * `profilesTruncated: true` response into a hard error instead. Two bounds
+ * that must agree should be one bound.
+ */
+export const CALIBRATION_MAX_PROFILE_LIST = 10_000;
 /** Cap on the number of machine names the renderer may pass to /for-machines. */
 const CALIBRATION_MAX_MACHINE_FILTER = 64;
 

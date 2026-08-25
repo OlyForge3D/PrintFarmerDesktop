@@ -293,8 +293,8 @@ describe('SidecarClient', () => {
     });
   });
 
-  it('keeps Desktop IPC v5 independent from sidecar protocol v1', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(5);
+  it('keeps Desktop IPC v6 independent from sidecar protocol v1', () => {
+    expect(IPC_CONTRACT_VERSION).toBe(6);
     expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(1);
   });
   it('resolves a handshake response', async () => {

@@ -21,6 +21,7 @@ import {
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   CALIBRATION_MAX_PRINTER_CANDIDATES,
+  CALIBRATION_MAX_PROFILE_LIST,
   OrcaProfileEntry,
   UNRECOGNIZED_CALIBRATION_INPUT,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
@@ -265,7 +266,7 @@ const CALIBRATION_MAX_WIRE_STRING = 512;
  * This ceiling is sized for small per-printer lists (missing inputs,
  * rejection reasons, a filament's compatible-printer names) and must not be
  * reused for a farm-wide catalog list: `/extended` uses its own, much higher
- * {@link EXTENDED_PROFILE_CEILING} instead, because this cap silently
+ * {@link CALIBRATION_MAX_PROFILE_LIST} instead, because this cap silently
  * dropping rows past it fed a per-profile identity lookup rather than a
  * display list — see the `/extended` schema below.
  */
@@ -3201,8 +3202,12 @@ export type RemoteExtendedProfileEntry = z.infer<
  * `/calibration-candidates`. Each row is validated independently (as
  * `boundedCandidateList` does) so one malformed row cannot take the rest of
  * the catalog down with it.
+ *
+ * The ceiling is {@link CALIBRATION_MAX_PROFILE_LIST}, shared with (not
+ * merely mirrored from) the IPC response schema in `src/shared/ipc.ts` — see
+ * that constant's doc comment for why #767 requires these to be the exact
+ * same value rather than two numbers that happen to agree today.
  */
-const EXTENDED_PROFILE_CEILING = 10_000;
 
 function boundedProfileList<T extends z.ZodTypeAny>(
   element: T,
@@ -3234,12 +3239,12 @@ export const RemoteExtendedProfilesResponse = z.union([
     .object({
       profiles: boundedProfileList(
         RemoteExtendedProfileEntry,
-        EXTENDED_PROFILE_CEILING,
+        CALIBRATION_MAX_PROFILE_LIST,
       ),
     })
     .passthrough()
     .transform((v) => v.profiles),
-  boundedProfileList(RemoteExtendedProfileEntry, EXTENDED_PROFILE_CEILING),
+  boundedProfileList(RemoteExtendedProfileEntry, CALIBRATION_MAX_PROFILE_LIST),
 ]);
 export type RemoteExtendedProfilesResponse = z.infer<
   typeof RemoteExtendedProfilesResponse

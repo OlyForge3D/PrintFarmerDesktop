@@ -29,7 +29,7 @@ describe('ipc contract', () => {
   });
 
   it('validates redacted server profile IPC without changing the contract version', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(5);
+    expect(IPC_CONTRACT_VERSION).toBe(6);
     const request = ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
       displayName: 'Production farm',
       baseUrl: 'http://10.0.0.20',
