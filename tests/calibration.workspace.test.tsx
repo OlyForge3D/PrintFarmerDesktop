@@ -573,6 +573,11 @@ function makeApi(savedRecord = record()) {
         profiles: [],
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
+    resolveSystemProfile: vi
+      .fn<CalibrationApi['resolveSystemProfile']>()
+      .mockRejectedValue(
+        new Error('resolveSystemProfile not stubbed in this test'),
+      ),
     cloneCalibrationFilamentProfile: vi
       .fn<CalibrationApi['cloneCalibrationFilamentProfile']>()
       .mockRejectedValue(

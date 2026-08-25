@@ -227,6 +227,11 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       ...noCustomProfiles(),
       fetchedAt: now,
     }),
+    resolveSystemProfile: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      profileId: filamentGuid,
+      imported: false,
+    }),
     cloneCalibrationFilamentProfile: vi.fn().mockResolvedValue({
       status: 'ok',
       clone: {

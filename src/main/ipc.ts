@@ -3756,6 +3756,115 @@ export function registerIpcHandlers(
     },
   );
 
+  // --- On-demand system profile identity resolution (issue #766) -----------
+  //
+  // PrintFarmer#2004 / PR #2008 shipped a non-admin resolve-or-import
+  // endpoint: a system profile whose Guid a list call above resolved to
+  // `null` (never imported into PrintFarmer's DB) is no longer a permanent
+  // dead end — the renderer calls this on demand (today, only at the
+  // filament clone step) to resolve the real Guid by name, auto-importing
+  // server-side if needed.
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationResolveSystemProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationResolveSystemProfile].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const resolved = await calibrationHttp.resolveProfileForModel(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.printerModelId,
+          {
+            profileType: request.profileType,
+            profileName: request.profileName,
+          },
+          signal,
+        );
+        if (resolved.profileId === null) {
+          emitCalibrationLog({
+            level: 'error',
+            component: 'calibration.http',
+            event: 'profiles.system.resolved',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'failed',
+            durationMs: Date.now() - startedAt,
+          });
+          return ipcSchemas[
+            IpcChannel.CalibrationResolveSystemProfile
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'serverError' as const,
+              message:
+                resolved.error ?? 'The server could not resolve this profile.',
+              retryable: false,
+              retryAfterSeconds: null,
+              reference: correlationId,
+            },
+          });
+        }
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.system.resolved',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationResolveSystemProfile
+        ].response.parse({
+          status: 'ok',
+          profileId: resolved.profileId,
+          imported: resolved.imported,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.system.resolved',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'System profile resolution failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationResolveSystemProfile
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
   // (calibration:setupPrinter handler removed 2026-08-23. The printer-
   // calibration setup PUT belonged to the printer-eligibility subsystem;
   // the filament-calibration workflow this desktop targets does not persist

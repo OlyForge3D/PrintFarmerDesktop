@@ -422,6 +422,9 @@ function profileSelectionApi(): CalibrationApi {
     cloneCalibrationFilamentProfile: vi
       .fn()
       .mockResolvedValue(notImplemented('cloneCalibrationFilamentProfile')),
+    resolveSystemProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('resolveSystemProfile')),
     submitCalibrationSlice: vi
       .fn()
       .mockResolvedValue(notImplemented('submitCalibrationSlice')),

@@ -249,6 +249,9 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
       profiles: [],
       fetchedAt: now,
     }),
+    resolveSystemProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('resolveSystemProfile')),
     cloneCalibrationFilamentProfile: vi
       .fn()
       .mockResolvedValue(notImplemented('cloneCalibrationFilamentProfile')),

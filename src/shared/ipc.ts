@@ -47,6 +47,14 @@ export const IpcChannel = {
   CalibrationListFilamentProfilesForMachines:
     'calibration:listFilamentProfilesForMachines',
   CalibrationListCustomProfiles: 'calibration:listCustomProfiles',
+  // --- On-demand system profile identity resolution (issue #766) -----------
+  // PrintFarmer#2004 shipped `POST /api/slicer/profiles/resolve-for-model`,
+  // gated only by `Calibration.Update` (a scope the desktop already holds).
+  // A system profile a catalog list returned with `guid: null` (never
+  // imported into PrintFarmer's DB) is no longer a dead end: the renderer
+  // resolves it by name on demand, and the server imports it transparently
+  // if needed. See `CalibrationSlicerProfileRef.guid` below.
+  CalibrationResolveSystemProfile: 'calibration:resolveSystemProfile',
   // --- Filament calibration slice pipeline (owner reframe 2026-08-23) -------
   CalibrationCloneFilamentProfile: 'calibration:cloneFilamentProfile',
   CalibrationSubmitCalibrationSlice: 'calibration:submitCalibrationSlice',
@@ -5600,10 +5608,19 @@ const CALIBRATION_MAX_MACHINE_FILTER = 64;
  * Unified profile row the renderer sees. `guid` is present for custom
  * profiles and for system profiles the main process was able to resolve
  * against `/extended`; `null` when only a canonical name is known (a system
- * profile whose Guid the DB list didn't carry). The renderer sends `guid`
- * back on the setup submission for the PUT; if it's null, the wizard should
- * refuse the selection with an actionable message rather than send a partial
- * setup that would be silently rejected.
+ * profile PrintFarmer's DB has never imported).
+ *
+ * Before PrintFarmer#2004 a `null` guid was a genuine dead end — the desktop
+ * cannot import profiles by design, so a never-imported catalog profile was
+ * permanently unselectable. #2004 shipped a non-admin
+ * `POST /api/slicer/profiles/resolve-for-model/{modelId}` endpoint
+ * (`Calibration.Update` scope, which the desktop already holds) that
+ * resolves a profile by **name** and auto-imports it server-side on demand.
+ * So `guid: null` here now means "not yet resolved", not "unselectable": the
+ * row stays selectable, and the caller resolves the real Guid via
+ * `calibration:resolveSystemProfile` at the point one is actually needed
+ * (today, only the filament clone step needs a Guid — see
+ * `FilamentCalibrationWizard.performClone`).
  */
 export const CalibrationSlicerProfileRef = z
   .object({
@@ -5840,6 +5857,67 @@ export const CalibrationListCustomProfilesResponse = z.discriminatedUnion(
 );
 export type CalibrationListCustomProfilesResponse = z.infer<
   typeof CalibrationListCustomProfilesResponse
+>;
+
+// --- calibration:resolveSystemProfile ---
+//
+// Backing: `POST /api/slicer/profiles/resolve-for-model/{modelId}`
+// (`ProfileResolutionDtos.cs`, `ProfilesController.cs`, PrintFarmer PR
+// #2008 closing #2004). Gated by `Calibration.Update`, a scope the desktop
+// already holds — unlike the admin-only import wizard, no prior admin
+// action is required. Looks the name up in PrintFarmer's DB first (no
+// worker call, no-op for an already-imported profile); if never imported,
+// resolves the catalog model, imports the single matching profile from the
+// OrcaSlicer worker catalog, and returns its new Guid. `profileId` is
+// non-null on success (imported or not); null only alongside a populated
+// `error` (ambiguous name, worker unreachable, model not found, etc).
+
+export const CalibrationProfileResolutionType = z.enum([
+  'machine',
+  'process',
+  'filament',
+]);
+export type CalibrationProfileResolutionType = z.infer<
+  typeof CalibrationProfileResolutionType
+>;
+
+export const CalibrationResolveSystemProfileRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /** Catalog printer-model Guid the profile name is resolved against. */
+    printerModelId: z.string().uuid(),
+    profileType: CalibrationProfileResolutionType,
+    /** The profile's canonical `Name`, as returned by the catalog list. */
+    profileName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+  })
+  .strict();
+export type CalibrationResolveSystemProfileRequest = z.infer<
+  typeof CalibrationResolveSystemProfileRequest
+>;
+
+export const CalibrationResolveSystemProfileResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** The resolved profile's database identity. */
+        profileId: z.string().uuid(),
+        /**
+         * True when the profile had never been imported and this call
+         * auto-imported it from the OrcaSlicer worker catalog; false when
+         * it already existed in PrintFarmer's database.
+         */
+        imported: z.boolean(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationResolveSystemProfileResponse = z.infer<
+  typeof CalibrationResolveSystemProfileResponse
 >;
 
 // (calibration:setupPrinter removed 2026-08-23 — printer-calibration setup PUT
@@ -6833,6 +6911,10 @@ export const ipcSchemas = {
     request: CalibrationListCustomProfilesRequest,
     response: CalibrationListCustomProfilesResponse,
   },
+  [IpcChannel.CalibrationResolveSystemProfile]: {
+    request: CalibrationResolveSystemProfileRequest,
+    response: CalibrationResolveSystemProfileResponse,
+  },
   [IpcChannel.CalibrationCloneFilamentProfile]: {
     request: CalibrationCloneFilamentProfileRequest,
     response: CalibrationCloneFilamentProfileResponse,
@@ -7015,6 +7097,9 @@ export interface PrintFarmerApi {
   listCalibrationCustomProfiles(
     request: CalibrationListCustomProfilesRequest,
   ): Promise<CalibrationListCustomProfilesResponse>;
+  resolveSystemProfile(
+    request: CalibrationResolveSystemProfileRequest,
+  ): Promise<CalibrationResolveSystemProfileResponse>;
   // --- Filament calibration slice pipeline (PR #1952) ---------------------
   cloneCalibrationFilamentProfile(
     request: CalibrationCloneFilamentProfileRequest,

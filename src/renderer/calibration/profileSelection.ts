@@ -113,11 +113,13 @@ export function decodeProfileOption(
 }
 
 /**
- * Resolve the chosen `<option>` value back to a profile Guid so the setup PUT
- * can be issued. `null` when the operator has not picked one, or the pick is
- * a system profile whose Guid the main process could not resolve (the setup
- * PUT requires all three Guids; a null-Guid pick must be refused with an
- * actionable message rather than submitted as a partial request).
+ * Resolve the chosen `<option>` value back to a profile Guid, when the main
+ * process has already resolved one from a prior list call. `null` when the
+ * operator has not picked one, or the pick is a system profile that has
+ * never been imported into PrintFarmer — the option is still selectable
+ * (issue #766); callers that need a Guid for a never-imported pick resolve
+ * it on demand via `calibration:resolveSystemProfile` instead of refusing
+ * the pick.
  */
 export function resolveChosenProfileGuid(
   selected: DecodedProfileOption | null,
