@@ -3679,3 +3679,59 @@ per-printer eligibility projection.
 `thermalProtectionConfirmed`, and `ventilationAssessed` to `false` (and `permissions` to `null`
 at :1124), while the renderer gate demands all three be `true`. If real, that blocks calibration
 regardless of how profile selection is implemented, and must be fixed alongside this work.
+
+## 2026-08-25: `resolveCalibrationConflict` — RESTORE the renderer path, do not delete the stack
+
+**By:** Ripley (analysis pass on issue #761)
+
+**What:** `SidecarCalibrationAdapter.resolveCalibrationConflict` (`src/main/calibrationService.ts:462`),
+`SidecarClient.resolveCalibrationConflict` (`src/main/sidecar.ts:1015`), and the Rust RPC
+(`native/model-core/src/serve.rs:1208`, `calibration.rs`, `sqlite_catalog.rs`) are **kept as-is**.
+The decision is: this is not dead scaffolding from the printer-calibration saga PR #757 reaped —
+it is the resolve half of the general outbox push/pull delta-sync engine
+(`calibrationEngine.ts`, live, actively tested by `calibrationEngine.test.ts` and
+`calibrationResolutionPolicyParity.test.ts`, not `describe.skip`) that pushes local mutations to
+PrintFarmer, detects revision conflicts, and records them via `recordCalibrationConflict`. That
+engine operates on `CalibrationProject`/`CalibrationAttempt`/`CalibrationDraft` — exactly the
+entities `PrintFarmer#1940` Path D **retains and reshapes** for server-orchestrated filament
+calibration, explicitly because two clients (desktop + web) sharing one server-owned run record
+can diverge. #761's own hypothesis in its "if yes" branch is confirmed by reading Path D directly:
+it names `CalibrationChange*`/`CalibrationSyncCursor`/`CalibrationIdempotencyRecord` as "the
+delta-sync substrate for thin clients," and its constraint section requires an offline outbox with
+conflict-safe replay. Deleting `resolveCalibrationConflict` now would sever the one recovery path
+that substrate has for a push that lost a race, right as Path D is about to make that race a normal
+occurrence instead of a printer-calibration-only edge case.
+
+**What #757 actually reaped:** `CalibrationConflictDialog.tsx` (551 lines, the renderer UI) and the
+`CalibrationResolveConflict`/`CalibrationListConflicts` IPC channel registrations, as part of
+deleting the old printer-calibration saga dashboard's "Conflicts" tile — a UI surface, not the sync
+engine underneath it. `mapCalibrationConflictKind` maps four entity types to conflict kinds; three
+(`CalibrationProject`, `CalibrationStep`→draft, `CalibrationAttempt`) are Path-D-retained, one
+(`CalibrationPrinterSnapshot`) maps to the `PrinterConfigurationSnapshot` entity Path D deletes
+(D3b) — that one mapping arm will need pruning when D3b lands, but is not a reason to delete the
+whole mechanism today.
+
+**Guardrail relocation is moot:** because the decision is keep-not-delete,
+`scripts/check-inert-class-field-seams.mjs:13-16` and
+`.squad/skills/test-discipline/SKILL.md` keep pointing at live code. No relocation needed.
+
+**#758 dependency:** the orphaned `CalibrationResolveConflict*` and `CalibrationListConflicts*` Zod
+schema pairs in `src/shared/ipc.ts` should be **kept, with a retention comment**, in the same
+category #758 already proposed for `CalibrationStagePhoto*`/`CalibrationInstallOrcaProfile*`/
+`CalibrationRestoreOrcaProfile*` — schemas Path D plans to reuse. Whoever executes #758 should
+treat these two schema pairs as "keep, deliberately" rather than deleting them as saga residue.
+
+**Follow-through (implementation, not this session):** the renderer-facing path still needs
+rebuilding — a new conflict-resolution UI scoped to the filament calibration workspace (not a
+resurrection of the deleted saga dialog) plus the `CalibrationResolveConflict`/
+`CalibrationListConflicts` IPC channel handlers wired back into `src/main/ipc.ts` and
+`src/preload/preload.ts`. Spun out as a child issue of #761; sequence it after Path D's D1/D4 land
+(so it targets the reshaped entity, not the one about to be edited) and after D3b resolves the
+`CalibrationPrinterSnapshot` conflict-kind question above.
+
+**Why:** #761 asked whether the desktop still needs calibration conflict resolution, framed
+correctly as a decision request rather than a cleanup task. Tracing consumers (not names) shows
+the machinery underneath the deleted UI is the same delta-sync substrate Path D's own text commits
+to keeping. The naming trap this epic keeps rediscovering cuts the other way here: a symbol whose
+neighbor UI was deleted looked like saga residue, but its actual behavior is general sync
+infrastructure that outlives the saga.
