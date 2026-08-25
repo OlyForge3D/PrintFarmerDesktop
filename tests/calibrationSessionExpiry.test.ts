@@ -19,10 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IpcChannel } from '@shared/ipc';
 import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
-import {
-  CALIBRATION_FIXTURE_IDS,
-  calibrationContextDto,
-} from './fixtures/calibrationContract.js';
+import { CALIBRATION_FIXTURE_IDS } from './fixtures/calibrationContract.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -55,11 +52,6 @@ const { registerIpcHandlers } = await import('../src/main/ipc.js');
 
 const PROFILE_ID = CALIBRATION_FIXTURE_IDS.profileId;
 const BASE_URL = 'http://farm.local';
-const PROJECT_ID = '44444444-4444-4444-8444-444444444444';
-const ATTEMPT_ID = '77777777-7777-4777-8777-777777777777';
-const ORCHESTRATION_ID = '22222222-2222-4222-8222-222222222222';
-const JOB_ID = '55555555-5555-4555-8555-555555555555';
-const OPERATION_ID = '66666666-6666-4666-8666-666666666666';
 
 const CANONICAL_PERMISSIONS = [
   'calibration:read',
@@ -146,36 +138,6 @@ const sidecar = {
   recordCalibrationConflict: () => Promise.resolve(),
 };
 
-const QUEUE_JOB = {
-  id: JOB_ID,
-  rowVersion: 'AAAAAAAAAAAA==',
-  revision: 1,
-  dispatchStateRowVersion: 'BBBBBBBBBBBB==',
-  dispatchStateRevision: 1,
-  dispatchResult: null,
-  jobKind: 'FilamentCalibration',
-  calibrationProjectId: PROJECT_ID,
-  calibrationAttemptId: ATTEMPT_ID,
-  calibrationOrchestrationId: ORCHESTRATION_ID,
-  pinnedPrinterConfigRevision: CALIBRATION_FIXTURE_IDS.configurationRevision,
-  gcodeFileId: '33333333-3333-4333-8333-333333333333',
-  gcodeFileName: 'calibration.gcode',
-  assignedPrinterId: CALIBRATION_FIXTURE_IDS.printerId,
-  assignedPrinterName: 'Voron 2.4',
-  status: 'Queued',
-  bedClearState: 'None',
-  bedClearCommandId: null,
-  bedClearIdempotencyKeySha256: null,
-  bedClearExpiresAtUtc: null,
-  priority: 0,
-  queuePosition: 1,
-  copies: 1,
-  completedCopies: 0,
-  remainingCopies: 1,
-  createdAt: CALIBRATION_FIXTURE_IDS.now,
-  updatedAt: CALIBRATION_FIXTURE_IDS.now,
-};
-
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -191,7 +153,6 @@ interface ServerOptions {
   rejectFragment?: string;
   /** Status used by the forced refusal. */
   rejectStatus?: 401 | 403;
-  job?: Record<string, unknown>;
 }
 
 /** Routes by URL, and answers 401 for any token it does not accept. */
@@ -231,55 +192,10 @@ function server(options: ServerOptions = {}): { calls: string[] } {
           json(
             printFarmerCapabilitiesResponse({
               effectivePermissions: CANONICAL_PERMISSIONS,
-              calibrationGenerationEnabled: true,
               ...options.capabilityOverrides,
             }),
           ),
         );
-      }
-      if (href.includes('calibration-context')) {
-        return Promise.resolve(json(calibrationContextDto()));
-      }
-      if (href.includes('acknowledge-bed-clear-and-start')) {
-        return Promise.resolve(
-          json({
-            jobETag: 'CCCCCCCCCCCC==',
-            dispatchStateETag: 'DDDDDDDDDDDD==',
-          }),
-        );
-      }
-      if (href.includes('generate-job')) {
-        return Promise.resolve(
-          json({
-            id: ORCHESTRATION_ID,
-            projectId: PROJECT_ID,
-            attemptId: ATTEMPT_ID,
-            operationId: OPERATION_ID,
-            status: 'Running',
-            currentStep: 'Slicing',
-            revision: 1,
-            retryCount: 0,
-            nextRetryAtUtc: null,
-            stepStartedAtUtc: null,
-            lastErrorCode: null,
-            problems: [],
-            model3DId: null,
-            sliceJobId: null,
-            workerId: null,
-            sourceArtifactId: null,
-            finalArtifactId: null,
-            gcodeFileId: null,
-            specificationSha256: null,
-            planManifestSha256: null,
-            gcodeSha256: null,
-            statusRoute: `/api/calibration-orchestrations/${ORCHESTRATION_ID}`,
-            createdAtUtc: CALIBRATION_FIXTURE_IDS.now,
-            updatedAtUtc: CALIBRATION_FIXTURE_IDS.now,
-          }),
-        );
-      }
-      if (href.includes('job-queue')) {
-        return Promise.resolve(json({ ...QUEUE_JOB, ...options.job }));
       }
       return Promise.resolve(json({}, 404));
     }),
