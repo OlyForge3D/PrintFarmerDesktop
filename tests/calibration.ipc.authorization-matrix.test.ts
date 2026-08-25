@@ -323,6 +323,15 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationResolveSystemProfile,
+    request: (profileId) => ({
+      profileId,
+      printerModelId: uuid(3),
+      profileType: 'filament',
+      profileName: 'PolyLite PLA Blue',
+    }),
+  },
+  {
     channel: IpcChannel.CalibrationSubmitCalibrationSlice,
     request: (profileId) => ({
       profileId,
