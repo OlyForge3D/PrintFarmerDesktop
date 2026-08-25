@@ -103,13 +103,16 @@ function noCustomProfiles(): {
   return { profiles: [] };
 }
 
-function printerCandidate(): CalibrationPrinterCandidate {
+function printerCandidate(
+  overrides: Partial<CalibrationPrinterCandidate> = {},
+): CalibrationPrinterCandidate {
   return {
     printerId,
     displayName: 'Emulator cell A',
     printerModel: 'Klipper machine',
     printerModelId,
     isOnline: true,
+    ...overrides,
   };
 }
 
@@ -156,6 +159,8 @@ function apiFor(options: {
   process: CalibrationSlicerProfileRef;
   filament: CalibrationSlicerProfileRef;
   resolveSystemProfile?: CalibrationApi['resolveSystemProfile'];
+  printer?: CalibrationPrinterCandidate;
+  saveFilamentCalibrationWizardState?: CalibrationApi['saveFilamentCalibrationWizardState'];
 }): CalibrationApi {
   const { machine, process, filament } = options;
   return {
@@ -167,7 +172,7 @@ function apiFor(options: {
     saveCalibrationWorkspaceState: vi.fn(),
     listCalibrationPrinters: vi.fn().mockResolvedValue(
       CalibrationListPrintersResponse.parse({
-        printers: [printerCandidate()],
+        printers: [options.printer ?? printerCandidate()],
         printersTruncated: false,
         printersUnreadable: 0,
         fetchedAt: now,
@@ -267,9 +272,9 @@ function apiFor(options: {
         notImplemented('updateCalibrationFilamentProfileMeasurement'),
       ),
     getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(null),
-    saveFilamentCalibrationWizardState: vi
-      .fn()
-      .mockResolvedValue({ saved: true }),
+    saveFilamentCalibrationWizardState:
+      options.saveFilamentCalibrationWizardState ??
+      vi.fn().mockResolvedValue({ saved: true }),
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockResolvedValue({ cleared: true }),
@@ -380,6 +385,36 @@ describe('never-imported system profiles are selectable, not a dead end (issue #
       candidate.value.includes(NEVER_IMPORTED_PROCESS_NAME),
     );
     expect(processOption?.disabled).toBe(false);
+    expect(processOption?.textContent).not.toMatch(/identity unresolved/i);
+
+    // Prove the process pick is genuinely selectable too — not merely
+    // "not disabled" in markup — by driving the cascade all the way to the
+    // never-imported filament option, exercising the full three-tier
+    // never-imported printer (machine + process + filament all `guid:
+    // null`), matching the "never-onboarded Qidi X-Plus 4" repro exactly.
+    fireEvent.change(processSelector, {
+      target: { value: processOption?.value },
+    });
+    const filamentSelector = await screen.findByRole('combobox', {
+      name: /filament profile/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        filamentSelector.querySelectorAll('option'),
+      ).some((candidate) => candidate.value.length > 0);
+      if (!populated) throw new Error('filament selector not populated');
+    });
+    const filamentOption = Array.from(
+      filamentSelector.querySelectorAll('option'),
+    ).find((candidate) =>
+      candidate.value.includes(NEVER_IMPORTED_FILAMENT_NAME),
+    );
+    expect(
+      filamentOption,
+      'never-imported filament option must render',
+    ).toBeDefined();
+    expect(filamentOption?.disabled).toBe(false);
+    expect(filamentOption?.textContent).not.toMatch(/identity unresolved/i);
   });
 
   it('ARM B (control) — an already-imported machine profile remains enabled and selectable (no regression)', async () => {
@@ -606,5 +641,173 @@ describe('filament clone resolves identity on demand when previously unimported 
     expect(clone.mock.calls[0]?.[0]).toMatchObject({
       sourceProfileId: importedFilamentGuid,
     });
+  });
+
+  it('refuses (with a banner, not a silent stall) when the printer has no catalog model to resolve a never-imported filament against', async () => {
+    const resolveSystemProfile = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'resolveSystemProfile must not be called without a printerModelId.',
+        ),
+      );
+    const api = apiFor({
+      machine: systemProfile(
+        IMPORTED_MACHINE_NAME,
+        importedMachineGuid,
+        'Bed 250×220',
+      ),
+      process: systemProfile(
+        NEVER_IMPORTED_PROCESS_NAME,
+        importedProcessGuid,
+        '0.4 nozzle',
+      ),
+      filament: systemProfile(NEVER_IMPORTED_FILAMENT_NAME, null, 'PLA'),
+      resolveSystemProfile,
+      printer: printerCandidate({ printerModelId: null }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+
+    const machineSelector = await screen.findByRole('combobox', {
+      name: /machine profile/i,
+    });
+    fireEvent.change(machineSelector, {
+      target: { value: `system:${IMPORTED_MACHINE_NAME}` },
+    });
+    const processSelector = await screen.findByRole('combobox', {
+      name: /process profile/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        processSelector.querySelectorAll('option'),
+      ).some((candidate) => candidate.value.length > 0);
+      if (!populated) throw new Error('process selector not populated');
+    });
+    fireEvent.change(processSelector, {
+      target: { value: `system:${NEVER_IMPORTED_PROCESS_NAME}` },
+    });
+    const filamentSelector = await screen.findByRole('combobox', {
+      name: /filament profile/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        filamentSelector.querySelectorAll('option'),
+      ).some((candidate) => candidate.value.length > 0);
+      if (!populated) throw new Error('filament selector not populated');
+    });
+    fireEvent.change(filamentSelector, {
+      target: { value: `system:${NEVER_IMPORTED_FILAMENT_NAME}` },
+    });
+
+    const nextButton = await screen.findByRole('button', {
+      name: /Next — name the clone/i,
+    });
+    await waitFor(() => {
+      if (nextButton.hasAttribute('disabled')) {
+        throw new Error('Next button not enabled yet');
+      }
+    });
+    fireEvent.click(nextButton);
+
+    const cloneButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(cloneButton);
+
+    // This narrow edge case (no catalog model association at all) is
+    // unchanged by #766 — it was never resolvable before either. The
+    // requirement is that it fails loudly with an actionable banner, not
+    // that it becomes resolvable.
+    await screen.findByText(/could not be resolved/i);
+    expect(resolveSystemProfile).not.toHaveBeenCalled();
+    expect(api.cloneCalibrationFilamentProfile).not.toHaveBeenCalled();
+  });
+
+  it('persists a resumable wizard record after cloning a never-imported filament (the resolved Guid is folded back, not lost)', async () => {
+    const resolveSystemProfile = vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      profileId: resolvedFilamentGuid,
+      imported: true,
+    });
+    const saveFilamentCalibrationWizardState: CalibrationApi['saveFilamentCalibrationWizardState'] =
+      vi.fn().mockResolvedValue({ saved: true });
+    const api = apiFor({
+      machine: systemProfile(
+        IMPORTED_MACHINE_NAME,
+        importedMachineGuid,
+        'Bed 250×220',
+      ),
+      process: systemProfile(
+        NEVER_IMPORTED_PROCESS_NAME,
+        importedProcessGuid,
+        '0.4 nozzle',
+      ),
+      filament: systemProfile(NEVER_IMPORTED_FILAMENT_NAME, null, 'PLA'),
+      resolveSystemProfile,
+      saveFilamentCalibrationWizardState,
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+
+    const machineSelector = await screen.findByRole('combobox', {
+      name: /machine profile/i,
+    });
+    fireEvent.change(machineSelector, {
+      target: { value: `system:${IMPORTED_MACHINE_NAME}` },
+    });
+    const processSelector = await screen.findByRole('combobox', {
+      name: /process profile/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        processSelector.querySelectorAll('option'),
+      ).some((candidate) => candidate.value.length > 0);
+      if (!populated) throw new Error('process selector not populated');
+    });
+    fireEvent.change(processSelector, {
+      target: { value: `system:${NEVER_IMPORTED_PROCESS_NAME}` },
+    });
+    const filamentSelector = await screen.findByRole('combobox', {
+      name: /filament profile/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        filamentSelector.querySelectorAll('option'),
+      ).some((candidate) => candidate.value.length > 0);
+      if (!populated) throw new Error('filament selector not populated');
+    });
+    fireEvent.change(filamentSelector, {
+      target: { value: `system:${NEVER_IMPORTED_FILAMENT_NAME}` },
+    });
+
+    const nextButton = await screen.findByRole('button', {
+      name: /Next — name the clone/i,
+    });
+    await waitFor(() => {
+      if (nextButton.hasAttribute('disabled')) {
+        throw new Error('Next button not enabled yet');
+      }
+    });
+    fireEvent.click(nextButton);
+
+    const cloneButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(cloneButton);
+    await screen.findByRole('button', { name: /Start Flow rate — pass 1/i });
+
+    // If the resolved Guid were only kept in a local variable at clone
+    // time and never folded back onto `picks.filamentGuid`, the
+    // persistence effect (which reads `picks.filamentGuid`) would see a
+    // permanently-null base filament Guid and never save a resumable
+    // record — silently losing restart/resume for every never-imported
+    // filament even though the clone itself succeeded.
+    await waitFor(() => {
+      expect(saveFilamentCalibrationWizardState).toHaveBeenCalled();
+    });
+    const calls = vi.mocked(saveFilamentCalibrationWizardState).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall?.[0].state.baseFilamentGuid).toBe(resolvedFilamentGuid);
   });
 });

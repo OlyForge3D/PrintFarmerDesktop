@@ -530,6 +530,14 @@ function FilamentCalibrationWizardInner(
       }
       setWorking((current) => ({
         ...current,
+        // Fold the just-resolved Guid back onto `picks` so the persistence
+        // effect (which reads `picks.filamentGuid`) can save a resumable
+        // record — otherwise a never-imported filament's clone would work
+        // in-session but never survive a restart (issue #766).
+        picks:
+          current.picks === null
+            ? current.picks
+            : { ...current.picks, filamentGuid: sourceProfileId },
         cloneId: response.clone.id,
         cloneName: response.clone.name,
         phase: 'methodPicker',
