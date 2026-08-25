@@ -238,6 +238,35 @@ describe('CalibrationConflictsDialog', () => {
     ).toBeDisabled();
   });
 
+  it('blocks manual merge when one side has a nested (non-scalar) top-level field, not just when it fails to parse', async () => {
+    const mergeConflict = conflict({
+      availableResolutions: ['manualFieldMerge'],
+      localPayloadSummary: JSON.stringify({ nested: { x: 1 } }),
+      serverPayloadSummary: JSON.stringify({ displayName: 'Server value' }),
+    });
+    const listCalibrationConflicts = vi
+      .fn()
+      .mockResolvedValue({ conflicts: [mergeConflict] });
+    mount(apiWith({ listCalibrationConflicts }));
+
+    await screen.findByText('Step draft');
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Merge fields manually' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Manual merge is blocked because one or both payload summaries are missing/,
+      ),
+    ).toBeInTheDocument();
+    // Previously this field was still offered from the fully-scalar server
+    // side alone, silently dropping the local side's unmergeable content.
+    expect(screen.queryByLabelText('displayName')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Resolve conflict' }),
+    ).toBeDisabled();
+  });
+
   it('shows a resolve error without dropping the conflict from the list', async () => {
     const targetConflict = conflict();
     const listCalibrationConflicts = vi

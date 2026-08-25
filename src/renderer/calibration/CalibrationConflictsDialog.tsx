@@ -539,16 +539,27 @@ function scalarFields(summary: string | null): Record<string, string> | null {
       return null;
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(parsed)) {
+      // A nested object/array value means this side is not "a JSON object
+      // with top-level scalar fields" as the blocking error above promises.
+      // Previously this was silently skipped per-key, which -- for a summary
+      // like `{"nested":{"x":1}}` -- left `scalarFields` returning `{}`
+      // (not `null`), so `mergeSeed`'s `local === null || server === null`
+      // guard never fired and the merge form silently seeded from only the
+      // other, fully-scalar side. That is the same one-sided-truncation
+      // failure the guard exists to catch, just reached through a value that
+      // parses as an object rather than one that fails to parse at all -- so
+      // it fails the whole side here instead of dropping just this entry.
+      if (
+        value !== null &&
+        typeof value !== 'string' &&
+        typeof value !== 'number' &&
+        typeof value !== 'boolean'
+      ) {
+        return null;
+      }
       if (key.length > MAX_MERGED_FIELD_KEY_LENGTH) continue;
       if (SENSITIVE_FIELD_NAME.test(key)) continue;
-      if (
-        value === null ||
-        typeof value === 'string' ||
-        typeof value === 'number' ||
-        typeof value === 'boolean'
-      ) {
-        result[key] = value === null ? '' : String(value);
-      }
+      result[key] = value === null ? '' : String(value);
     }
     return result;
   } catch {
