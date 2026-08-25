@@ -35,9 +35,8 @@ name: Citation reachability
 # orphans" from "cannot see orphans" requires three independent guard families:
 # classifier controls; the shallow-history refusal plus MAINLINE_FLOOR for the
 # reader; and scan-root preflights plus corpus-specific floors for the inputs.
-# The local arm uses CITATION_FLOOR, while the cross-repository admin-guide arm
-# below uses its own ADMIN_GUIDE_CITATION_FLOOR. Each guard covers a different
-# way of seeing nothing, and none implies the others.
+# The local arm uses CITATION_FLOOR. Each guard covers a different way of
+# seeing nothing, and none implies the others.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -153,8 +152,3 @@ jobs:
       # red ambiguous between those two remedies.
       - name: Verify pinned content assertions against their cited commits
         run: npm run check:citation-content
-
-      - name: Verify admin-guide server citations at their pinned revisions
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: npm run check:admin-guide-citations

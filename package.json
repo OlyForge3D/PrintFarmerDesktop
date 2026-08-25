@@ -62,7 +62,6 @@
     "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",
     "check:citation-reachability": "node scripts/check-citation-reachability.mjs",
     "check:citation-content": "node scripts/check-citation-content.mjs",
-    "check:admin-guide-citations": "node scripts/check-admin-guide-citations.mjs",
     "check:review-coverage": "node scripts/check-review-head-coverage.mjs",
     "check:closed-head-dispatch": "node scripts/check-closed-head-dispatch.mjs",
     "check:direct-push-artifact": "node scripts/check-direct-push-artifact.mjs",

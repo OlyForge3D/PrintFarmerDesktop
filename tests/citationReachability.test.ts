@@ -366,7 +366,6 @@ describe('the citation-reachability harness is invoked, not merely present', () 
         /shallow-history refusal plus MAINLINE_FLOOR/,
         /scan-root preflights plus corpus-specific floors/,
         /local arm uses CITATION_FLOOR/,
-        /cross-repository admin-guide arm\s+# below uses its own ADMIN_GUIDE_CITATION_FLOOR/,
         /none implies the others/,
       ].every((claim) => claim.test(contract));
 
@@ -388,7 +387,6 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // Every named guard family must also exist where the header says it does.
     const harness = read(HARNESS);
     const corpus = read(CORPUS_MODULE);
-    const adminGuideHarness = read('scripts/check-admin-guide-citations.mjs');
 
     // reader side - depth
     expect(workflowText).toMatch(/MAINLINE_FLOOR/);
@@ -415,18 +413,6 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // The floor must be stated by each caller, never by the shared mechanism.
     // #421's cross-repository corpus is disjoint and has its own calibrated floor.
     expect(corpus).not.toMatch(/const CITATION_FLOOR/);
-    // #756: the admin-guide harness has been reaped down to a stub, but the
-    // wiring around it (workflow step, npm script, this test's assertions)
-    // remains intact so removing the workflow step can happen in a follow-up
-    // PR that has `workflow` OAuth scope. What we assert here is exactly what
-    // survives: the constants a reader would search for are still declared,
-    // and the reap sentinel is discoverable so a green step is not
-    // indistinguishable from a silent drift.
-    expect(adminGuideHarness).toMatch(
-      /export const ADMIN_GUIDE_CITATION_FLOOR = \d+;/,
-    );
-    expect(adminGuideHarness).toMatch(/export const GUIDE_PATH = /);
-    expect(adminGuideHarness).toContain('#756-reap stub');
 
     // `--floor` exists for synthetic fixtures whose ledger is built by hand. An
     // armed invocation must never pass it, or the guard is unarmed by the very
