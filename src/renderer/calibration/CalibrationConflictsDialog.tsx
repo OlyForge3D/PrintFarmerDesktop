@@ -18,6 +18,12 @@ import './CalibrationConflictsDialog.css';
 
 const MAX_MERGED_FIELDS = 20;
 const MAX_MERGED_FIELD_LENGTH = 4096;
+// Mirrors the `mergedFields` key bound in `src/shared/ipc.ts`
+// (`CalibrationResolveConflictRequest.mergedFields`). Keys come from parsed
+// payload summaries, not from renderer-controlled input, so this is enforced
+// by dropping the field rather than blocking the whole merge -- the same
+// treatment already given to a non-scalar value.
+const MAX_MERGED_FIELD_KEY_LENGTH = 200;
 
 /**
  * Renderer-facing calibration conflict resolution (issue #762).
@@ -476,15 +482,22 @@ function ConflictDetail({
 function mergeSeed(conflict: CalibrationConflict): MergeSeed {
   const local = scalarFields(conflict.localPayloadSummary);
   const server = scalarFields(conflict.serverPayloadSummary);
-  if (local === null && server === null) {
+  // Blocked when *either* side fails to parse, not just when both do. A
+  // one-sided parse failure previously fell through to `local ?? {}` /
+  // `server ?? {}`, silently seeding the merge form from only the side that
+  // parsed -- which looks like a complete field set but is actually missing
+  // every field the other, unparsed side would have contributed. That is
+  // worse than refusing outright: the operator has no way to tell a
+  // deliberately-empty side from a malformed one they can't see.
+  if (local === null || server === null) {
     return {
       fields: {},
       error:
-        'Manual merge is blocked because the payload summaries do not contain a JSON object with top-level scalar fields.',
+        'Manual merge is blocked because one or both payload summaries are missing, or are not a JSON object with top-level scalar fields.',
     };
   }
-  const fields: Record<string, string> = { ...(local ?? {}) };
-  for (const [key, value] of Object.entries(server ?? {})) {
+  const fields: Record<string, string> = { ...local };
+  for (const [key, value] of Object.entries(server)) {
     if (!(key in fields)) fields[key] = value;
   }
   const keys = Object.keys(fields);
@@ -504,6 +517,20 @@ function mergeSeed(conflict: CalibrationConflict): MergeSeed {
   return { fields, error: null };
 }
 
+// Defense-in-depth alongside the upstream "never contains credentials"
+// invariant on `CalibrationConflict.localPayloadSummary` /
+// `serverPayloadSummary` (`src/shared/ipc.ts`): those fields are populated by
+// `summarizeConflictPayload` (`calibrationService.ts`), which does a plain
+// `JSON.stringify` with no redaction of its own, so the guarantee is
+// currently a contract, not an enforced one. This dialog is the first
+// renderer surface to read and re-send those fields, so a field whose *name*
+// looks credential-shaped is dropped from the merge form rather than echoed
+// back verbatim -- narrow enough not to reject legitimate calibration field
+// names (`displayName`, `stepId`, ...), but a second line of defense should
+// the upstream invariant ever be violated.
+const SENSITIVE_FIELD_NAME =
+  /token|secret|password|credential|api[-_]?key|authorization/i;
+
 function scalarFields(summary: string | null): Record<string, string> | null {
   if (summary === null) return null;
   try {
@@ -512,6 +539,8 @@ function scalarFields(summary: string | null): Record<string, string> | null {
       return null;
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(parsed)) {
+      if (key.length > MAX_MERGED_FIELD_KEY_LENGTH) continue;
+      if (SENSITIVE_FIELD_NAME.test(key)) continue;
       if (
         value === null ||
         typeof value === 'string' ||

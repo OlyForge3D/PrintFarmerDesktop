@@ -3969,10 +3969,14 @@ export const CalibrationResolveConflictRequest = z
     resolution: CalibrationConflictResolution,
     /**
      * For manualFieldMerge: the merged field values (plain text, no credentials).
-     * Only accepted for metadata/draft conflict kinds.
+     * Only accepted for metadata/draft conflict kinds. Both the key (a field
+     * name) and the value are bounded -- `z.record(valueSchema)` only bounds
+     * values, so an unbounded key type here would leave field *names*
+     * unbounded even though the comment above and the 20-key/4096-char-value
+     * limits below imply the whole structure is capped.
      */
     mergedFields: z
-      .record(z.string().max(4096))
+      .record(z.string().min(1).max(200), z.string().max(4096))
       .optional()
       .refine((fields) => !fields || Object.keys(fields).length <= 20),
   })

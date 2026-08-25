@@ -713,6 +713,19 @@ describe('CalibrationResolveConflictRequest/Response schemas', () => {
     ).toThrow();
   });
 
+  it('rejects a mergedFields key longer than 200 characters', () => {
+    // `z.record(valueSchema)` only bounds values, not keys -- this asserts the
+    // key schema itself enforces the limit, not just field-count/value-length.
+    expect(() =>
+      CalibrationResolveConflictRequest.parse({
+        profileId: PROFILE_UUID,
+        conflictId: ATTEMPT_UUID,
+        resolution: 'manualFieldMerge',
+        mergedFields: { ['k'.repeat(201)]: 'value' },
+      }),
+    ).toThrow();
+  });
+
   it('rejects an unknown top-level field (strict request)', () => {
     expect(() =>
       CalibrationResolveConflictRequest.parse({

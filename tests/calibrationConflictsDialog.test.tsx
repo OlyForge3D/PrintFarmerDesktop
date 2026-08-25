@@ -209,6 +209,35 @@ describe('CalibrationConflictsDialog', () => {
     });
   });
 
+  it('blocks manual merge when only one payload summary parses, instead of seeding from the other side alone', async () => {
+    const mergeConflict = conflict({
+      availableResolutions: ['manualFieldMerge'],
+      localPayloadSummary: 'not valid json',
+      serverPayloadSummary: JSON.stringify({ displayName: 'Server value' }),
+    });
+    const listCalibrationConflicts = vi
+      .fn()
+      .mockResolvedValue({ conflicts: [mergeConflict] });
+    mount(apiWith({ listCalibrationConflicts }));
+
+    await screen.findByText('Step draft');
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Merge fields manually' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Manual merge is blocked because one or both payload summaries are missing/,
+      ),
+    ).toBeInTheDocument();
+    // The one side that did parse must not be offered as a silently-partial
+    // field set.
+    expect(screen.queryByLabelText('displayName')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Resolve conflict' }),
+    ).toBeDisabled();
+  });
+
   it('shows a resolve error without dropping the conflict from the list', async () => {
     const targetConflict = conflict();
     const listCalibrationConflicts = vi
