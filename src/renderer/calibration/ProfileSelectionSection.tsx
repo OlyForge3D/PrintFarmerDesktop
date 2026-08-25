@@ -34,9 +34,10 @@ export interface ProfileSelectionSnapshot {
   readonly filamentName: string | null;
   /**
    * Guid of the picked base filament — its `sourceProfileId` for the clone
-   * step. Null for a system pick whose Guid the main process could not
-   * resolve (see the option's `disabled` attribute — the operator will not
-   * be able to pick that row from a live dropdown either).
+   * step, when already resolved. Null for a system pick that has never
+   * been imported into PrintFarmer; the option is still selectable (issue
+   * #766), and the wizard resolves the real Guid on demand at clone time
+   * via `calibration:resolveSystemProfile`.
    */
   readonly filamentGuid: string | null;
   /** Origin of the picked base filament, or null when nothing is picked. */
@@ -421,8 +422,7 @@ export function ProfileSelectionSection(
     const readyForClone =
       chosenMachineName !== null &&
       chosenProcessName !== null &&
-      chosenFilamentName !== null &&
-      chosenFilamentGuid !== null;
+      chosenFilamentName !== null;
     onSelectionChange({
       machineName: chosenMachineName,
       processName: chosenProcessName,
@@ -499,12 +499,8 @@ export function ProfileSelectionSection(
                 <option
                   key={profile.name}
                   value={profileOptionValue('system', profile.name)}
-                  disabled={profile.guid === null}
                 >
                   {systemOptionLabel(profile)}
-                  {profile.guid === null
-                    ? ' — identity unresolved; cannot be selected'
-                    : ''}
                 </option>
               ))}
             </optgroup>
@@ -550,12 +546,8 @@ export function ProfileSelectionSection(
                     <option
                       key={profile.name}
                       value={profileOptionValue('system', profile.name)}
-                      disabled={profile.guid === null}
                     >
                       {systemOptionLabel(profile)}
-                      {profile.guid === null
-                        ? ' — identity unresolved; cannot be selected'
-                        : ''}
                     </option>
                   ))}
                 </optgroup>
@@ -592,12 +584,8 @@ export function ProfileSelectionSection(
                   <option
                     key={profile.name}
                     value={profileOptionValue('system', profile.name)}
-                    disabled={profile.guid === null}
                   >
                     {systemOptionLabel(profile)}
-                    {profile.guid === null
-                      ? ' — identity unresolved; cannot be selected'
-                      : ''}
                   </option>
                 ))}
               </optgroup>

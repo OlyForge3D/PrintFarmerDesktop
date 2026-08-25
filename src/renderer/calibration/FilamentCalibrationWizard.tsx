@@ -470,7 +470,7 @@ function FilamentCalibrationWizardInner(
     const { picks, printerId, printerModelId, cloneName } = working;
     if (
       picks === null ||
-      picks.filamentGuid === null ||
+      picks.filamentName === null ||
       cloneName.trim().length === 0 ||
       printerId === null
     ) {
@@ -480,9 +480,45 @@ function FilamentCalibrationWizardInner(
     setBanner(null);
     setWorking((current) => ({ ...current, phase: 'cloning' }));
     try {
+      // The base filament may never have been imported into PrintFarmer
+      // (`picks.filamentGuid === null`) — no longer a dead end (issue #766,
+      // PrintFarmer PR #2008). Resolve its real Guid on demand, right here
+      // at the point it is actually needed, instead of requiring an admin
+      // to have pre-imported it before the operator could even pick it.
+      let sourceProfileId = picks.filamentGuid;
+      if (sourceProfileId === null) {
+        if (printerModelId === null) {
+          setBanner({
+            kind: 'error',
+            title: 'This filament profile could not be resolved.',
+            detail:
+              'The printer has no catalog model association, so its ' +
+              'system profiles cannot be resolved by name.',
+            recovery:
+              'Pick a custom filament profile, or associate this printer ' +
+              'with a catalog model.',
+            reference: null,
+          });
+          setWorking((current) => ({ ...current, phase: 'cloneName' }));
+          return;
+        }
+        const resolution = await calibrationApi().resolveSystemProfile({
+          profileId,
+          printerModelId,
+          profileType: 'filament',
+          profileName: picks.filamentName,
+        });
+        if (unmountedRef.current) return;
+        if (resolution.status === 'error') {
+          setBanner(bannerFromApiError(resolution.error));
+          setWorking((current) => ({ ...current, phase: 'cloneName' }));
+          return;
+        }
+        sourceProfileId = resolution.profileId;
+      }
       const response = await calibrationApi().cloneCalibrationFilamentProfile({
         profileId,
-        sourceProfileId: picks.filamentGuid,
+        sourceProfileId,
         name: cloneName.trim(),
         printerModelId: printerModelId ?? null,
       });
@@ -494,6 +530,14 @@ function FilamentCalibrationWizardInner(
       }
       setWorking((current) => ({
         ...current,
+        // Fold the just-resolved Guid back onto `picks` so the persistence
+        // effect (which reads `picks.filamentGuid`) can save a resumable
+        // record — otherwise a never-imported filament's clone would work
+        // in-session but never survive a restart (issue #766).
+        picks:
+          current.picks === null
+            ? current.picks
+            : { ...current.picks, filamentGuid: sourceProfileId },
         cloneId: response.clone.id,
         cloneName: response.clone.name,
         phase: 'methodPicker',

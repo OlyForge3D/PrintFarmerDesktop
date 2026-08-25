@@ -26,6 +26,13 @@ export type CalibrationApi = Pick<
   | 'listCalibrationProcessProfilesForMachines'
   | 'listCalibrationFilamentProfilesForMachines'
   | 'listCalibrationCustomProfiles'
+  // --- On-demand system profile identity resolution (issue #766) ----------
+  //
+  // A never-imported catalog profile lists with `guid: null` (list endpoints
+  // are unchanged upstream); this resolves-or-imports it by name on demand,
+  // at the point a Guid is actually required (today: the filament clone
+  // step in `FilamentCalibrationWizard`).
+  | 'resolveSystemProfile'
   // --- Filament calibration slice pipeline (Bishop PR #752, PR #1952) -----
   //
   // Consumed by the filament calibration wizard. `submitCalibrationSlice`

@@ -109,6 +109,8 @@ import {
   type CalibrationListFilamentProfilesForMachinesResponse,
   type CalibrationListCustomProfilesRequest,
   type CalibrationListCustomProfilesResponse,
+  type CalibrationResolveSystemProfileRequest,
+  type CalibrationResolveSystemProfileResponse,
   type CalibrationCloneFilamentProfileRequest,
   type CalibrationCloneFilamentProfileResponse,
   type CalibrationSubmitCalibrationSliceRequest,
@@ -500,6 +502,15 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationListCustomProfiles].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationListCustomProfiles,
+        request,
+      ),
+    ),
+  resolveSystemProfile: async (
+    request: CalibrationResolveSystemProfileRequest,
+  ): Promise<CalibrationResolveSystemProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationResolveSystemProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationResolveSystemProfile,
         request,
       ),
     ),

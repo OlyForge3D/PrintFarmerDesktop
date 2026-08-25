@@ -219,6 +219,13 @@ const ROUTES = {
   /** GET — the current user's custom profiles. */
   customProfiles: '/api/slicer/profiles/custom',
   /**
+   * POST — resolve (and auto-import if needed) a single catalog profile's
+   * identity for a printer model, PrintFarmer#2004 / PR #2008. Non-admin —
+   * gated only by `Calibration.Update`, which the desktop already holds.
+   */
+  resolveProfileForModel: (modelId: string) =>
+    `/api/slicer/profiles/resolve-for-model/${encodeURIComponent(modelId)}`,
+  /**
    * GET — printer details, used only to source the catalog
    * `PrinterModel` Guid that `CalibrationCandidateDto` omits from the wire.
    *
@@ -778,6 +785,23 @@ const CloneSingleProfileResponseSchema = z
     name: z.string().min(1).max(512),
     profileType: z.enum(['machine', 'process', 'filament']),
     isSystem: z.literal(false),
+  })
+  .strict();
+
+/**
+ * `ResolveProfileForModelResultDto` (`ProfileResolutionDtos.cs`,
+ * PrintFarmer#2004 / PR #2008). `profileId` is non-null on success (whether
+ * already-imported or freshly auto-imported); null only alongside a
+ * populated `error`.
+ */
+const ResolveProfileForModelResponseSchema = z
+  .object({
+    printerModelId: z.string().uuid(),
+    profileType: z.enum(['Machine', 'Process', 'Filament']),
+    profileName: z.string().min(1).max(512),
+    profileId: z.string().uuid().nullable(),
+    imported: z.boolean(),
+    error: z.string().max(2048).nullable(),
   })
   .strict();
 
@@ -1385,6 +1409,79 @@ export class CalibrationHttpClient {
         );
       }
       return await this.parse(pending, CloneSingleProfileResponseSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `POST /api/slicer/profiles/resolve-for-model/{modelId}` — resolves (and
+   * auto-imports if needed) a single catalog profile's identity by name,
+   * PrintFarmer#2004 / PR #2008. Unlike `cloneSingleProfile`, gated only by
+   * `Calibration.Update` — no `InteractiveSessionRequirement`, so no
+   * `remapInteractiveSession` here. A `status:200` body with a populated
+   * `error` and `profileId: null` (ambiguous name, worker unreachable, model
+   * not found) is a legal response, not an HTTP failure — the caller decides
+   * how to surface it.
+   */
+  async resolveProfileForModel(
+    profileId: string,
+    baseUrl: string,
+    modelId: string,
+    request: {
+      profileType: 'machine' | 'process' | 'filament';
+      profileName: string;
+    },
+    signal: AbortSignal,
+  ): Promise<{
+    profileId: string | null;
+    imported: boolean;
+    error: string | null;
+  }> {
+    // The server's `ProfileResolutionType` enum serializes/parses as its
+    // literal C# member names (`[JsonConverter(typeof(JsonStringEnumConverter))]`
+    // on the enum itself, bypassing the API's global camelCase property
+    // naming policy which only governs property names, not enum values) —
+    // PascalCase, not the lowercase the rest of this desktop's wire uses.
+    const wireProfileType =
+      request.profileType === 'machine'
+        ? 'Machine'
+        : request.profileType === 'process'
+          ? 'Process'
+          : 'Filament';
+    const body = JSON.stringify({
+      profileType: wireProfileType,
+      profileName: request.profileName,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.resolveProfileForModel(modelId),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      const parsed = await this.parse(
+        pending,
+        ResolveProfileForModelResponseSchema,
+      );
+      return {
+        profileId: parsed.profileId,
+        imported: parsed.imported,
+        error: parsed.error,
+      };
     } finally {
       pending.dispose();
     }

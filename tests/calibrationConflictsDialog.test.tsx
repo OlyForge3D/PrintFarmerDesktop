@@ -57,6 +57,7 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
     listCalibrationProcessProfilesForMachines: vi.fn(),
     listCalibrationFilamentProfilesForMachines: vi.fn(),
     listCalibrationCustomProfiles: vi.fn(),
+    resolveSystemProfile: vi.fn(),
     cloneCalibrationFilamentProfile: vi.fn(),
     submitCalibrationSlice: vi.fn(),
     getCalibrationSliceJobStatus: vi.fn(),
