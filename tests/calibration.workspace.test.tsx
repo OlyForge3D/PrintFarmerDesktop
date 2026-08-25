@@ -538,6 +538,7 @@ function makeApi(savedRecord = record()) {
         machineProfiles: [],
         processProfiles: [],
         filamentProfiles: [],
+        profilesTruncated: false,
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
     listCalibrationMachineProfilesForModel: vi
@@ -546,6 +547,7 @@ function makeApi(savedRecord = record()) {
         status: 'ok',
         profiles: [],
         noModelAlias: false,
+        profilesTruncated: false,
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
     listCalibrationProcessProfilesForMachines: vi
@@ -553,6 +555,7 @@ function makeApi(savedRecord = record()) {
       .mockResolvedValue({
         status: 'ok',
         profiles: [],
+        profilesTruncated: false,
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
     listCalibrationFilamentProfilesForMachines: vi
@@ -560,6 +563,7 @@ function makeApi(savedRecord = record()) {
       .mockResolvedValue({
         status: 'ok',
         profiles: [],
+        profilesTruncated: false,
         fetchedAt: '2026-01-01T00:00:00.000Z',
       }),
     listCalibrationCustomProfiles: vi

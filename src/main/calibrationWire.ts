@@ -21,6 +21,7 @@ import {
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
   CALIBRATION_MAX_PRINTER_CANDIDATES,
+  CALIBRATION_MAX_PROFILE_LIST,
   OrcaProfileEntry,
   UNRECOGNIZED_CALIBRATION_INPUT,
   UNRECOGNIZED_CALIBRATION_REASON_CODE,
@@ -261,6 +262,13 @@ const CALIBRATION_MAX_WIRE_STRING = 512;
  * runs, so a runaway list costs a slice rather than tens of thousands of
  * validations, and the ceiling is high enough above the per-printer cap that
  * "was this cut?" is still answerable afterwards.
+ *
+ * This ceiling is sized for small per-printer lists (missing inputs,
+ * rejection reasons, a filament's compatible-printer names) and must not be
+ * reused for a farm-wide catalog list: `/extended` uses its own, much higher
+ * {@link CALIBRATION_MAX_PROFILE_LIST} instead, because this cap silently
+ * dropping rows past it fed a per-profile identity lookup rather than a
+ * display list — see the `/extended` schema below.
  */
 const WIRE_LIST_CEILING = 1024;
 
@@ -2968,8 +2976,6 @@ export type RemoteQueueSubscriptionResources = z.infer<
 
 /** Length ceiling for a single profile name string. Name is identity for system profiles. */
 const MAX_PROFILE_NAME_LEN = 512;
-/** Cap on the number of profiles returned by any single listing endpoint. */
-const MAX_PROFILE_LIST = 2048;
 
 /**
  * `MachineProfileDto` — the OrcaSlicer worker's authoritative machine profile.
@@ -3178,23 +3184,68 @@ export type RemoteExtendedProfileEntry = z.infer<
 >;
 
 /**
+ * `/extended` is the sole Guid source for system profiles: three IPC
+ * handlers (`for-model`, process/filament `for-machines`) build a
+ * name→Guid identity map off this list and null out anything missing from
+ * it. `boundedWireList`'s shared {@link WIRE_LIST_CEILING} of 1024 is sized
+ * for small per-printer lists (missing inputs, rejection reasons); reusing it
+ * here silently dropped every profile past row 1024 from the identity map, so
+ * an imported profile past the cut looked identical to one that was never
+ * imported at all — a data-correctness bug, not a display truncation.
+ *
+ * `/extended` therefore gets its own ceiling, decoupled from
+ * {@link WIRE_LIST_CEILING} and set high enough that no real catalog is
+ * expected to reach it. Truncation is still possible in principle (a
+ * catalog can always grow), so it is derived from the raw wire length
+ * *before* slicing and reported as `truncated`, mirroring the
+ * `printersTruncated` precedent this file already established for
+ * `/calibration-candidates`. Each row is validated independently (as
+ * `boundedCandidateList` does) so one malformed row cannot take the rest of
+ * the catalog down with it.
+ *
+ * The ceiling is {@link CALIBRATION_MAX_PROFILE_LIST}, shared with (not
+ * merely mirrored from) the IPC response schema in `src/shared/ipc.ts` — see
+ * that constant's doc comment for why #767 requires these to be the exact
+ * same value rather than two numbers that happen to agree today.
+ */
+
+function boundedProfileList<T extends z.ZodTypeAny>(
+  element: T,
+  ceiling: number,
+) {
+  return z
+    .array(z.unknown())
+    .nullish()
+    .transform((raw) => {
+      const items = raw ?? [];
+      const considered = items.slice(0, ceiling);
+      const profiles: z.infer<T>[] = [];
+      for (const item of considered) {
+        const parsed = element.safeParse(item);
+        if (parsed.success) {
+          profiles.push(parsed.data as z.infer<T>);
+        }
+      }
+      return { profiles, truncated: items.length > ceiling };
+    });
+}
+
+/**
  * The extended list may be shaped as either a flat array or as
  * `{ profiles: [...] }`. Accept both; normalise to a flat array downstream.
  */
-export const RemoteExtendedProfilesResponse = z
-  .union([
-    z
-      .object({
-        profiles: boundedWireList(RemoteExtendedProfileEntry),
-      })
-      .passthrough(),
-    boundedWireList(RemoteExtendedProfileEntry).transform((profiles) => ({
-      profiles,
-    })),
-  ])
-  .transform((v) => ({
-    profiles: (v.profiles ?? []).slice(0, MAX_PROFILE_LIST),
-  }));
+export const RemoteExtendedProfilesResponse = z.union([
+  z
+    .object({
+      profiles: boundedProfileList(
+        RemoteExtendedProfileEntry,
+        CALIBRATION_MAX_PROFILE_LIST,
+      ),
+    })
+    .passthrough()
+    .transform((v) => v.profiles),
+  boundedProfileList(RemoteExtendedProfileEntry, CALIBRATION_MAX_PROFILE_LIST),
+]);
 export type RemoteExtendedProfilesResponse = z.infer<
   typeof RemoteExtendedProfilesResponse
 >;
@@ -3243,7 +3294,7 @@ export const RemoteCustomProfilesList = z
     })),
   ])
   .transform((v) => ({
-    profiles: (v.profiles ?? []).slice(0, MAX_PROFILE_LIST),
+    profiles: v.profiles ?? [],
   }));
 export type RemoteCustomProfilesList = z.infer<typeof RemoteCustomProfilesList>;
 

@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 5 as const;
+export const IPC_CONTRACT_VERSION = 6 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -5580,8 +5580,19 @@ export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 
 /** Longest single profile name string carried over the desktop IPC boundary. */
 const CALIBRATION_MAX_PROFILE_NAME = 512;
-/** Cap on the number of profiles the main process forwards to the renderer. */
-const CALIBRATION_MAX_PROFILE_LIST = 2048;
+/**
+ * Cap on the number of profiles the main process forwards to the renderer,
+ * per profile-type bucket. Shared by the wire schema
+ * (`RemoteExtendedProfilesResponse` in `calibrationWire.ts`, which imports
+ * this constant directly rather than defining its own) and this IPC schema
+ * deliberately — see #767, where the wire ceiling was raised independently
+ * of this one and a catalog with more than 2048 machine (or process, or
+ * filament) profiles parsed fine off the filament) profiles parsed fine off the
+ * network and then threw here on the way to the renderer, turning a
+ * `profilesTruncated: true` response into a hard error instead. Two bounds
+ * that must agree should be one bound.
+ */
+export const CALIBRATION_MAX_PROFILE_LIST = 10_000;
 /** Cap on the number of machine names the renderer may pass to /for-machines. */
 const CALIBRATION_MAX_MACHINE_FILTER = 64;
 
@@ -5640,6 +5651,13 @@ export const CalibrationListExtendedProfilesResponse = z.discriminatedUnion(
         filamentProfiles: z
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
+        /**
+         * True when `/extended` had more rows than this client's catalog
+         * ceiling and some were dropped. Mirrors `printersTruncated` on the
+         * calibration-candidates contract: derived from the raw wire length
+         * before slicing, never trusted from the payload.
+         */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
@@ -5681,6 +5699,13 @@ export const CalibrationListMachineProfilesForModelResponse =
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
         noModelAlias: z.boolean(),
+        /**
+         * True when the `/extended` join used to resolve these Guids had
+         * more rows than this client's catalog ceiling and some were
+         * dropped. `false` (never omitted) when no `/extended` fetch ran,
+         * e.g. the no-model-alias short-circuit below.
+         */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
@@ -5715,6 +5740,8 @@ export const CalibrationListProcessProfilesForMachinesResponse =
         profiles: z
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
+        /** See `profilesTruncated` on `CalibrationListMachineProfilesForModelResponse`. */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
@@ -5749,6 +5776,8 @@ export const CalibrationListFilamentProfilesForMachinesResponse =
         profiles: z
           .array(CalibrationSlicerProfileRef)
           .max(CALIBRATION_MAX_PROFILE_LIST),
+        /** See `profilesTruncated` on `CalibrationListMachineProfilesForModelResponse`. */
+        profilesTruncated: z.boolean(),
         fetchedAt: z.string().datetime(),
       })
       .strict(),
