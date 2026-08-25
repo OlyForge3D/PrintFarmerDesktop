@@ -4,15 +4,17 @@
  * Printer-first selection behaviour, driven through the real store and the real
  * wizard component.
  *
- * Only the preload bridge is replaced. The store, the reducer, the eligibility
- * rules and the component tree are the production ones, because every claim here
- * is about *when* a request is issued and *which* reply is allowed to land —
- * properties that live in the wiring and disappear the moment the store is
- * stubbed out.
+ * SKIPPED under #756: this whole suite exercised the printer-calibration
+ * saga's "New calibration project" wizard flow. That surface -- the New
+ * Calibration Project button, the printer-selection step's "which printer
+ * is eligible" copy, the up-front eligibility scan -- was removed with the
+ * saga renderers in this PR. Filament calibration has no printer-selection
+ * step of its own; every enabled non-maintenance printer is a candidate under
+ * Path D. The printer-list resilience it audits still exists at the transport
+ * (`calibrationWire.transformPrintersList`) and is covered directly there.
  *
- * The strongest assertions in this file are negative: that nothing was fetched.
- * A test that only checked the rendered result would pass just as well against
- * the eager farm-wide load this replaced.
+ * Kept as skipped rather than deleted so the contract is legible in git
+ * history if a printer-selection step is ever reintroduced.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -256,7 +258,7 @@ async function settle() {
 
 afterEach(cleanup);
 
-describe('nothing per-printer is fetched before the operator chooses', () => {
+describe.skip('nothing per-printer is fetched before the operator chooses', () => {
   it('says the list is partial when the server offered more printers than it carries', async () => {
     // Carried over from the candidate-truncation work and re-anchored here,
     // because printer-first moved this notice into the selection step. Without
@@ -331,7 +333,7 @@ describe('nothing per-printer is fetched before the operator chooses', () => {
   });
 });
 
-describe('activation fetches exactly one printer', () => {
+describe.skip('activation fetches exactly one printer', () => {
   it('reads one context and one profile set for the chosen printer only', async () => {
     const api = await openWizard(renderWizard());
     fireEvent.click(screen.getByRole('radio', { name: /Voron in bay one/ }));
@@ -370,7 +372,7 @@ describe('activation fetches exactly one printer', () => {
   });
 });
 
-describe('a reply may never populate a printer it is not about', () => {
+describe.skip('a reply may never populate a printer it is not about', () => {
   it('discards a slow reply for A once B has been chosen', async () => {
     const api = makeApi();
     const slowA = deferred<Record<string, unknown>>();
@@ -473,7 +475,7 @@ describe('a reply may never populate a printer it is not about', () => {
   });
 });
 
-describe('failure is scoped to the printer it is about', () => {
+describe.skip('failure is scoped to the printer it is about', () => {
   it('keeps the printer list when a context read fails', async () => {
     const api = makeApi();
     api.getCalibrationPrinterContext.mockRejectedValue(
@@ -511,37 +513,19 @@ describe('failure is scoped to the printer it is about', () => {
     ).toBeInTheDocument();
   });
 
-  it('lets an ineligible printer explain itself without allowing continuation', async () => {
-    const api = makeApi([
-      candidate(PRINTER_A, 'Voron in bay one', false),
-      candidate(PRINTER_B, 'Voron in bay two'),
-    ]);
-    await openWizard(renderWizard(api));
-    fireEvent.click(screen.getByRole('radio', { name: /Voron in bay one/ }));
-    await settle();
-
-    // Selectable, so the reasons can be read...
-    expect(screen.getByText(/cannot be calibrated yet/i)).toBeInTheDocument();
-    // ...but not continuable, so inspecting a refusal never risks acting on it,
-    // and nothing was fetched for it.
-    expect(
-      screen.getByRole('button', { name: 'Continue with this printer' }),
-    ).toBeDisabled();
-    expect(api.getCalibrationPrinterContext).not.toHaveBeenCalled();
+  it.skip('lets an ineligible printer explain itself without allowing continuation (Path D: ineligibility retired)', async () => {
+    // `#1943` retired the per-candidate `rejectionReasonCodes`/`eligibility`
+    // block that produced the "cannot be calibrated yet" copy and drove the
+    // Continue-button disabled state. Under Path D every printer is a
+    // candidate, so there is no ineligibility to explain. Kept skipped so
+    // the intent survives if per-printer eligibility is ever restored.
   });
 
-  it('says so when every available printer is ineligible', async () => {
-    const api = makeApi([
-      candidate(PRINTER_A, 'Voron in bay one', false),
-      candidate(PRINTER_B, 'Voron in bay two', false),
-    ]);
-    await openWizard(renderWizard(api));
-    // Deliberately different from "no printers": the farm has printers and the
-    // account can see them, so telling the operator to add hardware they
-    // already own would be wrong.
-    expect(
-      screen.getByText(/is currently eligible for calibration/i),
-    ).toBeInTheDocument();
+  it.skip('says so when every available printer is ineligible (Path D: ineligibility retired)', async () => {
+    // Same reasoning as above: `#1943` retired per-candidate eligibility, so
+    // "no printer is currently eligible" is not producible copy under
+    // Path D. If every-candidate-ineligible messaging is wanted again,
+    // restore the eligibility carrier and re-enable this test.
   });
 
   it('refuses a selection whose context carries no configuration revision', async () => {
@@ -566,7 +550,7 @@ describe('failure is scoped to the printer it is about', () => {
   });
 });
 
-describe('accessibility of the selection step', () => {
+describe.skip('accessibility of the selection step', () => {
   it('exposes the printer choice as a labelled radio group', async () => {
     await openWizard(renderWizard());
     const group = screen.getByRole('radiogroup', {
@@ -609,15 +593,10 @@ describe('accessibility of the selection step', () => {
     await settle();
   });
 
-  it('moves focus to the reasons when a chosen printer is refused', async () => {
-    const api = makeApi([candidate(PRINTER_A, 'Voron in bay one', false)]);
-    await openWizard(renderWizard(api));
-    fireEvent.click(screen.getByRole('radio', { name: /Voron in bay one/ }));
-    await settle();
-    // The reasons are what the operator needs next, so they must be reachable
-    // and focusable rather than left behind the activation point.
-    const reasons = document.getElementById('candidate-eligibility');
-    expect(reasons).toBeInTheDocument();
-    expect(reasons?.getAttribute('tabindex')).toBe('-1');
+  it.skip('moves focus to the reasons when a chosen printer is refused (Path D: ineligibility retired)', async () => {
+    // The `candidate-eligibility` region rendered per-candidate rejection
+    // reasons pulled from the retired `rejectionReasonCodes` block. Under
+    // Path D there are no reasons to focus, so the region is not emitted.
+    // Restore this test if per-candidate eligibility explanations return.
   });
 });

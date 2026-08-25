@@ -235,6 +235,7 @@ function register(profiles: ServerProfileService): Map<string, Handler> {
     loadScene: () => Promise.resolve({}),
     initialize: () => Promise.resolve(),
     adoptRecipe: () => Promise.resolve(),
+    purge: () => Promise.resolve(),
     dispose: () => undefined,
   };
   const approvals = {

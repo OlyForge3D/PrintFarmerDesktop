@@ -211,20 +211,7 @@ function refusedButRealPrinter(
     displayName,
     printerModel: 'Klipper machine',
     printerModelId: null,
-    firmwareCompatible: false,
-    orcaProfileId: null,
     isOnline: true,
-    updatedAt: now,
-    evaluationScope: 'preliminary' as const,
-    rejectionReasonCodes: [
-      'machine_profile_missing',
-      'process_profile_missing',
-      'filament_profile_missing',
-      'nozzle_diameter_missing',
-      'nozzle_material_missing',
-    ],
-    missingInputs: [],
-    eligibility: null,
   };
 }
 
@@ -337,8 +324,6 @@ function profileSelectionApi(): CalibrationApi {
       printersUnreadable: 0,
       printersTruncated: false,
     }),
-    listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
-    resolveCalibrationConflict: vi.fn(),
     syncCalibrationNow: vi.fn().mockResolvedValue({
       phase: 'succeeded',
       profileId,
@@ -349,33 +334,7 @@ function profileSelectionApi(): CalibrationApi {
       cursor: null,
       error: null,
     }),
-    openCalibrationPhoto: vi.fn().mockResolvedValue(null),
-    stageCalibrationPhoto: vi.fn(),
-    generateOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('generateOrcaProfile')),
     exportOrcaProfile: vi.fn().mockResolvedValue({ status: 'canceled' }),
-    installOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('installOrcaProfile')),
-    restoreOrcaProfile: vi
-      .fn()
-      .mockResolvedValue(notImplemented('restoreOrcaProfile')),
-    startCalibrationGeneration: vi
-      .fn()
-      .mockResolvedValue(notImplemented('startCalibrationGeneration')),
-    getCalibrationOrchestrationStatus: vi
-      .fn()
-      .mockResolvedValue(notImplemented('getCalibrationOrchestrationStatus')),
-    getCalibrationQueueState: vi
-      .fn()
-      .mockResolvedValue(notImplemented('getCalibrationQueueState')),
-    acknowledgeCalibrationBedClear: vi
-      .fn()
-      .mockResolvedValue(notImplemented('acknowledgeCalibrationBedClear')),
-    startCalibrationPrint: vi
-      .fn()
-      .mockResolvedValue(notImplemented('startCalibrationPrint')),
     pollCalibrationQueueChanges: vi
       .fn()
       .mockResolvedValue(notImplemented('pollCalibrationQueueChanges')),
@@ -572,7 +531,10 @@ afterEach(() => vi.useRealTimers());
  * cascade is missing. Every proposition is expected to FAIL today; when
  * each flips green, the corresponding part of the flow genuinely works.
  */
-describe('CalibrationWorkspace profile-selection flow (owner directive 2026-08-22)', () => {
+describe.skip('CalibrationWorkspace profile-selection flow (owner directive 2026-08-22)', () => {
+  // Skipped under #756: exercises the saga's "New calibration project"
+  // wizard's profile-selection step. That wizard was removed. The filament
+  // wizard's profile-selection has dedicated coverage.
   it('picking a printer reveals a machine-profile selector to the operator', async () => {
     // The owner directive: after picking a printer, PFD requests machine
     // profiles from the API. Concretely (api-contract report §A.1):
@@ -825,7 +787,7 @@ describe('CalibrationWorkspace profile-selection flow (owner directive 2026-08-2
  * filter code path has nothing to run yet. That is the correct
  * signal.
  */
-describe('custom-profile applicability filter (server vs client asymmetry)', () => {
+describe.skip('custom-profile applicability filter (server vs client asymmetry)', () => {
   it('a custom filament whose compatible_printers does NOT include the chosen machine is excluded from the filament dropdown', async () => {
     mountWorkspace();
     await openWizardAndPickPrinter();
@@ -1012,7 +974,7 @@ describe('custom-profile applicability filter (server vs client asymmetry)', () 
  * bubbling up. That is a hybrid strategy: the internal-call assertion
  * is a belt over the observable-outcome suspenders.
  */
-describe('eligibility ordering: the machine selector is offered BEFORE server eligibility is checked', () => {
+describe.skip('eligibility ordering: the machine selector is offered BEFORE server eligibility is checked', () => {
   it('picking a refused printer does NOT trigger an up-front getCalibrationPrinterContext call', async () => {
     // The API stub above rejects `getCalibrationPrinterContext` with a
     // pointed message about the flow. If the wizard calls it before

@@ -241,24 +241,11 @@ describe('CalibrationPrinterCandidate schema', () => {
       printerId: PRINTER_ID,
       displayName: 'Klipper Printer',
       printerModel: null,
-      firmwareCompatible: true,
-      orcaProfileId: 'orca-pla',
+      printerModelId: null,
       isOnline: true,
-      updatedAt: NOW,
-      eligibility: {
-        firmwareFamily: 'Klipper',
-        gcodeDialect: 'Klipper',
-        slicerFamily: 'OrcaSlicer',
-        slicerDistribution: 'upstream',
-        slicerIdentity: 'OrcaSlicer',
-        hardwareContextComplete: true,
-        safetyContextComplete: true,
-        permissionsComplete: true,
-        reasons: [],
-      },
     });
     expect(result.printerId).toBe(PRINTER_ID);
-    expect(result.firmwareCompatible).toBe(true);
+    expect(result.isOnline).toBe(true);
   });
 
   it('rejects extra renderer-injected fields (strict)', () => {
@@ -267,10 +254,8 @@ describe('CalibrationPrinterCandidate schema', () => {
         printerId: PRINTER_ID,
         displayName: 'Printer',
         printerModel: null,
-        firmwareCompatible: true,
-        orcaProfileId: null,
+        printerModelId: null,
         isOnline: false,
-        updatedAt: NOW,
         rendererPath: '/etc/passwd',
       }),
     ).toThrow();
@@ -753,28 +738,15 @@ describe('CalibrationApiError schema (typed HTTP error states)', () => {
 // IPC schema registry — calibration channels registered
 // ==========================================================================
 
+// Retained under #756: only the non-saga channels remain testable after the saga IPC reap.
 describe('ipcSchemas calibration channel registry', () => {
   const calibrationChannels = [
-    IpcChannel.OpenCalibrationPhoto,
     IpcChannel.CalibrationGetAvailability,
     IpcChannel.CalibrationListPrinters,
     IpcChannel.CalibrationGetPrinterContext,
-    IpcChannel.CalibrationListProjects,
-    IpcChannel.CalibrationGetProject,
-    IpcChannel.CalibrationSaveDraft,
-    IpcChannel.CalibrationListAttempts,
-    IpcChannel.CalibrationGetAttempt,
-    IpcChannel.CalibrationStagePhoto,
-    IpcChannel.CalibrationListConflicts,
-    IpcChannel.CalibrationResolveConflict,
     IpcChannel.CalibrationSyncNow,
-    IpcChannel.CalibrationStartGeneration,
-    IpcChannel.CalibrationGetQueueState,
-    IpcChannel.CalibrationAcknowledgeBedClear,
-    IpcChannel.CalibrationStartPrint,
     IpcChannel.CalibrationListOrcaProfiles,
     IpcChannel.CalibrationExportOrcaProfile,
-    IpcChannel.CalibrationImportLegacyBackupV4,
   ] as const;
 
   for (const channel of calibrationChannels) {
@@ -833,72 +805,6 @@ describe('ipcSchemas calibration channel registry', () => {
     ).toThrow();
   });
 
-  it('OpenCalibrationPhoto returns only an opaque nullable approval', () => {
-    expect(
-      ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse({
-        approvalId: ATTEMPT_UUID,
-      }),
-    ).toEqual({ approvalId: ATTEMPT_UUID });
-    expect(() =>
-      ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse({
-        approvalId: ATTEMPT_UUID,
-        path: 'C:\\private\\photo.png',
-      }),
-    ).toThrow();
-  });
-
-  it('CalibrationStagePhoto rejects renderer-supplied file path', () => {
-    // The request schema uses approvalId (UUID) not a raw file path
-    expect(() =>
-      ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse({
-        profileId: PROFILE_UUID,
-        projectId: PROJECT_UUID,
-        stageId: 'temperature',
-        attemptId: ATTEMPT_UUID,
-        path: 'C:\\Users\\user\\Desktop\\photo.jpg', // Not allowed
-        photoId: ATTEMPT_UUID,
-      }),
-    ).toThrow();
-  });
-
-  it('CalibrationStagePhoto accepts approvalId (UUID)', () => {
-    const result = ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse({
-      profileId: PROFILE_UUID,
-      projectId: PROJECT_UUID,
-      stageId: 'temperature',
-      attemptId: ATTEMPT_UUID,
-      approvalId: ATTEMPT_UUID, // Opaque UUID from dialog
-      photoId: ATTEMPT_UUID,
-      caption: 'Flow sample',
-      order: 1,
-    });
-    expect(result.approvalId).toBe(ATTEMPT_UUID);
-  });
-
-  it('CalibrationStagePhoto response never exposes a local path', () => {
-    expect(() =>
-      ipcSchemas[IpcChannel.CalibrationStagePhoto].response.parse({
-        photoId: ATTEMPT_UUID,
-        attemptId: ATTEMPT_UUID,
-        stageId: 'temperature',
-        projectId: PROJECT_UUID,
-        profileId: PROFILE_UUID,
-        contentHash: SHA256,
-        mimeType: 'image/jpeg',
-        byteSize: 1024,
-        status: 'staged',
-        uploadAttempts: 0,
-        remotePhotoId: null,
-        remoteUrl: null,
-        stagedAt: NOW,
-        uploadedAt: null,
-        caption: 'Flow sample',
-        order: 1,
-        localPath: 'C:\\private\\calibration-photo.png',
-      }),
-    ).toThrow();
-  });
-
   it('CalibrationListOrcaProfiles requires a selected printer as well as the profile fence', () => {
     const printerId = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
     expect(
@@ -917,38 +823,6 @@ describe('ipcSchemas calibration channel registry', () => {
     expect(() =>
       ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].request.parse({}),
     ).toThrow();
-  });
-
-  it('CalibrationResolveConflict rejects invalid resolution strategy', () => {
-    expect(() =>
-      ipcSchemas[IpcChannel.CalibrationResolveConflict].request.parse({
-        profileId: PROFILE_UUID,
-        conflictId: ATTEMPT_UUID,
-        resolution: 'lastWriteWins', // Not valid
-      }),
-    ).toThrow();
-  });
-
-  it('CalibrationImportLegacyBackupV4 rejects raw file path from renderer', () => {
-    expect(() =>
-      ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].request.parse({
-        profileId: PROFILE_UUID,
-        path: 'C:\\backup.zip', // Not allowed
-        operationId: ATTEMPT_UUID,
-      }),
-    ).toThrow();
-  });
-
-  it('CalibrationImportLegacyBackupV4 accepts approvalId from dialog', () => {
-    const result = ipcSchemas[
-      IpcChannel.CalibrationImportLegacyBackupV4
-    ].request.parse({
-      profileId: PROFILE_UUID,
-      approvalId: ATTEMPT_UUID,
-      operationId: ATTEMPT_UUID,
-      printerMappings: [],
-    });
-    expect(result.approvalId).toBe(ATTEMPT_UUID);
   });
 });
 
@@ -1000,44 +874,4 @@ describe('additive compatibility (remote DTOs accept extra fields)', () => {
 // Generation/queue/bed-clear/print-start disabled semantics
 // ==========================================================================
 
-describe('generation/queue disabled states parse correctly', () => {
-  it('CalibrationStartGeneration syncRequired error parses', () => {
-    const result = ipcSchemas[
-      IpcChannel.CalibrationStartGeneration
-    ].response.parse({
-      status: 'error',
-      error: {
-        code: 'syncRequired',
-        message: 'Sync required.',
-        retryable: false,
-        retryAfterSeconds: null,
-        reference: null,
-      },
-    });
-    expect(result.status).toBe('error');
-  });
-
-  it('CalibrationStartGeneration ok state parses with orchestrationId', () => {
-    const result = ipcSchemas[
-      IpcChannel.CalibrationStartGeneration
-    ].response.parse({
-      status: 'submitted',
-      orchestrationId: ATTEMPT_UUID,
-    });
-    expect(result.status).toBe('submitted');
-  });
-
-  it('CalibrationStartPrint printerContextStale error parses', () => {
-    const result = ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
-      status: 'error',
-      error: {
-        code: 'printerContextStale',
-        message: 'Printer context is stale.',
-        retryable: false,
-        retryAfterSeconds: null,
-        reference: null,
-      },
-    });
-    expect(result.status).toBe('error');
-  });
-});
+// Removed under #756: `CalibrationStartGeneration`/`CalibrationStartPrint` were reaped with the printer-calibration saga in this PR.

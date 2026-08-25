@@ -25,9 +25,8 @@
  * That is what this harness reproduces.
  *
  * A harness that stops at the 202 has the same self-referential defect
- * Round 2 diagnosed in `calibrationServerContractParity.test.ts`: it asserts
- * against a claim the desktop makes, not against the destination the claim
- * is about. The emulator poll is deliberate.
+ * as an assertion against the desktop's own claim rather than against the
+ * destination the claim is about. The emulator poll is deliberate.
  *
  * PREREQUISITE — SEED
  * -------------------

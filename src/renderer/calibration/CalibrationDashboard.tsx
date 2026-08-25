@@ -1,13 +1,9 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
-import { formatTimestamp } from './workspaceTypes';
-import { ImportLegacyBackup } from './ImportLegacyBackup';
-import { browserCalibrationEnvironment } from './api';
-import { CalibrationConflictDialog } from './CalibrationConflictDialog';
 
 const availabilityCopy = {
   serverVersionTooLow:
-    'Update the selected PrintFarmer server before creating a calibration.',
+    'Update the selected PrintFarmer server before calibrating a filament spool.',
   missingScopes:
     'The selected profile does not have every required calibration permission. Ask a PrintFarmer administrator to grant calibration read, write, generation, and print permissions to this profile.',
   unsupportedFirmware:
@@ -17,7 +13,7 @@ const availabilityCopy = {
   missingCapabilityFlags:
     'One or more required calibration capabilities are disabled. Ask a PrintFarmer administrator to enable the calibration capabilities for this server, then refresh this workspace.',
   operatorDisabled:
-    'Printer Calibration was disabled by the server operator. Ask the server operator to re-enable Printer Calibration, then refresh this workspace.',
+    'Filament calibration was disabled by the server operator. Ask the server operator to re-enable calibration, then refresh this workspace.',
   legacyServer:
     'This profile points to a server without the calibration API. Select a profile for a PrintFarmer server that exposes the calibration API, or upgrade that server.',
   sessionExpired:
@@ -25,20 +21,27 @@ const availabilityCopy = {
   noProfile: 'Select a PrintFarmer profile to continue.',
 } as const;
 
+/**
+ * Filament calibration landing page.
+ *
+ * The old dashboard was the printer-calibration saga's shell: it led with a
+ * "New calibration project" primary button (that saga), and its summary
+ * strip, saved-project list, conflict/queue tiles, backup-import flow, and
+ * profile-sync panel were all state produced by the same saga. Filament
+ * calibration (the feature this project actually serves — see
+ * `.squad/decisions/inbox/vasquez-filament-calibration-reframe.md`) does
+ * not produce any of that state and drives none of those tiles, so keeping
+ * them meant the operator opened the calibration page and was led into the
+ * wrong feature (`OlyForge3D/PrintFarmerDesktop#756`).
+ *
+ * Under Path D the surviving action is a single primary entry point into
+ * the filament-spool wizard. Availability, profile identity, and
+ * connection state are still surfaced because the wizard depends on them,
+ * but they are read-only signals here — the "sync and retry" / "manage
+ * conflicts" / "import backup" affordances belonged to the retired saga.
+ */
 export function CalibrationDashboard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
-  const [showImport, setShowImport] = useState(false);
-  const [showConflicts, setShowConflicts] = useState(false);
-  const conflictProfileId = store.profileId;
-  const active = store.records.filter(
-    (record) => record.status !== 'complete' && record.status !== 'archived',
-  );
-  const completed = store.records.filter(
-    (record) => record.status === 'complete',
-  );
-  const pending = store.records.filter((record) => !record.isSynced);
-  const conflicts = store.records.filter((record) => record.hasConflicts);
-  const stale = store.records.filter((record) => !record.isPrinterContextFresh);
   const unavailableReason = store.availability?.unavailableReason;
   const creationBlocked =
     store.profileId === null ||
@@ -46,12 +49,12 @@ export function CalibrationDashboard(): React.JSX.Element {
     store.availability?.available !== true ||
     store.disabled;
 
-  let recovery = 'Calibration is ready.';
+  let recovery = 'Filament calibration is ready.';
   if (store.profileId === null)
     recovery = 'Select or create a PrintFarmer profile.';
   else if (store.offline)
     recovery =
-      'Reconnect to PrintFarmer to create a project. Existing projects remain editable offline.';
+      'Reconnect to PrintFarmer to calibrate a filament spool. The wizard needs a live connection to clone profiles and dispatch slices.';
   else if (store.availability?.available !== true)
     recovery =
       store.availability?.unavailableDetail ??
@@ -67,11 +70,12 @@ export function CalibrationDashboard(): React.JSX.Element {
       <header className="cal-view-heading">
         <div>
           <h1 id="cal-dashboard-title" data-cal-heading tabIndex={-1}>
-            Printer Calibration
+            Filament Calibration
           </h1>
           <p className="cal-subtitle">
-            Guided, traceable tuning bound to one explicit printer, tool,
-            nozzle, material, and base profile.
+            Tune a filament spool using the OrcaSlicer wiki workflow: clone the
+            profile, run a slice, print it, measure the result, and write the
+            corrected value back to the cloned profile.
           </p>
         </div>
         <div className="cal-actions">
@@ -86,44 +90,24 @@ export function CalibrationDashboard(): React.JSX.Element {
           <button
             type="button"
             className="cal-button cal-button--primary"
-            onClick={() => void store.navigate('newProject')}
-            disabled={creationBlocked}
-            aria-describedby="new-project-gate"
-          >
-            New calibration project
-          </button>
-          <button
-            type="button"
-            className="cal-button"
             onClick={() => void store.navigate('filamentCalibration')}
-            disabled={
-              store.profileId === null || store.offline || store.disabled
-            }
-            aria-describedby="new-project-gate"
+            disabled={creationBlocked}
+            aria-describedby="filament-cal-gate"
           >
             Calibrate a filament spool
-          </button>
-          <button
-            type="button"
-            className="cal-button"
-            onClick={() => setShowImport(true)}
-            disabled={store.profileId === null || store.disabled}
-            aria-label="Import a legacy calibration backup file"
-          >
-            Import backup…
           </button>
         </div>
       </header>
 
       <p
-        id="new-project-gate"
+        id="filament-cal-gate"
         className={creationBlocked ? 'cal-gate-copy' : 'cal-visually-hidden'}
       >
         {recovery}
       </p>
 
       {store.loading ? (
-        <p role="status">Loading saved calibration projects.</p>
+        <p role="status">Confirming calibration availability.</p>
       ) : null}
       {store.error ? (
         <div className="cal-alert" role="alert">
@@ -139,9 +123,8 @@ export function CalibrationDashboard(): React.JSX.Element {
       ) : null}
       {store.offline ? (
         <p className="cal-alert cal-alert--warning" role="alert">
-          Offline: saved projects can be edited and queued locally.
-          Synchronization and hardware actions are blocked. Reconnect to
-          PrintFarmer, then select Sync and retry to restore hardware actions.
+          Offline: filament calibration requires a live PrintFarmer connection.
+          Reconnect to PrintFarmer to start the wizard.
         </p>
       ) : null}
       {store.availability?.unavailableReason === 'missingScopes' ? (
@@ -156,265 +139,55 @@ export function CalibrationDashboard(): React.JSX.Element {
       unavailableReason !== null &&
       unavailableReason !== 'missingScopes' ? (
         <p className="cal-alert cal-alert--warning" role="alert">
-          Calibration is unavailable on this PrintFarmer server.{' '}
+          Filament calibration is unavailable on this PrintFarmer server.{' '}
           {store.availability?.unavailableDetail ??
             availabilityCopy[unavailableReason]}
         </p>
       ) : null}
 
       <section
-        className="cal-summary-strip"
-        aria-label="Calibration project summary"
+        className="cal-pane cal-detail-pane"
+        aria-labelledby="cal-connection-title"
       >
-        <div>
-          <strong>{active.length}</strong>
-          <span>Active</span>
-        </div>
-        <div>
-          <strong>{completed.length}</strong>
-          <span>Completed</span>
-        </div>
-        <div>
-          <strong>{pending.length}</strong>
-          <span>Queued locally</span>
-        </div>
-        <div>
-          <strong>{conflicts.length}</strong>
-          <span>Conflicts</span>
+        <h2 id="cal-connection-title">Profile and connection</h2>
+        <dl className="cal-definition-list">
+          <div>
+            <dt>Profile</dt>
+            <dd>
+              {store.profileId
+                ? store.profileName || 'Selected'
+                : 'Not selected'}
+            </dd>
+          </div>
+          <div>
+            <dt>Connection</dt>
+            <dd>
+              {store.profileId === null
+                ? 'Not connected'
+                : store.offline
+                  ? 'Offline'
+                  : 'Online'}
+            </dd>
+          </div>
+          <div>
+            <dt>Calibration API</dt>
+            <dd>
+              {store.availability?.available ? 'Available' : 'Unavailable'}
+            </dd>
+          </div>
+        </dl>
+        <div className="cal-actions cal-actions--stacked">
           <button
             type="button"
-            className="cal-link-button cal-summary-action"
-            onClick={() => setShowConflicts(true)}
-            disabled={
-              store.profileId === null || store.offline || store.disabled
-            }
+            className="cal-link-button"
+            onClick={() => void store.manageProfiles()}
+            disabled={store.disabled}
           >
-            Review conflicts
+            Manage PrintFarmer profiles
           </button>
         </div>
+        {creationBlocked ? <p className="cal-inline-note">{recovery}</p> : null}
       </section>
-
-      <div className="cal-dashboard-layout">
-        <section className="cal-pane" aria-labelledby="projects-title">
-          <div className="cal-pane-heading">
-            <div>
-              <h2 id="projects-title">Saved projects</h2>
-              <p>Exact local workspace state for the selected profile.</p>
-            </div>
-            <span className="cal-count">{store.records.length}</span>
-          </div>
-          {!store.loading && !store.error && store.records.length === 0 ? (
-            <div className="cal-empty">
-              <h3>No calibration projects</h3>
-              <p>
-                Create one after PrintFarmer confirms eligibility and current
-                printer context.
-              </p>
-            </div>
-          ) : (
-            <ul className="cal-project-list">
-              {store.records.map((record) => {
-                const recoveryMessage =
-                  store.recoveryByProject[record.projectId];
-                return (
-                  <li key={record.projectId}>
-                    <button
-                      type="button"
-                      className="cal-project-row"
-                      onClick={() => void store.openProject(record.projectId)}
-                      disabled={store.disabled}
-                    >
-                      <span className="cal-project-copy">
-                        <strong>{record.displayName}</strong>
-                        <span>
-                          {record.completedStepCount} of {record.totalStepCount}{' '}
-                          stages complete. Updated{' '}
-                          {formatTimestamp(record.updatedAt)}.
-                        </span>
-                      </span>
-                      <span className="cal-row-flags">
-                        <span
-                          className={`cal-badge cal-badge--${record.status}`}
-                        >
-                          {record.status}
-                        </span>
-                        {!record.isSynced ? (
-                          <span className="cal-badge cal-badge--warning">
-                            Queued locally
-                          </span>
-                        ) : (
-                          <span className="cal-badge cal-badge--success">
-                            Synchronized
-                          </span>
-                        )}
-                        {!record.isPrinterContextFresh ? (
-                          <span className="cal-badge cal-badge--danger">
-                            Stale snapshot
-                          </span>
-                        ) : null}
-                        {record.hasConflicts ? (
-                          <span className="cal-badge cal-badge--danger">
-                            Conflict
-                          </span>
-                        ) : null}
-                        {recoveryMessage ? (
-                          <span className="cal-badge cal-badge--danger">
-                            Recovery required
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                    {recoveryMessage ? (
-                      <p className="cal-recovery-copy" role="alert">
-                        {recoveryMessage}
-                      </p>
-                    ) : null}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {store.unhydratedProjects.length > 0 ? (
-            <section
-              className="cal-recovery-projects"
-              aria-labelledby="remote-recovery-title"
-            >
-              <h3 id="remote-recovery-title">Remote recovery required</h3>
-              <p>
-                These PrintFarmer records are remote-only or require migration.
-                No renderer domain state was fabricated.
-              </p>
-              <ul className="cal-project-list">
-                {store.unhydratedProjects.map((project) => (
-                  <li key={project.projectId} className="cal-recovery-copy">
-                    <strong>{project.displayName}</strong>
-                    <span>
-                      Migration required; backend reference{' '}
-                      {project.remoteProjectId}.
-                    </span>
-                    <button
-                      type="button"
-                      className="cal-button"
-                      disabled={store.offline || store.disabled}
-                      onClick={() => void store.sync(project.projectId)}
-                    >
-                      Sync and retry this project
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-        </section>
-
-        <aside
-          className="cal-dashboard-aside"
-          aria-label="Calibration connection status"
-        >
-          <section className="cal-pane cal-detail-pane">
-            <h2>Profile and synchronization</h2>
-            <dl className="cal-definition-list">
-              <div>
-                <dt>Profile</dt>
-                <dd>
-                  {store.profileId
-                    ? store.profileName || 'Selected'
-                    : 'Not selected'}
-                </dd>
-              </div>
-              <div>
-                <dt>Connection</dt>
-                <dd>
-                  {store.profileId === null
-                    ? 'Not connected'
-                    : store.offline
-                      ? 'Offline'
-                      : 'Online'}
-                </dd>
-              </div>
-              <div>
-                <dt>Calibration API</dt>
-                <dd>
-                  {store.availability?.available ? 'Available' : 'Unavailable'}
-                </dd>
-              </div>
-              <div>
-                <dt>Offline editing</dt>
-                <dd>
-                  {store.availability?.offlineEditingEnabled ||
-                  store.records.length > 0
-                    ? 'Available'
-                    : 'Unavailable'}
-                </dd>
-              </div>
-              <div>
-                <dt>Profile generation</dt>
-                <dd>
-                  {store.availability?.capabilityFlags
-                    ?.calibrationGenerationEnabled
-                    ? 'Available'
-                    : 'Disabled on server'}
-                </dd>
-              </div>
-              <div>
-                <dt>Stale projects</dt>
-                <dd>{stale.length}</dd>
-              </div>
-              <div>
-                <dt>Conflicts</dt>
-                <dd>{conflicts.length}</dd>
-              </div>
-            </dl>
-            <div className="cal-actions cal-actions--stacked">
-              <button
-                type="button"
-                className="cal-link-button"
-                onClick={() => void store.manageProfiles()}
-                disabled={store.disabled}
-              >
-                Manage PrintFarmer profiles
-              </button>
-              <button
-                type="button"
-                className="cal-button"
-                onClick={() => void store.sync()}
-                disabled={
-                  store.disabled || store.profileId === null || store.offline
-                }
-                aria-describedby="sync-gate"
-              >
-                Sync and retry
-              </button>
-            </div>
-            <p id="sync-gate" className="cal-field-help">
-              Sync requires a connection. Conflicts remain explicit and are
-              never overwritten here.
-            </p>
-            {creationBlocked ? (
-              <p className="cal-inline-note">{recovery}</p>
-            ) : null}
-          </section>
-        </aside>
-      </div>
-      {showImport && store.profileId !== null && (
-        <div className="cal-modal-overlay" role="presentation">
-          <ImportLegacyBackup
-            profileId={store.profileId}
-            env={browserCalibrationEnvironment}
-            onClose={() => setShowImport(false)}
-            onImportComplete={() => void store.refresh()}
-          />
-        </div>
-      )}
-      {showConflicts && conflictProfileId !== null ? (
-        <CalibrationConflictDialog
-          key={conflictProfileId}
-          profileId={conflictProfileId}
-          profileName={store.profileName || 'Selected profile'}
-          onClose={() => setShowConflicts(false)}
-          onResolved={() => void store.refresh()}
-        />
-      ) : null}
     </section>
   );
 }

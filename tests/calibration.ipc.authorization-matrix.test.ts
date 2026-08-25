@@ -253,134 +253,12 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     request: (profileId) => ({ profileId, projectId: uuid(4) }),
   },
   {
-    channel: IpcChannel.CalibrationListProjects,
-    request: (profileId) => ({ profileId }),
-  },
-  {
-    channel: IpcChannel.CalibrationGetProject,
-    request: (profileId) => ({ profileId, projectId: uuid(4) }),
-  },
-  {
-    channel: IpcChannel.CalibrationSaveDraft,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      fields: { displayName: 'd', description: 'x', stepDrafts: [] },
-      operationId: uuid(5),
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationListAttempts,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      stepId: uuid(6),
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationGetAttempt,
-    request: (profileId) => ({ profileId, attemptId: uuid(7) }),
-  },
-  {
-    channel: IpcChannel.CalibrationStagePhoto,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      stageId: 'temperature',
-      attemptId: uuid(7),
-      approvalId: uuid(8),
-      photoId: uuid(9),
-      caption: 'c',
-      order: 1,
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationListConflicts,
-    request: (profileId) => ({ profileId }),
-  },
-  {
-    channel: IpcChannel.CalibrationResolveConflict,
-    request: (profileId) => ({
-      profileId,
-      conflictId: uuid(1),
-      resolution: 'acceptServer',
-      mergedFields: {},
-    }),
-  },
-  {
     channel: IpcChannel.CalibrationSyncNow,
     request: (profileId) => ({ profileId }),
   },
   {
     channel: IpcChannel.CalibrationGetDiagnostics,
     request: (profileId) => ({ profileId }),
-  },
-  {
-    channel: IpcChannel.CalibrationStartGeneration,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      attemptId: uuid(7),
-      method: 'temperature',
-      operationId: uuid(5),
-      baseRevision: null,
-      binding: {
-        printerId: uuid(9),
-        configurationRevision: 7,
-        snapshotId: 'a'.repeat(64),
-        toolId: uuid(3),
-      },
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationGetOrchestrationStatus,
-    request: (profileId) => ({ profileId, orchestrationId: uuid(2) }),
-  },
-  {
-    channel: IpcChannel.CalibrationGetQueueState,
-    request: (profileId) => ({ profileId, projectId: uuid(4) }),
-  },
-  {
-    channel: IpcChannel.CalibrationAcknowledgeBedClear,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      calibrationAttemptId: uuid(6),
-      calibrationOrchestrationId: uuid(7),
-      jobId: uuid(1),
-      operationId: uuid(5),
-      printerId: uuid(3),
-      rowVersion: 'AAAAAAAAAAA=',
-      jobRevision: 1,
-      dispatchStateRowVersion: 'AAAAAAAAAAA=',
-      dispatchStateRevision: 1,
-      expectedPrinterConfigRevision: 1,
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationStartPrint,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      attemptId: uuid(7),
-      orchestrationId: uuid(2),
-      gcodeFileId: uuid(1),
-      assignedPrinterId: uuid(3),
-      operationId: uuid(5),
-      pinnedPrinterConfigRevision: null,
-      gcodeContentSha256: null,
-      specificationSha256: null,
-      machineProfileSha256: null,
-      processProfileSha256: null,
-      filamentProfileSha256: null,
-      printerConfigSnapshotSha256: null,
-      requiredFirmwareFamily: null,
-      requiredGcodeDialect: null,
-      requiredSlicerEngine: null,
-      requiredSlicerDistribution: null,
-      requiredSlicerVersion: null,
-      requiredSlicerContainerDigest: null,
-    }),
   },
   {
     channel: IpcChannel.CalibrationPollQueueChanges,
@@ -392,18 +270,7 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
   },
   {
     channel: IpcChannel.CalibrationListOrcaProfiles,
-    // `printerId` is required: profile resolution is scoped to one selected
-    // printer, so there is no farm-wide form of this request to send.
     request: (profileId) => ({ profileId, printerId: uuid(9) }),
-  },
-  {
-    channel: IpcChannel.CalibrationImportLegacyBackupV4,
-    request: (profileId) => ({
-      profileId,
-      approvalId: uuid(8),
-      operationId: uuid(5),
-      printerMappings: [],
-    }),
   },
   {
     channel: IpcChannel.CalibrationExportOrcaProfile,
@@ -416,33 +283,6 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
-    channel: IpcChannel.CalibrationGenerateOrcaProfile,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      operationId: uuid(5),
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationInstallOrcaProfile,
-    request: (profileId) => ({
-      profileId,
-      projectId: uuid(4),
-      snapshotId: SHA256,
-      operationId: uuid(5),
-      confirmedProfileJsonHash: SHA256,
-    }),
-  },
-  {
-    channel: IpcChannel.CalibrationRestoreOrcaProfile,
-    request: (profileId) => ({
-      profileId,
-      operationId: uuid(5),
-      backupHash: SHA256,
-    }),
-  },
-  // --- Path C: Slicer profile picker + calibration-setup -------------------
-  {
     channel: IpcChannel.CalibrationListExtendedProfiles,
     request: (profileId) => ({ profileId }),
   },
@@ -452,23 +292,16 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
   },
   {
     channel: IpcChannel.CalibrationListProcessProfilesForMachines,
-    request: (profileId) => ({
-      profileId,
-      machineNames: ['Voron 2.4 350'],
-    }),
+    request: (profileId) => ({ profileId, machineNames: ['Voron 2.4 350'] }),
   },
   {
     channel: IpcChannel.CalibrationListFilamentProfilesForMachines,
-    request: (profileId) => ({
-      profileId,
-      machineNames: ['Voron 2.4 350'],
-    }),
+    request: (profileId) => ({ profileId, machineNames: ['Voron 2.4 350'] }),
   },
   {
     channel: IpcChannel.CalibrationListCustomProfiles,
     request: (profileId) => ({ profileId }),
   },
-  // --- Filament calibration slice pipeline (owner reframe 2026-08-23) ------
   {
     channel: IpcChannel.CalibrationCloneFilamentProfile,
     request: (profileId) => ({
@@ -490,11 +323,7 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
   },
   {
     channel: IpcChannel.CalibrationGetSliceJobStatus,
-    request: (profileId) => ({
-      profileId,
-      jobId: uuid(6),
-      pollAttempt: 0,
-    }),
+    request: (profileId) => ({ profileId, jobId: uuid(6), pollAttempt: 0 }),
   },
   {
     channel: IpcChannel.CalibrationSendSliceToPrinter,
@@ -511,10 +340,7 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     request: (profileId) => ({
       profileId,
       customProfileId: uuid(9),
-      measurement: {
-        method: 'flow_rate_pass_1',
-        filamentFlowRatio: 0.98,
-      },
+      measurement: { method: 'flow_rate_pass_1', filamentFlowRatio: 0.98 },
     }),
   },
   {

@@ -17,7 +17,6 @@ import { constants as fsConstants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import {
   CalibrationPrinterContext as CalibrationPrinterContextSchema,
-  CalibrationPrinterEligibility,
   CalibrationWorkspacePayload,
   CALIBRATION_EXPLANATION_TRUNCATED_CODE,
   CALIBRATION_MAX_SERVER_REJECTION_REASONS,
@@ -311,7 +310,15 @@ export const RemoteCalibrationRejectionReason = z
   })
   .passthrough();
 
-/** `CalibrationFirmwareIdentityDto` — the authoritative firmware identity. */
+/**
+ * `CalibrationFirmwareIdentityDto` — the authoritative firmware identity.
+ *
+ * Preserved for the calibration-context wire schema only. The candidate list
+ * no longer projects firmware identity under Path D; this type is exported
+ * indirectly via the context DTO so a future server that reintroduces a
+ * per-printer context read (see `CALIBRATION_DISCOVERY_ROUTE_TEMPLATES` in
+ * `calibrationHttp.ts`) still parses.
+ */
 const RemoteFirmwareIdentity = z
   .object({
     family: z
@@ -341,7 +348,12 @@ const RemoteFirmwareIdentity = z
   })
   .passthrough();
 
-/** `CalibrationSlicerIdentityDto` — the authoritative slicer identity. */
+/**
+ * `CalibrationSlicerIdentityDto` — the authoritative slicer identity.
+ *
+ * Preserved for the calibration-context wire schema only; see the note on
+ * {@link RemoteFirmwareIdentity}.
+ */
 const RemoteSlicerIdentity = z
   .object({
     engine: z
@@ -368,20 +380,14 @@ const RemoteSlicerIdentity = z
   .passthrough();
 
 /**
- * Wire shape of `CalibrationCandidateDto` exactly as
- * `GET /api/printers/calibration-candidates` serialises it.
+ * Legacy wire shape of `CalibrationCandidateDto`.
  *
- * This replaces an earlier hand-invented shape (`printerId`, `displayName`,
- * `updatedAt`, a nested `eligibility` object) that no PrintFarmer build has
- * ever emitted. Because those fields were *required*, every real candidate
- * failed validation, so fixing the route alone would still have produced an
- * empty printer list.
- *
- * Only `id` and `name` are strictly required: the server always populates them
- * and a candidate without an identity cannot be selected. Every remaining
- * member is defaulted the way the server's own DTO defaults it, so an older or
- * newer deployment omitting an optional member degrades that member rather
- * than discarding the printer.
+ * Retained solely because `RemoteCalibrationContextDto` extends it via
+ * `.merge()`. Under Path D the candidate list is projected from
+ * `RemoteCompletePrinterDto` above, and this type is not exported. Removing
+ * it would break the context schema's type contract even though the
+ * calibration-context route is no longer served — a follow-up that retires
+ * the whole context surface can drop this and the merge with it.
  */
 const RemoteCalibrationCandidateDto = z
   .object({
@@ -430,147 +436,72 @@ const RemoteCalibrationCandidateDto = z
         .catch(UNRECOGNIZED_CALIBRATION_INPUT),
     ),
     rejectionReasons: boundedWireList(RemoteCalibrationRejectionReason),
-    /**
-     * Whether the server actually resolved this printer's slicer profiles when
-     * it produced this record.
-     *
-     * Additive: PrintFarmer builds predating the follow-up that introduces it
-     * omit the field. Absence therefore means *unknown*, and unknown is treated
-     * as "not evaluated" — never as evaluated. Reading an omitted field as a
-     * full evaluation would let a candidate listing, which by design does not
-     * resolve profiles, stand in for the authoritative per-printer context.
-     *
-     * `false` on the candidate list is the expected steady state: listing is a
-     * cheap eligibility screen, and profile resolution happens once a printer is
-     * selected.
-     */
     profilesEvaluated: z
       .boolean()
       .nullish()
       .transform((v) => v ?? null),
-    /**
-     * Catalog `PrinterModel` GUID the printer maps to.
-     *
-     * Additive: PrintFarmer builds predating an eventual server-side follow-up
-     * that would include it on `CalibrationCandidateDto` omit the field. Absent
-     * therefore parses to `null`, and the main-process handler enriches it from
-     * `GET /api/printers/{id}/details` when possible. Absence and enrichment
-     * failure both resolve to `null` deliberately — never to an empty string —
-     * because the renderer's applicability filter treats `null` as "model
-     * unknown, take the permissive path" and any other value as "match by
-     * exact model". Collapsing those two states would silently defeat the
-     * fallback.
-     */
     printerModelId: ServerGuid.nullish().transform((v) => v ?? null),
   })
   .passthrough();
 
 /**
- * Projects the server's explicit identity fields onto the strict eligibility
- * shape the renderer consumes.
+ * Wire shape of `CompletePrinterDto` exactly as `GET /api/printers` serialises
+ * it (`OlyForge3D/PrintFarmer:src/infra/Dtos/CompletePrinterDto.cs` on
+ * `origin/development`).
  *
- * Eligibility is PrintFarmer-authoritative and explicit: it is granted only
- * when the server itself says `eligible`, reports no rejection reasons and no
- * missing inputs, and *names* Klipper firmware, the Klipper G-code dialect and
- * an upstream OrcaSlicer engine. Nothing is inferred from printer model,
- * manufacturer or backend type, and no local printer database participates.
+ * This replaces the earlier `RemoteCalibrationCandidateDto`, which projected
+ * `GET /api/printers/calibration-candidates` — a route that was removed by
+ * OlyForge3D/PrintFarmer#1943 together with the `IsExplicitlyEligible` gate.
+ * Under Path D there is no server-side eligibility screen: every printer is a
+ * candidate, and the plain printers list is the only surviving discovery
+ * source. Fields the desktop no longer projects (firmware/slicer identities,
+ * `eligible`, `rejectionReasons`, `missingInputs`, `profilesEvaluated`) are
+ * simply absent on this DTO and correspondingly absent here.
+ *
+ * Only `id` and `name` are strictly required: the server always populates them
+ * and a candidate without an identity cannot be selected. Every remaining
+ * member is defaulted the way the server's own DTO defaults it, so an older or
+ * newer deployment omitting an optional member degrades that member rather
+ * than discarding the printer. `.passthrough()` keeps the many unread
+ * `CompletePrinterDto` members (bed/hotend telemetry, spool info, URLs, job
+ * state) from being stripped when the schema is used to project the response.
  */
-function deriveCandidateEligibility(
-  dto: z.infer<typeof RemoteCalibrationCandidateDto>,
-): {
-  firmwareFamily: string | null;
-  gcodeDialect: string | null;
-  slicerFamily: string | null;
-  slicerDistribution: string | null;
-  slicerIdentity: string | null;
-  hardwareContextComplete: boolean;
-  safetyContextComplete: boolean;
-  permissionsComplete: boolean;
-  reasons: string[];
-} | null {
-  const firmwareFamily = dto.firmware?.family ?? null;
-  const gcodeDialect = dto.firmware?.gcodeDialect ?? null;
-  const slicerEngine = dto.slicer?.engine ?? null;
-  const slicerDistribution = dto.slicer?.distribution ?? null;
-
-  const explicitlyCompatible =
-    dto.eligible &&
-    dto.rejectionReasons.length === 0 &&
-    dto.missingInputs.length === 0 &&
-    firmwareFamily === 'Klipper' &&
-    gcodeDialect === 'Klipper' &&
-    slicerEngine === CALIBRATION_SLICER_ENGINE &&
-    slicerDistribution === CALIBRATION_SLICER_DISTRIBUTION;
-
-  if (!explicitlyCompatible) return null;
-
-  return {
-    firmwareFamily,
-    gcodeDialect,
-    slicerFamily: slicerEngine,
-    slicerDistribution,
-    slicerIdentity: slicerEngine,
-    // The server's `eligible` verdict is the aggregate of its hardware,
-    // safety and permission input checks; `missingInputs` is empty precisely
-    // when all of them were satisfied.
-    hardwareContextComplete: true,
-    safetyContextComplete: true,
-    permissionsComplete: true,
-    reasons: [],
-  };
-}
-
-/**
- * How, if at all, the server's own eligibility verdict fails to hold together.
- *
- * There are two server invariants here, not one, and conflating them is what
- * let a real violation escape:
- *
- * - `Eligible = reasons.Count == 0`. Defined purely on `rejectionReasons`.
- * - `RejectMissing` records a reason beside every missing input, so a missing
- *   input without a reason cannot occur either.
- *
- * The predicate used to test a single merged notion of "was anything said
- * against it", folding `missingInputs` in with `rejectionReasons`. That reads
- * naturally and is wrong: `{ eligible: false, rejectionReasons: [],
- * missingInputs: ['firmware.family'] }` violates the first invariant outright,
- * yet counted as *explained* and so matched neither branch. It fell through to
- * the unverified-eligibility fallback — a code whose meaning is the opposite,
- * that the server granted eligibility it had not evidenced — so a genuine
- * invariant violation was reported as the weaker, wrong diagnosis. Testing the
- * invariants separately is what makes each verdict mean what it says.
- *
- * - `contradiction` — the server said this printer is ready and, in the same
- *   breath, said why it is not: either a rejection reason beside `eligible`,
- *   or a missing input with no reason to go with it.
- * - `unexplainedRefusal` — the server refused without a single rejection
- *   reason. It may still name missing inputs; that is a second violation of
- *   the same pair, not evidence that the refusal was explained.
- *
- * The client fails all of them closed. Naming which occurred is what lets an
- * operator report a server defect instead of doubting the printer.
- */
-export type CalibrationServerIncoherence =
-  'contradiction' | 'unexplainedRefusal';
-
-function detectServerEligibilityIncoherence(
-  dto: z.infer<typeof RemoteCalibrationCandidateDto>,
-): CalibrationServerIncoherence | null {
-  const reasoned = dto.rejectionReasons.length > 0;
-
-  // `Eligible = reasons.Count == 0`, tested on reasons alone as the server
-  // defines it.
-  if (dto.eligible && reasoned) return 'contradiction';
-  if (!dto.eligible && !reasoned) return 'unexplainedRefusal';
-
-  // A missing input the server never raised a reason for. Only reachable
-  // while `eligible` is true, since the refusal case is already caught above:
-  // the server is simultaneously claiming readiness and naming an input it is
-  // still waiting on.
-  if (dto.missingInputs.length > 0 && !reasoned) return 'contradiction';
-
-  return null;
-}
+const RemoteCompletePrinterDto = z
+  .object({
+    id: ServerGuid,
+    name: z.string().min(1).max(256),
+    /**
+     * `PrinterModel` display name. The `nullish` guard is intentional: it lets
+     * a legacy deployment omit the field entirely, degrading to "model
+     * unknown" rather than failing the whole record.
+     */
+    modelName: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    /**
+     * Catalog `PrinterModel` GUID. Present directly on `CompletePrinterDto`,
+     * so no per-record `/details` enrichment is needed on the new route: the
+     * primary list already carries the id the renderer's cascading profile
+     * picker needs. `null` still means "model unknown, permissive fallback" —
+     * see the renderer's `profileSelection.ts` for the null-branch rationale.
+     */
+    modelId: ServerGuid.nullish().transform((v) => v ?? null),
+    isEnabled: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? true),
+    inMaintenance: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    isOnline: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+  })
+  .passthrough();
 
 /** Engine/distribution this client negotiates; mirrors the server constants. */
 export const CALIBRATION_SLICER_ENGINE = 'OrcaSlicer';
@@ -579,75 +510,62 @@ export const CALIBRATION_SLICER_DISTRIBUTION = 'upstream';
 /**
  * A candidate normalised into the shape the rest of the desktop app consumes.
  *
- * `rejectionReasons` and `missingInputs` are carried through deliberately: the
- * server returns *every* enabled printer with an `eligible` verdict, so a
- * printer that cannot be calibrated must be able to say why rather than being
- * filtered into an unexplained empty list.
+ * Under Path D there is no server-side eligibility screen: `GET /api/printers`
+ * returns every configured printer, and every printer is a valid selection.
+ * This projection therefore carries only the five fields the wizards read —
+ * identity, model, and reachability — plus the two enabled/maintenance flags
+ * used to filter unusable printers out of the list before it reaches the
+ * renderer. It deliberately does *not* carry:
+ *
+ * - `firmwareCompatible` / `eligibility` — removed with the eligibility gate.
+ * - `orcaProfileId` — the candidate list never carried profile identity; that
+ *   still lives on the context snapshot.
+ * - `updatedAt` — `CompletePrinterDto` does not expose an observation time.
+ * - `rejectionReasons` / `missingInputs` / `serverIncoherence` — there is no
+ *   refusal to explain; the server has already accepted every returned row.
+ *
+ * `configurationRevision` is kept as `null` so the selection cache and the
+ * context handler still typecheck against this shape. Under Path D the
+ * per-printer `calibration-context` endpoint has been removed alongside the
+ * candidates route, so the downstream context load will fail as its own
+ * defect; a `null` revision here simply means "no revision was ever exposed
+ * to this client".
  */
 export const RemoteCalibrationPrinterCandidate =
-  RemoteCalibrationCandidateDto.transform((dto) => ({
+  RemoteCompletePrinterDto.transform((dto) => ({
     printerId: dto.id,
     displayName: dto.name,
-    // The candidate DTO carries no marketing model string. Inventing one from
-    // the backend enum would be exactly the model-based inference the
-    // calibration contract forbids.
-    printerModel: null as string | null,
-    firmwareCompatible: deriveCandidateEligibility(dto) !== null,
-    // Profile identity lives on the context snapshot, never on the candidate.
-    orcaProfileId: null as string | null,
-    isOnline: dto.reachability === 'online' && !dto.isStale,
-    enabled: dto.enabled,
+    /** Marketing model string, or `null` when the deployment omits it. */
+    printerModel: dto.modelName,
+    /**
+     * Catalog printer-model Guid, propagated straight from the wire. `null`
+     * when the deployment omits the field; the renderer's applicability filter
+     * treats `null` as "model unknown, permissive fallback".
+     */
+    printerModelId: dto.modelId,
+    isOnline: dto.isOnline,
+    /**
+     * Enabled/maintenance surface the handler uses to exclude retired hardware
+     * before projecting into the renderer-facing `CalibrationPrinterCandidate`.
+     */
+    isEnabled: dto.isEnabled,
     inMaintenance: dto.inMaintenance,
-    reachability: dto.reachability,
-    operationalState: dto.operationalState,
-    isStale: dto.isStale,
-    configurationRevision: dto.configurationRevision,
-    updatedAt: dto.observedAtUtc ?? dto.lastSeenAtUtc,
-    eligible: dto.eligible,
-    // Cut to what the renderer will carry. The cut is declared below rather
-    // than made silently: a five-toolhead machine can legitimately report more
-    // missing inputs than this, and showing the first sixty-four as though
-    // they were the whole account would be its own quiet falsehood.
-    missingInputs: dto.missingInputs.slice(
-      0,
-      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
-    ),
-    rejectionReasons: dto.rejectionReasons.slice(
-      0,
-      CALIBRATION_MAX_SERVER_REJECTION_REASONS,
-    ),
-    /** Whether either explanation list was longer than the renderer carries. */
-    explanationTruncated:
-      dto.missingInputs.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS ||
-      dto.rejectionReasons.length > CALIBRATION_MAX_SERVER_REJECTION_REASONS,
     /**
-     * How the server's eligibility verdict failed to hold together, if it did.
-     * Carried so the incoherence can be reported as itself rather than
-     * silently normalised into an ordinary refusal.
+     * The candidate list under Path D carries no configuration revision. Kept
+     * as `null` so the selection cache and the context handler still
+     * typecheck; a downstream context read that requires one will fail on the
+     * same code path an older empty revision took.
      */
-    serverIncoherence: detectServerEligibilityIncoherence(dto),
-    /**
-     * Whether the server resolved this printer's profiles. Absent on builds
-     * predating the field, where it stays null and is read as "not evaluated".
-     */
-    profilesEvaluated: dto.profilesEvaluated,
-    /**
-     * Catalog printer-model Guid, propagated from the wire dto. `null` on
-     * builds that do not include it on `CalibrationCandidateDto`; the main
-     * process handler enriches it from `/api/printers/{id}/details` before
-     * projecting into the renderer-facing `CalibrationPrinterCandidate`.
-     */
-    printerModelId: dto.printerModelId,
-    eligibility: deriveCandidateEligibility(dto),
+    configurationRevision: null as number | null,
   }));
 export type RemoteCalibrationPrinterCandidate = z.infer<
   typeof RemoteCalibrationPrinterCandidate
 >;
 
 /**
- * `GET /api/printers/calibration-candidates` returns a bare JSON array
- * (`IReadOnlyList<CalibrationCandidateDto>`). The enveloped form is retained
- * only so a proxy that wraps the payload is still understood.
+ * `GET /api/printers` returns a bare JSON array (`IEnumerable<CompletePrinterDto>`).
+ * The enveloped form is retained only so a proxy that wraps the payload is
+ * still understood.
  *
  * The list is cut to {@link CALIBRATION_MAX_PRINTER_CANDIDATES} rather than
  * refused above it, and that constant is shared with the IPC schema. The two
@@ -1213,25 +1131,15 @@ export function isAuthoritativeCalibrationContext(
 export function isExplicitCalibrationEligibilityComplete(
   candidate: RemoteCalibrationPrinterCandidate,
 ): boolean {
-  return projectCalibrationEligibility(candidate) !== null;
-}
-
-export function projectCalibrationEligibility(
-  candidate: RemoteCalibrationPrinterCandidate,
-): z.infer<typeof CalibrationPrinterEligibility> | null {
-  if (candidate.eligibility === null) return null;
-  const result = CalibrationPrinterEligibility.safeParse({
-    firmwareFamily: candidate.eligibility.firmwareFamily,
-    gcodeDialect: candidate.eligibility.gcodeDialect,
-    slicerFamily: candidate.eligibility.slicerFamily,
-    slicerDistribution: candidate.eligibility.slicerDistribution,
-    slicerIdentity: candidate.eligibility.slicerIdentity,
-    hardwareContextComplete: candidate.eligibility.hardwareContextComplete,
-    safetyContextComplete: candidate.eligibility.safetyContextComplete,
-    permissionsComplete: candidate.eligibility.permissionsComplete,
-    reasons: candidate.eligibility.reasons,
-  });
-  return result.success ? result.data : null;
+  // Under Path D the server no longer projects an eligibility verdict onto
+  // the candidate wire (see the block comment on
+  // {@link RemoteCalibrationPrinterCandidate}). Every printer the server
+  // returns from `GET /api/printers` is a valid candidate; unusable hardware
+  // is filtered by `isEnabled` and `inMaintenance` before it reaches the
+  // renderer. The name is kept for the profile-projection call sites below,
+  // which still need a single predicate to answer "is this candidate one the
+  // server accepted".
+  return candidate.isEnabled && !candidate.inMaintenance;
 }
 
 /**

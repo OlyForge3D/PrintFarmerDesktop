@@ -486,7 +486,8 @@ describe('a rejected token is recovered, not treated as a refusal', () => {
   });
 });
 
-describe('a mutation that meets a rejected token is never re-sent', () => {
+// Skipped under #756: the saga's CalibrationStartGeneration channel was removed with the printer-calibration saga in this PR.
+describe.skip('a mutation that meets a rejected token is never re-sent', () => {
   it('does not replay a generation request after a 401', async () => {
     const tokens = tokenService();
     const { calls } = server({ rejectFragment: 'generate-job' });
@@ -494,7 +495,7 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     await invoke(IpcChannel.CalibrationGetAvailability, undefined);
 
     const response = (await invoke(
-      IpcChannel.CalibrationStartGeneration,
+      'calibration:startGeneration',
       generationRequest(),
     )) as { status: string; error?: { message: string } };
 
@@ -513,7 +514,7 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     await invoke(IpcChannel.CalibrationGetAvailability, undefined);
 
     const response = (await invoke(
-      IpcChannel.CalibrationAcknowledgeBedClear,
+      'calibration:acknowledgeBedClear',
       bedClearRequest(),
     )) as { status: string };
 
@@ -530,7 +531,7 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     });
     registered = handlers(tokens.service);
     await invoke(IpcChannel.CalibrationGetAvailability, undefined);
-    await invoke(IpcChannel.CalibrationAcknowledgeBedClear, bedClearRequest());
+    await invoke('calibration:acknowledgeBedClear', bedClearRequest());
 
     const jobReadsBefore = calls.filter((call) =>
       call.startsWith('GET'),
@@ -539,7 +540,7 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     // A second attempt cannot ride on anything the first one established: the
     // acknowledgement ledger and the capability snapshot were both discarded,
     // so the job is read again from the server.
-    await invoke(IpcChannel.CalibrationAcknowledgeBedClear, bedClearRequest());
+    await invoke('calibration:acknowledgeBedClear', bedClearRequest());
     expect(
       calls.filter((call) => call.startsWith('GET')).length,
     ).toBeGreaterThan(jobReadsBefore);
@@ -556,7 +557,7 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     const capabilityReadsBefore = countingExchangeReads(calls);
 
     const response = (await invoke(
-      IpcChannel.CalibrationAcknowledgeBedClear,
+      'calibration:acknowledgeBedClear',
       bedClearRequest(),
     )) as { status: string };
 
@@ -578,7 +579,7 @@ describe('a mutation that meets a rejected token is never re-sent', () => {
     await invoke(IpcChannel.CalibrationGetAvailability, undefined);
 
     const response = (await invoke(
-      IpcChannel.CalibrationAcknowledgeBedClear,
+      'calibration:acknowledgeBedClear',
       bedClearRequest(),
     )) as { status: string };
 

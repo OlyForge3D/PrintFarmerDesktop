@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { CalibrationGetQueueStateResponse, IpcSchemas } from '@shared/ipc';
+import type { IpcSchemas } from '@shared/ipc';
 import type { z } from 'zod';
 
 /**
@@ -500,7 +500,7 @@ export async function applyCalibrationScenario(
     expiry: new Date(Date.now() + 600_000).toISOString(),
   };
 
-  await app.evaluate(({ ipcMain }, { scenario, record, ids, expiry }) => {
+  await app.evaluate(({ ipcMain }, { scenario, record, ids }) => {
     const handle = <C extends StubbedChannel>(
       channel: C,
       handler: (...a: never[]) => StubResponse<C> | Promise<StubResponse<C>>,
@@ -733,197 +733,22 @@ export async function applyCalibrationScenario(
       },
     }));
 
-    handle('calibration:startGeneration', () => ({
-      status: 'submitted',
-      orchestrationId: ids.orchestrationId,
-    }));
-
-    const failed = scenario.orchestration === 'failed';
-    handle('calibration:getOrchestrationStatus', () => ({
+    // Queue change polling — always returns no events since the saga channels
+    // that drive generation, queue dispatch, and bed-clear were removed in #756.
+    handle('calibration:pollQueueChanges', () => ({
       status: 'ok',
-      orchestration: {
-        id: ids.orchestrationId,
-        projectId: ids.projectId,
-        attemptId: ids.attemptId,
-        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
-        status: failed ? 'Failed' : 'Succeeded',
-        currentStep: failed ? 'SlicingFailed' : 'Completed',
-        revision: 2,
-        retryCount: failed ? 2 : 0,
-        nextRetryAtUtc: null,
-        stepStartedAtUtc: ids.now,
-        lastErrorCode: failed ? 'SLICER_EXIT_NONZERO' : null,
-        problems: failed
-          ? [
-              {
-                code: 'SLICER_EXIT_NONZERO',
-                field: null,
-                message: 'The slicer exited before producing G-code.',
-              },
-            ]
-          : [],
-        model3DId: null,
-        sliceJobId: null,
-        workerId: null,
-        sourceArtifactId: null,
-        finalArtifactId: null,
-        gcodeFileId: failed ? null : ids.gcodeId,
-        specificationSha256: null,
-        planManifestSha256: null,
-        gcodeSha256: null,
-        manifestSha256: null,
-        generatorVersion: 'a11y-gen-1.0',
-        slicerContainerDigest: null,
-        slicerBinarySha256: null,
-        statusRoute: `/api/calibration-orchestrations/${ids.orchestrationId}`,
-        createdAtUtc: ids.now,
-        updatedAtUtc: ids.now,
-        completedAtUtc: failed ? ids.now : ids.now,
-      },
+      afterSequence: 0,
+      nextSequence: 0,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
     }));
-
-    const queueKind = scenario.queue ?? 'none';
-    const unresolvedOutcome =
-      queueKind === 'unknownOutcome' ||
-      queueKind === 'unknownOutcomeRefetchFailure';
-    // The refetch-failure scenario must let the FIRST fetch through, or
-    // `queueState` is never populated and the panel renders nothing to
-    // co-render with. Gating on a call count races with any prefetch and with
-    // the mount-time poll, so gate on the mechanism itself: fail only once a
-    // gap has been served AND at least one fetch has succeeded. That is
-    // exactly the reachable path (gap -> refetch -> failure) and is
-    // order-independent.
-    let okServed = 0;
-    let gapServed = false;
-    handle('calibration:getQueueState', () => {
-      if (queueKind === 'none') {
-        return {
-          status: 'error',
-          error: {
-            code: 'jobNotFound',
-            message: 'No queued job for this project.',
-            retryable: false,
-            retryAfterSeconds: null,
-            reference: null,
-          },
-        } satisfies CalibrationGetQueueStateResponse;
-      }
-      if (
-        queueKind === 'unknownOutcomeRefetchFailure' &&
-        gapServed &&
-        okServed > 0
-      ) {
-        return {
-          status: 'error',
-          error: {
-            code: 'serverError',
-            message: 'Network timeout',
-            retryable: true,
-            retryAfterSeconds: null,
-            reference: null,
-          },
-        } satisfies CalibrationGetQueueStateResponse;
-      }
-      okServed += 1;
-      return {
-        status: 'ok',
-        job: {
-          jobId: ids.jobId,
-          jobKind: 'FilamentCalibration',
-          rowVersion: 'W/"a11y-etag"',
-          jobRevision: 1,
-          dispatchStateRowVersion: 'W/"a11y-dispatch"',
-          dispatchStateRevision: 1,
-          status: unresolvedOutcome ? 'Starting' : 'Assigned',
-          dispatchAttemptOutcome: unresolvedOutcome ? 'Unknown' : null,
-          bedClearState: 'None',
-          gcodeFileId: ids.gcodeId,
-          assignedPrinterId: ids.printerId,
-          assignedPrinterName: 'A11y Fixture Printer',
-          acknowledgementExpiresAt: expiry,
-          calibrationProjectId: ids.projectId,
-          calibrationAttemptId: ids.attemptId,
-          calibrationOrchestrationId: ids.orchestrationId,
-          pinnedPrinterConfigRevision: ids.configurationRevision,
-          bedClearCommandId: null,
-          bedClearIdempotencyKeySha256: null,
-          bedClearExpiresAtUtc: null,
-          priority: 50,
-          queuePosition: 1,
-          updatedAt: ids.now,
-        },
-      } satisfies CalibrationGetQueueStateResponse;
-    });
-
-    handle('calibration:acknowledgeBedClear', () => ({
-      status: 'ok',
-      jobRowVersion: 'W/"a11y-etag-2"',
-      dispatchStateRowVersion: 'W/"a11y-dispatch-2"',
-    }));
-
-    handle('calibration:startPrint', () => ({
-      status: 'ok',
-      jobId: ids.jobId,
-      rowVersion: 'W/"a11y-etag"',
-      dispatchStateRowVersion: 'W/"a11y-dispatch"',
-      replayed: false,
-    }));
-
-    // A gap is the panel's only trigger for a refetch after the initial fetch
-    // (`:173 gapDetected -> onGapDetected() -> refetchJobState()`).
-    handle('calibration:pollQueueChanges', () => {
-      const gap = queueKind === 'unknownOutcomeRefetchFailure' && okServed > 0;
-      if (gap) gapServed = true;
-      return {
-        status: 'ok',
-        afterSequence: 0,
-        nextSequence: 0,
-        hasMore: false,
-        gapDetected: gap,
-        events: [],
-      };
-    });
 
     handle('calibration:getSubscriptionResources', () => ({
       status: 'ok',
       printerIds: [ids.printerId],
       jobIds: [ids.jobId],
       projectIds: [ids.projectId],
-    }));
-
-    handle('calibration:generateOrcaProfile', () => ({
-      status: 'ok',
-      displayName: 'A11y calibrated PLA',
-      safeFilename: 'a11y-calibrated-pla.json',
-      profileJsonHash: 'c'.repeat(64),
-      patchedFieldCount: 4,
-      warnings: [],
-    }));
-
-    handle('calibration:installOrcaProfile', () =>
-      scenario.installFails === true
-        ? {
-            status: 'error',
-            error: {
-              code: 'verificationFailed',
-              message: 'The OrcaSlicer profile directory rejected the write.',
-              retryable: false,
-            },
-          }
-        : {
-            status: 'ok',
-            installedHash: 'd'.repeat(64),
-            backupHash: 'e'.repeat(64),
-          },
-    );
-
-    handle('calibration:restoreOrcaProfile', () => ({
-      status: 'ok',
-      restoredHash: 'e'.repeat(64),
-    }));
-
-    handle('calibration:openPhoto', () => ({
-      approvalId: 'fb000000-fb00-4b00-8b00-bb0000000000',
     }));
   }, args);
 

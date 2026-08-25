@@ -8,11 +8,12 @@
  * route, query-string or schema regression fails here rather than in
  * production.
  *
- * Fixture provenance: `CalibrationCandidateDto` / `CalibrationContextDto` in
- * `src/infra/Calibration/CalibrationContracts.cs` on
- * OlyForge3D/PrintFarmer@development, cross-checked against the live
- * `routes` member of `GET /api/calibration/capabilities` on production
- * `0.2.3+125d2c9b2`.
+ * Fixture provenance: `CompletePrinterDto` in `src/infra/Dtos/CompletePrinterDto.cs`
+ * on OlyForge3D/PrintFarmer@origin/development (post-`OlyForge3D/PrintFarmer#1943`,
+ * which removed `/api/printers/calibration-candidates` and the
+ * `IsExplicitlyEligible` gate). Under Path D the desktop discovers printers
+ * via the plain `GET /api/printers` list — every printer is a candidate — and
+ * the candidate list carries no server-side eligibility metadata.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,6 +26,7 @@ import {
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
 const BASE_URL = 'https://printfarmer.example';
 const PRINTER_ID = 'aaaaaaaa-1111-4111-8111-222222222222';
+const MODEL_ID = 'bbbbbbbb-2222-4222-8222-333333333333';
 
 function tokens() {
   return {
@@ -63,98 +65,49 @@ function recordingFetch(
   return { calls, fetch: impl };
 }
 
-/** A verbatim-shaped `CalibrationCandidateDto` for an eligible Klipper printer. */
-function eligibleCandidateDto(overrides: Record<string, unknown> = {}) {
+/**
+ * A verbatim-shaped `CompletePrinterDto` for an online, enabled printer, as
+ * `GET /api/printers` serialises it. Fields the client does not project
+ * (bed/hotend telemetry, spool info, URLs, job state) are omitted; the wire
+ * schema's `.passthrough()` guarantees their presence does not affect
+ * projection.
+ */
+function completePrinterDto(overrides: Record<string, unknown> = {}) {
   return {
     id: PRINTER_ID,
     name: 'Voron 2.4 #1',
-    enabled: true,
+    modelId: MODEL_ID,
+    modelName: 'Voron 2.4 (350mm)',
+    isEnabled: true,
     inMaintenance: false,
-    backend: 'Moonraker',
-    location: { id: '33333333-3333-4333-8333-333333333333', name: 'Rack A' },
-    configurationRevision: 7,
-    reachability: 'online',
-    operationalState: 'idle',
-    statusSource: 'moonraker',
-    observedAtUtc: '2026-08-11T14:00:00Z',
-    lastSeenAtUtc: '2026-08-11T14:00:00Z',
-    isStale: false,
-    staleAfterSeconds: 60,
-    statusSupported: true,
-    supportsStatus: true,
-    supportsFileUpload: true,
-    supportsStartPrint: true,
-    supportsUploadAndPrint: true,
-    supportsDirectCommand: true,
-    supportsMultiExtruderStatus: false,
-    buildVolume: { x: 350, y: 350, z: 340 },
-    bedOrigin: { x: 0, y: 0 },
-    physicalToolheadCount: 1,
-    activeToolheadIndex: 0,
-    toolheads: [],
-    firmware: {
-      family: 'Klipper',
-      gcodeDialect: 'Klipper',
-      detectionSource: 'moonraker',
-      version: 'v0.12.0',
-      verified: true,
-    },
-    slicer: {
-      engine: 'OrcaSlicer',
-      distribution: 'upstream',
-      version: '2.4.2',
-      profileFormat: 'orca-json',
-    },
-    eligible: true,
-    missingInputs: [],
-    rejectionReasons: [],
+    isOnline: true,
     ...overrides,
   };
 }
 
 describe('calibration discovery routes', () => {
-  it('requests the canonical candidate route, not the 404 legacy path', async () => {
-    const { calls, fetch } = recordingFetch([eligibleCandidateDto()]);
+  it('requests the plain printers list, not the retired calibration-candidates path', async () => {
+    const { calls, fetch } = recordingFetch([completePrinterDto()]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
     await client.getPrinters(PROFILE_ID, BASE_URL, AbortSignal.timeout(5_000));
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toBe(`${BASE_URL}/api/printers/calibration-candidates`);
-    // The path production answered with 404 must never be requested again.
-    expect(calls[0]).not.toContain('/api/calibration/printers');
+    expect(calls[0]).toBe(`${BASE_URL}/api/printers`);
+    // The retired route removed by OlyForge3D/PrintFarmer#1943 must never be
+    // requested again; hitting it now returns 404 (`Calibration resource not
+    // found`), the very defect this contract fix exists to prevent.
+    expect(calls[0]).not.toContain('/api/printers/calibration-candidates');
   });
 
-  it('sends the mandatory slicerType on the context route', async () => {
-    const { calls, fetch } = recordingFetch({
-      ...eligibleCandidateDto(),
-      schemaVersion: '1.0',
-      snapshotSha256: 'a'.repeat(64),
-      capturedAtUtc: '2026-08-11T14:00:00Z',
-      capturedBySubject: 'subject-1',
-      snapshot: { configurationRevision: 7, toolheads: [] },
-    });
-    const client = new CalibrationHttpClient(tokens(), { fetch });
-
-    await client.getPrinterContext(
-      PROFILE_ID,
-      BASE_URL,
-      PRINTER_ID,
-      AbortSignal.timeout(5_000),
-    );
-
-    // The server compares slicerType with StringComparison.Ordinal and answers
-    // 400 unsupported_slicer_type when it is absent or differently cased.
-    expect(calls[0]).toBe(
-      `${BASE_URL}/api/printers/${PRINTER_ID}/calibration-context?slicerType=OrcaSlicer`,
-    );
-  });
-
-  it('keeps the route templates aligned with what the server advertises', () => {
-    // These are the values the live capabilities payload publishes under
-    // `routes.calibrationCandidates` and `routes.calibrationContext`.
-    expect(CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationCandidates).toBe(
-      '/api/printers/calibration-candidates',
+  it('keeps the route templates aligned with what the server serves', () => {
+    // These are the values `GET /api/printers` and the calibration-context
+    // route template resolve to under Path D. `printers` replaces the retired
+    // `calibrationCandidates` template; `calibrationContext` stays as a
+    // transitional stub while the per-printer context surface is retired
+    // separately (also removed server-side by #1943).
+    expect(CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.printers).toBe(
+      '/api/printers',
     );
     expect(CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationContext).toBe(
       '/api/printers/{printerId}/calibration-context?slicerType=OrcaSlicer',
@@ -163,8 +116,8 @@ describe('calibration discovery routes', () => {
 });
 
 describe('calibration candidate DTO normalisation', () => {
-  it('parses a real bare-array candidate payload into a usable printer', async () => {
-    const { fetch } = recordingFetch([eligibleCandidateDto()]);
+  it('parses a real bare-array printers payload into a usable candidate', async () => {
+    const { fetch } = recordingFetch([completePrinterDto()]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
     const { printers } = await client.getPrinters(
@@ -178,33 +131,28 @@ describe('calibration candidate DTO normalisation', () => {
     expect(printers[0]!.printerId).toBe(PRINTER_ID);
     expect(printers[0]!.displayName).toBe('Voron 2.4 #1');
     expect(printers[0]!.isOnline).toBe(true);
-    expect(printers[0]!.firmwareCompatible).toBe(true);
-    expect(printers[0]!.eligibility).not.toBeNull();
+    // Path D: `printerModelId` is already on `CompletePrinterDto`, so the
+    // renderer's cascading profile picker no longer needs a per-record
+    // enrichment round-trip.
+    expect(printers[0]!.printerModelId).toBe(MODEL_ID);
+    expect(printers[0]!.printerModel).toBe('Voron 2.4 (350mm)');
   });
 
-  it('keeps an ineligible printer visible with its rejection reasons', async () => {
+  it('parses disabled and in-maintenance printers so the handler can filter them', async () => {
+    // The wire schema is inclusive: it projects every printer the server
+    // returns. Selection filtering (skipping disabled or in-maintenance
+    // printers) happens in the IPC handler, not here, so the schema keeps
+    // both fields on the projected record for the handler to gate on.
     const { fetch } = recordingFetch([
-      eligibleCandidateDto({
-        eligible: false,
-        // `slicer.engine`, as the server actually spells it — an earlier
-        // fixture said `slicer_engine`, which no PrintFarmer build emits, so
-        // it could not have caught a field-path regression.
-        missingInputs: ['slicer.engine'],
-        rejectionReasons: [
-          {
-            code: 'firmware_family_not_klipper',
-            field: 'firmware.family',
-            message: 'Firmware family is not Klipper.',
-          },
-        ],
-        firmware: {
-          family: 'Marlin',
-          gcodeDialect: 'Marlin',
-          detectionSource: 'probe',
-          version: null,
-          verified: false,
-        },
+      completePrinterDto({
+        id: 'cccccccc-3333-4333-8333-444444444444',
+        isEnabled: false,
       }),
+      completePrinterDto({
+        id: 'dddddddd-4444-4444-8444-555555555555',
+        inMaintenance: true,
+      }),
+      completePrinterDto(),
     ]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
@@ -214,38 +162,24 @@ describe('calibration candidate DTO normalisation', () => {
       AbortSignal.timeout(5_000),
     );
 
-    // Present, but explicitly not calibratable, and able to say why.
-    expect(printers).toHaveLength(1);
-    expect(printers[0]!.eligibility).toBeNull();
-    expect(printers[0]!.firmwareCompatible).toBe(false);
-    expect(printers[0]!.rejectionReasons[0]!.code).toBe(
-      'firmware_family_not_klipper',
+    expect(printers).toHaveLength(3);
+    const disabled = printers.find(
+      (p) => p.printerId === 'cccccccc-3333-4333-8333-444444444444',
     );
-  });
-
-  it('refuses eligibility that the server did not explicitly grant', async () => {
-    // Firmware and slicer look right, but the server's own verdict is false.
-    // Eligibility must follow PrintFarmer, never a locally re-derived guess.
-    const { fetch } = recordingFetch([
-      eligibleCandidateDto({ eligible: false }),
-    ]);
-    const client = new CalibrationHttpClient(tokens(), { fetch });
-
-    const { printers } = await client.getPrinters(
-      PROFILE_ID,
-      BASE_URL,
-      AbortSignal.timeout(5_000),
+    expect(disabled?.isEnabled).toBe(false);
+    const maintenance = printers.find(
+      (p) => p.printerId === 'dddddddd-4444-4444-8444-555555555555',
     );
-
-    expect(printers[0]!.eligibility).toBeNull();
+    expect(maintenance?.inMaintenance).toBe(true);
+    const healthy = printers.find((p) => p.printerId === PRINTER_ID);
+    expect(healthy?.isEnabled).toBe(true);
+    expect(healthy?.inMaintenance).toBe(false);
   });
 
   it('drops a malformed candidate and counts it, rather than emptying silently', async () => {
-    // This used to assert that the whole request rejected. That was the right
-    // instinct — a malformed payload must never be swallowed — but the wrong
-    // mechanism: the response is parsed as one value, so failing it discarded
-    // every healthy printer alongside the bad one. The intent is preserved by
-    // reporting the loss instead of hiding it.
+    // A malformed payload must never be swallowed. Failing the whole request
+    // used to discard every healthy printer alongside the bad one; the
+    // response is now split so the loss is reported instead of hidden.
     const { fetch } = recordingFetch([{ id: 'not-a-guid', name: '' }]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
@@ -262,7 +196,7 @@ describe('calibration candidate DTO normalisation', () => {
   it('keeps the healthy printers when one candidate beside them is malformed', async () => {
     const { fetch } = recordingFetch([
       { id: 'not-a-guid', name: '' },
-      eligibleCandidateDto(),
+      completePrinterDto(),
     ]);
     const client = new CalibrationHttpClient(tokens(), { fetch });
 
@@ -326,6 +260,10 @@ describe('calibration discovery error discrimination', () => {
   });
 
   it('maps route drift to notFound rather than an empty result', async () => {
+    // This is the shape the retired `/api/printers/calibration-candidates`
+    // returned once #1943 removed the endpoint — the runtime break Vasquez
+    // reported. If the desktop ever regresses back to that route, this
+    // assertion catches it.
     const { fetch } = recordingFetch({ status: 404 }, { status: 404 });
     const client = new CalibrationHttpClient(tokens(), { fetch });
 

@@ -44,10 +44,10 @@ const WORKSPACES: readonly WorkspaceDefinition[] = [
   },
   {
     id: 'calibration',
-    label: 'Printer Calibration',
+    label: 'Filament Calibration',
     icon: 'calibration',
     landmarkId: 'calibration-main',
-    skipTarget: 'printer calibration',
+    skipTarget: 'filament calibration',
     headingSelector: '[data-cal-heading]',
     group: 'places',
   },

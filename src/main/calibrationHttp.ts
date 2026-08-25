@@ -94,33 +94,35 @@ export const CALIBRATION_QUEUE_ROUTE_TEMPLATES = {
 } as const;
 
 /**
- * Canonical printer-discovery route templates (issue: calibration discovery
- * 404 drift).
+ * Canonical printer-discovery route templates.
  *
- * These are the two routes the calibration wizard needs before it can show a
- * single printer. They are NOT under `/api/calibration/...`: PrintFarmer serves
- * them from `PrinterCalibrationController`, which is `[Route("api/printers")]`.
+ * `PrinterCalibrationController` — which had served both
+ * `/api/printers/calibration-candidates` and
+ * `/api/printers/{id}/calibration-context` — was removed by
+ * OlyForge3D/PrintFarmer#1943 alongside the `IsExplicitlyEligible` gate.
+ * Under Path D there is no server-side eligibility screen: every printer
+ * `PrintersController.GetAsync` returns is a valid calibration candidate,
+ * and the plain printers list is the only surviving discovery source.
  *
- * Verified three ways against production `0.2.3+125d2c9b2`:
- * 1. `PrinterCalibrationController.cs` on OlyForge3D/PrintFarmer@development —
- *    `[HttpGet("calibration-candidates")]` and
- *    `[HttpGet("{id:guid}/calibration-context")]`.
- * 2. The live `GET /api/calibration/capabilities` payload, whose `routes`
- *    member advertises exactly these two paths.
- * 3. Live GET probes: the previous `/api/calibration/printers` returns 404
- *    while `/api/printers/calibration-candidates` returns 401 unauthenticated.
- *
- * `slicerType` is a REQUIRED query parameter on the context route. The server
- * compares it with `StringComparison.Ordinal` against
- * `CalibrationContractConstants.SlicerEngine` and returns HTTP 400
- * `unsupported_slicer_type` when it is absent or differs by case. It is pinned
- * here rather than derived from a response so a server-supplied value can never
- * steer the request.
+ * The context route is kept here for the moment as a transitional stub, so
+ * the callers that still reference `printerContext(...)` continue to
+ * typecheck. The endpoint itself is gone on `origin/development`; a caller
+ * that hits it will receive an ordinary 404, surfaced through the same
+ * `CalibrationHttpError` path any other missing resource takes. Removing the
+ * remaining callers is a separate follow-up (the `NewCalibrationProject`
+ * flow relies on it).
  */
 export const CALIBRATION_DISCOVERY_ROUTE_TEMPLATES = {
-  /** GET — printers the server considers calibration candidates. */
-  calibrationCandidates: '/api/printers/calibration-candidates',
-  /** GET — per-printer calibration context; `slicerType` is mandatory. */
+  /** GET — every printer PrintFarmer has, without an eligibility filter. */
+  printers: '/api/printers',
+  /**
+   * GET — per-printer calibration context.
+   *
+   * Retired server-side by #1943; kept here so remaining callers still
+   * typecheck. `slicerType` is preserved in the template because a future
+   * server-orchestrated calibration API is likely to reintroduce a
+   * per-printer context read, and the query parameter is cheap to keep.
+   */
   calibrationContext:
     '/api/printers/{printerId}/calibration-context?slicerType=OrcaSlicer',
 } as const;
@@ -146,9 +148,8 @@ function buildRoute(template: string, params: Record<string, string>): string {
 
 const ROUTES = {
   capabilities: '/api/calibration/capabilities',
-  /** GET — canonical calibration candidate list (see templates above). */
-  printerCandidates:
-    CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.calibrationCandidates,
+  /** GET — every printer PrintFarmer has (see templates above). */
+  printerCandidates: CALIBRATION_DISCOVERY_ROUTE_TEMPLATES.printers,
   /**
    * GET — canonical per-printer calibration context. `slicerType` is pinned to
    * the constant the server requires; it is never taken from a response.

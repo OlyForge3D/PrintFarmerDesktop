@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  CalibrationPrinterCandidate,
   CalibrationSaveWorkspaceStateRequest,
   CalibrationWorkspacePayload,
   deriveCalibrationWorkspaceProjection,
@@ -12,7 +11,6 @@ import {
   isExplicitCalibrationContextComplete,
   isExplicitCalibrationEligibilityComplete,
   prepareCalibrationWorkspaceSave,
-  projectCalibrationEligibility,
   projectCalibrationPrinterContext,
   projectPrintFarmerOrcaProfile,
   RemoteCalibrationProject,
@@ -364,97 +362,16 @@ describe('calibration workspace IPC', () => {
   });
 });
 
-describe('explicit printer eligibility', () => {
-  it('maps incomplete and unknown remote assertions to null', () => {
-    // A printer the server explicitly refuses.
-    const refused = RemoteCalibrationPrinterCandidate.parse(
-      candidateDto({
-        eligible: false,
-        rejectionReasons: [
-          {
-            code: 'firmware_family_not_klipper',
-            field: 'firmware.family',
-            message: 'Firmware family is not Klipper.',
-          },
-        ],
-      }),
-    );
-    expect(projectCalibrationEligibility(refused)).toBeNull();
-    expect(isExplicitCalibrationEligibilityComplete(refused)).toBe(false);
-
-    // Firmware identity the server could not determine.
-    const incomplete = RemoteCalibrationPrinterCandidate.parse(
-      candidateDto({
-        firmware: {
-          family: 'Unknown',
-          gcodeDialect: 'Unknown',
-          detectionSource: 'unknown',
-          version: null,
-          verified: false,
-        },
-      }),
-    );
-    expect(projectCalibrationEligibility(incomplete)).toBeNull();
-    expect(isExplicitCalibrationEligibilityComplete(incomplete)).toBe(false);
-
-    // A slicer distribution outside the upstream allow-list.
-    const fork = RemoteCalibrationPrinterCandidate.parse(
-      candidateDto({
-        slicer: {
-          engine: 'OrcaSlicer',
-          distribution: 'vendorFork',
-          version: '2.4.2',
-          profileFormat: 'orca-json',
-        },
-      }),
-    );
-    expect(projectCalibrationEligibility(fork)).toBeNull();
-    expect(isExplicitCalibrationEligibilityComplete(fork)).toBe(false);
-  });
-
-  it('accepts only the five canonical literals independent of names', () => {
-    const remote = RemoteCalibrationPrinterCandidate.parse(
-      candidateDto({
-        name: 'No Klipper hint',
-        futureRemoteField: 'ignored',
-      }),
-    );
-    const eligibility = projectCalibrationEligibility(remote);
-    const parsed = CalibrationPrinterCandidate.parse({
-      printerId: remote.printerId,
-      displayName: remote.displayName,
-      printerModel: null,
-      firmwareCompatible: true,
-      orcaProfileId: null,
-      isOnline: true,
-      updatedAt: NOW,
-      eligibility,
-    });
-    expect(parsed.eligibility).toEqual({
-      firmwareFamily: 'Klipper',
-      gcodeDialect: 'Klipper',
-      slicerFamily: 'OrcaSlicer',
-      slicerDistribution: 'upstream',
-      slicerIdentity: 'OrcaSlicer',
-      hardwareContextComplete: true,
-      safetyContextComplete: true,
-      permissionsComplete: true,
-      reasons: [],
-    });
-    expect(isExplicitCalibrationEligibilityComplete(remote)).toBe(true);
-  });
-
-  it('never grants eligibility the server withheld, whatever the name says', () => {
-    // Every identity field reads as compatible, but PrintFarmer's own verdict
-    // is false. The client must follow the server, not re-derive a verdict.
-    const misleading = RemoteCalibrationPrinterCandidate.parse(
-      candidateDto({
-        name: 'Klipper OrcaSlicer upstream',
-        eligible: false,
-      }),
-    );
-    expect(projectCalibrationEligibility(misleading)).toBeNull();
-  });
+describe.skip('explicit printer eligibility (Path D: eligibility gate retired)', () => {
+  // The eligibility gate at `/api/printers/calibration-candidates` was
+  // retired by `OlyForge3D/PrintFarmer#1943`. The candidate list now
+  // projects `CompletePrinterDto` with no eligibility metadata, so the
+  // client no longer runs an eligibility projection and these scenarios do
+  // not apply. Kept as `describe.skip` so the intent is discoverable if the
+  // shape ever returns.
+  it('maps incomplete and unknown remote assertions to null', () => {});
+  it('accepts only the five canonical literals independent of names', () => {});
+  it('never grants eligibility the server withheld, whatever the name says', () => {});
 });
 
 /**
@@ -465,8 +382,19 @@ function candidateDto(overrides: Record<string, unknown> = {}) {
   return {
     id: PRINTER_GUID,
     name: 'Any arbitrary printer name',
+    // Under Path D the candidate list projects `CompletePrinterDto`, which
+    // spells this field `isEnabled` (not `enabled`). Kept explicit rather
+    // than deleted so a legacy fixture cannot silently degrade the candidate
+    // to disabled and mask a genuine projection regression.
+    isEnabled: true,
     enabled: true,
     inMaintenance: false,
+    // `CompletePrinterDto.IsOnline` under Path D. The old fixture leaned on
+    // `reachability`/`operationalState` to imply online-ness; the new wire
+    // schema reads the boolean directly and defaults it to `false` when
+    // absent, so it must be set explicitly for a candidate the projection
+    // should treat as reachable.
+    isOnline: true,
     backend: 'Moonraker',
     configurationRevision: 7,
     reachability: 'online',
@@ -1023,10 +951,17 @@ describe('PrintFarmer Orca profile discovery projection', () => {
   });
 
   it('omits incomplete or ineligible contexts regardless of names', () => {
-    // Reads as fully compatible; the server's verdict says otherwise.
-    const misleadingName = remoteCandidate({
+    // Under Path D the candidate-side eligibility verdict (`eligible`,
+    // `rejectionReasons`, `missingInputs`) has been retired from the wire.
+    // The last remaining candidate-side rejection surface is the enabled /
+    // maintenance flag pair the handler filters on; a candidate the wire
+    // says is disabled must still refuse to project a profile, and this
+    // sub-case is what proves the flag is honoured. The pre-Path-D
+    // "misleading printer name overrides the server verdict" scenario is
+    // no longer producible because the server no longer produces a verdict.
+    const disabledCandidate = remoteCandidate({
       name: 'Klipper OrcaSlicer upstream',
-      eligible: false,
+      isEnabled: false,
     });
     const missingRevision = RemoteCalibrationPrinterContext.parse(
       contextDto({
@@ -1055,7 +990,7 @@ describe('PrintFarmer Orca profile discovery projection', () => {
 
     expect(
       projectPrintFarmerOrcaProfile(
-        misleadingName,
+        disabledCandidate,
         RemoteCalibrationPrinterContext.parse(contextDto()),
       ),
     ).toBeNull();

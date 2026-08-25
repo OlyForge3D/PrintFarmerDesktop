@@ -803,7 +803,13 @@ const DIAGNOSE_PREAMBLE_ONLY_RECURRENCE = [
   'Escalate to the on-call engineer.',
 ].join('\n');
 
-describe('calibration documentation reference integrity', () => {
+describe.skip('calibration documentation reference integrity', () => {
+  // Skipped under #756: this guard scanned the printer-calibration saga
+  // documentation (admin guide, user guide, incident runbooks for the worker,
+  // orchestration, dispatch and Orca install/restore paths). All of that
+  // surface was reaped with the saga; the docs themselves were deleted in the
+  // same change. Restore this guard against the filament-calibration
+  // documentation surface when it exists.
   it('resolves the seven named runbooks, the rollout procedure and both operator guides', () => {
     // Without this the scans below are vacuous: an empty document set passes
     // every "no unknown reference" assertion while proving nothing.

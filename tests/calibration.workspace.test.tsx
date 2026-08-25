@@ -259,42 +259,14 @@ const candidates: CalibrationPrinterCandidate[] = [
     displayName: 'Klipper Orca Super Printer',
     printerModel: null,
     printerModelId: null,
-    firmwareCompatible: false,
-    orcaProfileId: 'orca-base',
     isOnline: true,
-    updatedAt: now,
-    // Explicitly ineligible: the server named a reason, so the renderer can
-    // explain the refusal instead of showing an unexplained absence.
-    // Basic screening only; the candidate list does not resolve profiles.
-    evaluationScope: 'preliminary' as const,
-    rejectionReasonCodes: ['firmware_family_not_klipper'],
-    missingInputs: [],
-    eligibility: null,
   },
   {
     printerId: 'printer-safe',
     displayName: 'Unbranded cell 7',
     printerModel: 'Machine 400',
     printerModelId: null,
-    firmwareCompatible: true,
-    orcaProfileId: null,
     isOnline: true,
-    updatedAt: now,
-    // Basic screening only; the candidate list does not resolve profiles.
-    evaluationScope: 'preliminary' as const,
-    rejectionReasonCodes: [],
-    missingInputs: [],
-    eligibility: {
-      firmwareFamily: 'Klipper',
-      gcodeDialect: 'Klipper',
-      slicerFamily: 'OrcaSlicer',
-      slicerDistribution: 'upstream',
-      slicerIdentity: 'OrcaSlicer',
-      hardwareContextComplete: true,
-      safetyContextComplete: true,
-      permissionsComplete: true,
-      reasons: [],
-    },
   },
 ];
 
@@ -444,7 +416,7 @@ function makeApi(savedRecord = record()) {
       );
     },
   );
-  return {
+  const base = {
     getCalibrationAvailability: vi.fn().mockResolvedValue(availability()),
     listCalibrationWorkspaceStates: vi
       .fn()
@@ -514,11 +486,6 @@ function makeApi(savedRecord = record()) {
         printersTruncated: false,
       }),
     ),
-    listCalibrationConflicts: vi
-      .fn<CalibrationApi['listCalibrationConflicts']>()
-      .mockResolvedValue({ conflicts: [] }),
-    resolveCalibrationConflict:
-      vi.fn<CalibrationApi['resolveCalibrationConflict']>(),
     syncCalibrationNow: vi.fn().mockResolvedValue({
       phase: 'succeeded',
       profileId,
@@ -529,103 +496,10 @@ function makeApi(savedRecord = record()) {
       cursor: null,
       error: null,
     }),
-    openCalibrationPhoto: vi.fn().mockResolvedValue(null),
-    stageCalibrationPhoto: vi.fn<CalibrationApi['stageCalibrationPhoto']>(),
-    generateOrcaProfile: vi
-      .fn<CalibrationApi['generateOrcaProfile']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'workspaceNotReady',
-          message: 'Not implemented in test.',
-          retryable: false,
-        },
-      }),
     exportOrcaProfile: vi
       .fn<CalibrationApi['exportOrcaProfile']>()
       .mockResolvedValue({
         status: 'canceled',
-      }),
-    installOrcaProfile: vi
-      .fn<CalibrationApi['installOrcaProfile']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'unsupportedPlatform',
-          message: 'Not implemented in test.',
-          retryable: false,
-        },
-      }),
-    restoreOrcaProfile: vi
-      .fn<CalibrationApi['restoreOrcaProfile']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'unsupportedPlatform',
-          message: 'Not implemented in test.',
-          retryable: false,
-        },
-      }),
-    // --- Calibration generation, queue, and bed-clear (issue #54) ----------
-    startCalibrationGeneration: vi
-      .fn<CalibrationApi['startCalibrationGeneration']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'serverError',
-          message: 'Not implemented in test.',
-          retryable: false,
-          retryAfterSeconds: null,
-          reference: null,
-        },
-      }),
-    getCalibrationOrchestrationStatus: vi
-      .fn<CalibrationApi['getCalibrationOrchestrationStatus']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'serverError',
-          message: 'Not implemented in test.',
-          retryable: false,
-          retryAfterSeconds: null,
-          reference: null,
-        },
-      }),
-    getCalibrationQueueState: vi
-      .fn<CalibrationApi['getCalibrationQueueState']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'serverError',
-          message: 'Not implemented in test.',
-          retryable: false,
-          retryAfterSeconds: null,
-          reference: null,
-        },
-      }),
-    acknowledgeCalibrationBedClear: vi
-      .fn<CalibrationApi['acknowledgeCalibrationBedClear']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'serverError',
-          message: 'Not implemented in test.',
-          retryable: false,
-          retryAfterSeconds: null,
-          reference: null,
-        },
-      }),
-    startCalibrationPrint: vi
-      .fn<CalibrationApi['startCalibrationPrint']>()
-      .mockResolvedValue({
-        status: 'error',
-        error: {
-          code: 'serverError',
-          message: 'Not implemented in test.',
-          retryable: false,
-          retryAfterSeconds: null,
-          reference: null,
-        },
       }),
     // --- Queue reconciliation (issue #54) ------------------------------------
     pollCalibrationQueueChanges: vi
@@ -732,6 +606,26 @@ function makeApi(savedRecord = record()) {
       .fn<CalibrationApi['clearFilamentCalibrationWizardState']>()
       .mockResolvedValue({ cleared: true }),
   } satisfies CalibrationApi;
+  // Saga stubs removed in #756 — added outside satisfies so describe.skip blocks compile.
+  return Object.assign(base, {
+    listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    resolveCalibrationConflict: vi.fn(),
+    openCalibrationPhoto: vi.fn().mockResolvedValue(null),
+    stageCalibrationPhoto: vi.fn(),
+    generateOrcaProfile: vi.fn(),
+    installOrcaProfile: vi.fn(),
+    restoreOrcaProfile: vi.fn(),
+    startCalibrationGeneration: vi.fn(),
+    getCalibrationOrchestrationStatus: vi.fn(),
+    getCalibrationQueueState: vi.fn(),
+    acknowledgeCalibrationBedClear: vi.fn(),
+    startCalibrationPrint: vi.fn(),
+    listCalibrationProjects: vi.fn(),
+    getCalibrationProject: vi.fn(),
+    saveCalibrationDraft: vi.fn(),
+    listCalibrationAttempts: vi.fn(),
+    getCalibrationAttempt: vi.fn(),
+  });
 }
 
 function deferred<T>(): {
@@ -791,7 +685,18 @@ function renderWorkspace(
 beforeEach(() => vi.restoreAllMocks());
 afterEach(() => vi.useRealTimers());
 
-describe('CalibrationWorkspace', () => {
+describe.skip('CalibrationWorkspace', () => {
+  // Skipped under #756: this 70-test suite exercised the printer-calibration
+  // saga UI end-to-end -- "New calibration project" button, "Review conflicts"
+  // button, project list, editable Project name, step workflow, report/profile
+  // patch, and the workspace-state save-on-leave flush. That entire surface
+  // was removed with the saga renderers (NewCalibrationProject.tsx,
+  // ProjectOverview.tsx, CalibrationStepWorkflow.tsx, CalibrationReportAndProfile.tsx,
+  // CalibrationConflictDialog.tsx, and their siblings) in this PR. The
+  // filament-calibration wizard has its own dedicated suites
+  // (filamentCalibration.acceptance.test.ts, filamentCalibrationWizard.test.tsx).
+  // Skip is preferred over deletion so the saga contract is preserved in git
+  // history alongside the wizard's replacement contract.
   it('shows precise no-profile and offline states while keeping local projects resumable', async () => {
     const noProfile = renderWorkspace(makeApi(), null);
     expect(
@@ -813,7 +718,8 @@ describe('CalibrationWorkspace', () => {
     );
   });
 
-  it('opens the authoritative conflict review even when workspace flags report zero', async () => {
+  // Skipped under #756: the saga's listCalibrationConflicts channel was removed with the printer-calibration saga in this PR.
+  it.skip('opens the authoritative conflict review even when workspace flags report zero', async () => {
     const { api } = renderWorkspace();
     const review = await screen.findByRole('button', {
       name: 'Review conflicts',
@@ -1097,44 +1003,14 @@ describe('CalibrationWorkspace', () => {
     expect(screen.queryByText(/could not be read/)).toBeNull();
   });
 
-  it('uses explicit candidate eligibility independent of printer names', async () => {
-    const { api } = renderWorkspace();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'New calibration project' }),
-    );
-    const trap = await screen.findByRole('radio', {
-      name: /Klipper Orca Super Printer/,
-    });
-    fireEvent.click(trap);
-    expect(
-      screen.getByRole('button', { name: 'Continue with this printer' }),
-    ).toBeDisabled();
-    // The server named `firmware_family_not_klipper`, so that is what the
-    // operator must be told. Asserting the old generic sentence is absent is
-    // the load-bearing half: it passed for every refusal alike, so a test that
-    // only looked for *some* refusal text could not tell an explanation from a
-    // shrug.
-    expect(
-      screen.getAllByText(/Calibration currently requires Klipper firmware/)
-        .length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.queryByText(/canonical Klipper, OrcaSlicer, upstream eligibility/),
-    ).toBeNull();
-
-    fireEvent.click(screen.getByRole('radio', { name: /Unbranded cell 7/ }));
-    const load = screen.getByRole('button', {
-      name: 'Continue with this printer',
-    });
-    expect(load).toBeEnabled();
-    fireEvent.click(load);
-    expect(
-      await screen.findByText(/Configuration is complete and current/),
-    ).toBeInTheDocument();
-    expect(api.getCalibrationPrinterContext).toHaveBeenCalledWith({
-      profileId,
-      printerId: 'printer-safe',
-    });
+  it.skip('uses explicit candidate eligibility independent of printer names (Path D: eligibility gate retired)', async () => {
+    // The `/api/printers/calibration-candidates` route and its per-printer
+    // `rejectionReasonCodes`/`eligibility` metadata were retired by
+    // `OlyForge3D/PrintFarmer#1943`. `NewCalibrationProject` used those to
+    // render the "Continue" button disabled and to show the refusal wording
+    // asserted here. Under Path D there is no server-side eligibility, so
+    // the "Klipper firmware" sentence is no longer produced. Kept as
+    // `it.skip` so the intent is discoverable if the shape ever returns.
   });
 
   it('creates a complete explicit project and persists the exact workspace payload', async () => {
@@ -1482,7 +1358,8 @@ describe('CalibrationWorkspace', () => {
     ).toBe(true);
   });
 
-  it('stages opaque approved photo IDs and handles cancel and format failure', async () => {
+  // Skipped under #756: the saga's stageCalibrationPhoto channel was removed with the printer-calibration saga in this PR.
+  it.skip('stages opaque approved photo IDs and handles cancel and format failure', async () => {
     const saved = record(withActiveAttempt());
     const api = makeApi(saved);
     api.openCalibrationPhoto
@@ -1825,7 +1702,8 @@ describe('CalibrationWorkspace', () => {
     ).toBeInTheDocument();
   });
 
-  it('does not resurrect a late generated profile after switching projects', async () => {
+  // Skipped under #756: the saga's generateOrcaProfile channel was removed with the printer-calibration saga in this PR.
+  it.skip('does not resurrect a late generated profile after switching projects', async () => {
     const secondProjectId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const completed = withCompletedAttempt();
     const finalAttemptId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -1920,7 +1798,8 @@ describe('CalibrationWorkspace', () => {
         Promise.resolve(request.projectId === secondProjectId ? second : first),
     );
     const generation =
-      deferred<Awaited<ReturnType<CalibrationApi['generateOrcaProfile']>>>();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      deferred<any>();
     api.generateOrcaProfile.mockReturnValue(generation.promise);
     renderWorkspace(api);
 
@@ -3512,6 +3391,7 @@ describe('CalibrationWorkspace', () => {
       await waitFor(() => {
         const calls = api.acknowledgeCalibrationBedClear.mock.calls;
         expect(calls.length).toBeGreaterThanOrEqual(2);
+        /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
         const firstArgs = calls[0]?.[0];
         const secondArgs = calls[1]?.[0];
         expect(secondArgs?.rowVersion).toBe('REFRESHED_JOB==');
@@ -3519,6 +3399,7 @@ describe('CalibrationWorkspace', () => {
         expect(secondArgs?.dispatchStateRowVersion).toBe('REFRESHED_DISP==');
         expect(secondArgs?.dispatchStateRevision).toBe(3);
         expect(secondArgs?.operationId).toBe(firstArgs?.operationId);
+        /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
       });
     });
   });
@@ -3994,6 +3875,7 @@ describe('CalibrationWorkspace', () => {
     fireEvent.click(queueBtn);
 
     await waitFor(() => expect(api.startCalibrationPrint).toHaveBeenCalled());
+    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
     const callArg = api.startCalibrationPrint.mock.calls[0]?.[0];
     expect(callArg?.machineProfileSha256).toBe(
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -4006,6 +3888,7 @@ describe('CalibrationWorkspace', () => {
     // Mutation test: set filamentProfileSha256 = machineProfileSha256 → this
     // expect(null) fails, catching the false-provenance regression.
     expect(callArg?.filamentProfileSha256).toBeNull();
+    /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
   });
 
   it('stale machineProfileSha256 (job differs from selectedBaseProfile) causes configChange block (criterion 11)', async () => {

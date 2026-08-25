@@ -652,14 +652,14 @@ export function CalibrationWorkspaceStoreProvider({
             ...current,
             [projectId]: parsed.message,
           }));
-          setView('overview');
+          setView('dashboard');
           reportError(parsed.message);
           return;
         }
         hydrateActiveProject({ record, domainState: parsed.state });
         setRecords((current) => replaceRecord(current, record));
         setSelectedStageId(parsed.state.currentStageId);
-        setView('overview');
+        setView('dashboard');
         setLiveMessage(
           `${record.displayName} resumed from its exact saved state.`,
         );
@@ -770,7 +770,7 @@ export function CalibrationWorkspaceStoreProvider({
         }
       }
       setSelectedStageId(stageId);
-      setView('step');
+      setView('dashboard');
     },
     [dispatchEvent, environment, flush, reportError],
   );
@@ -1189,7 +1189,7 @@ export function CalibrationWorkspaceStoreProvider({
           return next;
         });
         setSelectedStageId('temperature');
-        setView('overview');
+        setView('dashboard');
         setLiveMessage('Project saved locally; synchronization is queued.');
         return true;
       } catch (cause) {
@@ -1393,13 +1393,11 @@ export function CalibrationWorkspaceStoreProvider({
         }
         if (
           !candidates.printers.some(
-            (candidate) =>
-              candidate.printerId === project.record.printerId &&
-              candidate.evaluationScope === 'preliminary',
+            (candidate) => candidate.printerId === project.record.printerId,
           )
         ) {
           reportError(
-            'PrintFarmer no longer lists this project printer as a preliminary calibration candidate.',
+            'PrintFarmer no longer lists this project printer as a calibration candidate.',
           );
           return null;
         }
@@ -1502,56 +1500,21 @@ export function CalibrationWorkspaceStoreProvider({
       reportError('Open a calibration project before generating a profile.');
       return;
     }
-    const operationId = environment.createId();
     setLiveMessage(
       'Generating OrcaSlicer filament profile from calibration data.',
     );
     setAlertMessage(null);
     try {
-      const result = await calibrationApi().generateOrcaProfile({
-        profileId,
-        projectId: project.record.projectId,
-        operationId,
-      });
-      const currentProject = activeProjectRef.current;
-      if (
-        profileIdRef.current !== profileId ||
-        currentProject?.record.projectId !== project.record.projectId ||
-        currentProject.domainState.binding.snapshot.snapshotId !==
-          project.domainState.binding.snapshot.snapshotId
-      ) {
-        return;
-      }
-      if (result.status === 'error') {
-        reportError(`Profile generation failed: ${result.error.message}`);
-        return;
-      }
-      setGeneratedProfile({
-        operationId,
-        profileId,
-        projectId: project.record.projectId,
-        snapshotId: project.domainState.binding.snapshot.snapshotId,
-        displayName: result.displayName,
-        safeFilename: result.safeFilename,
-        profileJsonHash: result.profileJsonHash,
-        patchedFieldCount: result.patchedFieldCount,
-        warnings: result.warnings,
-        installedHash: null,
-        backupHash: null,
-        exportedHash: null,
-      });
-      const warningSuffix =
-        result.warnings.length > 0
-          ? ` ${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'}.`
-          : '';
-      setLiveMessage(
-        `Profile "${result.displayName}" generated with ${result.patchedFieldCount} calibrated field${result.patchedFieldCount === 1 ? '' : 's'}.${warningSuffix}`,
+      await Promise.resolve();
+      reportError(
+        'Generating OrcaSlicer profiles is unavailable in this build.',
       );
+      return;
     } catch (cause) {
       if (profileIdRef.current !== profileId) return;
       reportError(errorMessage(cause, 'OrcaSlicer profile generation failed.'));
     }
-  }, [environment, reportError]);
+  }, [reportError]);
 
   const exportProfile = useCallback(async (): Promise<void> => {
     const profileId = profileIdRef.current;
@@ -1609,32 +1572,11 @@ export function CalibrationWorkspaceStoreProvider({
     setLiveMessage('Installing OrcaSlicer filament profile transactionally.');
     setAlertMessage(null);
     try {
-      const result = await calibrationApi().installOrcaProfile({
-        profileId,
-        projectId: project.record.projectId,
-        snapshotId: project.domainState.binding.snapshot.snapshotId,
-        operationId: generatedProfile.operationId,
-        confirmedProfileJsonHash: generatedProfile.profileJsonHash,
-      });
-      if (profileIdRef.current !== profileId) return;
-      if (result.status === 'error') {
-        reportError(
-          `Profile installation failed: ${result.error.message}. Your existing OrcaSlicer profile was not changed. Select Restore from backup if a backup exists, then select Install transactionally to retry.`,
-        );
-        return;
-      }
-      setGeneratedProfile((prev) =>
-        prev
-          ? {
-              ...prev,
-              installedHash: result.installedHash,
-              backupHash: result.backupHash,
-            }
-          : prev,
+      await Promise.resolve();
+      reportError(
+        'Installing OrcaSlicer profiles is unavailable in this build.',
       );
-      setLiveMessage(
-        `Profile "${generatedProfile.displayName}" installed successfully. A backup was created.`,
-      );
+      return;
     } catch (cause) {
       if (profileIdRef.current !== profileId) return;
       reportError(
@@ -1657,22 +1599,11 @@ export function CalibrationWorkspaceStoreProvider({
     setLiveMessage('Restoring OrcaSlicer profile from backup.');
     setAlertMessage(null);
     try {
-      const result = await calibrationApi().restoreOrcaProfile({
-        profileId,
-        operationId: generatedProfile.operationId,
-        backupHash: generatedProfile.backupHash,
-      });
-      if (profileIdRef.current !== profileId) return;
-      if (result.status === 'error') {
-        reportError(`Profile restore failed: ${result.error.message}`);
-        return;
-      }
-      setGeneratedProfile((prev) =>
-        prev ? { ...prev, installedHash: null, backupHash: null } : prev,
+      await Promise.resolve();
+      reportError(
+        'Restoring OrcaSlicer profiles is unavailable in this build.',
       );
-      setLiveMessage(
-        `Profile restored from backup. Hash: ${result.restoredHash.slice(0, 12)}…. Your previous OrcaSlicer profile is back in place. Select Generate OrcaSlicer profile to try the calibrated profile again.`,
-      );
+      return;
     } catch (cause) {
       if (profileIdRef.current !== profileId) return;
       reportError(errorMessage(cause, 'OrcaSlicer profile restore failed.'));

@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 4 as const;
+export const IPC_CONTRACT_VERSION = 5 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -20,33 +20,13 @@ export const IpcChannel = {
   CalibrationListWorkspaceStates: 'calibration:listWorkspaceStates',
   CalibrationGetWorkspaceState: 'calibration:getWorkspaceState',
   CalibrationSaveWorkspaceState: 'calibration:saveWorkspaceState',
-  CalibrationListProjects: 'calibration:listProjects',
-  CalibrationGetProject: 'calibration:getProject',
-  CalibrationSaveDraft: 'calibration:saveDraft',
-  CalibrationListAttempts: 'calibration:listAttempts',
-  CalibrationGetAttempt: 'calibration:getAttempt',
-  OpenCalibrationPhoto: 'calibration:openPhoto',
-  CalibrationStagePhoto: 'calibration:stagePhoto',
-  CalibrationListConflicts: 'calibration:listConflicts',
-  CalibrationResolveConflict: 'calibration:resolveConflict',
   CalibrationSyncNow: 'calibration:syncNow',
   CalibrationGetDiagnostics: 'calibration:getDiagnostics',
-  CalibrationStartGeneration: 'calibration:startGeneration',
-  CalibrationGetOrchestrationStatus: 'calibration:getOrchestrationStatus',
-  CalibrationGetQueueState: 'calibration:getQueueState',
-  CalibrationAcknowledgeBedClear: 'calibration:acknowledgeBedClear',
-  CalibrationStartPrint: 'calibration:startPrint',
   // --- Queue reconciliation (issue #54) ------------------------------------
   CalibrationPollQueueChanges: 'calibration:pollQueueChanges',
   CalibrationGetSubscriptionResources: 'calibration:getSubscriptionResources',
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
-  CalibrationPickLegacyBackupV4: 'calibration:pickLegacyBackupV4',
-  CalibrationImportLegacyBackupV4: 'calibration:importLegacyBackupV4',
-  // --- Upstream Orca filament profiles (issue #55) -------------------------
-  CalibrationGenerateOrcaProfile: 'calibration:generateOrcaProfile',
-  CalibrationInstallOrcaProfile: 'calibration:installOrcaProfile',
-  CalibrationRestoreOrcaProfile: 'calibration:restoreOrcaProfile',
   // --- Machine → process → filament profile cascade ------------------------
   // Five channels for the cascading profile picker: step 1 of the filament
   // calibration workflow ("select the machine profile, the process profile,
@@ -286,20 +266,6 @@ export const OpenModelFileResponse = z
   })
   .nullable();
 export type OpenModelFileResponse = z.infer<typeof OpenModelFileResponse>;
-
-// --- calibration:openPhoto -------------------------------------------------
-
-export const OpenCalibrationPhotoRequest = z.void();
-export type OpenCalibrationPhotoRequest = z.infer<
-  typeof OpenCalibrationPhotoRequest
->;
-export const OpenCalibrationPhotoResponse = z
-  .object({ approvalId: z.string().uuid() })
-  .strict()
-  .nullable();
-export type OpenCalibrationPhotoResponse = z.infer<
-  typeof OpenCalibrationPhotoResponse
->;
 
 // --- model:extractVendorMetadata ------------------------------------------
 
@@ -1723,116 +1689,33 @@ export const CalibrationPrinterCandidate = z
     /**
      * Catalog `PrinterModel` GUID this printer maps to.
      *
-     * Sourced by the main-process handler from `GET /api/printers/{id}/details`
-     * (`OlyForge3D/PrintFarmer:src/infra/Dtos/PrinterDetailsDto.cs:17`) —
-     * `CalibrationCandidateDto` does not include it on the wire. The renderer's
-     * cascading profile picker uses it to call
-     * `GET /api/slicer/profiles/machine/for-model/{modelId}` and to filter
-     * custom machine/process profiles by model.
+     * Sourced directly from `CompletePrinterDto.ModelId`
+     * (`OlyForge3D/PrintFarmer:src/infra/Dtos/CompletePrinterDto.cs` on
+     * `origin/development`). Under Path D `GET /api/printers` — the plain
+     * printers list that replaced the removed calibration-candidates route —
+     * already carries the model Guid, so no per-record `/details` enrichment
+     * round-trip is needed on the way to the renderer.
      *
      * `null` deliberately means "model unknown" — the wire response was
-     * missing the field, the details enrichment fetch failed, or the operator
-     * is running a server build predating the model catalog. The renderer's
-     * permissive fallback (`src/renderer/calibration/profileSelection.ts:49-53`)
-     * shows the wider catalog pool rather than an empty picker in that case.
-     * Encoding "unknown" as an empty string would collapse it into "known
-     * value that matches nothing" and silently defeat the fallback — the exact
-     * shape the calibration contract exists to prevent.
+     * missing the field, or the operator is running a server build predating
+     * the model catalog. The renderer's permissive fallback
+     * (`src/renderer/calibration/profileSelection.ts:49-53`) shows the wider
+     * catalog pool rather than an empty picker in that case. Encoding
+     * "unknown" as an empty string would collapse it into "known value that
+     * matches nothing" and silently defeat the fallback — the exact shape
+     * the calibration contract exists to prevent.
      *
      * Additive on the response schema: `optional().default(null)` means older
-     * or hand-written clients that omit the field still parse; the field is
-     * always populated by the current main-process handler, so no version bump
-     * is needed. `nullable()` covers the "field known, value unknown" case.
+     * or hand-written clients that omit the field still parse; the current
+     * main-process handler forwards whatever the wire says, so no version
+     * bump is needed. `nullable()` covers the "field known, value unknown"
+     * case.
      */
     printerModelId: z.string().uuid().nullable().optional().default(null),
-    /** Whether the printer meets the Klipper firmware/dialect requirement. */
-    firmwareCompatible: z.boolean(),
-    /** OrcaSlicer profile identity associated with this printer. */
-    orcaProfileId: z.string().max(512).nullable(),
     /** Whether PrintFarmer considers this printer currently online. */
     isOnline: z.boolean(),
-    /**
-     * When PrintFarmer last observed this printer, or null when it never has.
-     *
-     * Nullable because `ObservedAtUtc` and `LastSeenAtUtc` are both `DateTime?`
-     * on `CalibrationCandidateDto`: a printer that is enabled but has never
-     * been reached carries neither. Requiring a string here meant one such
-     * printer threw a ZodError that failed the *entire* list — reintroducing
-     * the empty-discovery failure this contract fix exists to remove, through
-     * a different field. Fabricating a timestamp instead would assert an
-     * observation that never happened.
-     */
-    updatedAt: z.string().datetime().nullable(),
-    /**
-     * How far PrintFarmer got when it judged this printer.
-     *
-     * `'preliminary'` means basic screening only: reachability, maintenance
-     * state, firmware family and dialect, slicer engine and distribution. It is
-     * *not* a statement about the printer's slicer profiles, because listing
-     * candidates deliberately does not resolve them.
-     *
-     * `'full'` means profiles were resolved too, which only the per-printer
-     * calibration context does.
-     *
-     * A candidate is therefore always `'preliminary'` unless the server
-     * explicitly reports otherwise. This distinction exists because a
-     * preliminary pass is enough to say "this printer cannot be calibrated" but
-     * never enough to say "this printer is safe to bind a project to" — and
-     * conflating the two would let the cheap screen authorise work that only the
-     * authoritative snapshot can.
-     */
-    evaluationScope: z.literal('preliminary').default('preliminary'),
-    /**
-     * Machine-readable codes for why PrintFarmer judged this printer
-     * ineligible, e.g. `firmware_family_not_klipper`.
-     *
-     * Codes only, never the server's `message` text, and validated against
-     * {@link CALIBRATION_REJECTION_REASON_CODES} rather than merely being
-     * short strings — see that catalogue for why the distinction matters.
-     *
-     * Bounded by {@link CALIBRATION_MAX_REJECTION_REASON_CODES}: the server's
-     * own cap plus the client's one diagnostic.
-     */
-    rejectionReasonCodes: z
-      .array(CalibrationRejectionReasonCode)
-      .max(CALIBRATION_MAX_REJECTION_REASON_CODES)
-      .optional()
-      .default([]),
-    /** Field paths PrintFarmer still needs populated before calibration. */
-    missingInputs: z
-      .array(CalibrationMissingInputField)
-      .max(CALIBRATION_MAX_SERVER_REJECTION_REASONS)
-      .optional()
-      .default([]),
-    eligibility: CalibrationPrinterEligibility.nullable()
-      .optional()
-      .default(null),
   })
-  .strict()
-  .superRefine((candidate, context) => {
-    if (candidate.firmwareCompatible !== (candidate.eligibility !== null)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['firmwareCompatible'],
-        message:
-          'Firmware compatibility must be backed by complete explicit eligibility.',
-      });
-    }
-    // An eligible printer has nothing to explain. If both were allowed at once
-    // the renderer could show a printer as ready and as refused simultaneously.
-    if (
-      candidate.eligibility !== null &&
-      (candidate.rejectionReasonCodes.length > 0 ||
-        candidate.missingInputs.length > 0)
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['rejectionReasonCodes'],
-        message:
-          'An eligible printer cannot also carry rejection reasons or missing inputs.',
-      });
-    }
-  });
+  .strict();
 export type CalibrationPrinterCandidate = z.infer<
   typeof CalibrationPrinterCandidate
 >;
@@ -4644,9 +4527,10 @@ export const CalibrationQueueJobState = z
     printStartAllowed: z.boolean().nullable().optional(),
     /**
      * When `printStartAllowed` is false, the typed reason. This is a
-     * passthrough of `PrintStartBlockedReason` on the server-side job DTO;
-     * see `docs/runbooks/stale-dispatch-lease.md` for the documented
-     * operator surface. Renderer translation is driven from
+     * passthrough of `PrintStartBlockedReason` on the server-side job DTO.
+     * (The `docs/runbooks/stale-dispatch-lease.md` reference formerly here
+     * documented the printer-calibration saga runbook, reaped under #756.)
+     * Renderer translation is driven from
      * `CalibrationApiError.blockedReasonCode` (which carries the code across
      * error responses from `/api/job-queue/{id}/start`); this field is the
      * *steady-state* companion for the same code on the job read path.
@@ -7145,10 +7029,6 @@ export const ipcSchemas = {
     request: OpenModelFileRequest,
     response: OpenModelFileResponse,
   },
-  [IpcChannel.OpenCalibrationPhoto]: {
-    request: OpenCalibrationPhotoRequest,
-    response: OpenCalibrationPhotoResponse,
-  },
   [IpcChannel.ExtractVendorMetadata]: {
     request: ExtractVendorMetadataRequest,
     response: ExtractVendorMetadataResponse,
@@ -7350,38 +7230,6 @@ export const ipcSchemas = {
     request: CalibrationSaveWorkspaceStateRequest,
     response: CalibrationSaveWorkspaceStateResponse,
   },
-  [IpcChannel.CalibrationListProjects]: {
-    request: CalibrationListProjectsRequest,
-    response: CalibrationListProjectsResponse,
-  },
-  [IpcChannel.CalibrationGetProject]: {
-    request: CalibrationGetProjectRequest,
-    response: CalibrationGetProjectResponse,
-  },
-  [IpcChannel.CalibrationSaveDraft]: {
-    request: CalibrationSaveDraftRequest,
-    response: CalibrationSaveDraftResponse,
-  },
-  [IpcChannel.CalibrationListAttempts]: {
-    request: CalibrationListAttemptsRequest,
-    response: CalibrationListAttemptsResponse,
-  },
-  [IpcChannel.CalibrationGetAttempt]: {
-    request: CalibrationGetAttemptRequest,
-    response: CalibrationGetAttemptResponse,
-  },
-  [IpcChannel.CalibrationStagePhoto]: {
-    request: CalibrationStagePhotoRequest,
-    response: CalibrationStagePhotoResponse,
-  },
-  [IpcChannel.CalibrationListConflicts]: {
-    request: CalibrationListConflictsRequest,
-    response: CalibrationListConflictsResponse,
-  },
-  [IpcChannel.CalibrationResolveConflict]: {
-    request: CalibrationResolveConflictRequest,
-    response: CalibrationResolveConflictResponse,
-  },
   [IpcChannel.CalibrationSyncNow]: {
     request: CalibrationSyncNowRequest,
     response: CalibrationSyncNowResponse,
@@ -7389,26 +7237,6 @@ export const ipcSchemas = {
   [IpcChannel.CalibrationGetDiagnostics]: {
     request: CalibrationGetDiagnosticsRequest,
     response: CalibrationGetDiagnosticsResponse,
-  },
-  [IpcChannel.CalibrationStartGeneration]: {
-    request: CalibrationStartGenerationRequest,
-    response: CalibrationStartGenerationResponse,
-  },
-  [IpcChannel.CalibrationGetOrchestrationStatus]: {
-    request: CalibrationGetOrchestrationStatusRequest,
-    response: CalibrationGetOrchestrationStatusResponse,
-  },
-  [IpcChannel.CalibrationGetQueueState]: {
-    request: CalibrationGetQueueStateRequest,
-    response: CalibrationGetQueueStateResponse,
-  },
-  [IpcChannel.CalibrationAcknowledgeBedClear]: {
-    request: CalibrationAcknowledgeBedClearRequest,
-    response: CalibrationAcknowledgeBedClearResponse,
-  },
-  [IpcChannel.CalibrationStartPrint]: {
-    request: CalibrationStartPrintRequest,
-    response: CalibrationStartPrintResponse,
   },
   // --- Queue reconciliation (issue #54) ------------------------------------
   [IpcChannel.CalibrationPollQueueChanges]: {
@@ -7426,27 +7254,6 @@ export const ipcSchemas = {
   [IpcChannel.CalibrationExportOrcaProfile]: {
     request: CalibrationExportOrcaProfileRequest,
     response: CalibrationExportOrcaProfileResponse,
-  },
-  [IpcChannel.CalibrationPickLegacyBackupV4]: {
-    request: CalibrationPickLegacyBackupV4Request,
-    response: CalibrationPickLegacyBackupV4Response,
-  },
-  [IpcChannel.CalibrationImportLegacyBackupV4]: {
-    request: CalibrationImportLegacyBackupV4Request,
-    response: CalibrationImportLegacyBackupV4Response,
-  },
-  // --- Upstream Orca filament profiles (issue #55) -------------------------
-  [IpcChannel.CalibrationGenerateOrcaProfile]: {
-    request: CalibrationGenerateOrcaProfileRequest,
-    response: CalibrationGenerateOrcaProfileResponse,
-  },
-  [IpcChannel.CalibrationInstallOrcaProfile]: {
-    request: CalibrationInstallOrcaProfileRequest,
-    response: CalibrationInstallOrcaProfileResponse,
-  },
-  [IpcChannel.CalibrationRestoreOrcaProfile]: {
-    request: CalibrationRestoreOrcaProfileRequest,
-    response: CalibrationRestoreOrcaProfileResponse,
   },
   [IpcChannel.CalibrationListExtendedProfiles]: {
     request: CalibrationListExtendedProfilesRequest,
@@ -7510,7 +7317,6 @@ export interface PrintFarmerApi {
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
   loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
   openModelFile(): Promise<OpenModelFileResponse>;
-  openCalibrationPhoto(): Promise<OpenCalibrationPhotoResponse>;
   extractVendorMetadata(
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse>;
@@ -7610,51 +7416,12 @@ export interface PrintFarmerApi {
   saveCalibrationWorkspaceState(
     request: CalibrationSaveWorkspaceStateRequest,
   ): Promise<CalibrationSaveWorkspaceStateResponse>;
-  listCalibrationProjects(
-    request: CalibrationListProjectsRequest,
-  ): Promise<CalibrationListProjectsResponse>;
-  getCalibrationProject(
-    request: CalibrationGetProjectRequest,
-  ): Promise<CalibrationGetProjectResponse>;
-  saveCalibrationDraft(
-    request: CalibrationSaveDraftRequest,
-  ): Promise<CalibrationSaveDraftResponse>;
-  listCalibrationAttempts(
-    request: CalibrationListAttemptsRequest,
-  ): Promise<CalibrationListAttemptsResponse>;
-  getCalibrationAttempt(
-    request: CalibrationGetAttemptRequest,
-  ): Promise<CalibrationGetAttemptResponse>;
-  stageCalibrationPhoto(
-    request: CalibrationStagePhotoRequest,
-  ): Promise<CalibrationStagePhotoResponse>;
-  listCalibrationConflicts(
-    request: CalibrationListConflictsRequest,
-  ): Promise<CalibrationListConflictsResponse>;
-  resolveCalibrationConflict(
-    request: CalibrationResolveConflictRequest,
-  ): Promise<CalibrationResolveConflictResponse>;
   syncCalibrationNow(
     request: CalibrationSyncNowRequest,
   ): Promise<CalibrationSyncNowResponse>;
   getCalibrationDiagnostics(
     request: CalibrationGetDiagnosticsRequest,
   ): Promise<CalibrationGetDiagnosticsResponse>;
-  startCalibrationGeneration(
-    request: CalibrationStartGenerationRequest,
-  ): Promise<CalibrationStartGenerationResponse>;
-  getCalibrationOrchestrationStatus(
-    request: CalibrationGetOrchestrationStatusRequest,
-  ): Promise<CalibrationGetOrchestrationStatusResponse>;
-  getCalibrationQueueState(
-    request: CalibrationGetQueueStateRequest,
-  ): Promise<CalibrationGetQueueStateResponse>;
-  acknowledgeCalibrationBedClear(
-    request: CalibrationAcknowledgeBedClearRequest,
-  ): Promise<CalibrationAcknowledgeBedClearResponse>;
-  startCalibrationPrint(
-    request: CalibrationStartPrintRequest,
-  ): Promise<CalibrationStartPrintResponse>;
   // --- Queue reconciliation (issue #54) ------------------------------------
   pollCalibrationQueueChanges(
     request: CalibrationPollQueueChangesRequest,
@@ -7668,20 +7435,6 @@ export interface PrintFarmerApi {
   exportOrcaProfile(
     request: CalibrationExportOrcaProfileRequest,
   ): Promise<CalibrationExportOrcaProfileResponse>;
-  pickLegacyCalibrationBackupV4(): Promise<CalibrationPickLegacyBackupV4Response>;
-  importLegacyCalibrationBackupV4(
-    request: CalibrationImportLegacyBackupV4Request,
-  ): Promise<CalibrationImportLegacyBackupV4Response>;
-  // --- Upstream Orca filament profiles (issue #55) -------------------------
-  generateOrcaProfile(
-    request: CalibrationGenerateOrcaProfileRequest,
-  ): Promise<CalibrationGenerateOrcaProfileResponse>;
-  installOrcaProfile(
-    request: CalibrationInstallOrcaProfileRequest,
-  ): Promise<CalibrationInstallOrcaProfileResponse>;
-  restoreOrcaProfile(
-    request: CalibrationRestoreOrcaProfileRequest,
-  ): Promise<CalibrationRestoreOrcaProfileResponse>;
   // --- Machine → process → filament profile cascade -----------------------
   listCalibrationExtendedProfiles(
     request: CalibrationListExtendedProfilesRequest,

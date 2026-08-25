@@ -65,9 +65,9 @@ const repoRoot = path.resolve(
 );
 const mainDir = path.join(repoRoot, 'src', 'main');
 
-/** Three source entry files representing the three input classes in #158. */
+/** Two source entry files representing the remaining input classes in #158
+ * after #756 reaped the legacy v4 backup importer. */
 const ENTRY_POINTS = [
-  'calibrationImportV4.ts', // legacy v4 backup files, native picker
   'orcaProfileDiscovery.ts', // upstream-Orca profiles, scanned from disk
   'orcaProfileInstall.ts', // upstream-Orca profiles, install/save targets
 ];
@@ -84,7 +84,6 @@ const ENTRY_POINTS = [
  * test green on its own.
  */
 const EXPECTED_CLOSURE_FILES = [
-  'calibrationImportV4.ts',
   'ipc.ts',
   'orcaProfileDiscovery.ts',
   'orcaProfileInstall.ts',
@@ -927,7 +926,10 @@ describe('the closure membership assertion tells a complete closure from a parti
   });
 });
 
-describe('the two excused vectors, and what makes them excusable', () => {
+describe.skip('the two excused vectors, and what makes them excusable', () => {
+  // Skipped under #756: calibrationImportV4.ts was reaped with the printer-
+  // calibration saga. The excuses these tests documented can be reintroduced
+  // when a filament-server calibration importer is designed.
   it('a legacy v4 backup is JSON text rather than an archive', () => {
     const source = readFileSync(
       path.join(mainDir, 'calibrationImportV4.ts'),
