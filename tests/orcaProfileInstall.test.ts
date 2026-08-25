@@ -1956,22 +1956,13 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
 
 import { ipcSchemas, IpcChannel } from '../src/shared/ipc.js';
 
-// Skipped under #756: the saga's CalibrationGenerateOrcaProfile channel was removed with the printer-calibration saga in this PR.
+// Skipped: CalibrationInstallOrcaProfile and CalibrationRestoreOrcaProfile are
+// retained schemas (issue #758 / PrintFarmer #1940 Path D) but are not
+// currently wired into the ipcSchemas registry, since re-adding them awaits a
+// finalized Path D design. CalibrationExportOrcaProfile and
+// CalibrationListOrcaProfiles are live, wired channels included here only for
+// the "all channel strings distinct" check below.
 describe.skip('IPC schema presence for issue #55 channels', () => {
-  it('CalibrationGenerateOrcaProfile is registered in ipcSchemas', () => {
-    expect(
-      ipcSchemas['calibration:generateOrcaProfile' as unknown as IpcChannel],
-    ).toBeDefined();
-    expect(
-      ipcSchemas['calibration:generateOrcaProfile' as unknown as IpcChannel]
-        .request,
-    ).toBeDefined();
-    expect(
-      ipcSchemas['calibration:generateOrcaProfile' as unknown as IpcChannel]
-        .response,
-    ).toBeDefined();
-  });
-
   it('CalibrationInstallOrcaProfile is registered in ipcSchemas', () => {
     expect(
       ipcSchemas['calibration:installOrcaProfile' as unknown as IpcChannel],
@@ -2010,7 +2001,6 @@ describe.skip('IPC schema presence for issue #55 channels', () => {
 
   it('all new channel string values are distinct', () => {
     const channels = [
-      'calibration:generateOrcaProfile' as unknown as IpcChannel,
       'calibration:installOrcaProfile' as unknown as IpcChannel,
       'calibration:restoreOrcaProfile' as unknown as IpcChannel,
       IpcChannel.CalibrationExportOrcaProfile,

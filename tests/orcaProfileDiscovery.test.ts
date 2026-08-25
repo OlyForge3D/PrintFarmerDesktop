@@ -276,8 +276,6 @@ describe('Content hash stability', () => {
 
 import {
   OrcaProfileOperationError,
-  CalibrationGenerateOrcaProfileRequest,
-  CalibrationGenerateOrcaProfileResponse,
   CalibrationInstallOrcaProfileRequest,
   CalibrationInstallOrcaProfileResponse,
   CalibrationRestoreOrcaProfileRequest,
@@ -327,72 +325,6 @@ describe('OrcaProfileOperationError schema', () => {
     const result = OrcaProfileOperationError.safeParse({
       code: 'internalError',
       message: 'Test',
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe('CalibrationGenerateOrcaProfileRequest schema', () => {
-  it('parses a valid request', () => {
-    const result = CalibrationGenerateOrcaProfileRequest.safeParse({
-      profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
-      projectId: 'bbbbbbbb-bbbb-4bbb-8bbb-222222222222',
-      operationId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects missing projectId', () => {
-    const result = CalibrationGenerateOrcaProfileRequest.safeParse({
-      profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
-      operationId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects non-UUID projectId', () => {
-    const result = CalibrationGenerateOrcaProfileRequest.safeParse({
-      profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
-      projectId: 'not-a-uuid',
-      operationId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe('CalibrationGenerateOrcaProfileResponse schema', () => {
-  it('parses ok response', () => {
-    const result = CalibrationGenerateOrcaProfileResponse.safeParse({
-      status: 'ok',
-      displayName: 'Generic PLA [PFD-abc12345]',
-      safeFilename: 'Generic_PLA_PFD-abc12345.json',
-      profileJsonHash: 'a'.repeat(64),
-      patchedFieldCount: 3,
-      warnings: [],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('parses error response', () => {
-    const result = CalibrationGenerateOrcaProfileResponse.safeParse({
-      status: 'error',
-      error: {
-        code: 'baseProfileMissing',
-        message: 'Profile not found.',
-        retryable: false,
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects ok response with invalid hash', () => {
-    const result = CalibrationGenerateOrcaProfileResponse.safeParse({
-      status: 'ok',
-      displayName: 'Profile',
-      safeFilename: 'profile.json',
-      profileJsonHash: 'not-a-hash',
-      patchedFieldCount: 0,
-      warnings: [],
     });
     expect(result.success).toBe(false);
   });
@@ -620,16 +552,6 @@ describe('Renderer privilege denial — export/install IPC contracts', () => {
       operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-222222222222',
       backupHash: 'a'.repeat(64),
       backupPath: 'C:\\Evil\\backup.json', // must be rejected
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('CalibrationGenerateOrcaProfileRequest does not accept baseProfilePath', () => {
-    const result = CalibrationGenerateOrcaProfileRequest.safeParse({
-      profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-111111111111',
-      projectId: 'bbbbbbbb-bbbb-4bbb-8bbb-222222222222',
-      operationId: 'cccccccc-cccc-4ccc-8ccc-333333333333',
-      baseProfilePath: '/home/user/evil.json', // must be rejected
     });
     expect(result.success).toBe(false);
   });

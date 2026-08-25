@@ -1022,25 +1022,6 @@ export type CalibrationCapabilityFlagAdvertisement = z.infer<
 >;
 
 /**
- * What an action claims to act on, so it can be verified against the
- * authoritative context before anything is dispatched.
- *
- * Carried explicitly rather than inferred from the project record because
- * selection fencing and action fencing must agree: the printer and revision an
- * action runs against have to be the ones the operator actually selected and
- * saw, not whatever happens to be current when the request lands.
- */
-export const CalibrationActionBinding = z
-  .object({
-    printerId: z.string().min(1).max(256),
-    configurationRevision: z.number().int().nonnegative().nullable(),
-    snapshotId: z.string().min(1).max(256).nullable(),
-    toolId: z.string().min(1).max(256).nullable(),
-  })
-  .strict();
-export type CalibrationActionBinding = z.infer<typeof CalibrationActionBinding>;
-
-/**
  * Canonical permissions, spelled exactly as PrintFarmer emits them in the
  * capability payload's `effectivePermissions` member.
  *
@@ -3524,30 +3505,6 @@ export const CalibrationProject = z
   .strict();
 export type CalibrationProject = z.infer<typeof CalibrationProject>;
 
-export const CalibrationListProjectsRequest = z
-  .object({ profileId: z.string().uuid() })
-  .strict();
-export type CalibrationListProjectsRequest = z.infer<
-  typeof CalibrationListProjectsRequest
->;
-export const CalibrationListProjectsResponse = z
-  .object({ projects: z.array(CalibrationProjectSummary).max(500) })
-  .strict();
-export type CalibrationListProjectsResponse = z.infer<
-  typeof CalibrationListProjectsResponse
->;
-
-export const CalibrationGetProjectRequest = z
-  .object({ profileId: z.string().uuid(), projectId: z.string().uuid() })
-  .strict();
-export type CalibrationGetProjectRequest = z.infer<
-  typeof CalibrationGetProjectRequest
->;
-export const CalibrationGetProjectResponse = CalibrationProject;
-export type CalibrationGetProjectResponse = z.infer<
-  typeof CalibrationGetProjectResponse
->;
-
 // --- Drafts ----------------------------------------------------------------
 
 /**
@@ -3581,30 +3538,6 @@ export const CalibrationDraftFields = z
   .strict();
 export type CalibrationDraftFields = z.infer<typeof CalibrationDraftFields>;
 
-export const CalibrationSaveDraftRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    fields: CalibrationDraftFields,
-    /** Client-generated idempotency key for this draft save operation. */
-    operationId: z.string().uuid(),
-  })
-  .strict();
-export type CalibrationSaveDraftRequest = z.infer<
-  typeof CalibrationSaveDraftRequest
->;
-export const CalibrationSaveDraftResponse = z
-  .object({
-    /** Updated project aggregate. */
-    project: CalibrationProject,
-    /** Whether the operation was queued in the outbox (offline). */
-    queued: z.boolean(),
-  })
-  .strict();
-export type CalibrationSaveDraftResponse = z.infer<
-  typeof CalibrationSaveDraftResponse
->;
-
 // --- Calibration attempts ---------------------------------------------------
 
 /** A single discrete attempt at one calibration step. Append-only. */
@@ -3629,39 +3562,6 @@ export const CalibrationAttempt = z
   })
   .strict();
 export type CalibrationAttempt = z.infer<typeof CalibrationAttempt>;
-
-export const CalibrationListAttemptsRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    stepId: z.string().uuid(),
-  })
-  .strict();
-export type CalibrationListAttemptsRequest = z.infer<
-  typeof CalibrationListAttemptsRequest
->;
-export const CalibrationListAttemptsResponse = z
-  .object({
-    attempts: z.array(CalibrationAttempt).max(999),
-  })
-  .strict();
-export type CalibrationListAttemptsResponse = z.infer<
-  typeof CalibrationListAttemptsResponse
->;
-
-export const CalibrationGetAttemptRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    attemptId: z.string().uuid(),
-  })
-  .strict();
-export type CalibrationGetAttemptRequest = z.infer<
-  typeof CalibrationGetAttemptRequest
->;
-export const CalibrationGetAttemptResponse = CalibrationAttempt;
-export type CalibrationGetAttemptResponse = z.infer<
-  typeof CalibrationGetAttemptResponse
->;
 
 // --- Calibration events and observations -----------------------------------
 
@@ -3748,6 +3648,11 @@ export type StagedPhoto = z.infer<typeof StagedPhoto>;
 /**
  * Photo staging request. The renderer provides a dialog-approved opaque
  * approval ID; the main process resolves the actual file path.
+ *
+ * Retained intentionally (issue #758) despite having zero current production
+ * consumers: PrintFarmer #1940 (Path D) keeps calibration photos server-side
+ * as a fit for filament calibration, and re-adding this channel only needs
+ * the key/handler/wire/preload wiring restored, not a new contract.
  */
 export const CalibrationStagePhotoRequest = z
   .object({
@@ -4052,24 +3957,6 @@ export const CalibrationConflict = z
   .strict();
 export type CalibrationConflict = z.infer<typeof CalibrationConflict>;
 
-export const CalibrationListConflictsRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid().optional(),
-    /** If true, include already-resolved conflicts. */
-    includeResolved: z.boolean().default(false),
-  })
-  .strict();
-export type CalibrationListConflictsRequest = z.infer<
-  typeof CalibrationListConflictsRequest
->;
-export const CalibrationListConflictsResponse = z
-  .object({ conflicts: z.array(CalibrationConflict).max(1000) })
-  .strict();
-export type CalibrationListConflictsResponse = z.infer<
-  typeof CalibrationListConflictsResponse
->;
-
 export const CalibrationResolveConflictRequest = z
   .object({
     profileId: z.string().uuid(),
@@ -4285,101 +4172,6 @@ export const CalibrationApiError = z
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
 
 /**
- * Method-specific options for calibration G-code generation.
- * Only the fields applicable to the chosen method need to be populated.
- * Uses passthrough so the server can extend the options without breaking the desktop.
- */
-export const CalibrationMethodOptions = z
-  .object({
-    // Temperature tower
-    startCelsius: z.number().int().optional(),
-    endCelsius: z.number().int().optional(),
-    stepCelsius: z.number().int().optional(),
-    // Flow sweep
-    startRatio: z.number().optional(),
-    endRatio: z.number().optional(),
-    stepRatio: z.number().optional(),
-    // Flow verification
-    flowRatio: z.number().optional(),
-    // Pressure advance
-    startPressureAdvance: z.number().optional(),
-    endPressureAdvance: z.number().optional(),
-    stepPressureAdvance: z.number().optional(),
-    lineCount: z.number().int().optional(),
-    lineLengthMillimeters: z.number().optional(),
-    cornersPerRow: z.number().int().optional(),
-    // Retraction
-    startLengthMillimeters: z.number().optional(),
-    endLengthMillimeters: z.number().optional(),
-    stepLengthMillimeters: z.number().optional(),
-    retractionSpeedMillimetersPerSecond: z.number().optional(),
-    // Max volumetric speed
-    startCubicMillimetersPerSecond: z.number().optional(),
-    endCubicMillimetersPerSecond: z.number().optional(),
-    stepCubicMillimetersPerSecond: z.number().optional(),
-    // Shrinkage / final print
-    nominalLengthMillimeters: z.number().optional(),
-    barWidthMillimeters: z.number().optional(),
-    model3DId: z.string().uuid().optional(),
-    expectedSha256: z.string().max(256).optional(),
-  })
-  .passthrough();
-export type CalibrationMethodOptions = z.infer<typeof CalibrationMethodOptions>;
-
-/**
- * Request to trigger G-code generation for a specific calibration attempt.
- * Routes to POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job.
- */
-export const CalibrationStartGenerationRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    /** The calibration attempt to generate G-code for. */
-    attemptId: z.string().uuid(),
-    /** Generation method identifier (e.g. "temperature", "flow"). */
-    method: z.string().min(1).max(256),
-    /** Definition schema version (default "1.0"). */
-    definitionVersion: z.string().min(1).max(64).optional(),
-    /** Method-specific generation options. */
-    options: CalibrationMethodOptions.optional(),
-    /** Client-generated idempotency key for this generation request. */
-    operationId: z.string().uuid(),
-    /**
-     * Optimistic revision of the attempt (long? on server) — 412 if stale.
-     * This is an integer revision counter, NOT a base-64 ETag.
-     */
-    baseRevision: z.number().int().nullable(),
-    /**
-     * The printer context this generation is bound to. Required: generation is
-     * verified against the authoritative context before dispatch, and an action
-     * that names no binding cannot be verified at all.
-     */
-    binding: CalibrationActionBinding,
-  })
-  .strict();
-export type CalibrationStartGenerationRequest = z.infer<
-  typeof CalibrationStartGenerationRequest
->;
-export const CalibrationStartGenerationResponse = z.discriminatedUnion(
-  'status',
-  [
-    z
-      .object({
-        status: z.literal('submitted'),
-        /** Orchestration ID to poll via CalibrationGetOrchestrationStatus. */
-        orchestrationId: z.string().uuid(),
-      })
-      .strict(),
-    z
-      .object({ status: z.literal('error'), error: CalibrationApiError })
-      .strict(),
-  ],
-);
-export type CalibrationStartGenerationResponse = z.infer<
-  typeof CalibrationStartGenerationResponse
->;
-
-/**
  * An individual problem within an orchestration status (validation or execution issue).
  */
 export const CalibrationOrchestrationProblem = z
@@ -4436,34 +4228,6 @@ export const CalibrationOrchestrationStatus = z
   .passthrough();
 export type CalibrationOrchestrationStatus = z.infer<
   typeof CalibrationOrchestrationStatus
->;
-
-/** Poll the status of a G-code generation orchestration. */
-export const CalibrationGetOrchestrationStatusRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    orchestrationId: z.string().uuid(),
-  })
-  .strict();
-export type CalibrationGetOrchestrationStatusRequest = z.infer<
-  typeof CalibrationGetOrchestrationStatusRequest
->;
-export const CalibrationGetOrchestrationStatusResponse = z.discriminatedUnion(
-  'status',
-  [
-    z
-      .object({
-        status: z.literal('ok'),
-        orchestration: CalibrationOrchestrationStatus,
-      })
-      .strict(),
-    z
-      .object({ status: z.literal('error'), error: CalibrationApiError })
-      .strict(),
-  ],
-);
-export type CalibrationGetOrchestrationStatusResponse = z.infer<
-  typeof CalibrationGetOrchestrationStatusResponse
 >;
 
 /**
@@ -4539,164 +4303,6 @@ export const CalibrationQueueJobState = z
   })
   .passthrough();
 export type CalibrationQueueJobState = z.infer<typeof CalibrationQueueJobState>;
-
-export const CalibrationGetQueueStateRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    /** The specific job ID to look up via GET /api/job-queue/{id}. */
-    jobId: z.string().uuid().optional(),
-  })
-  .strict();
-export type CalibrationGetQueueStateRequest = z.infer<
-  typeof CalibrationGetQueueStateRequest
->;
-export const CalibrationGetQueueStateResponse = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('ok'),
-      /** Full queue job state from REST. */
-      job: CalibrationQueueJobState,
-    })
-    .strict(),
-  z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
-]);
-export type CalibrationGetQueueStateResponse = z.infer<
-  typeof CalibrationGetQueueStateResponse
->;
-
-/**
- * Acknowledge that the bed has been cleared before starting an exact calibration job.
- *
- * Calls POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start.
- * THREE preconditions are required by the server:
- *   - `Idempotency-Key` header (from operationId)
- *   - `If-Match` header (from rowVersion — opaque base-64 job ETag)
- *   - `X-Dispatch-State-If-Match` header (from dispatchStateRowVersion — opaque base-64 dispatch state ETag)
- * Any missing precondition returns 428 precondition_required.
- */
-export const CalibrationAcknowledgeBedClearRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    calibrationAttemptId: z.string().uuid(),
-    calibrationOrchestrationId: z.string().uuid(),
-    jobId: z.string().uuid(),
-    operationId: z.string().uuid(),
-    /** Printer UUID for the request body `printerId`. */
-    printerId: z.string().uuid(),
-    /**
-     * Opaque base-64 job rowVersion (from `CalibrationQueueJobState.rowVersion`).
-     * Sent byte-identical as the `If-Match` request header.
-     */
-    rowVersion: z.string().min(1).max(256),
-    jobRevision: z.number().int().nonnegative(),
-    /**
-     * Opaque base-64 dispatch state rowVersion (from `CalibrationQueueJobState.dispatchStateRowVersion`).
-     * Sent byte-identical as the `X-Dispatch-State-If-Match` request header.
-     */
-    dispatchStateRowVersion: z.string().min(1).max(256),
-    dispatchStateRevision: z.number().int().nonnegative(),
-    /** Exact pinned printer configuration revision from the authoritative job. */
-    expectedPrinterConfigRevision: z.number().int().nonnegative(),
-  })
-  .strict();
-export type CalibrationAcknowledgeBedClearRequest = z.infer<
-  typeof CalibrationAcknowledgeBedClearRequest
->;
-export const CalibrationAcknowledgeBedClearResponse = z.discriminatedUnion(
-  'status',
-  [
-    /**
-     * 202 Accepted or 200 OK — acknowledgement was accepted or was an exact
-     * idempotent replay. Updated ETags are included for subsequent operations.
-     */
-    z
-      .object({
-        status: z.literal('ok'),
-        jobRowVersion: z.string().nullable(),
-        dispatchStateRowVersion: z.string().nullable(),
-      })
-      .strict(),
-    /**
-     * 412 Precondition Failed — dispatch_revision_conflict.
-     * The body carries the CURRENT ETags so the caller can retry without a
-     * separate GET.
-     */
-    z
-      .object({
-        status: z.literal('revisionConflict'),
-        jobRowVersion: z.string(),
-        dispatchStateRowVersion: z.string(),
-      })
-      .strict(),
-    z
-      .object({ status: z.literal('error'), error: CalibrationApiError })
-      .strict(),
-  ],
-);
-export type CalibrationAcknowledgeBedClearResponse = z.infer<
-  typeof CalibrationAcknowledgeBedClearResponse
->;
-
-/**
- * Create a FilamentCalibration queue job via POST /api/job-queue.
- * All provenance fields are required by the server to produce an immutable
- * hash record.  ETags are opaque strings, never integers.
- */
-export const CalibrationStartPrintRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    /** Calibration attempt ID that produced the G-code. */
-    attemptId: z.string().uuid(),
-    /** Generation orchestration ID (for idempotency scope). */
-    orchestrationId: z.string().uuid(),
-    /** Promoted G-code file UUID from the orchestration. */
-    gcodeFileId: z.string().uuid(),
-    /** Printer to assign the job to (must be the same printer the context was snapshotted for). */
-    assignedPrinterId: z.string().uuid(),
-    /** Client-generated idempotency key. */
-    operationId: z.string().uuid(),
-    /** Pinned printer config revision — guards against config advancing after snapshot. */
-    pinnedPrinterConfigRevision: z.number().int().nullable(),
-    // --- Immutable provenance / hash set ---
-    gcodeContentSha256: z.string().max(256).nullable(),
-    specificationSha256: z.string().max(256).nullable(),
-    machineProfileSha256: z.string().max(256).nullable(),
-    processProfileSha256: z.string().max(256).nullable(),
-    filamentProfileSha256: z.string().max(256).nullable(),
-    printerConfigSnapshotSha256: z.string().max(256).nullable(),
-    // --- Required slicer dialect for the job runner ---
-    requiredFirmwareFamily: z.string().max(256).nullable(),
-    requiredGcodeDialect: z.string().max(256).nullable(),
-    requiredSlicerEngine: z.string().max(256).nullable(),
-    requiredSlicerDistribution: z.string().max(256).nullable(),
-    requiredSlicerVersion: z.string().max(256).nullable(),
-    requiredSlicerContainerDigest: z.string().max(256).nullable(),
-  })
-  .strict();
-export type CalibrationStartPrintRequest = z.infer<
-  typeof CalibrationStartPrintRequest
->;
-export const CalibrationStartPrintResponse = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('ok'),
-      jobId: z.string().uuid(),
-      /** Opaque base-64 job rowVersion ETag. Use as `If-Match` on bed-clear. */
-      rowVersion: z.string().nullable(),
-      /** Opaque base-64 dispatch state ETag. Use as `X-Dispatch-State-If-Match` on bed-clear. */
-      dispatchStateRowVersion: z.string().nullable(),
-      /** true when this is an exact idempotent replay of a previous request. */
-      replayed: z.boolean(),
-    })
-    .strict(),
-  z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
-]);
-export type CalibrationStartPrintResponse = z.infer<
-  typeof CalibrationStartPrintResponse
->;
 
 // --- Queue reconciliation / change feed (issue #54) ------------------------
 
@@ -5391,45 +4997,9 @@ export const LegacyBackupPreflight = z
 export type LegacyBackupPreflight = z.infer<typeof LegacyBackupPreflight>;
 
 /**
- * Per-project printer mapping: the renderer supplies one mapping per project
- * that requiresPrinterMapping=true. Eligibility is enforced by the main process;
- * the renderer never receives or forwards raw printer data.
- */
-export const LegacyBackupPrinterMapping = z
-  .object({
-    /** Legacy project ID from the backup. */
-    legacyProjectId: z.string().max(256),
-    /** Authoritative PrintFarmer printer ID to map to. */
-    targetPrinterId: z.string().min(1).max(256),
-    /** Authoritative PrintFarmer tool ID for the physical toolhead/nozzle. */
-    targetToolId: z.string().min(1).max(256),
-  })
-  .strict();
-export type LegacyBackupPrinterMapping = z.infer<
-  typeof LegacyBackupPrinterMapping
->;
-
-/**
- * Per-project import result returned after a successful backend operation.
- */
-export const LegacyBackupProjectResult = z
-  .object({
-    legacyProjectId: z.string().max(256),
-    targetProjectId: z.string().uuid(),
-    outcome: z.enum(['created', 'skipped', 'unsupported', 'corrupt', 'error']),
-    detail: z.string().max(512).nullable(),
-    importedAttemptCount: z.number().int().nonnegative(),
-    importedPhotoCount: z.number().int().nonnegative(),
-  })
-  .strict();
-export type LegacyBackupProjectResult = z.infer<
-  typeof LegacyBackupProjectResult
->;
-
-/**
  * Picker channel: shows a native file dialog for a .pfdbak / .json backup file,
  * runs bounded local preflight validation, and returns an approvalId that the
- * renderer passes to CalibrationImportLegacyBackupV4.
+ * renderer passes to the (now-removed) legacy backup import channel.
  *
  * The renderer never receives a filesystem path; the main process owns the
  * approved path for the lifetime of the operation.
@@ -5444,7 +5014,7 @@ export const CalibrationPickLegacyBackupV4Response = z.discriminatedUnion(
     z
       .object({
         status: z.literal('ok'),
-        /** Opaque approval token; pass to CalibrationImportLegacyBackupV4. */
+        /** Opaque approval token. */
         approvalId: z.string().uuid(),
         preflight: LegacyBackupPreflight,
       })
@@ -5459,49 +5029,6 @@ export type CalibrationPickLegacyBackupV4Response = z.infer<
   typeof CalibrationPickLegacyBackupV4Response
 >;
 
-/**
- * Import request for a legacy calibration backup v4 file.
- * The file is identified by an approvalId from CalibrationPickLegacyBackupV4;
- * the renderer cannot supply an arbitrary path.
- */
-export const CalibrationImportLegacyBackupV4Request = z
-  .object({
-    profileId: z.string().uuid(),
-    /** Approval from CalibrationPickLegacyBackupV4. */
-    approvalId: z.string().uuid(),
-    /** Client-generated stable idempotency key for the entire import operation. */
-    operationId: z.string().uuid(),
-    /**
-     * Explicit printer/toolhead mappings for every project where
-     * requiresPrinterMapping=true. Missing mappings cause an error.
-     */
-    printerMappings: z.array(LegacyBackupPrinterMapping).max(10_000),
-  })
-  .strict();
-export type CalibrationImportLegacyBackupV4Request = z.infer<
-  typeof CalibrationImportLegacyBackupV4Request
->;
-export const CalibrationImportLegacyBackupV4Response = z.discriminatedUnion(
-  'status',
-  [
-    z
-      .object({
-        status: z.literal('ok'),
-        summary: LegacyCalibrationBackupSummary,
-        importedProjectCount: z.number().int().nonnegative(),
-        /** Per-project results for audit/report. */
-        projectResults: z.array(LegacyBackupProjectResult).max(10_000),
-      })
-      .strict(),
-    z
-      .object({ status: z.literal('error'), error: CalibrationApiError })
-      .strict(),
-  ],
-);
-export type CalibrationImportLegacyBackupV4Response = z.infer<
-  typeof CalibrationImportLegacyBackupV4Response
->;
-
 // ==========================================================================
 // End of Printer Calibration transport additions
 // ==========================================================================
@@ -5509,67 +5036,21 @@ export type CalibrationImportLegacyBackupV4Response = z.infer<
 // --- Upstream Orca filament profiles (issue #55) ---------------------------
 
 /**
- * Request to generate a calibrated OrcaSlicer filament profile from the
- * current calibration workspace state. The main process reads the workspace
- * observations, resolves the local base profile by orcaProfileId, applies
- * the patch, and caches the generated JSON keyed by operationId. The renderer
- * never supplies the base profile path or generated JSON bytes directly.
- */
-export const CalibrationGenerateOrcaProfileRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    /** Client-generated idempotency key; also used to retrieve cached output. */
-    operationId: z.string().uuid(),
-  })
-  .strict();
-export type CalibrationGenerateOrcaProfileRequest = z.infer<
-  typeof CalibrationGenerateOrcaProfileRequest
->;
-
-export const CalibrationGenerateOrcaProfileResponse = z.discriminatedUnion(
-  'status',
-  [
-    z
-      .object({
-        status: z.literal('ok'),
-        /** Display name for the generated profile. */
-        displayName: z.string().min(1).max(512),
-        /**
-         * Safe filename (no path separators, max 200 chars, .json suffix),
-         * suitable for a save-dialog default name.
-         */
-        safeFilename: z.string().min(1).max(200),
-        /** SHA-256 of the generated profile JSON (exact content identity). */
-        profileJsonHash: z.string().regex(/^[a-f0-9]{64}$/),
-        /** Number of patch fields applied from completed observations. */
-        patchedFieldCount: z.number().int().nonnegative().max(64),
-        /**
-         * Non-blocking warnings about partial calibration, skipped stages,
-         * or unresolved base fields.
-         */
-        warnings: z.array(z.string().max(512)).max(64),
-      })
-      .strict(),
-    z
-      .object({
-        status: z.literal('error'),
-        error: OrcaProfileOperationError,
-      })
-      .strict(),
-  ],
-);
-export type CalibrationGenerateOrcaProfileResponse = z.infer<
-  typeof CalibrationGenerateOrcaProfileResponse
->;
-
-/**
  * Windows-only: transactionally install the generated profile into the
  * canonical OrcaSlicer user-data directory. Requires a prior successful
- * CalibrationGenerateOrcaProfile call with the same operationId. The main
- * process validates that OrcaSlicer is not running, creates a timestamped
- * backup, writes via a temp file, performs readback verification, and
- * atomically replaces the target.
+ * generate step producing the same operationId. The main process validates
+ * that OrcaSlicer is not running, creates a timestamped backup, writes via a
+ * temp file, performs readback verification, and atomically replaces the
+ * target.
+ *
+ * Retained intentionally (issue #758): PrintFarmer #1940 (Path D) plans to
+ * reuse installing a tuned profile into local OrcaSlicer as a plausible
+ * calibration end-step, so re-adding this channel only needs the
+ * key/handler/wire/preload wiring restored, not a new contract. The prior
+ * generate-a-profile schema (`CalibrationGenerateOrcaProfile*`) was removed
+ * with the rest of the printer-calibration saga under issue #756/#758 — Path
+ * D's design is not finalized, so it may return in a different shape rather
+ * than as a straight re-add of the deleted schema.
  */
 export const CalibrationInstallOrcaProfileRequest = z
   .object({
@@ -5577,8 +5058,8 @@ export const CalibrationInstallOrcaProfileRequest = z
     projectId: z.string().uuid(),
     snapshotId: z.string().min(1).max(256),
     /**
-     * Must match the operationId from a prior CalibrationGenerateOrcaProfile
-     * call. Used to retrieve the cached generated profile bytes.
+     * Must match the operationId a prior generate step produced. Used to
+     * retrieve the cached generated profile bytes.
      */
     operationId: z.string().uuid(),
     /**
@@ -5623,6 +5104,10 @@ export type CalibrationInstallOrcaProfileResponse = z.infer<
  * Windows-only: restore a profile from a timestamped backup created during
  * a prior CalibrationInstallOrcaProfile call. Used for explicit user-driven
  * rollback after a confirmed install.
+ *
+ * Retained intentionally (issue #758) as the rollback counterpart to the
+ * retained `CalibrationInstallOrcaProfile` channel for PrintFarmer #1940
+ * (Path D).
  */
 export const CalibrationRestoreOrcaProfileRequest = z
   .object({
@@ -6053,9 +5538,9 @@ export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 // documented at §C.2 of `printfarmer-api-contract.md` says system profiles are
 // name-keyed on the worker DTOs, Guid-keyed via `/extended`, and custom
 // profiles are Guid-keyed everywhere. The existing `machineProfileSha256`
-// fields on `CalibrationStartPrintRequest` / `CalibrationJobProvenance` are
-// PROVENANCE hashes for a generated gcode job — a different concern from the
-// identity used to select a profile — and are left in place unchanged.
+// field on `CalibrationJobProvenance` is a PROVENANCE hash for a generated
+// gcode job — a different concern from the identity used to select a
+// profile — and is left in place unchanged.
 
 /** Longest single profile name string carried over the desktop IPC boundary. */
 const CALIBRATION_MAX_PROFILE_NAME = 512;

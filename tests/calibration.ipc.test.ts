@@ -869,9 +869,3 @@ describe('additive compatibility (remote DTOs accept extra fields)', () => {
     ).toThrow();
   });
 });
-
-// ==========================================================================
-// Generation/queue/bed-clear/print-start disabled semantics
-// ==========================================================================
-
-// Removed under #756: `CalibrationStartGeneration`/`CalibrationStartPrint` were reaped with the printer-calibration saga in this PR.

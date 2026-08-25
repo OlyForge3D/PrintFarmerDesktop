@@ -115,7 +115,6 @@ import {
   CalibrationPrinterContext,
   CalibrationPrinterEligibility,
   CalibrationQueueJobState,
-  CalibrationStartPrintRequest,
   CalibrationUnavailableReason,
   CalibrationWorkspaceStageId,
   CalibrationOutboxUnavailableReason,
@@ -305,7 +304,6 @@ const CONTRACT_SCHEMAS: readonly ZodTypeAny[] = [
   CalibrationPrinterContext,
   CalibrationPrinterEligibility,
   CalibrationQueueJobState,
-  CalibrationStartPrintRequest,
   // The *server-advertised* capability flags. These are a different vocabulary
   // from CalibrationCapabilityFlags above, and the gap was invisible until a
   // document named one: calibrationWire.ts maps server calibrationSyncEnabled

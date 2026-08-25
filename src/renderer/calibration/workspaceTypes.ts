@@ -243,7 +243,7 @@ export interface CalibrationWorkspaceStoreValue {
   readonly restoreProfile: () => Promise<void>;
 }
 
-/** State of a generated OrcaSlicer profile (from CalibrationGenerateOrcaProfile). */
+/** State of a generated OrcaSlicer profile (from the generate-profile step). */
 export interface GeneratedProfileState {
   /** Client-generated operation ID used to correlate generate → export/install. */
   readonly operationId: string;

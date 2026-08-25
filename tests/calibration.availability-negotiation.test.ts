@@ -225,36 +225,3 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
     expect(result.capabilityFlags).toBeNull();
   });
 });
-
-/**
- * Executable annotation for the calibration conflict resolution surface.
- *
- * The resolve path now exists end to end (issue #216), so this block no longer
- * documents a gap. It documents the *negotiation*: the IPC handler refuses when
- * the transport cannot resolve, and stops refusing when it can, from one
- * predicate.
- *
- * The refusal arm is still live code — any `CalibrationSidecar` implementation
- * without the method reaches it — so it is exercised by removing the capability
- * rather than by deleting the test. A refusal test that can no longer be
- * triggered would have to be deleted or would pass vacuously; this one is
- * driven, and the test below proves the removal removes something.
- *
- * It asserts the *code*, not merely that a rejection happened -- the handler
- * would also reject on a bad profile or a malformed request, and "it threw" is
- * not evidence that it threw for the documented reason.
- */
-/**
- * #363 -- the resolve channel validates its own response.
- *
- * Its sibling `CalibrationListConflicts` has parsed its response against
- * `ipcSchemas` since it was written; this channel returned the adapter's value
- * unchecked, which is why the epoch-seconds `createdAt` broke the *list* channel
- * loudly and passed through this one in silence.
- *
- * The variable is deliberately NOT a timestamp. `sidecarTimestampToIso` already
- * converts those, so a timestamp could not reach the parse and a spec built on
- * one would pass whether or not the parse existed. A non-UUID `profileId` is a
- * field the adapter does not touch, so it reaches the boundary intact and only
- * the parse can reject it.
- */
