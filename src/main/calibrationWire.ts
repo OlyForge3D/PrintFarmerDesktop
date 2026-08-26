@@ -3053,7 +3053,7 @@ export const RemoteMachineProfile = z
       .nullish()
       .transform((v) => v ?? null),
   })
-  .passthrough();
+  .strip();
 export type RemoteMachineProfile = z.infer<typeof RemoteMachineProfile>;
 
 /**
@@ -3104,7 +3104,7 @@ export const RemoteProcessProfile = z
       .nullish()
       .transform((v) => v ?? null),
   })
-  .passthrough();
+  .strip();
 export type RemoteProcessProfile = z.infer<typeof RemoteProcessProfile>;
 
 /** `FilamentProfileDto`. Applicability by `compatible_printers` name list. */
@@ -3144,7 +3144,7 @@ export const RemoteFilamentProfile = z
       .nullish()
       .transform((v) => v ?? null),
   })
-  .passthrough();
+  .strip();
 export type RemoteFilamentProfile = z.infer<typeof RemoteFilamentProfile>;
 
 /**

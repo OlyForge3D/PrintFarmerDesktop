@@ -98,6 +98,43 @@ const emptyPrinterList: PrinterListState = {
   printers: [],
 };
 
+/**
+ * One option label for the printer dropdown. A `<select>` option can only carry
+ * text, so the model that the radio list rendered as a separate node is folded
+ * into the single string here.
+ *
+ * The "(offline)" marker the flat list used to append is deliberately NOT
+ * repeated: reachability is carried by the enclosing `<optgroup>` instead, so
+ * an offline printer is not labelled offline twice.
+ */
+function printerOptionLabel(printer: CalibrationPrinterCandidate): string {
+  const model =
+    printer.printerModel !== null ? ` — ${printer.printerModel}` : '';
+  return `${printer.displayName}${model}`;
+}
+
+/**
+ * Split the printer list by reachability, preserving server order within each
+ * group. Online printers are offered first because they are the only ones that
+ * can complete a calibration in one sitting — the flow ends in a real print.
+ *
+ * Offline printers are kept rather than pruned. The filament wizard does not
+ * gate on `isOnline` (unlike the retired saga's `candidateEligibilityBlockers`),
+ * so an offline printer can still be taken through clone and slice, and a
+ * printer that is merely rebooting must not vanish from the farm mid-session.
+ */
+function partitionPrintersByReachability(
+  printers: readonly CalibrationPrinterCandidate[],
+): {
+  readonly online: readonly CalibrationPrinterCandidate[];
+  readonly offline: readonly CalibrationPrinterCandidate[];
+} {
+  return {
+    online: printers.filter((printer) => printer.isOnline),
+    offline: printers.filter((printer) => !printer.isOnline),
+  };
+}
+
 interface SliceJobUiState {
   readonly snapshot: CalibrationSliceJobSnapshot | null;
   readonly cappedOut: boolean;
@@ -221,7 +258,7 @@ export function FilamentCalibrationWizard(): React.JSX.Element {
   if (profileId === null) {
     return (
       <section
-        className="cal-view"
+        className="cal-view cal-view--form"
         aria-labelledby="filament-cal-title"
         data-testid="filament-calibration-wizard"
       >
@@ -934,7 +971,7 @@ function FilamentCalibrationWizardInner(
 
   return (
     <section
-      className="cal-view"
+      className="cal-view cal-view--form"
       aria-labelledby="filament-cal-title"
       data-testid="filament-calibration-wizard"
     >
@@ -1084,6 +1121,7 @@ function SelectStep(props: SelectStepProps): React.JSX.Element | null {
     visible,
   } = props;
   if (!visible) return null;
+  const printerGroups = partitionPrintersByReachability(printerList.printers);
   const readyToProceed =
     working.printerId !== null &&
     working.picks !== null &&
@@ -1121,28 +1159,39 @@ function SelectStep(props: SelectStepProps): React.JSX.Element | null {
       ) : null}
 
       {printerList.printers.length > 0 ? (
-        <fieldset className="cal-step-fieldset">
-          <legend>Printer</legend>
-          {printerList.printers.map((printer) => (
-            <label key={printer.printerId} className="cal-printer-option">
-              <input
-                type="radio"
-                name="filament-cal-printer"
-                value={printer.printerId}
-                checked={working.printerId === printer.printerId}
-                onChange={() => onPickPrinter(printer)}
-                aria-label={printer.displayName}
-              />
-              <span>
-                {printer.displayName}
-                {printer.printerModel !== null
-                  ? ` — ${printer.printerModel}`
-                  : ''}
-                {printer.isOnline ? '' : ' (offline)'}
-              </span>
-            </label>
-          ))}
-        </fieldset>
+        <label>
+          Printer
+          <select
+            value={working.printerId ?? ''}
+            onChange={(event) => {
+              const picked = printerList.printers.find(
+                (printer) => printer.printerId === event.target.value,
+              );
+              if (picked !== undefined) onPickPrinter(picked);
+            }}
+            aria-label="Printer"
+          >
+            <option value="">Select a printer</option>
+            {printerGroups.online.length > 0 ? (
+              <optgroup label="Online">
+                {printerGroups.online.map((printer) => (
+                  <option key={printer.printerId} value={printer.printerId}>
+                    {printerOptionLabel(printer)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {printerGroups.offline.length > 0 ? (
+              <optgroup label="Offline — cannot print until reachable">
+                {printerGroups.offline.map((printer) => (
+                  <option key={printer.printerId} value={printer.printerId}>
+                    {printerOptionLabel(printer)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+          </select>
+        </label>
       ) : printerList.loading || printerList.error !== null ? null : (
         <p className="cal-hint">
           No PrintFarmer printers are available. Add one on the server, then
@@ -1245,9 +1294,17 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
     >
       <legend>3. Pick a calibration step</legend>
       <p className="cal-hint">
-        Work through the steps in the recommended order. Each measurement is
-        written back onto <strong>{working.cloneName}</strong>, so the next step
-        reads the value the previous step just corrected.
+        Work through these in order. Each measurement is written back onto{' '}
+        <strong>{working.cloneName}</strong>, so the next step reads the value
+        the previous step just corrected.
+      </p>
+      <p className="cal-notice">
+        These are the calibration steps PrintFarmer can run today — temperature
+        and the two flow-rate passes, in OrcaSlicer&apos;s recommended relative
+        order. OrcaSlicer&apos;s own guide also covers max volumetric speed,
+        pressure advance, retraction, cornering, input shaping, and VFA, which
+        PrintFarmer cannot slice yet; run those in OrcaSlicer directly if you
+        need them.
       </p>
       <ul className="cal-method-list">
         {FILAMENT_WIZARD_METHODS.map((method) => {

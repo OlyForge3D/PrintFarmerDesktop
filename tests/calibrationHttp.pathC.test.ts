@@ -387,6 +387,124 @@ describe('CalibrationHttpClient.getFilamentProfilesForMachines', () => {
   });
 });
 
+/**
+ * The profile-catalog endpoints are held to their own, much larger response
+ * ceiling than the rest of the calibration API.
+ *
+ * ## Why
+ *
+ * The server returns far more per profile than the desktop consumes: every
+ * `FilamentProfileDto` carries the entire OrcaSlicer profile in an opaque
+ * `Settings` bag plus `StartGcode`/`EndGcode` (`FilamentProfileDto.cs:80-86`),
+ * while `ipc.ts` projects each row down to
+ * `{ name, guid, source, displayLabel, contentSha256 }` and discards the rest.
+ * An owner's Qidi X-Plus 4 hit the general 1 MiB cap on
+ * `filament/for-machines` — a request whose *useful* payload is a few kilobytes
+ * of profile names — and the wizard reported
+ * "Calibration API response exceeded 1048576 byte limit."
+ *
+ * ## Matched predicate pair
+ *
+ * Both arms use the same client, the same oversized body, and the same
+ * predicate (does the call reject with `bodyTooLarge`?). They differ only in
+ * which endpoint is called, so "the catalog endpoints were widened" is proven
+ * against "everything else still enforces the general cap" rather than against
+ * a client that simply stopped checking.
+ */
+describe('profile-catalog responses have their own, larger ceiling', () => {
+  // Comfortably over the 1 MiB general cap, comfortably under the 32 MiB
+  // catalog ceiling, so the two arms are separated by the ceiling under test
+  // rather than by the size of the fixture.
+  const OVERSIZED = 'x'.repeat(2 * 1024 * 1024);
+
+  function oversizedFilamentList(): unknown {
+    return [
+      {
+        name: 'Generic PLA @Voron 2.4',
+        material: 'PLA',
+        manufacturer: 'Generic',
+        compatiblePrinters: ['Voron 2.4 350'],
+        nozzleTemperature: 215,
+        bedTemperature: 60,
+        instantiation: true,
+        // Stands in for the Settings bag / gcode the desktop never reads.
+        startGcode: OVERSIZED,
+      },
+    ];
+  }
+
+  it('ARM A — filament/for-machines accepts a body far over the general 1 MiB cap', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(oversizedFilamentList()));
+    const client = makeClient(fetchMock);
+
+    const result = await client.getFilamentProfilesForMachines(
+      PROFILE_ID,
+      BASE_URL,
+      ['Voron 2.4 350'],
+      AbortSignal.timeout(5_000),
+    );
+
+    // Parsed, not rejected: this is the exact call that failed for the owner.
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe('Generic PLA @Voron 2.4');
+  });
+
+  it('ARM B (control) — a non-catalog endpoint still rejects the same oversized body', async () => {
+    // Same client, same size, same predicate. Without this arm, arm A would
+    // also pass if the cap had simply been removed everywhere — which is the
+    // regression this pair exists to make visible.
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        printerId: PRINTER_ID,
+        displayName: OVERSIZED,
+      }),
+    );
+    const client = makeClient(fetchMock);
+
+    await expect(
+      client.getPrinterDetails(
+        PROFILE_ID,
+        BASE_URL,
+        PRINTER_ID,
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toMatchObject({ code: 'bodyTooLarge' });
+  });
+
+  it('still enforces the catalog ceiling when it is genuinely exceeded', async () => {
+    // The widened ceiling is a bound, not an absence of one. Configure a small
+    // catalog ceiling and confirm the same call now refuses — otherwise "32 MiB"
+    // would be indistinguishable from "unbounded".
+    //
+    // Every predicate needs a control that isolates the variable: we also
+    // raise `maxResponseBytes` well above the 2 MiB fixture, so the ONLY cap
+    // that can plausibly reject this body is the 1024-byte catalog ceiling
+    // under test. Without this, a mutation that made `postProfileFilter` fall
+    // back to the general cap would still see `bodyTooLarge` (the general cap
+    // is 1 MiB by default, also below 2 MiB) and this test would stay green
+    // while proving nothing about the catalog-specific ceiling.
+    const fetchMock = vi.fn().mockResolvedValue(json(oversizedFilamentList()));
+    const client = new CalibrationHttpClient(stableTokens(), {
+      fetch: fetchMock,
+      timeoutMs: 10_000,
+      maxResponseBytes: 32 * 1024 * 1024,
+      profileCatalogMaxResponseBytes: 1024,
+      now: () => Date.now(),
+      random: () => 0.5,
+      sleep: () => Promise.resolve(),
+    });
+
+    await expect(
+      client.getFilamentProfilesForMachines(
+        PROFILE_ID,
+        BASE_URL,
+        ['Voron 2.4 350'],
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toMatchObject({ code: 'bodyTooLarge' });
+  });
+});
+
 describe('CalibrationHttpClient.getCustomProfiles', () => {
   // Verbatim from research report lines 130-166: React CustomProfile
   // interface. Custom profiles DO carry an id Guid.

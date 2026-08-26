@@ -565,7 +565,8 @@
 
 .cal-form-pane label,
 .cal-step-section label,
-.cal-detail-pane label {
+.cal-detail-pane label,
+.cal-step-fieldset label {
   display: grid;
   gap: 5px;
   margin: 11px 0;
@@ -580,7 +581,10 @@
 .cal-step-section textarea,
 .cal-detail-pane input,
 .cal-detail-pane select,
-.cal-detail-pane textarea {
+.cal-detail-pane textarea,
+.cal-step-fieldset input,
+.cal-step-fieldset select,
+.cal-step-fieldset textarea {
   width: 100%;
   min-width: 0;
   min-height: 34px;
@@ -593,15 +597,192 @@
 
 .cal-form-pane textarea,
 .cal-step-section textarea,
-.cal-detail-pane textarea {
+.cal-detail-pane textarea,
+.cal-step-fieldset textarea {
   min-height: 76px;
   resize: vertical;
 }
 
 .cal-form-pane [aria-invalid='true'],
 .cal-step-section [aria-invalid='true'],
-.cal-detail-pane [aria-invalid='true'] {
+.cal-detail-pane [aria-invalid='true'],
+.cal-step-fieldset [aria-invalid='true'] {
   border-color: #d9676f;
+}
+
+/*
+ * Filament calibration wizard
+ * ---------------------------------------------------------------------------
+ * The wizard renders straight into `.cal-workspace-content`, not into the
+ * `.cal-form-pane` / `.cal-step-section` / `.cal-detail-pane` containers the
+ * rules above were scoped to, so until `.cal-step-fieldset` joined those
+ * scopes none of the shared form treatment reached it. Labels fell back to
+ * inline flow against their controls, and every select was intrinsically
+ * sized — which is why a dropdown visibly resized and shoved its neighbours
+ * sideways the moment its options loaded.
+ *
+ * Widths are settled by the grid track, never by the longest option string.
+ */
+
+.cal-step-fieldset {
+  min-width: 0;
+  margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+}
+
+/*
+ * Each step embeds `ProfileSelectionSection`, itself a `.cal-step-fieldset`.
+ * A card inside a card is never right: the inner group keeps its legend, so
+ * the grouping still reaches assistive technology, and drops the card skin.
+ */
+.cal-step-fieldset .cal-step-fieldset {
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.cal-step-fieldset > legend {
+  margin-left: -4px;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.cal-step-fieldset .cal-step-fieldset > legend {
+  margin: 0 0 10px;
+  padding: 0;
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.cal-step-fieldset .cal-hint {
+  max-width: 70ch;
+  margin: 0 0 14px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.cal-step-fieldset .cal-notice {
+  max-width: 70ch;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: #171d24;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cal-step-fieldset .cal-actions {
+  margin-top: 18px;
+}
+
+/* Field labels sit a step below prose so a scan finds the controls first. */
+.cal-step-fieldset label {
+  gap: 6px;
+  margin: 14px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/*
+ * Long profile names would otherwise stretch a control to an unreadable
+ * width; the cap keeps every control on one measure whatever it holds.
+ */
+.cal-step-fieldset input {
+  max-width: 640px;
+}
+
+/*
+ * A wizard is a form, not a dashboard: at the shared `.cal-view` measure of
+ * 1480px the step cards ran the full window while their controls sat in the
+ * left third, which read as an empty right half rather than as a composition.
+ * The whole view — heading included, so nothing misaligns — narrows to a
+ * working column.
+ */
+.cal-view--form {
+  width: min(100%, 880px);
+}
+
+/*
+ * One column, deliberately. These four choices are sequential rather than
+ * parallel, and the values are long enough ("QIDI ABS-GF25 @Qidi X-Plus 4 0.4
+ * nozzle — QIDI ABS-GF") that a two-up grid truncates exactly the nozzle and
+ * material text that distinguishes one profile from its neighbour.
+ *
+ * Fixed single track, never `auto-fit`: the cascade mounts the process and
+ * filament selects only once their prerequisite is chosen, and a
+ * content-derived track would re-flow the controls already on screen each
+ * time one arrives. A fixed track holds every field's position from the
+ * first paint.
+ */
+.cal-field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  margin: 0;
+}
+
+.cal-field-grid > label {
+  min-width: 0;
+}
+
+/*
+ * Equivalent choices, so a list with hairline rules rather than a row of
+ * cards: action on the left, what it corrects on the right.
+ */
+.cal-method-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cal-method-list > li {
+  display: grid;
+  max-width: none;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  gap: 6px;
+}
+
+.cal-method-list > li:first-child {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.cal-method-list .cal-hint {
+  margin: 0;
+  font-size: 12px;
+}
+
+.cal-method-list .cal-button {
+  justify-self: start;
+  min-width: 240px;
+}
+
+/* The card is now a fixed 880px column, so this switches on card width. */
+@media (min-width: 760px) {
+  .cal-method-list > li {
+    grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
+    align-items: center;
+    gap: 6px 20px;
+  }
+
+  .cal-method-list .cal-button {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 .cal-form-grid,
