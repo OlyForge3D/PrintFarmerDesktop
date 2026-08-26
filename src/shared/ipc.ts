@@ -6581,7 +6581,9 @@ export const FilamentWizardStateRecord = z
     /** The clone id every write-back names — the identity that carries state across steps. */
     cloneId: z.string().uuid(),
     cloneName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
-    completedMethods: z.array(CalibrationSliceMethod).max(3),
+    completedMethods: z
+      .array(CalibrationSliceMethod)
+      .max(CalibrationSliceMethod.options.length),
     currentMethod: CalibrationSliceMethod.nullable(),
     inFlightJob: FilamentWizardStateInFlightJob.nullable(),
     phase: FilamentWizardStatePhase,
