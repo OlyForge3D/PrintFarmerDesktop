@@ -16,9 +16,12 @@
  * candidate contract used to prevent.
  *
  * Discrimination: a negative-control test asserts that when the fixture
- * returns no printers, the wizard renders the "No PrintFarmer printers are
- * available" copy — proving the positive test's `printers.count > 0`
- * assertion is not vacuous.
+ * returns no printers, the wizard's printer `<select>` is entirely absent
+ * AND the "No PrintFarmer printers are available" copy renders — proving
+ * the positive test's `printers.count > 0` assertion is not vacuous. Post-
+ * #773 the picker is a `<select>` with an always-present empty-value
+ * placeholder option, so counting `<option>` elements is not enough on its
+ * own — the discriminator is the presence/absence of the combobox itself.
  */
 import { expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
@@ -104,20 +107,33 @@ test('Filament Calibration wizard opens and the printer list populates from /api
   await openFilamentCalibrationWizard(page);
 
   // The wizard's Step 1 fieldset is what actually consumes
-  // `calibration:listPrinters`; asserting on the printer radio group inside
-  // it proves the shipped route serves the shape the desktop expects.
+  // `calibration:listPrinters`; asserting on the printer picker inside it
+  // proves the shipped route serves the shape the desktop expects. Post-
+  // #773 the picker is a `<select>` with an "Online"/"Offline" `<optgroup>`
+  // instead of a radio group, so count the real `<option>` elements — those
+  // whose `value` is non-empty, since `value=""` is the always-rendered
+  // "Select a printer" placeholder and would otherwise make the populated
+  // and empty cases indistinguishable.
   const step1 = page.getByRole('group', {
     name: 'Step 1 — machine, process, and base filament',
   });
   await expect(step1).toBeVisible();
 
-  const printerRadios = step1.locator(
-    'input[name="filament-cal-printer"][type="radio"]',
-  );
-  const count = await printerRadios.count();
+  const printerSelect = step1.getByRole('combobox', { name: 'Printer' });
+  await expect(printerSelect).toBeVisible();
+  const printerOptions = printerSelect.locator('option:not([value=""])');
+  const count = await printerOptions.count();
+  // Failure message names what was actually observed, not one guessed
+  // cause. The previous wording ("the /api/printers response is not
+  // reaching the wizard") assumed a specific mechanism and misattributed
+  // the very failure that made this file fail on trunk: the DOM had
+  // migrated to a `<select>` and the assertion's radio-shaped locator no
+  // longer matched anything. `printerSelect.toBeVisible()` above already
+  // proves the combobox itself mounted, so if the count is 0 here the two
+  // remaining causes are the ones enumerated.
   expect(
     count,
-    'printer list rendered empty — the /api/printers response is not reaching the wizard',
+    "the Printer combobox mounted but contains no non-placeholder <option> — either the /api/printers response never reached the wizard, or the picker's <option> shape drifted from what this selector matches",
   ).toBeGreaterThan(0);
 });
 
@@ -125,10 +141,35 @@ test('Filament Calibration wizard shows the empty-list hint when no printers are
   browserName,
 }) => {
   expect(browserName).toBe('chromium');
-  // Discriminator for the populated-list assertion above: with an empty
-  // response, the wizard must render its "no printers" hint rather than a
-  // spinning loader or a silent void. If this test also passes on a
-  // populated fixture, the previous test proves nothing.
+  // Discriminator for the populated-list assertion above.
+  //
+  // The previous version of this control asserted `radioCount == 0` on a
+  // selector (`input[name="filament-cal-printer"][type="radio"]`) that
+  // #773 had already removed. That assertion PASSED in the CI run that
+  // caught the picker regression (workflow run 32921712975): the DOM had
+  // no radios in EITHER the populated or empty scenarios, so the control
+  // reported success while the contract it was meant to protect was
+  // broken. Any new discriminator here has to be robust against the same
+  // failure mode — a locator that vacuously reports the "expected"
+  // result on both scenarios is worse than no control at all.
+  //
+  // In the shipped wizard the entire `<label>Printer<select>…</select>
+  // </label>` is conditional on `printers.length > 0` (see
+  // `FilamentCalibrationWizard.tsx` `SelectStep`) — so with an empty
+  // fixture the combobox is not rendered at all, and only the "no
+  // printers" hint appears in its place. Asserting BOTH is the
+  // discriminator:
+  //
+  //   - If the populated case's DOM leaked into the empty scenario, the
+  //     combobox count would be > 0 and this test would fail.
+  //   - If the wizard failed to render Step 1 altogether, the hint text
+  //     would be absent and this test would fail.
+  //
+  // Counting non-placeholder `<option>` elements alone would not work
+  // here: when the combobox is absent, that count is 0, and it is ALSO 0
+  // in a broken populated-case render where the select mounted with only
+  // the "Select a printer" placeholder. The presence/absence of the
+  // combobox itself is what discriminates.
   await applyCalibrationScenario(app, page, { printerList: 'empty' });
   await openFilamentCalibrationWizard(page);
 
@@ -137,10 +178,8 @@ test('Filament Calibration wizard shows the empty-list hint when no printers are
   });
   await expect(step1).toBeVisible();
 
-  const printerRadios = step1.locator(
-    'input[name="filament-cal-printer"][type="radio"]',
-  );
-  await expect(printerRadios).toHaveCount(0);
+  const printerSelect = step1.getByRole('combobox', { name: 'Printer' });
+  await expect(printerSelect).toHaveCount(0);
   await expect(
     step1.getByText(
       /No PrintFarmer printers are available\. Add one on the server/,
