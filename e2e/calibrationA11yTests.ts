@@ -171,13 +171,15 @@ test('@a11y filament calibration wizard printer picker is reachable by keyboard 
   const step1 = page.getByRole('group', {
     name: 'Step 1 — machine, process, and base filament',
   });
-  const firstPrinter = step1
-    .locator('input[name="filament-cal-printer"][type="radio"]')
-    .first();
+  // Post-#773 the picker is a `<select aria-label="Printer">` with
+  // `<optgroup>`-grouped options, not a radio group. The invariant this
+  // test guards is unchanged: the picker must be reachable by keyboard
+  // traversal from the CTA — proven here by tabbing to the combobox.
+  const printerSelect = step1.getByRole('combobox', { name: 'Printer' });
   await expectTabReaches(
     page,
-    firstPrinter,
-    'the first printer radio in the wizard Step 1 picker',
+    printerSelect,
+    'the printer picker combobox in the wizard Step 1',
     80,
     step1,
   );

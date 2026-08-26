@@ -36,6 +36,7 @@ import type {
   CalibrationApi,
   CalibrationEnvironment,
 } from '../src/renderer/calibration/api';
+import { pickPrinterByLabel } from './fixtures/filamentWizardPrinterPicker';
 
 const profileId = '11111111-1111-4111-8111-111111111111';
 const printerIdA = '33333333-3333-4333-8333-333333333301';
@@ -333,13 +334,21 @@ function mount(api: CalibrationApi) {
   );
 }
 
+/**
+ * Choose a printer from the wizard's printer dropdown by its visible label.
+ * The picker is a `<select>`, so selection is a `change` carrying the option's
+ * value (the printer id) rather than a click on a labelled radio.
+ *
+ * Implementation lives in `tests/fixtures/filamentWizardPrinterPicker.ts` —
+ * shared with the other filament-wizard test suites so the picker convention
+ * cannot silently drift between them.
+ */
+
 async function openWizardAndPickPrinter(): Promise<void> {
   fireEvent.click(
     await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
   );
-  fireEvent.click(
-    await screen.findByRole('radio', { name: /Emulator cell A/ }),
-  );
+  await pickPrinterByLabel(/Emulator cell A/);
   await waitFor(() => {
     const selector = screen.queryByRole('combobox', {
       name: /machine profile/i,
@@ -501,6 +510,27 @@ describe('FilamentCalibrationWizard step sequencing', () => {
     expect(secondCall[0].customProfileId).toBe(cloneGuid);
     expect(firstCall[0].measurement.method).toBe('flow_rate_pass_1');
     expect(secondCall[0].measurement.method).toBe('temperature_tower');
+  });
+});
+
+describe('FilamentCalibrationWizard method-picker capability boundary', () => {
+  // Step 3 renders a `<p className="cal-notice">` naming the calibration steps
+  // PrintFarmer cannot slice (max volumetric speed, pressure advance,
+  // retraction, cornering, input shaping, VFA) and pointing operators at
+  // OrcaSlicer for those. Without an assertion here, silently deleting the
+  // paragraph would ship green — the copy is a capability boundary, not
+  // decorative hint text. Assert one stable substring rather than the whole
+  // paragraph so operator-facing wording can still be edited without
+  // breaking this test.
+  it('names an OrcaSlicer-only step that PrintFarmer cannot run yet', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const notice = await screen.findByText(/max volumetric speed/i);
+    expect(notice).toBeInTheDocument();
   });
 });
 

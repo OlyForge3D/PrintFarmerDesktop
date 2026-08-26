@@ -63,6 +63,7 @@ import type {
   CalibrationApi,
   CalibrationEnvironment,
 } from '../src/renderer/calibration/api';
+import { pickPrinterByLabel } from './fixtures/filamentWizardPrinterPicker';
 
 const profileId = '11111111-1111-4111-8111-111111111111';
 const printerId = '33333333-3333-4333-8333-333333333301';
@@ -312,13 +313,21 @@ function mount(api: CalibrationApi) {
   );
 }
 
+/**
+ * Choose a printer from the wizard's printer dropdown by its visible label.
+ * The picker is a `<select>`, so selection is a `change` carrying the option's
+ * value (the printer id) rather than a click on a labelled radio.
+ *
+ * Implementation lives in `tests/fixtures/filamentWizardPrinterPicker.ts` —
+ * shared with the other filament-wizard test suites so the picker convention
+ * cannot silently drift between them.
+ */
+
 async function openWizardAndPickPrinter(): Promise<void> {
   fireEvent.click(
     await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
   );
-  fireEvent.click(
-    await screen.findByRole('radio', { name: /Emulator cell A/ }),
-  );
+  await pickPrinterByLabel(/Emulator cell A/);
   await waitFor(() => {
     const selector = screen.queryByRole('combobox', {
       name: /machine profile/i,

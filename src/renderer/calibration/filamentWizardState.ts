@@ -68,10 +68,41 @@ import type {
   FilamentWizardStateRecord,
 } from '@shared/ipc';
 
-/** The three methods this build supports, in the recommended wiki order. */
+/**
+ * The three methods this build supports, ordered to match the OrcaSlicer
+ * calibration guide.
+ *
+ * The guide's full recommended order is:
+ *
+ *   1. Temperature           5. Retraction
+ *   2. Max volumetric speed  6. Cornering (jerk / junction deviation)
+ *   3. Pressure advance      7. Input shaping
+ *   4. Flow                  8. VFA
+ *
+ * (plus Tolerance, listed outside the numbered sequence.)
+ * https://www.orcaslicer.com/wiki/guides/calibration_guide
+ *
+ * Of those eight categories the PrintFarmer slice pipeline implements two —
+ * temperature and flow — so this list is the correct *relative* order of what
+ * is available, not the whole guide. Steps 2 and 3 fall between them and are
+ * simply absent; the wizard must not imply the sequence is complete.
+ *
+ * Temperature leads because the dependency is physical and one-way: nozzle
+ * temperature changes filament viscosity and therefore how it flows, so a flow
+ * ratio measured before the temperature is settled has to be measured again.
+ * This list previously ran `flow_rate_pass_1` first while claiming to be in
+ * wiki order; it was not, and that ordering discarded its own result.
+ *
+ * Flow also has more upstream than the two passes here — YOLO (Recommended)
+ * and YOLO (Perfectionist). Their absence, and that of categories 2, 3 and
+ * 5-8, is a server capability boundary rather than a wizard omission:
+ * `Farm.Slicer.Module.Models.CalibrationMethod` declares exactly these three
+ * wire names and `CalibrationMethods.TryParse` rejects anything else. See
+ * PrintFarmer#2051.
+ */
 export const FILAMENT_WIZARD_METHODS: readonly CalibrationSliceMethod[] = [
-  'flow_rate_pass_1',
   'temperature_tower',
+  'flow_rate_pass_1',
   'flow_rate_pass_2',
 ];
 

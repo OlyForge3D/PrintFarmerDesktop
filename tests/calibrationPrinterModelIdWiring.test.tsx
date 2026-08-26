@@ -61,6 +61,7 @@ import type {
   CalibrationApi,
   CalibrationEnvironment,
 } from '../src/renderer/calibration/api';
+import { pickPrinterByLabel } from './fixtures/filamentWizardPrinterPicker';
 
 const profileId = '11111111-1111-4111-8111-111111111111';
 const printerId = 'printer-a';
@@ -312,15 +313,23 @@ function mountWith(candidate: CalibrationPrinterCandidate) {
   return { api };
 }
 
+/**
+ * Choose a printer from the wizard's printer dropdown by its visible label.
+ * The picker is a `<select>`, so selection is a `change` carrying the option's
+ * value (the printer id) rather than a click on a labelled radio.
+ *
+ * Implementation lives in `tests/fixtures/filamentWizardPrinterPicker.ts` —
+ * shared with the other filament-wizard test suites so the picker convention
+ * cannot silently drift between them.
+ */
+
 async function openWizardAndPickPrinter(): Promise<void> {
   // The filament wizard is entered from the calibration dashboard's single
   // primary CTA — same host that the saga wizard used to occupy.
   fireEvent.click(
     await screen.findByRole('button', { name: /Calibrate a filament spool/i }),
   );
-  fireEvent.click(
-    await screen.findByRole('radio', { name: /Emulator cell A/ }),
-  );
+  await pickPrinterByLabel(/Emulator cell A/);
   // Wait for the cascade's `useEffect(loadCatalog)` async fetches to settle
   // so the predicate below observes a stable set of `mock.calls`.
   await waitFor(() => {

@@ -547,6 +547,26 @@ export interface CalibrationHttpClientOptions {
   connectTimeoutMs?: number;
   /** Maximum response body in bytes (default: 1 MiB). */
   maxResponseBytes?: number;
+  /**
+   * Maximum response body in bytes for the slicer profile-catalog endpoints
+   * (default: 32 MiB).
+   *
+   * These are held to a separate, much larger ceiling because the server
+   * returns far more per profile than the desktop consumes: every
+   * `FilamentProfileDto` / `ProcessProfileDto` carries the entire OrcaSlicer
+   * profile in its opaque `Settings` bag plus `StartGcode`/`EndGcode`
+   * (`FilamentProfileDto.cs:80-86`), while the desktop projects each row down
+   * to `{ name, guid, source, displayLabel }` and discards the rest. A farm
+   * with a full vendor filament library therefore clears the general 1 MiB cap
+   * on a request whose useful payload is a few kilobytes of names.
+   *
+   * The general cap stays where it is: it is the anti-DoS bound for every
+   * other calibration response, and widening it globally to accommodate one
+   * over-broad list endpoint would weaken all of them. The real remedy is a
+   * lightweight server-side projection (PrintFarmer#2049); this ceiling exists
+   * so the desktop is not blocked in the meantime.
+   */
+  profileCatalogMaxResponseBytes?: number;
   /** Maximum photo upload body in bytes (default: 20 MiB). */
   maxPhotoBytes?: number;
   now?: () => number;
@@ -1021,6 +1041,7 @@ export class CalibrationHttpClient {
   private readonly timeoutMs: number;
   private readonly connectTimeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly profileCatalogMaxResponseBytes: number;
   private readonly maxPhotoBytes: number;
   private readonly now: () => number;
   private readonly random: () => number;
@@ -1037,6 +1058,8 @@ export class CalibrationHttpClient {
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 5_000;
     this.maxResponseBytes = options.maxResponseBytes ?? 1024 * 1024;
+    this.profileCatalogMaxResponseBytes =
+      options.profileCatalogMaxResponseBytes ?? 32 * 1024 * 1024;
     this.maxPhotoBytes = options.maxPhotoBytes ?? 20 * 1024 * 1024;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
@@ -1197,6 +1220,8 @@ export class CalibrationHttpClient {
       ROUTES.extendedProfiles,
       ExtendedProfilesSchema,
       signal,
+      4,
+      this.profileCatalogMaxResponseBytes,
     );
   }
 
@@ -1221,6 +1246,8 @@ export class CalibrationHttpClient {
       ROUTES.machineProfilesForModel(modelId),
       z.array(MachineProfileSchema).max(2048),
       signal,
+      4,
+      this.profileCatalogMaxResponseBytes,
     );
   }
 
@@ -1792,7 +1819,11 @@ export class CalibrationHttpClient {
           pending.timedOut(),
         );
       }
-      return await this.parse(pending, responseSchema);
+      return await this.parse(
+        pending,
+        responseSchema,
+        this.profileCatalogMaxResponseBytes,
+      );
     } finally {
       pending.dispose();
     }
@@ -2353,6 +2384,7 @@ export class CalibrationHttpClient {
     schema: ZodType.ZodType<T, ZodType.ZodTypeDef, unknown>,
     signal: AbortSignal,
     maxAttempts = 4,
+    maxBytes: number = this.maxResponseBytes,
   ): Promise<T> {
     let attempt = 0;
     while (true) {
@@ -2373,7 +2405,7 @@ export class CalibrationHttpClient {
               pending.timedOut(),
             );
           }
-          return await this.parse(pending, schema);
+          return await this.parse(pending, schema, maxBytes);
         } finally {
           pending.dispose();
         }
@@ -2561,8 +2593,9 @@ export class CalibrationHttpClient {
   private async parse<T>(
     pending: PendingResponse,
     schema: ZodType.ZodType<T, ZodType.ZodTypeDef, unknown>,
+    maxBytes: number = this.maxResponseBytes,
   ): Promise<T> {
-    const body = await this.readBody(pending);
+    const body = await this.readBody(pending, maxBytes);
     let json: unknown;
     try {
       json = JSON.parse(body);
@@ -2582,7 +2615,10 @@ export class CalibrationHttpClient {
     }
   }
 
-  private async readBody(pending: PendingResponse): Promise<string> {
+  private async readBody(
+    pending: PendingResponse,
+    maxBytes: number = this.maxResponseBytes,
+  ): Promise<string> {
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
     try {
@@ -2594,11 +2630,11 @@ export class CalibrationHttpClient {
         const { done, value } = await reader.read();
         if (done) break;
         totalBytes += value.byteLength;
-        if (totalBytes > this.maxResponseBytes) {
+        if (totalBytes > maxBytes) {
           await reader.cancel();
           throw new CalibrationHttpError(
             'bodyTooLarge',
-            `Calibration API response exceeded ${this.maxResponseBytes} byte limit.`,
+            `Calibration API response exceeded ${maxBytes} byte limit.`,
             pending.response.status,
           );
         }

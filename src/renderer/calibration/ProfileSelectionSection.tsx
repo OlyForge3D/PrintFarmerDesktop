@@ -485,53 +485,54 @@ export function ProfileSelectionSection(
         </p>
       ) : null}
 
-      <label>
-        Machine profile
-        <select
-          value={chosenMachine}
-          onChange={(event) => setChosenMachine(event.target.value)}
-          aria-label="Machine profile"
-        >
-          <option value="">Select a machine profile</option>
-          {catalog.systemMachines.length > 0 ? (
-            <optgroup label="System profiles">
-              {catalog.systemMachines.map((profile) => (
-                <option
-                  key={profile.name}
-                  value={profileOptionValue('system', profile.name)}
-                >
-                  {systemOptionLabel(profile)}
-                </option>
-              ))}
-            </optgroup>
-          ) : null}
-          {customMachines.length > 0 ? (
-            <optgroup label="Your custom profiles">
-              {customMachines.map((profile) => (
-                <option
-                  key={profile.id}
-                  value={profileOptionValue('custom', profile.id)}
-                >
-                  {customOptionLabel(profile)}
-                </option>
-              ))}
-            </optgroup>
-          ) : null}
-        </select>
-      </label>
+      {chosenMachineName !== null && forMachine.loading ? (
+        <p role="status" className="cal-hint">
+          Loading process and filament profiles for {chosenMachineName}.
+        </p>
+      ) : null}
+      {chosenMachineName !== null && forMachine.error !== null ? (
+        <div className="cal-alert" role="alert">
+          <p>{forMachine.error}</p>
+        </div>
+      ) : null}
 
-      {chosenMachineName !== null ? (
-        <>
-          {forMachine.loading ? (
-            <p role="status" className="cal-hint">
-              Loading process and filament profiles for {chosenMachineName}.
-            </p>
-          ) : null}
-          {forMachine.error !== null ? (
-            <div className="cal-alert" role="alert">
-              <p>{forMachine.error}</p>
-            </div>
-          ) : null}
+      <div className="cal-field-grid">
+        <label>
+          Machine profile
+          <select
+            value={chosenMachine}
+            onChange={(event) => setChosenMachine(event.target.value)}
+            aria-label="Machine profile"
+          >
+            <option value="">Select a machine profile</option>
+            {catalog.systemMachines.length > 0 ? (
+              <optgroup label="System profiles">
+                {catalog.systemMachines.map((profile) => (
+                  <option
+                    key={profile.name}
+                    value={profileOptionValue('system', profile.name)}
+                  >
+                    {systemOptionLabel(profile)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {customMachines.length > 0 ? (
+              <optgroup label="Your custom profiles">
+                {customMachines.map((profile) => (
+                  <option
+                    key={profile.id}
+                    value={profileOptionValue('custom', profile.id)}
+                  >
+                    {customOptionLabel(profile)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+          </select>
+        </label>
+
+        {chosenMachineName !== null ? (
           <label>
             Process profile
             <select
@@ -566,45 +567,45 @@ export function ProfileSelectionSection(
               ) : null}
             </select>
           </label>
-        </>
-      ) : null}
+        ) : null}
 
-      {chosenProcess !== '' ? (
-        <label>
-          Filament profile
-          <select
-            value={chosenFilament}
-            onChange={(event) => setChosenFilament(event.target.value)}
-            aria-label="Filament profile"
-          >
-            <option value="">Select a filament profile</option>
-            {forMachine.systemFilaments.length > 0 ? (
-              <optgroup label="System profiles">
-                {forMachine.systemFilaments.map((profile) => (
-                  <option
-                    key={profile.name}
-                    value={profileOptionValue('system', profile.name)}
-                  >
-                    {systemOptionLabel(profile)}
-                  </option>
-                ))}
-              </optgroup>
-            ) : null}
-            {customFilaments.length > 0 ? (
-              <optgroup label="Your custom profiles">
-                {customFilaments.map((profile) => (
-                  <option
-                    key={profile.id}
-                    value={profileOptionValue('custom', profile.id)}
-                  >
-                    {customOptionLabel(profile)}
-                  </option>
-                ))}
-              </optgroup>
-            ) : null}
-          </select>
-        </label>
-      ) : null}
+        {chosenProcess !== '' ? (
+          <label>
+            Filament profile
+            <select
+              value={chosenFilament}
+              onChange={(event) => setChosenFilament(event.target.value)}
+              aria-label="Filament profile"
+            >
+              <option value="">Select a filament profile</option>
+              {forMachine.systemFilaments.length > 0 ? (
+                <optgroup label="System profiles">
+                  {forMachine.systemFilaments.map((profile) => (
+                    <option
+                      key={profile.name}
+                      value={profileOptionValue('system', profile.name)}
+                    >
+                      {systemOptionLabel(profile)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {customFilaments.length > 0 ? (
+                <optgroup label="Your custom profiles">
+                  {customFilaments.map((profile) => (
+                    <option
+                      key={profile.id}
+                      value={profileOptionValue('custom', profile.id)}
+                    >
+                      {customOptionLabel(profile)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+            </select>
+          </label>
+        ) : null}
+      </div>
     </fieldset>
   );
 }
