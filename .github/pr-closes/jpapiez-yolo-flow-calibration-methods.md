@@ -1,6 +1,6 @@
 ```closes
-775
-776
+#775
+#776
 ```
 
 Adds YOLO (Recommended) and YOLO (Perfectionist) to the filament calibration
