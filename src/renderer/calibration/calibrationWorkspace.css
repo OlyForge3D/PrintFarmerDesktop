@@ -683,6 +683,34 @@
   line-height: 1.5;
 }
 
+/*
+ * The dead-end notice replaces a control rather than annotating one, so it
+ * carries the vertical rhythm a field would have occupied and separates its
+ * own paragraphs. Deliberately not tinted as a warning: nothing has gone
+ * wrong, the printer simply has no profile coverage yet, and colouring it as
+ * an error would misreport an ordinary setup state as a fault.
+ */
+.cal-step-fieldset .cal-notice--empty {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+}
+
+.cal-step-fieldset .cal-notice--empty p {
+  margin: 0 0 8px;
+}
+
+.cal-step-fieldset .cal-notice--empty p:last-of-type {
+  margin-bottom: 0;
+}
+
+.cal-step-fieldset .cal-notice--empty strong {
+  color: var(--text);
+}
+
+.cal-step-fieldset .cal-notice--empty .cal-actions {
+  margin-top: 12px;
+}
+
 .cal-step-fieldset .cal-actions {
   margin-top: 18px;
 }
