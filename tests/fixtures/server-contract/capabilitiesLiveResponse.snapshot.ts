@@ -181,4 +181,30 @@ export const PROVENANCE = {
   serverVersion: '0.2.3+6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
   commitSha: '6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
   capturedAt: '2026-08-21T21:52-07:00',
+  /**
+   * The csharp-source snapshots in this directory have moved forward to
+   * `678d339…`; no source snapshot remains at `6cf79de…`, so this capture is
+   * no longer anchored by commit equality.
+   *
+   * This field is NOT a re-stamp. The body below is still the verbatim
+   * response from a server built at `6cf79de…` — re-stamping `commitSha` to
+   * the newer pin would claim a capture from a server nobody contacted, which
+   * is precisely the fabrication the provenance guard exists to catch.
+   *
+   * Known deltas between this capture and the `678d339…` contract:
+   *   - `calibrationGenerationEnabled` — DELETED server-side (7169f1d32 /
+   *     #1995) along with the generator subsystem (D2/#1979). Still present in
+   *     the body below because the server did send it at capture time.
+   *   - `supportedExportFormats` — DELETED by the same commit.
+   *
+   * Neither delta weakens this fixture's current job: it is the payload the
+   * flag-mapping suite parses, and the desktop schema is `.passthrough()`, so
+   * the two dead fields are inert. `calibrationSlicingEnabled` — the field the
+   * desktop's generation flag now binds to — is present in the capture, so the
+   * re-pointed alias is exercised against real captured data.
+   *
+   * REPLACE THIS FIXTURE when a server at or after `678d339…` is reachable:
+   * re-capture, update the body, set `commitSha`, and delete `supersededBy`.
+   */
+  supersededBy: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
 };

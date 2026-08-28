@@ -124,7 +124,7 @@ describe('CalibrationHttpClient capability contract', () => {
 
   it('treats capability switches an older server omits as disabled', async () => {
     const body = printFarmerCapabilitiesResponse();
-    delete body.calibrationGenerationEnabled;
+    delete body.calibrationSlicingEnabled;
     delete body.calibrationPhotosEnabled;
     const fetchMock = vi.fn().mockResolvedValue(json(body));
     const client = makeClient(fetchMock);

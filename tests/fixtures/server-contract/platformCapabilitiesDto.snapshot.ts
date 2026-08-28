@@ -5,10 +5,10 @@
  * SOURCE-OF-TRUTH PROVENANCE
  * --------------------------
  * Repository:  OlyForge3D/PrintFarmer
- * Commit SHA:  6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e
+ * Commit SHA:  678d3398934537ff6ee4528c2e51aaa4a244d37f
  * Branch:      development (at snapshot time)
  * Source file: src/infra/Dtos/PlatformCapabilitiesDto.cs
- * Blob hash:   da54b12c3783c6aa694f4b1904b9810b47990a74
+ * Blob hash:   7ab8cd45cfb7d0587e72e175c3104e5851b71fa8
  * C# type:     Farm.Infrastructure.Dtos.PlatformCapabilitiesDto
  *
  * This DTO is what the "capability negotiation" layer resolves against.
@@ -23,8 +23,8 @@
  *
  *   2. Some of the boolean fields on this DTO are HARDCODED FALSE on the
  *      server side because their backing subsystem is unimplemented — see
- *      `src/api/Services/Capabilities/CalibrationCapabilityService.cs:203-205`
- *      (blob 39056b32892c44b0ea71cf4be0b26f44ba7c88c7), which hardcodes
+ *      `src/modules/Farm.Modules.Calibration/Services/Capabilities/CalibrationCapabilityService.cs:203-205`
+ *      (blob b3856c06f7e6827024dfbebba13cc86548241595), which hardcodes
  *      `CalibrationQueueEnabled = false`, `CalibrationJobBoundBedClearEnabled
  *      = false`, and `CalibrationEventsEnabled = false`. A desktop alias that
  *      binds a REQUIRED calibration flag to one of these hardcoded-false
@@ -32,6 +32,23 @@
  *      forever, no matter how the server operator configures it. The
  *      counterfactual regression guard in `capabilityFlagMapping` pins this
  *      failure mode against re-introduction.
+ *
+ *   3. TWO FIELDS WERE DELETED SERVER-SIDE and are deliberately absent below:
+ *      `calibrationGenerationEnabled` and `supportedExportFormats`. They were
+ *      removed by PrintFarmer 7169f1d32 ("D6: Rescope
+ *      CalibrationCapabilitiesController / PlatformCapabilitiesDto for
+ *      filament calibration", #1995), which rescoped this DTO to describe only
+ *      what a thin client needs to drive *server-orchestrated filament
+ *      calibration*. The generator subsystem those fields described
+ *      (`Farm.Web.Api.Services.Calibration.Generation`) was deleted outright by
+ *      D2/#1979 — so this is a subsystem removal, NOT a rename. Do not
+ *      "restore" them to make a test pass.
+ *
+ *      The desktop's `calibrationGenerationEnabled` capability flag survives as
+ *      a *desktop* concept ("can this server produce calibration output?") but
+ *      now binds to `calibrationSlicingEnabled`, which the server computes from
+ *      `calibrationSlicingOperational` rather than hardcoding. See the semantic
+ *      mapping in `CALIBRATION_FLAG_SOURCES` for the reasoning.
  */
 
 /**
@@ -54,7 +71,6 @@ export const PLATFORM_CAPABILITIES_DTO_FIELDS = [
   'calibrationSyncEnabled',
   'calibrationPhotosEnabled',
   'calibrationProfileHistoryEnabled',
-  'calibrationGenerationEnabled',
   'calibrationSlicingEnabled',
   'calibrationArtifactPromotionEnabled',
   'calibrationQueueEnabled',
@@ -75,7 +91,6 @@ export const PLATFORM_CAPABILITIES_DTO_FIELDS = [
   'routes',
   'limits',
   'acceptedMimeTypes',
-  'supportedExportFormats',
   'healthyCompatibleWorker',
   'unavailableReasons',
   'effectivePermissions',
@@ -132,7 +147,11 @@ export const CALIBRATION_CAPABILITY_FLAG_ALLOWLIST = [
   'calibrationSyncEnabled',
   'calibrationPhotosEnabled',
   'calibrationProfileHistoryEnabled',
-  'calibrationGenerationEnabled',
+  // Backs the desktop's `calibrationGenerationEnabled` flag since the server
+  // deleted its own generation field (PrintFarmer 7169f1d32 / #1995).
+  // Authorised because the service computes it from
+  // `calibrationSlicingOperational` — a real deployment switch, not one of the
+  // hardcoded-false fields below.
   'calibrationSlicingEnabled',
   'calibrationArtifactPromotionEnabled',
   'calibrationQueueEnabled',
@@ -153,9 +172,9 @@ export const CALIBRATION_CAPABILITY_FLAG_ALLOWLIST = [
 export const PROVENANCE = {
   kind: 'csharp-source' as const,
   sourceRepo: 'OlyForge3D/PrintFarmer',
-  commitSha: '6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
+  commitSha: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
   sourcePath: 'src/infra/Dtos/PlatformCapabilitiesDto.cs',
-  blobHash: 'da54b12c3783c6aa694f4b1904b9810b47990a74',
+  blobHash: '7ab8cd45cfb7d0587e72e175c3104e5851b71fa8',
   typeName: 'PlatformCapabilitiesDto',
   additionalSources: [
     {
@@ -166,8 +185,8 @@ export const PROVENANCE = {
     },
     {
       sourcePath:
-        'src/api/Services/Capabilities/CalibrationCapabilityService.cs',
-      blobHash: '39056b32892c44b0ea71cf4be0b26f44ba7c88c7',
+        'src/modules/Farm.Modules.Calibration/Services/Capabilities/CalibrationCapabilityService.cs',
+      blobHash: 'b3856c06f7e6827024dfbebba13cc86548241595',
       typeName: 'CalibrationCapabilityService',
       note: 'Hardcoded-false calibration flags at lines 203-205; cited by the mis-fix counterfactual.',
     },

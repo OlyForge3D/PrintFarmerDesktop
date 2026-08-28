@@ -5,10 +5,10 @@
  * SOURCE-OF-TRUTH PROVENANCE
  * --------------------------
  * Repository:  OlyForge3D/PrintFarmer
- * Commit SHA:  6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e
+ * Commit SHA:  678d3398934537ff6ee4528c2e51aaa4a244d37f
  * Branch:      development (at snapshot time)
  * Source file: src/infra/Dtos/QueueDtos.cs
- * Blob hash:   d43cc5354d53c4fc217f659fc7db279933df5501
+ * Blob hash:   09a5c3506d2de304131fe33d17d58c761b26c2df
  * C# type:     Farm.Infrastructure.Dtos.PrintQueue.QueuePrintJobDto (lines 80–202)
  *
  * The property list below is copied verbatim from the server DTO's C# properties.
@@ -102,8 +102,8 @@ export const CALIBRATION_JOB_KIND = 'FilamentCalibration' as const;
 export const PROVENANCE = {
   kind: 'csharp-source' as const,
   sourceRepo: 'OlyForge3D/PrintFarmer',
-  commitSha: '6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
+  commitSha: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
   sourcePath: 'src/infra/Dtos/QueueDtos.cs',
-  blobHash: 'd43cc5354d53c4fc217f659fc7db279933df5501',
+  blobHash: '09a5c3506d2de304131fe33d17d58c761b26c2df',
   typeName: 'QueuePrintJobDto',
 };

@@ -26,7 +26,11 @@ export function printFarmerCapabilitiesResponse(
     calibrationSyncEnabled: true,
     calibrationPhotosEnabled: true,
     calibrationProfileHistoryEnabled: true,
-    calibrationGenerationEnabled: true,
+    // `calibrationGenerationEnabled` is deliberately NOT set: the server
+    // deleted that field with the generator subsystem (7169f1d32 / #1995,
+    // D2/#1979). This fixture must faithfully reflect the wire, and the wire
+    // no longer carries it. The desktop flag of the same name now binds to
+    // `calibrationSlicingEnabled` below.
     calibrationSlicingEnabled: true,
     calibrationArtifactPromotionEnabled: true,
     calibrationQueueEnabled: false,
