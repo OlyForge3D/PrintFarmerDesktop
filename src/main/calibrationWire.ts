@@ -1599,7 +1599,7 @@ type RemoteCalibrationFlagSourcePath =
   | 'calibrationPersistenceEnabled'
   | 'calibrationSyncEnabled'
   | 'calibrationPhotosEnabled'
-  | 'calibrationGenerationEnabled'
+  | 'calibrationSlicingEnabled'
   | 'operatorFeatures.offlineWriteReplayEnabled';
 
 /**
@@ -1612,9 +1612,9 @@ type RemoteCalibrationFlagSourcePath =
  * added to this map is automatically covered by the test — nothing needs to
  * be hand-copied into `tests/`.
  *
- * Semantic mapping (verified against a live PrintFarmer stack, `GET
- * /api/calibration/capabilities`, `serverVersion` 0.2.3+6cf79dee0e7e, and
- * the server's `PlatformCapabilitiesDto.cs:47-48` and `:71-72` XML docs):
+ * Semantic mapping (verified against the server sources pinned by
+ * `tests/fixtures/server-contract/platformCapabilitiesDto.snapshot.ts` at
+ * PrintFarmer `678d3398934537ff6ee4528c2e51aaa4a244d37f`):
  *
  * - `calibrationApiEnabled`         ← `calibrationPersistenceEnabled`
  *   ("calibration API persistence is up"). Live value: `true`.
@@ -1638,6 +1638,26 @@ type RemoteCalibrationFlagSourcePath =
  *   `readFlagBackingField` below), not the sync switch, and it is not
  *   load-bearing for this gate. Live value: `true`.
  *
+ * - `calibrationGenerationEnabled`   ← `calibrationSlicingEnabled`
+ *   The desktop flag keeps its name — it answers a *desktop* question ("can
+ *   this server produce calibration G-code and profile patches?") — but its
+ *   backing field changed. The server's `CalibrationGenerationEnabled` was
+ *   DELETED by PrintFarmer 7169f1d32 (#1995) when the generator subsystem
+ *   `Farm.Web.Api.Services.Calibration.Generation` was removed by D2/#1979.
+ *   Server-orchestrated filament calibration replaced it, and its switch is
+ *   `CalibrationSlicingEnabled`.
+ *
+ *   Binding here is deliberate and load-bearing: the service computes
+ *   `CalibrationSlicingEnabled = calibrationSlicingOperational`, so it tracks
+ *   real deployment state. It is NOT one of the hardcoded-false fields
+ *   (`CalibrationQueueEnabled`, `CalibrationJobBoundBedClearEnabled`,
+ *   `CalibrationEventsEnabled`) — binding to one of those would refuse
+ *   generation on every deployment forever. See note 2 in the DTO snapshot.
+ *
+ *   Left un-consumed on purpose: `calibrationArtifactPromotionEnabled` is a
+ *   *separate* server switch covering promotion of a produced artifact. The
+ *   desktop does not read it yet, so `applyPatch` is gated on slicing alone.
+ *
  * `readFlagBackingField` handles both flat and nested paths so future flags
  * whose backing wire field lives inside a nested block (e.g. `operatorFeatures`)
  * can be added without changing the resolver. A flat-only resolver is blind
@@ -1649,7 +1669,7 @@ export const CALIBRATION_FLAG_SOURCES = {
   calibrationChangeFeedEnabled: 'calibrationSyncEnabled',
   calibrationOfflineDraftEnabled: 'calibrationSyncEnabled',
   calibrationPhotoUploadEnabled: 'calibrationPhotosEnabled',
-  calibrationGenerationEnabled: 'calibrationGenerationEnabled',
+  calibrationGenerationEnabled: 'calibrationSlicingEnabled',
 } as const satisfies Record<string, RemoteCalibrationFlagSourcePath>;
 
 /** Name of one of the negotiated end-to-end calibration capability flags. */
@@ -1798,8 +1818,17 @@ export const RemoteCalibrationCapabilities = z
     calibrationEventsEnabled: AdvertisedFlagRaw,
     /** Calibration photo capture and upload. */
     calibrationPhotosEnabled: AdvertisedFlagRaw,
-    /** Calibration command generation and G-code promotion. */
-    calibrationGenerationEnabled: AdvertisedFlagRaw,
+    /**
+     * Server-orchestrated calibration slicing. **Load-bearing** for the
+     * desktop's `calibrationGenerationEnabled` flag — see
+     * `CALIBRATION_FLAG_SOURCES` for why the desktop flag kept its name while
+     * its backing field moved here.
+     *
+     * The server's own `calibrationGenerationEnabled` was deleted with the
+     * generator subsystem (PrintFarmer 7169f1d32 / #1995, D2/#1979) and is
+     * intentionally NOT declared here.
+     */
+    calibrationSlicingEnabled: AdvertisedFlagRaw,
     /**
      * Nested operator-features block. `offlineWriteReplayEnabled` is a real
      * capability field the server advertises, readable via

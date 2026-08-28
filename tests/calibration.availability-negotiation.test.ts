@@ -158,7 +158,7 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
   it('stays available when only optional features are disabled', async () => {
     respondWith(
       printFarmerCapabilitiesResponse({
-        calibrationGenerationEnabled: false,
+        calibrationSlicingEnabled: false,
         calibrationPhotosEnabled: false,
       }),
     );

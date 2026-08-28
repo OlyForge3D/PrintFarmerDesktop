@@ -31,7 +31,9 @@ function capabilities(): ReturnType<
     // (→ `calibrationApiEnabled`), `calibrationSyncEnabled` (→
     // `calibrationChangeFeedEnabled` and `calibrationOfflineDraftEnabled`),
     // `calibrationPhotosEnabled` (→ `calibrationPhotoUploadEnabled`),
-    // `calibrationGenerationEnabled`. See `CALIBRATION_FLAG_SOURCES`.
+    // `calibrationSlicingEnabled` (→ the desktop's
+    // `calibrationGenerationEnabled`; the server deleted its own field of that
+    // name in 7169f1d32 / #1995). See `CALIBRATION_FLAG_SOURCES`.
     // `calibrationContextEnabled`, `calibrationEventsEnabled`, and
     // `operatorFeatures.offlineWriteReplayEnabled` are real wire fields
     // the schema declares for pass-through/diagnostics but are not the
@@ -41,7 +43,7 @@ function capabilities(): ReturnType<
     calibrationPersistenceEnabled: true,
     calibrationSyncEnabled: true,
     calibrationPhotosEnabled: true,
-    calibrationGenerationEnabled: true,
+    calibrationSlicingEnabled: true,
     operatorFeatures: { offlineWriteReplayEnabled: true },
     supportedFirmwareFamilies: ['Klipper'],
     supportedGcodeDialects: ['Klipper'],

@@ -7,13 +7,14 @@
  * SOURCE-OF-TRUTH PROVENANCE
  * --------------------------
  * Repository:  OlyForge3D/PrintFarmer
- * Commit SHA:  6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e
+ * Commit SHA:  678d3398934537ff6ee4528c2e51aaa4a244d37f
  * Contracts source: src/infra/Calibration/CalibrationContracts.cs
- *   Blob SHA:       d063f0a1aeaf19669a21700ce2c81622d48d7dc0
+ *   Blob SHA:       cecc1b32528f9dfc6c4233c99433b1a788e4c35a
  *   C# types:       Farm.Infrastructure.Calibration.CalibrationCandidateDto,
  *                   Farm.Infrastructure.Calibration.CalibrationContextDto
- * Controller:  src/api/Controllers/PrinterCalibrationController.cs
- *   Blob SHA:  ebde4688551bd1848d7ab17165d1ffb63d8c38dc
+ * Controller:  removed from the server — the printer-calibration saga that owned
+ *              PrinterCalibrationController.cs was reaped upstream, so this
+ *              snapshot no longer pins it (see note below).
  *
  * CalibrationContextDto extends CalibrationCandidateDto (C# class inheritance)
  * so its wire shape is Candidate + Context-only fields. The two lists below
@@ -115,16 +116,9 @@ export const CALIBRATION_REJECTION_REASON_DTO_FIELDS = [
 export const PROVENANCE = {
   kind: 'csharp-source' as const,
   sourceRepo: 'OlyForge3D/PrintFarmer',
-  commitSha: '6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
+  commitSha: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
   sourcePath: 'src/infra/Calibration/CalibrationContracts.cs',
-  blobHash: 'd063f0a1aeaf19669a21700ce2c81622d48d7dc0',
+  blobHash: 'cecc1b32528f9dfc6c4233c99433b1a788e4c35a',
   typeName: 'CalibrationCandidateDto',
-  additionalSources: [
-    {
-      sourcePath: 'src/api/Controllers/PrinterCalibrationController.cs',
-      blobHash: 'ebde4688551bd1848d7ab17165d1ffb63d8c38dc',
-      typeName: 'PrinterCalibrationController',
-      note: 'Serves candidates + context under /api/printers/**.',
-    },
-  ],
+  additionalSources: [],
 };

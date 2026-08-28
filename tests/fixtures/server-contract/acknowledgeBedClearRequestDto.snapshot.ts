@@ -5,14 +5,14 @@
  * SOURCE-OF-TRUTH PROVENANCE
  * --------------------------
  * Repository:  OlyForge3D/PrintFarmer
- * Commit SHA:  6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e
+ * Commit SHA:  678d3398934537ff6ee4528c2e51aaa4a244d37f
  * Branch:      development (at snapshot time)
- * Source file: src/api/Controllers/Requests/AcknowledgeBedClearRequestDto.cs
- * Blob hash:   74722bc4a2a45c19dc9a963d9e02e96474978deb
+ * Source file: src/modules/Farm.Modules.PrintQueue/Controllers/Requests/AcknowledgeBedClearRequestDto.cs
+ * Blob hash:   c3efe8fec5186b851bac402cc78d270b4daa717c
  * C# type:     Farm.Web.Api.Controllers.Requests.AcknowledgeBedClearRequestDto
  *
  * Header preconditions enforced by the action (see JobQueueController.cs
- * `AcknowledgeBedClearAndStartAsync`, blob 65cc4419c0777959ead8d432d159e3b5273e7d61):
+ * `AcknowledgeBedClearAndStartAsync`, blob f6188167cd298869ee4683db1fa005f4d9eca539):
  *   - Idempotency-Key            (has body fallback via IdempotencyKey field;
  *                                 428 requires BOTH header and body blank)
  *   - If-Match                   (no body fallback; 428 if absent)
@@ -61,14 +61,16 @@ export const BED_CLEAR_REQUIRED_HEADERS = [
 export const PROVENANCE = {
   kind: 'csharp-source' as const,
   sourceRepo: 'OlyForge3D/PrintFarmer',
-  commitSha: '6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
-  sourcePath: 'src/api/Controllers/Requests/AcknowledgeBedClearRequestDto.cs',
-  blobHash: '74722bc4a2a45c19dc9a963d9e02e96474978deb',
+  commitSha: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
+  sourcePath:
+    'src/modules/Farm.Modules.PrintQueue/Controllers/Requests/AcknowledgeBedClearRequestDto.cs',
+  blobHash: 'c3efe8fec5186b851bac402cc78d270b4daa717c',
   typeName: 'AcknowledgeBedClearRequestDto',
   additionalSources: [
     {
-      sourcePath: 'src/api/Controllers/JobQueueController.cs',
-      blobHash: '65cc4419c0777959ead8d432d159e3b5273e7d61',
+      sourcePath:
+        'src/modules/Farm.Modules.PrintQueue/Controllers/JobQueueController.cs',
+      blobHash: 'f6188167cd298869ee4683db1fa005f4d9eca539',
       typeName: 'JobQueueController.AcknowledgeBedClearAndStartAsync',
       note: 'Enforces the three required headers (Idempotency-Key, If-Match, X-Dispatch-State-If-Match).',
     },

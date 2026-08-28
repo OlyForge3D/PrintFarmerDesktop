@@ -6,12 +6,12 @@
  * SOURCE-OF-TRUTH PROVENANCE
  * --------------------------
  * Repository:  OlyForge3D/PrintFarmer
- * Commit SHA:  6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e
+ * Commit SHA:  678d3398934537ff6ee4528c2e51aaa4a244d37f
  * Enum source: src/infra/Domain/PrintJobEnums.cs
  *   Blob SHA:  03b56a83237d8541572be92a29a87d991b5aac9a
  *   C# type:   Farm.Infrastructure.Domain.JobBlockedReasonCode
  * Switch src:  src/infra/Services/Queue/Dispatch/DispatchSafetyGates.cs
- *   Blob SHA:  39190b333089503f68609ea249c3d89c727ba7b1
+ *   Blob SHA:  ce6b81505697916974eead591f0383a60e34b26f
  *   C# method: Farm.Infrastructure.Services.Queue.Dispatch.DispatchSafetyGates.MapBlockedReason
  *
  * WHY THIS SNAPSHOT EXISTS
@@ -103,14 +103,14 @@ export type JobBlockedReasonWireToken =
 export const PROVENANCE = {
   kind: 'csharp-source' as const,
   sourceRepo: 'OlyForge3D/PrintFarmer',
-  commitSha: '6cf79dee0e7e1b7d692399d6aff3e4f72a1c8e0e',
+  commitSha: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
   sourcePath: 'src/infra/Domain/PrintJobEnums.cs',
   blobHash: '03b56a83237d8541572be92a29a87d991b5aac9a',
   typeName: 'JobBlockedReasonCode',
   additionalSources: [
     {
       sourcePath: 'src/infra/Services/Queue/Dispatch/DispatchSafetyGates.cs',
-      blobHash: '39190b333089503f68609ea249c3d89c727ba7b1',
+      blobHash: 'ce6b81505697916974eead591f0383a60e34b26f',
       typeName: 'DispatchSafetyGates.MapBlockedReason',
       note: 'Wire-token to enum mapping. Returns null for unrecognised tokens.',
     },

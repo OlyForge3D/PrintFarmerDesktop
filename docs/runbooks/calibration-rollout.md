@@ -51,13 +51,13 @@ sets. `RemoteCalibrationCapabilities` normalises the wire names into the
 negotiation shape the feature gate consumes, so callers never depend on raw
 wire naming.
 
-| Client flag (`CalibrationCapabilityFlags`) | Server switch (`RemoteCalibrationCapabilities`) | What it gates                                                                        |
-| ------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `calibrationApiEnabled`                    | `calibrationPersistenceEnabled`                 | Calibration persistence API — the discovery/read surface every later stage stands on |
-| `calibrationChangeFeedEnabled`             | `calibrationSyncEnabled`                        | Change-feed / sync path — cursors and replay                                         |
-| `calibrationOfflineDraftEnabled`           | `calibrationSyncEnabled`                        | Offline draft replay travels through the same sync/change-feed path                  |
-| `calibrationPhotoUploadEnabled`            | `calibrationPhotosEnabled`                      | Staged calibration photo upload                                                      |
-| `calibrationGenerationEnabled`             | `calibrationGenerationEnabled`                  | Generation and G-code promotion                                                      |
+| Client flag (`CalibrationCapabilityFlags`) | Server switch (`RemoteCalibrationCapabilities`) | What it gates                                                                                                                                                                                                                   |
+| ------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `calibrationApiEnabled`                    | `calibrationPersistenceEnabled`                 | Calibration persistence API — the discovery/read surface every later stage stands on                                                                                                                                            |
+| `calibrationChangeFeedEnabled`             | `calibrationSyncEnabled`                        | Change-feed / sync path — cursors and replay                                                                                                                                                                                    |
+| `calibrationOfflineDraftEnabled`           | `calibrationSyncEnabled`                        | Offline draft replay travels through the same sync/change-feed path                                                                                                                                                             |
+| `calibrationPhotoUploadEnabled`            | `calibrationPhotosEnabled`                      | Staged calibration photo upload                                                                                                                                                                                                 |
+| `calibrationGenerationEnabled`             | `calibrationSlicingEnabled`                     | Generation and G-code promotion. The server deleted its own `calibrationGenerationEnabled` field with the generator subsystem (PrintFarmer 7169f1d32 / #1995); the client flag keeps its name and now reads the slicing switch. |
 
 **Two consequences an operator must know before starting.**
 
@@ -153,7 +153,7 @@ next.
 
 ### Stage 5 — Idempotent calibration queue and shared safe dispatch
 
-- **Capability flags:** `calibrationGenerationEnabled`
+- **Capability flags:** `calibrationGenerationEnabled` (for the server switch it reads, see the mapping table above)
 - **Precondition:** stage 4 healthy and observed operational. Duplicate
   generation, queue and start commands replay a single operation under
   concurrent clients; two backend instances cannot claim the same printer;
@@ -162,7 +162,7 @@ next.
   uncertain backend start remains `Starting` until reconciliation and is never
   blindly retried; changed firmware, stale telemetry, busy/maintenance state
   and an expired acknowledgement each block safely with a typed reason.
-- **Rollback:** set `calibrationGenerationEnabled` false. In-flight jobs must
+- **Rollback:** set the backing server switch false (see the mapping table above). In-flight jobs must
   reconcile rather than being force-failed.
 
 ### Stage 6 — PFD transport and offline support

@@ -34,6 +34,7 @@
  *      if it does not bite, the snapshot import is another self-referential
  *      mirror and this file has failed at its one job.
  */
+import { existsSync } from 'node:fs';
 import {
   type IncomingMessage,
   type Server,
@@ -41,6 +42,7 @@ import {
   createServer,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -51,6 +53,7 @@ import {
   ACKNOWLEDGE_BED_CLEAR_REQUEST_DTO_FIELDS,
   ACKNOWLEDGE_BED_CLEAR_REQUEST_DTO_REQUIRED,
   BED_CLEAR_REQUIRED_HEADERS,
+  PROVENANCE as ACKNOWLEDGE_BED_CLEAR_PROVENANCE,
 } from './fixtures/server-contract/acknowledgeBedClearRequestDto.snapshot.js';
 import {
   CALIBRATION_JOB_KIND,
@@ -251,10 +254,20 @@ describe('calibration wire ↔ PrintFarmer server contract (loopback)', () => {
         : 'AcknowledgeBedClearRequestDto snapshot matches server DTO on disk',
       () => {
         if (serverRepo === null) return;
+        // Read the path from the snapshot's own provenance rather than
+        // hardcoding it. The server's module-decomposition epic moved this DTO
+        // from `src/api/**` to `src/modules/**`; a hardcoded path turned that
+        // into a bare ENOENT that named no cause. Sourcing it from PROVENANCE
+        // means the path can only be wrong if the snapshot itself is wrong,
+        // which the provenance guard already reports.
+        const relPath = ACKNOWLEDGE_BED_CLEAR_PROVENANCE.sourcePath;
+        expect(
+          existsSync(path.join(serverRepo, relPath)),
+          `Server source not found at ${relPath}. The snapshot's PROVENANCE.sourcePath is stale — the server most likely moved this file (the module-decomposition epic relocated src/api/** to src/modules/**). Re-pin the snapshot rather than editing this path inline.`,
+        ).toBe(true);
         const report = compareDto({
           repoRoot: serverRepo,
-          relPath:
-            'src/api/Controllers/Requests/AcknowledgeBedClearRequestDto.cs',
+          relPath,
           typeName: 'AcknowledgeBedClearRequestDto',
           snapshotFields: ACKNOWLEDGE_BED_CLEAR_REQUEST_DTO_FIELDS,
         });
