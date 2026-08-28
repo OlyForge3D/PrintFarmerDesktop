@@ -53,6 +53,7 @@ import type { FilamentWizardStateRecord as FilamentWizardStateRecordType } from 
 import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
+  SCALAR_MEASUREMENT_SPECS,
   isFlowRatioMethod,
 } from '../src/renderer/calibration/filamentWizardState';
 
@@ -194,6 +195,103 @@ describe('filament calibration method catalogue', () => {
     expect(flowFromCatalogue).not.toContain('temperature_tower');
     expect(flowFromWireUnion).not.toContain('temperature_tower');
     expect(flowFromCatalogue.length).toBeGreaterThan(0);
+  });
+
+  it('follows the guide order across all five adopted categories', () => {
+    // Guide order is Temperature (1) → Max volumetric speed (2) → Pressure
+    // advance (3) → Flow (4) → Retraction (5). Appending a method rather than
+    // slotting it by guide position silently inverts the recommended sequence,
+    // which is the whole reason this file exists.
+    const at = (method: string): number =>
+      FILAMENT_WIZARD_METHODS.indexOf(method as never);
+
+    expect(at('temperature_tower')).toBeLessThan(at('max_volumetric_speed'));
+    expect(at('max_volumetric_speed')).toBeLessThan(
+      at('pressure_advance_tower'),
+    );
+    expect(at('pressure_advance_tower')).toBeLessThan(
+      at('flow_rate_yolo_recommended'),
+    );
+    expect(at('flow_rate_pass_2')).toBeLessThan(at('retraction'));
+
+    // Control: every method named above is actually in the list. `indexOf`
+    // returns -1 for an absent method, and -1 < anything, so the assertions
+    // above would pass vacuously against a list that had lost an entry.
+    for (const method of [
+      'temperature_tower',
+      'max_volumetric_speed',
+      'pressure_advance_tower',
+      'flow_rate_yolo_recommended',
+      'flow_rate_pass_2',
+      'retraction',
+    ]) {
+      expect(
+        at(method),
+        `${method} missing from the wizard list`,
+      ).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('labels each scalar measurement with the band the wire schema actually enforces', () => {
+    // The spec's min/max are presentation only — the measurement step validates
+    // by parsing `CalibrationFilamentMeasurement`. If the label and the schema
+    // disagree, the operator is told one band and rejected against another.
+    // Probing both edges is what makes this an agreement test rather than a
+    // restatement of the spec.
+    const methodForSchema = new Map<string, string>();
+    for (const method of CalibrationSliceMethod.options) {
+      methodForSchema.set(
+        FILAMENT_METHOD_META[method].measurementSchema,
+        method,
+      );
+    }
+
+    for (const [schema, spec] of Object.entries(SCALAR_MEASUREMENT_SPECS)) {
+      const method = methodForSchema.get(schema);
+      expect(method, `no method uses the ${schema} schema`).toBeDefined();
+      if (method === undefined) continue;
+
+      const parse = (value: number): boolean =>
+        CalibrationFilamentMeasurement.safeParse({
+          method,
+          [spec.field]: value,
+        }).success;
+
+      // Inside the advertised band, at both edges.
+      expect(parse(spec.min), `${schema}: min ${spec.min} rejected`).toBe(true);
+      expect(parse(spec.max), `${schema}: max ${spec.max} rejected`).toBe(true);
+
+      // Outside it — the control. A schema with no bounds at all would pass
+      // the two assertions above and fail these.
+      const outside = Math.max(Math.abs(spec.max - spec.min) * 0.5, 0.001);
+      expect(
+        parse(spec.min - outside),
+        `${schema}: below-band value accepted`,
+      ).toBe(false);
+      expect(
+        parse(spec.max + outside),
+        `${schema}: above-band value accepted`,
+      ).toBe(false);
+    }
+  });
+
+  it('gives the three new-quantity methods their own measurement schemas', () => {
+    expect(FILAMENT_METHOD_META.max_volumetric_speed.measurementSchema).toBe(
+      'maxVolumetricSpeed',
+    );
+    expect(FILAMENT_METHOD_META.pressure_advance_tower.measurementSchema).toBe(
+      'pressureAdvance',
+    );
+    expect(FILAMENT_METHOD_META.retraction.measurementSchema).toBe(
+      'retractionLength',
+    );
+
+    // Control: these must not be flow ratios. Reusing `flowRatio` would render
+    // a flow-ratio input and submit a payload the IPC boundary rejects.
+    expect(isFlowRatioMethod('max_volumetric_speed')).toBe(false);
+    expect(isFlowRatioMethod('pressure_advance_tower')).toBe(false);
+    expect(isFlowRatioMethod('retraction')).toBe(false);
+    expect(isFlowRatioMethod('flow_rate_yolo_recommended')).toBe(true);
   });
 });
 

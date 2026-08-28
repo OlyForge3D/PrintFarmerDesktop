@@ -514,23 +514,45 @@ describe('FilamentCalibrationWizard step sequencing', () => {
 });
 
 describe('FilamentCalibrationWizard method-picker capability boundary', () => {
-  // Step 3 renders a `<p className="cal-notice">` naming the calibration steps
-  // PrintFarmer cannot slice (max volumetric speed, pressure advance,
-  // retraction, cornering, input shaping, VFA) and pointing operators at
-  // OrcaSlicer for those. Without an assertion here, silently deleting the
-  // paragraph would ship green — the copy is a capability boundary, not
-  // decorative hint text. Assert one stable substring rather than the whole
-  // paragraph so operator-facing wording can still be edited without
-  // breaking this test.
-  it('names an OrcaSlicer-only step that PrintFarmer cannot run yet', async () => {
+  // Step 3 renders a `<p className="cal-notice">` stating the scope boundary
+  // and pointing operators at OrcaSlicer for what falls outside it. Without an
+  // assertion here, silently deleting the paragraph would ship green — the
+  // copy is a capability boundary, not decorative hint text. Assert one stable
+  // substring rather than the whole paragraph so operator-facing wording can
+  // still be edited without breaking this test.
+  //
+  // The boundary moved once the wizard adopted every slice-able method (#775
+  // -#779): it is no longer "these are not implemented yet" but "machine
+  // calibrations have nothing to write to a filament profile". The paragraph
+  // must state a boundary that is actually true — naming a method as
+  // not-yet-supported after it ships is worse than saying nothing.
+  it('names the machine-calibration scope boundary', async () => {
     const api = wizardApi();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
 
-    const notice = await screen.findByText(/max volumetric speed/i);
+    const notice = await screen.findByText(/input shaping and VFA/i);
     expect(notice).toBeInTheDocument();
+    expect(notice.textContent ?? '').toMatch(/firmware motion settings/i);
+  });
+
+  it('does not describe an adopted method as unavailable', async () => {
+    // Control on the assertion above. The notice previously listed max
+    // volumetric speed, pressure advance and retraction as things PrintFarmer
+    // "cannot slice yet"; all three are now offered, so that copy would be
+    // actively misleading rather than merely stale.
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const notice = await screen.findByText(/input shaping and VFA/i);
+    const text = notice.textContent ?? '';
+    expect(text).not.toMatch(/cannot slice/i);
+    expect(text).not.toMatch(/does not offer/i);
   });
 });
 

@@ -83,12 +83,14 @@ import type {
  * (plus Tolerance, listed outside the numbered sequence.)
  * https://www.orcaslicer.com/wiki/guides/calibration_guide
  *
- * Of those eight categories this list covers two — temperature (1) and flow
- * (4). Categories 2, 3 and 5 are implemented server-side and are being adopted
- * here separately (#777, #778, #779). Categories 6-8 (cornering, input shaping,
- * VFA) are deliberately excluded: they are *machine* calibrations whose results
- * are firmware motion settings, and this wizard's only output is a patched
- * filament profile, so there is nowhere to write them. See #786.
+ * Of those eight categories this list now covers five: temperature (1), max
+ * volumetric speed (2), pressure advance (3), flow (4) and retraction (5), in
+ * exactly that order.
+ *
+ * Categories 6-8 (cornering, input shaping, VFA) are deliberately excluded and
+ * are not coming: they are *machine* calibrations whose results are firmware
+ * motion settings, and this wizard's only output is a patched filament profile,
+ * so there is nowhere to write them. See #786 and OlyForge3D/PrintFarmer#2162.
  *
  * Temperature leads because the dependency is physical and one-way: nozzle
  * temperature changes filament viscosity and therefore how it flows, so a flow
@@ -102,13 +104,21 @@ import type {
  * They are alternatives, not a sequence: the wizard's `methodPicker` phase
  * offers this list and the operator chooses one per round. Recommended is
  * listed before the legacy passes because it is the default choice.
+ *
+ * Pressure advance is Tower only. PA Line and PA Pattern stay unsupported
+ * upstream on licensing grounds (GPL-3.0 provenance and vendor-specific
+ * respectively), so the summary names the variant rather than "pressure
+ * advance" generally.
  */
 export const FILAMENT_WIZARD_METHODS: readonly CalibrationSliceMethod[] = [
   'temperature_tower',
+  'max_volumetric_speed',
+  'pressure_advance_tower',
   'flow_rate_yolo_recommended',
   'flow_rate_yolo_perfectionist',
   'flow_rate_pass_1',
   'flow_rate_pass_2',
+  'retraction',
 ];
 
 /**
@@ -126,7 +136,102 @@ export interface FilamentMethodMeta {
   readonly title: string;
   readonly summary: string;
   readonly measurementPrompt: string;
-  readonly measurementSchema: 'flowRatio' | 'temperature';
+  readonly measurementSchema: FilamentMeasurementSchema;
+}
+
+/**
+ * Which physical quantity a method's measurement step collects.
+ *
+ * Everything except `temperature` is a single bounded number, which is why the
+ * measurement step renders them from one generic branch rather than one branch
+ * per method — the shape that made every earlier method addition touch the
+ * component.
+ */
+export type FilamentMeasurementSchema =
+  | 'flowRatio'
+  | 'temperature'
+  | 'maxVolumetricSpeed'
+  | 'pressureAdvance'
+  | 'retractionLength';
+
+/**
+ * Presentation for a single-value measurement.
+ *
+ * `min`/`max` here are for the operator-facing label and nothing else —
+ * enforcement is the wire schema's job, and the measurement step validates by
+ * parsing through `CalibrationFilamentMeasurement` rather than re-checking
+ * these numbers. `filamentCalibrationMethodOrder.test.ts` asserts the two
+ * agree at both edges, so a label that drifts from the enforced band fails
+ * rather than misleading the operator.
+ */
+export interface ScalarMeasurementSpec {
+  /** Property name on the wire measurement branch. */
+  readonly field:
+    | 'filamentFlowRatio'
+    | 'maxVolumetricSpeed'
+    | 'pressureAdvance'
+    | 'retractionLength';
+  readonly label: string;
+  readonly ariaLabel: string;
+  readonly step: string;
+  readonly min: number;
+  readonly max: number;
+  /** Shown when the entered value falls outside the band. */
+  readonly rangeMessage: string;
+}
+
+export const SCALAR_MEASUREMENT_SPECS: Readonly<
+  Record<
+    Exclude<FilamentMeasurementSchema, 'temperature'>,
+    ScalarMeasurementSpec
+  >
+> = {
+  flowRatio: {
+    field: 'filamentFlowRatio',
+    label: 'Corrected filament flow ratio (0.5–1.5)',
+    ariaLabel: 'Flow ratio',
+    step: '0.001',
+    min: 0.5,
+    max: 1.5,
+    rangeMessage:
+      'The flow ratio must be between 0.5 and 1.5 — values outside that band are physically implausible.',
+  },
+  maxVolumetricSpeed: {
+    field: 'maxVolumetricSpeed',
+    label: 'Observed maximum volumetric speed (1–60 mm³/s)',
+    ariaLabel: 'Maximum volumetric speed',
+    step: '0.1',
+    min: 1,
+    max: 60,
+    rangeMessage:
+      'The maximum volumetric speed must be between 1 and 60 mm³/s. The slicing-time ceiling is 50 mm³/s; the band allows a little above it for filaments that tolerate more.',
+  },
+  pressureAdvance: {
+    field: 'pressureAdvance',
+    label: 'Pressure advance coefficient (0.0–2.0)',
+    ariaLabel: 'Pressure advance',
+    step: '0.001',
+    min: 0,
+    max: 2,
+    rangeMessage:
+      'The pressure advance coefficient must be between 0.0 and 2.0.',
+  },
+  retractionLength: {
+    field: 'retractionLength',
+    label: 'Retraction length (0–10 mm)',
+    ariaLabel: 'Retraction length',
+    step: '0.05',
+    min: 0,
+    max: 10,
+    rangeMessage: 'The retraction length must be between 0 and 10 mm.',
+  },
+};
+
+/** The scalar spec for a schema, or `null` for the two-field temperature case. */
+export function scalarSpecFor(
+  schema: FilamentMeasurementSchema,
+): ScalarMeasurementSpec | null {
+  return schema === 'temperature' ? null : SCALAR_MEASUREMENT_SPECS[schema];
 }
 
 export const FILAMENT_METHOD_META: Record<
@@ -177,6 +282,33 @@ export const FILAMENT_METHOD_META: Record<
     measurementPrompt:
       'Enter the refined filament flow ratio. Same 0.5–1.5 physical band as pass 1.',
     measurementSchema: 'flowRatio',
+  },
+  max_volumetric_speed: {
+    method: 'max_volumetric_speed',
+    title: 'Max volumetric speed',
+    summary:
+      'A tower whose extrusion rate climbs with height, printed with the flow ceiling lifted so the slicer does not clamp the sweep. Find the height where extrusion first degrades and read off the rate below it.',
+    measurementPrompt:
+      'Enter the highest volumetric speed that still extruded cleanly, in mm³/s. The band is 1–60; the slice itself runs against a 50 mm³/s ceiling.',
+    measurementSchema: 'maxVolumetricSpeed',
+  },
+  pressure_advance_tower: {
+    method: 'pressure_advance_tower',
+    title: 'Pressure advance — tower',
+    summary:
+      'A tower stepping the pressure-advance coefficient per band, emitted as Klipper SET_PRESSURE_ADVANCE or Marlin M900 K. Pick the band with the sharpest corners and least bulging. Tower only — PA Line and PA Pattern are not available upstream.',
+    measurementPrompt:
+      'Enter the pressure advance coefficient from the best band (0.0–2.0). Saving also enables pressure advance on the profile, since a coefficient alone leaves it switched off.',
+    measurementSchema: 'pressureAdvance',
+  },
+  retraction: {
+    method: 'retraction',
+    title: 'Retraction',
+    summary:
+      'A tower stepping retraction length per band. Pick the shortest length that still leaves no stringing between the towers — longer is not better, and over-retraction causes its own defects.',
+    measurementPrompt:
+      'Enter the chosen retraction length in millimetres (0–10). This is written as a per-filament override, not to the machine profile.',
+    measurementSchema: 'retractionLength',
   },
 };
 

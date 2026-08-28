@@ -5955,6 +5955,9 @@ export const CalibrationSliceMethod = z.enum([
   'flow_rate_pass_2',
   'flow_rate_yolo_recommended',
   'flow_rate_yolo_perfectionist',
+  'max_volumetric_speed',
+  'pressure_advance_tower',
+  'retraction',
   'temperature_tower',
 ]);
 export type CalibrationSliceMethod = z.infer<typeof CalibrationSliceMethod>;
@@ -6431,6 +6434,10 @@ export type CalibrationSendSliceToPrinterResponse = z.infer<
 //   flow_rate_pass_1 / flow_rate_pass_2           → filament_flow_ratio
 //   flow_rate_yolo_recommended /
 //   flow_rate_yolo_perfectionist                  → filament_flow_ratio
+//   max_volumetric_speed                          → filament_max_volumetric_speed
+//   pressure_advance_tower                        → pressure_advance +
+//                                                   enable_pressure_advance
+//   retraction                                    → filament_retraction_length
 //   temperature_tower                             → nozzle_temperature +
 //                                                   nozzle_temperature_initial_layer
 // This is enforced structurally by the discriminated union below — a
@@ -6442,6 +6449,10 @@ export type CalibrationSendSliceToPrinterResponse = z.infer<
 // than on a list of method literals. A literal list silently mis-routes every
 // method added after it was written — see the write-back in `main/ipc.ts`,
 // which treated any non-`flow_rate_pass_*` method as a temperature tower.
+//
+// Numeric bounds on the single-value measurements mirror the server's
+// `CalibrationMeasurementRanges` verbatim rather than being invented here, so
+// a value the desktop accepts is never one the server would reject.
 
 export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
   z
@@ -6496,6 +6507,51 @@ export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
        * Initial-layer temperature in °C. Same band as `nozzleTemperature`.
        */
       nozzleTemperatureInitialLayer: z.number().int().min(150).max(300),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('max_volumetric_speed'),
+      /**
+       * Observed maximum volumetric speed in mm³/s — the value the operator
+       * settles on after inspecting the printed tower, not the permissive
+       * slicing-time ceiling the worker applies before slicing.
+       *
+       * Bounds mirror the server's
+       * `CalibrationMeasurementRanges.MaximumVolumetricSpeed` (1..60) exactly.
+       * The upper bound sits deliberately above the worker's 50mm³/s slicing
+       * ceiling so a filament that tolerates slightly more is not rejected.
+       */
+      maxVolumetricSpeed: z.number().finite().min(1).max(60),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('pressure_advance_tower'),
+      /**
+       * Pressure-advance (linear-advance) coefficient. Bounds mirror the
+       * server's `CalibrationMeasurementRanges.PressureAdvance` (0.0..2.0).
+       *
+       * The write-back also sets `enable_pressure_advance`: a coefficient
+       * written into a profile that leaves the flag off produces a profile
+       * that looks calibrated and prints as though it were not.
+       */
+      pressureAdvance: z.number().finite().min(0).max(2),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('retraction'),
+      /**
+       * Retraction length in millimetres. Bounds mirror the server's
+       * `CalibrationMeasurementRanges.RetractionLength` (0.0..10.0).
+       *
+       * Written to `filament_retraction_length` — the OrcaSlicer *per-filament
+       * override*, not the machine-level `retraction_length`. The wizard's only
+       * output is a filament clone, and the server leaves the write-back to the
+       * client precisely so it lands in the consumer's own scope.
+       */
+      retractionLength: z.number().finite().min(0).max(10),
     })
     .strict(),
 ]);

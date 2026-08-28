@@ -62,8 +62,8 @@ import type {
   CalibrationPrinterCandidate,
   CalibrationSliceJobSnapshot,
   CalibrationSliceMethod,
-  CalibrationFilamentMeasurement,
 } from '@shared/ipc';
+import { CalibrationFilamentMeasurement } from '@shared/ipc';
 import { browserCalibrationEnvironment, calibrationApi } from './api';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
 import {
@@ -74,8 +74,8 @@ import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
   buildPersistedState,
-  isFlowRatioMethod,
   restoredWorkingState,
+  scalarSpecFor,
   type FilamentWizardInFlightJob,
   type FilamentWizardPersistedState,
   type FilamentWizardPhase,
@@ -1305,11 +1305,11 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
         the previous step just corrected.
       </p>
       <p className="cal-notice">
-        These are the calibration steps PrintFarmer can run today, in
-        OrcaSlicer&apos;s recommended relative order. The guide also covers max
-        volumetric speed, pressure advance, and retraction — the server can
-        slice those, but this build does not offer them yet; run them in
-        OrcaSlicer directly if you need them in the meantime.
+        These are the calibration steps PrintFarmer runs, in OrcaSlicer&apos;s
+        recommended order. Cornering, input shaping and VFA are deliberately
+        absent: they calibrate firmware motion settings rather than filament
+        behaviour, so there is nothing for them to write back to a filament
+        profile. Run those in OrcaSlicer directly.
       </p>
       <ul className="cal-method-list">
         {FILAMENT_WIZARD_METHODS.map((method) => {
@@ -1469,7 +1469,8 @@ interface MeasurementStepProps {
 function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
   const { method, onSubmit, busy } = props;
   const meta = FILAMENT_METHOD_META[method];
-  const [flowRatio, setFlowRatio] = useState<string>('');
+  const scalarSpec = scalarSpecFor(meta.measurementSchema);
+  const [scalarValue, setScalarValue] = useState<string>('');
   const [nozzleTemp, setNozzleTemp] = useState<string>('');
   const [initialTemp, setInitialTemp] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -1478,19 +1479,25 @@ function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
     event.preventDefault();
     setFormError(null);
     try {
-      if (isFlowRatioMethod(method)) {
-        const value = Number(flowRatio);
-        if (!Number.isFinite(value)) {
-          setFormError('Enter a flow ratio between 0.5 and 1.5.');
+      if (scalarSpec !== null) {
+        const value = Number(scalarValue);
+        if (scalarValue.trim() === '' || !Number.isFinite(value)) {
+          setFormError(scalarSpec.rangeMessage);
           return;
         }
-        if (value < 0.5 || value > 1.5) {
-          setFormError(
-            'The flow ratio must be between 0.5 and 1.5 — values outside that band are physically implausible.',
-          );
+        // Validate by parsing the wire schema rather than re-checking the
+        // spec's numbers here. The spec's min/max exist for the label; the
+        // schema is what the IPC boundary actually enforces, and duplicating
+        // the band in the UI is how the two drift apart.
+        const parsed = CalibrationFilamentMeasurement.safeParse({
+          method,
+          [scalarSpec.field]: value,
+        });
+        if (!parsed.success) {
+          setFormError(scalarSpec.rangeMessage);
           return;
         }
-        onSubmit({ method, filamentFlowRatio: value });
+        onSubmit(parsed.data);
         return;
       }
       const nozzle = Number(nozzleTemp);
@@ -1526,15 +1533,15 @@ function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
       >
         <legend>6. Enter the measurement</legend>
         <p className="cal-hint">{meta.measurementPrompt}</p>
-        {meta.measurementSchema === 'flowRatio' ? (
+        {scalarSpec !== null ? (
           <label>
-            Corrected filament flow ratio (0.5–1.5)
+            {scalarSpec.label}
             <input
               type="number"
-              step="0.001"
-              value={flowRatio}
-              onChange={(event) => setFlowRatio(event.target.value)}
-              aria-label="Flow ratio"
+              step={scalarSpec.step}
+              value={scalarValue}
+              onChange={(event) => setScalarValue(event.target.value)}
+              aria-label={scalarSpec.ariaLabel}
             />
           </label>
         ) : (
