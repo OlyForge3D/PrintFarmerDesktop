@@ -5953,6 +5953,8 @@ export type CalibrationResolveSystemProfileResponse = z.infer<
 export const CalibrationSliceMethod = z.enum([
   'flow_rate_pass_1',
   'flow_rate_pass_2',
+  'flow_rate_yolo_recommended',
+  'flow_rate_yolo_perfectionist',
   'temperature_tower',
 ]);
 export type CalibrationSliceMethod = z.infer<typeof CalibrationSliceMethod>;
@@ -6426,12 +6428,20 @@ export type CalibrationSendSliceToPrinterResponse = z.infer<
 // as the clone endpoint).
 //
 // The method-to-key mapping is:
-//   flow_rate_pass_1 / flow_rate_pass_2 → filament_flow_ratio
-//   temperature_tower                   → nozzle_temperature +
-//                                         nozzle_temperature_initial_layer
+//   flow_rate_pass_1 / flow_rate_pass_2           → filament_flow_ratio
+//   flow_rate_yolo_recommended /
+//   flow_rate_yolo_perfectionist                  → filament_flow_ratio
+//   temperature_tower                             → nozzle_temperature +
+//                                                   nozzle_temperature_initial_layer
 // This is enforced structurally by the discriminated union below — a
 // temperature-tower request that only carries `filamentFlowRatio` fails
 // at the IPC boundary.
+//
+// All four flow methods share one measurement shape and one write-back key,
+// so consumers must branch on the *shape* (`'filamentFlowRatio' in m`) rather
+// than on a list of method literals. A literal list silently mis-routes every
+// method added after it was written — see the write-back in `main/ipc.ts`,
+// which treated any non-`flow_rate_pass_*` method as a temperature tower.
 
 export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
   z
@@ -6449,6 +6459,28 @@ export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
   z
     .object({
       method: z.literal('flow_rate_pass_2'),
+      filamentFlowRatio: z.number().finite().min(0.5).max(1.5),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('flow_rate_yolo_recommended'),
+      /**
+       * YOLO (Recommended) measures the same physical quantity as the legacy
+       * two-pass method — a corrected `filament_flow_ratio` — in a single
+       * print, so it carries the identical payload and the identical 0.5..1.5
+       * plausibility band.
+       */
+      filamentFlowRatio: z.number().finite().min(0.5).max(1.5),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal('flow_rate_yolo_perfectionist'),
+      /**
+       * YOLO (Perfectionist) is a finer sweep than Recommended but resolves to
+       * the same `filament_flow_ratio` key and the same band.
+       */
       filamentFlowRatio: z.number().finite().min(0.5).max(1.5),
     })
     .strict(),

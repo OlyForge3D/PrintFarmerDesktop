@@ -18,7 +18,11 @@
 
 import { z } from 'zod';
 import type { z as ZodType } from 'zod';
-import { CalibrationApiError, type CalibrationApiErrorCode } from '@shared/ipc';
+import {
+  CalibrationApiError,
+  type CalibrationApiErrorCode,
+  CalibrationSliceMethod,
+} from '@shared/ipc';
 import type {
   RemoteCalibrationApplyRequest,
   RemoteCalibrationApplyResult,
@@ -979,20 +983,19 @@ function remapInteractiveSession(
 }
 
 /**
- * Wire values of `CalibrationMethod` this client supports (mirrors
- * `CalibrationMethod.cs` from PR #1952). PA Pattern / PA Line are deliberately
- * absent (upstream issue #1938). Exported so the remap-to-actionable-message
- * function below can name them in the operator-facing error text without
- * relying on the server echoing them back on `supportedMethods` — the client
- * knows its own supported set at compile time, and it is the operator's fix
- * ("pick one of these") regardless of whether the server bothered to include
- * the list.
+ * Wire values of `CalibrationMethod` this client supports. Derived from the
+ * single `CalibrationSliceMethod` catalogue rather than hand-listed, so it
+ * cannot drift from what the desktop actually offers. PA Pattern / PA Line are
+ * absent because they are absent from that catalogue (upstream issue #1938).
+ *
+ * Exported so the remap-to-actionable-message function below can name them in
+ * the operator-facing error text without relying on the server echoing them
+ * back on `supportedMethods` — the client knows its own supported set at
+ * compile time, and it is the operator's fix ("pick one of these") regardless
+ * of whether the server bothered to include the list.
  */
-export const CLIENT_SUPPORTED_CALIBRATION_METHODS = [
-  'flow_rate_pass_1',
-  'flow_rate_pass_2',
-  'temperature_tower',
-] as const;
+export const CLIENT_SUPPORTED_CALIBRATION_METHODS =
+  CalibrationSliceMethod.options;
 export type ClientSupportedCalibrationMethod =
   (typeof CLIENT_SUPPORTED_CALIBRATION_METHODS)[number];
 
@@ -1541,7 +1544,7 @@ export class CalibrationHttpClient {
       userId: string;
       printerId: string;
       slicerProfileJson: string;
-      method: 'flow_rate_pass_1' | 'flow_rate_pass_2' | 'temperature_tower';
+      method: CalibrationSliceMethod;
       params?: Record<string, number> | null;
       idempotencyKey?: string | null;
     },

@@ -4412,10 +4412,12 @@ export function registerIpcHandlers(
         // `nozzle_temperature` / `nozzle_temperature_initial_layer` are
         // arrays of stringified integer °C. Writing a bare number is silent
         // wire drift that OrcaSlicer will accept and mis-interpret.
-        if (
-          request.measurement.method === 'flow_rate_pass_1' ||
-          request.measurement.method === 'flow_rate_pass_2'
-        ) {
+        // Branch on the measurement *shape*, not on a list of method literals.
+        // This previously read `method === 'flow_rate_pass_1' || === '..._2'`,
+        // so every flow method added afterwards fell into the `else` and was
+        // written back as a temperature tower. All four flow methods carry
+        // `filamentFlowRatio` and resolve to the same key.
+        if ('filamentFlowRatio' in request.measurement) {
           parsed.filament_flow_ratio = [
             request.measurement.filamentFlowRatio.toFixed(3),
           ];

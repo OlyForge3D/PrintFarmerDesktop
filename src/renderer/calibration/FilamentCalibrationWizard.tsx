@@ -74,17 +74,23 @@ import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
   buildPersistedState,
+  isFlowRatioMethod,
   restoredWorkingState,
   type FilamentWizardInFlightJob,
   type FilamentWizardPersistedState,
   type FilamentWizardPhase,
 } from './filamentWizardState';
 
-const SUPPORTED_METHOD_NAMES: Record<CalibrationSliceMethod, string> = {
-  flow_rate_pass_1: 'Flow rate — pass 1',
-  temperature_tower: 'Temperature tower',
-  flow_rate_pass_2: 'Flow rate — pass 2',
-};
+/**
+ * Operator-facing display names, derived from the single method catalogue so a
+ * method added to `FILAMENT_METHOD_META` cannot be missing here. This was a
+ * hand-maintained `Record<CalibrationSliceMethod, string>` duplicating
+ * `FILAMENT_METHOD_META[].title`; deriving it removes the second place a new
+ * method has to be registered.
+ */
+const SUPPORTED_METHOD_NAMES: readonly string[] = Object.values(
+  FILAMENT_METHOD_META,
+).map((meta) => meta.title);
 
 interface PrinterListState {
   readonly loading: boolean;
@@ -166,7 +172,7 @@ function errorCopy(error: CalibrationApiError): {
     case 'unsupportedCalibrationMethod':
       return {
         title: 'This calibration method is not supported by the server.',
-        detail: `${error.message} Supported by this desktop build: ${Object.values(SUPPORTED_METHOD_NAMES).join(', ')}.`,
+        detail: `${error.message} Supported by this desktop build: ${SUPPORTED_METHOD_NAMES.join(', ')}.`,
         recovery: 'Pick one of the supported methods and try again.',
       };
     case 'interactiveSessionRequired':
@@ -1299,12 +1305,11 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
         the previous step just corrected.
       </p>
       <p className="cal-notice">
-        These are the calibration steps PrintFarmer can run today — temperature
-        and the two flow-rate passes, in OrcaSlicer&apos;s recommended relative
-        order. OrcaSlicer&apos;s own guide also covers max volumetric speed,
-        pressure advance, retraction, cornering, input shaping, and VFA, which
-        PrintFarmer cannot slice yet; run those in OrcaSlicer directly if you
-        need them.
+        These are the calibration steps PrintFarmer can run today, in
+        OrcaSlicer&apos;s recommended relative order. The guide also covers max
+        volumetric speed, pressure advance, and retraction — the server can
+        slice those, but this build does not offer them yet; run them in
+        OrcaSlicer directly if you need them in the meantime.
       </p>
       <ul className="cal-method-list">
         {FILAMENT_WIZARD_METHODS.map((method) => {
@@ -1473,7 +1478,7 @@ function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
     event.preventDefault();
     setFormError(null);
     try {
-      if (method === 'flow_rate_pass_1' || method === 'flow_rate_pass_2') {
+      if (isFlowRatioMethod(method)) {
         const value = Number(flowRatio);
         if (!Number.isFinite(value)) {
           setFormError('Enter a flow ratio between 0.5 and 1.5.');

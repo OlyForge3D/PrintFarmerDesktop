@@ -63,13 +63,14 @@
  */
 
 import type {
+  CalibrationFilamentMeasurement,
   CalibrationSliceJobStatus,
   CalibrationSliceMethod,
   FilamentWizardStateRecord,
 } from '@shared/ipc';
 
 /**
- * The three methods this build supports, ordered to match the OrcaSlicer
+ * The methods this build supports, ordered to match the OrcaSlicer
  * calibration guide.
  *
  * The guide's full recommended order is:
@@ -82,10 +83,12 @@ import type {
  * (plus Tolerance, listed outside the numbered sequence.)
  * https://www.orcaslicer.com/wiki/guides/calibration_guide
  *
- * Of those eight categories the PrintFarmer slice pipeline implements two —
- * temperature and flow — so this list is the correct *relative* order of what
- * is available, not the whole guide. Steps 2 and 3 fall between them and are
- * simply absent; the wizard must not imply the sequence is complete.
+ * Of those eight categories this list covers two — temperature (1) and flow
+ * (4). Categories 2, 3 and 5 are implemented server-side and are being adopted
+ * here separately (#777, #778, #779). Categories 6-8 (cornering, input shaping,
+ * VFA) are deliberately excluded: they are *machine* calibrations whose results
+ * are firmware motion settings, and this wizard's only output is a patched
+ * filament profile, so there is nowhere to write them. See #786.
  *
  * Temperature leads because the dependency is physical and one-way: nozzle
  * temperature changes filament viscosity and therefore how it flows, so a flow
@@ -93,15 +96,17 @@ import type {
  * This list previously ran `flow_rate_pass_1` first while claiming to be in
  * wiki order; it was not, and that ordering discarded its own result.
  *
- * Flow also has more upstream than the two passes here — YOLO (Recommended)
- * and YOLO (Perfectionist). Their absence, and that of categories 2, 3 and
- * 5-8, is a server capability boundary rather than a wizard omission:
- * `Farm.Slicer.Module.Models.CalibrationMethod` declares exactly these three
- * wire names and `CalibrationMethods.TryParse` rejects anything else. See
- * PrintFarmer#2051.
+ * Within flow (4) upstream offers four entries, all present here: YOLO
+ * (Recommended) and YOLO (Perfectionist) — the current method — plus the legacy
+ * Pass 1 / Pass 2 pair, kept because operators mid-workflow depend on them.
+ * They are alternatives, not a sequence: the wizard's `methodPicker` phase
+ * offers this list and the operator chooses one per round. Recommended is
+ * listed before the legacy passes because it is the default choice.
  */
 export const FILAMENT_WIZARD_METHODS: readonly CalibrationSliceMethod[] = [
   'temperature_tower',
+  'flow_rate_yolo_recommended',
+  'flow_rate_yolo_perfectionist',
   'flow_rate_pass_1',
   'flow_rate_pass_2',
 ];
@@ -132,9 +137,27 @@ export const FILAMENT_METHOD_META: Record<
     method: 'flow_rate_pass_1',
     title: 'Flow rate — pass 1',
     summary:
-      'Nine blocks with the flow ratio stepped from −20% to +20%. Pick the block whose top surface is smoothest, then apply the corresponding multiplier to the current flow ratio.',
+      'Legacy two-pass method, kept for continuity — prefer YOLO (Recommended) for new work. Nine blocks with the flow ratio stepped from −20% to +20%. Pick the block whose top surface is smoothest, then apply the corresponding multiplier to the current flow ratio.',
     measurementPrompt:
       'Enter the corrected filament flow ratio. Multiply the current flow ratio by (1 + selected step ÷ 100). Values outside 0.5–1.5 are physically implausible for pass 1.',
+    measurementSchema: 'flowRatio',
+  },
+  flow_rate_yolo_recommended: {
+    method: 'flow_rate_yolo_recommended',
+    title: 'Flow rate — YOLO (Recommended)',
+    summary:
+      'The current OrcaSlicer flow method and the default choice: a single print that resolves the flow ratio in one pass, with no second print to centre. Pick the band with the smoothest top surface and apply its modifier. Use this unless you have a specific reason not to.',
+    measurementPrompt:
+      'Enter the corrected filament flow ratio — the current ratio adjusted by the selected band modifier. Values outside 0.5–1.5 are physically implausible.',
+    measurementSchema: 'flowRatio',
+  },
+  flow_rate_yolo_perfectionist: {
+    method: 'flow_rate_yolo_perfectionist',
+    title: 'Flow rate — YOLO (Perfectionist)',
+    summary:
+      'A finer sweep than Recommended, in smaller steps. Run it after Recommended to squeeze out the remaining error — it refines that result rather than replacing it, so running it alone wastes the finer resolution.',
+    measurementPrompt:
+      'Enter the refined filament flow ratio from the finer sweep. Same 0.5–1.5 physical band as Recommended.',
     measurementSchema: 'flowRatio',
   },
   temperature_tower: {
@@ -150,12 +173,41 @@ export const FILAMENT_METHOD_META: Record<
     method: 'flow_rate_pass_2',
     title: 'Flow rate — pass 2',
     summary:
-      'Finer flow-ratio steps (±9%) around the value pass 1 landed on. Same selection procedure — pick the smoothest top surface, apply the multiplier.',
+      'Second half of the legacy two-pass method — finer flow-ratio steps (±9%) around the value pass 1 landed on. Same selection procedure. Prefer YOLO (Perfectionist) for new work.',
     measurementPrompt:
       'Enter the refined filament flow ratio. Same 0.5–1.5 physical band as pass 1.',
     measurementSchema: 'flowRatio',
   },
 };
+
+/**
+ * The methods whose measurement is a flow ratio, derived from the wire union
+ * rather than listed. A flow method added to `CalibrationFilamentMeasurement`
+ * joins this automatically, so no call site has to be found and updated.
+ */
+export type FlowRatioMethod = Extract<
+  CalibrationFilamentMeasurement,
+  { filamentFlowRatio: number }
+>['method'];
+
+/**
+ * Narrowing predicate for "does this method measure a flow ratio".
+ *
+ * The runtime answer comes from the method catalogue and the *type* comes from
+ * the wire union, so the two are independent sources that must agree.
+ * `filamentCalibrationMethodOrder.test.ts` asserts they do, in both directions
+ * — a metadata entry that disagrees with the schema becomes a test failure
+ * rather than an input that silently asks the operator for the wrong quantity.
+ *
+ * Call sites must use this rather than comparing against method literals: the
+ * literal form is what caused every flow method added after the original two
+ * to fall through to the temperature branch.
+ */
+export function isFlowRatioMethod(
+  method: CalibrationSliceMethod,
+): method is FlowRatioMethod {
+  return FILAMENT_METHOD_META[method].measurementSchema === 'flowRatio';
+}
 
 /**
  * Where the operator is in the loop right now. The wizard is a linear
