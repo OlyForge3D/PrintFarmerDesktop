@@ -127,6 +127,59 @@ function customOptionLabel(profile: CalibrationCustomProfileRef): string {
   return `${profile.name} (custom / your profile)`;
 }
 
+/**
+ * Shown when a cascade level resolves to zero selectable profiles.
+ *
+ * This is a real, reachable state, not a defensive branch: a printer whose
+ * model has no OrcaSlicer profile coverage cannot be onboarded from the
+ * catalog at all (PrintFarmer#2055). Before this notice the operator got an
+ * empty dropdown and nothing else — indistinguishable from a slow load, and
+ * with no indication that the remedy exists somewhere else entirely.
+ *
+ * The remedy is deliberately *not* offered as an action here. Creating a
+ * profile family is `POST /api/slicer/profiles/clone-family`, gated on
+ * `slicer_engines:admin` — a permission the desktop never holds by design, so
+ * wiring a button would only produce a 403. Naming the destination is the
+ * honest affordance; the desktop states what it cannot do rather than
+ * pretending the operator is stuck.
+ */
+function NoProfilesNotice(props: {
+  readonly level: 'machine' | 'process' | 'filament';
+  readonly onReload: () => void;
+  readonly machineName?: string | null;
+}): React.JSX.Element {
+  const { level, onReload, machineName } = props;
+  const scope =
+    level === 'machine'
+      ? 'this printer'
+      : `the machine profile ${machineName ?? 'you selected'}`;
+  return (
+    <div className="cal-notice cal-notice--empty" role="status">
+      <p>
+        <strong>
+          No {level} profiles are available for {scope}.
+        </strong>{' '}
+        Nothing in the OrcaSlicer catalog covers it, and no custom profile you
+        can use has been uploaded.
+      </p>
+      <p>
+        Calibration needs a stored profile to clone from, so it cannot start
+        until one exists. An administrator can create one in PrintFarmer&apos;s
+        web interface by cloning a profile family from a similar printer model —
+        that copies the machine, process, and filament profiles across the
+        nozzle sizes you own. Creating profiles requires slicer-admin
+        permission, which this desktop app does not hold, so it has to be done
+        there rather than here.
+      </p>
+      <div className="cal-actions">
+        <button type="button" className="cal-button" onClick={onReload}>
+          Reload profiles
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ProfileSelectionSection(
   props: ProfileSelectionSectionProps,
 ): React.JSX.Element {
@@ -377,6 +430,34 @@ export function ProfileSelectionSection(
     [catalog.custom, chosenMachineName],
   );
 
+  /*
+   * "Nothing to choose from", per cascade level.
+   *
+   * Each is gated on `loaded && !loading && error === null` so the notice
+   * cannot fire while the answer is still unknown — an empty list mid-fetch
+   * means "not yet", and telling the operator to go create a profile family
+   * because a request had not landed would be worse than saying nothing.
+   */
+  const catalogSettled =
+    catalog.loaded && !catalog.loading && catalog.error === null;
+  const noMachineProfiles =
+    catalogSettled &&
+    catalog.systemMachines.length === 0 &&
+    customMachines.length === 0;
+  const forMachineSettled =
+    chosenMachineName !== null &&
+    !forMachine.loading &&
+    forMachine.error === null;
+  const noProcessProfiles =
+    forMachineSettled &&
+    forMachine.systemProcesses.length === 0 &&
+    customProcesses.length === 0;
+  const noFilamentProfiles =
+    forMachineSettled &&
+    chosenProcess !== '' &&
+    forMachine.systemFilaments.length === 0 &&
+    customFilaments.length === 0;
+
   // Selection snapshot for the filament calibration wizard. Resolves each
   // dropdown value back to its canonical `Name` string (system) or the
   // custom row's `name` (custom); the base filament also resolves its
@@ -497,42 +578,57 @@ export function ProfileSelectionSection(
       ) : null}
 
       <div className="cal-field-grid">
-        <label>
-          Machine profile
-          <select
-            value={chosenMachine}
-            onChange={(event) => setChosenMachine(event.target.value)}
-            aria-label="Machine profile"
-          >
-            <option value="">Select a machine profile</option>
-            {catalog.systemMachines.length > 0 ? (
-              <optgroup label="System profiles">
-                {catalog.systemMachines.map((profile) => (
-                  <option
-                    key={profile.name}
-                    value={profileOptionValue('system', profile.name)}
-                  >
-                    {systemOptionLabel(profile)}
-                  </option>
-                ))}
-              </optgroup>
-            ) : null}
-            {customMachines.length > 0 ? (
-              <optgroup label="Your custom profiles">
-                {customMachines.map((profile) => (
-                  <option
-                    key={profile.id}
-                    value={profileOptionValue('custom', profile.id)}
-                  >
-                    {customOptionLabel(profile)}
-                  </option>
-                ))}
-              </optgroup>
-            ) : null}
-          </select>
-        </label>
+        {noMachineProfiles ? (
+          <NoProfilesNotice
+            level="machine"
+            onReload={() => void loadCatalog()}
+          />
+        ) : (
+          <label>
+            Machine profile
+            <select
+              value={chosenMachine}
+              onChange={(event) => setChosenMachine(event.target.value)}
+              aria-label="Machine profile"
+            >
+              <option value="">Select a machine profile</option>
+              {catalog.systemMachines.length > 0 ? (
+                <optgroup label="System profiles">
+                  {catalog.systemMachines.map((profile) => (
+                    <option
+                      key={profile.name}
+                      value={profileOptionValue('system', profile.name)}
+                    >
+                      {systemOptionLabel(profile)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {customMachines.length > 0 ? (
+                <optgroup label="Your custom profiles">
+                  {customMachines.map((profile) => (
+                    <option
+                      key={profile.id}
+                      value={profileOptionValue('custom', profile.id)}
+                    >
+                      {customOptionLabel(profile)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+            </select>
+          </label>
+        )}
 
-        {chosenMachineName !== null ? (
+        {chosenMachineName !== null && noProcessProfiles ? (
+          <NoProfilesNotice
+            level="process"
+            machineName={chosenMachineName}
+            onReload={() => void loadCatalog()}
+          />
+        ) : null}
+
+        {chosenMachineName !== null && !noProcessProfiles ? (
           <label>
             Process profile
             <select
@@ -569,7 +665,15 @@ export function ProfileSelectionSection(
           </label>
         ) : null}
 
-        {chosenProcess !== '' ? (
+        {noFilamentProfiles ? (
+          <NoProfilesNotice
+            level="filament"
+            machineName={chosenMachineName}
+            onReload={() => void loadCatalog()}
+          />
+        ) : null}
+
+        {chosenProcess !== '' && !noFilamentProfiles ? (
           <label>
             Filament profile
             <select
