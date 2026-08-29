@@ -71,6 +71,7 @@ function capability(
     flags: {
       calibrationApiEnabled: true,
       calibrationGenerationEnabled: true,
+      calibrationArtifactPromotionEnabled: true,
       ...overrides.flags,
     },
   };

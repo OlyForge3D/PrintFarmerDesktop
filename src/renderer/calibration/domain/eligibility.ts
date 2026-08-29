@@ -225,6 +225,14 @@ export function decideCalibrationAction(
       ),
     );
   }
+  if (action === 'applyPatch' && !runtime.serverArtifactPromotionEnabled) {
+    blockers.push(
+      error(
+        'SERVER_ARTIFACT_PROMOTION_DISABLED',
+        'This server does not have calibration artifact promotion enabled, so a generated profile patch cannot be applied. Measured results can still be recorded.',
+      ),
+    );
+  }
   if (
     action === 'applyPatch' &&
     state.stages.finalVerification.status !== 'completed'

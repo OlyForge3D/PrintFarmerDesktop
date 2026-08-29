@@ -1600,6 +1600,7 @@ type RemoteCalibrationFlagSourcePath =
   | 'calibrationSyncEnabled'
   | 'calibrationPhotosEnabled'
   | 'calibrationSlicingEnabled'
+  | 'calibrationArtifactPromotionEnabled'
   | 'operatorFeatures.offlineWriteReplayEnabled';
 
 /**
@@ -1654,9 +1655,16 @@ type RemoteCalibrationFlagSourcePath =
  *   `CalibrationEventsEnabled`) — binding to one of those would refuse
  *   generation on every deployment forever. See note 2 in the DTO snapshot.
  *
- *   Left un-consumed on purpose: `calibrationArtifactPromotionEnabled` is a
- *   *separate* server switch covering promotion of a produced artifact. The
- *   desktop does not read it yet, so `applyPatch` is gated on slicing alone.
+ * - `calibrationArtifactPromotionEnabled` ← `CalibrationArtifactPromotionEnabled`
+ *   A *separate* server switch from `calibrationSlicingEnabled`: slicing being
+ *   operational only means a slicing fleet can produce G-code/profile
+ *   artifacts; promotion is the distinct step of accepting a produced
+ *   artifact as the deployment's new profile. A deployment can have slicing
+ *   up and promotion down (e.g. an unhealthy promotion checkpoint store or
+ *   reconciler), in which case `generate` may still succeed while applying
+ *   the resulting patch must not be offered as though it will succeed.
+ *   Direct 1:1 binding — the desktop flag keeps the server's name because
+ *   there is no distinct desktop-side question to ask.
  *
  * `readFlagBackingField` handles both flat and nested paths so future flags
  * whose backing wire field lives inside a nested block (e.g. `operatorFeatures`)
@@ -1670,6 +1678,7 @@ export const CALIBRATION_FLAG_SOURCES = {
   calibrationOfflineDraftEnabled: 'calibrationSyncEnabled',
   calibrationPhotoUploadEnabled: 'calibrationPhotosEnabled',
   calibrationGenerationEnabled: 'calibrationSlicingEnabled',
+  calibrationArtifactPromotionEnabled: 'calibrationArtifactPromotionEnabled',
 } as const satisfies Record<string, RemoteCalibrationFlagSourcePath>;
 
 /** Name of one of the negotiated end-to-end calibration capability flags. */
@@ -1830,6 +1839,16 @@ export const RemoteCalibrationCapabilities = z
      */
     calibrationSlicingEnabled: AdvertisedFlagRaw,
     /**
+     * A distinct server switch from `calibrationSlicingEnabled` covering
+     * promotion of a produced artifact into the deployment's active profile.
+     * **Load-bearing** for the desktop's `calibrationArtifactPromotionEnabled`
+     * flag — see `CALIBRATION_FLAG_SOURCES`. A deployment can have slicing
+     * operational while promotion is unavailable (e.g. an unhealthy
+     * checkpoint store or reconciler), so `applyPatch` must not be gated on
+     * `calibrationSlicingEnabled` alone.
+     */
+    calibrationArtifactPromotionEnabled: AdvertisedFlagRaw,
+    /**
      * Nested operator-features block. `offlineWriteReplayEnabled` is a real
      * capability field the server advertises, readable via
      * `readFlagBackingField(dto, 'operatorFeatures.offlineWriteReplayEnabled')`.
@@ -1974,16 +1993,19 @@ export const REQUIRED_CALIBRATION_FLAGS = [
  * gating the workspace.
  *
  * A deployment can legitimately run calibration without them. `calibrationPhotos`
- * only adds evidence attachments, and `calibrationGeneration` requires an entire
+ * only adds evidence attachments, `calibrationGeneration` requires an entire
  * slicing fleet server-side (an online worker attesting a pinned upstream
- * OrcaSlicer build), which many deployments will not have. Recording measured
- * results by hand stays fully usable in both cases, so these are surfaced to the
+ * OrcaSlicer build), and `calibrationArtifactPromotion` additionally requires
+ * a healthy promotion checkpoint store and reconciler — a deployment can have
+ * slicing operational while promotion is not. Recording measured results by
+ * hand stays fully usable in all cases, so these are surfaced to the
  * renderer through `capabilityFlags` and gate their own actions instead of
  * blocking the tab.
  */
 export const OPTIONAL_CALIBRATION_FEATURE_FLAGS = [
   'calibrationPhotoUploadEnabled',
   'calibrationGenerationEnabled',
+  'calibrationArtifactPromotionEnabled',
 ] as const;
 
 /** Names the capability flags the server did not advertise as enabled. */

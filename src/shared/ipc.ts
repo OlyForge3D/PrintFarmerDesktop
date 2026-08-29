@@ -997,6 +997,15 @@ export const CalibrationCapabilityFlags = z
      * available when it is false.
      */
     calibrationGenerationEnabled: z.boolean(),
+    /**
+     * Server accepts promotion of a produced calibration artifact. Optional
+     * and distinct from `calibrationGenerationEnabled`: a deployment can have
+     * a working slicing fleet (so `generate` succeeds) while its promotion
+     * checkpoint store or reconciler is unhealthy, in which case a produced
+     * artifact cannot be promoted. `applyPatch` requires this flag in
+     * addition to generation; `generate` does not.
+     */
+    calibrationArtifactPromotionEnabled: z.boolean(),
   })
   .passthrough();
 export type CalibrationCapabilityFlags = z.infer<
@@ -1028,6 +1037,7 @@ export const CalibrationCapabilityFlagAdvertisement = z
     calibrationOfflineDraftEnabled: CalibrationFlagAdvertisement,
     calibrationPhotoUploadEnabled: CalibrationFlagAdvertisement,
     calibrationGenerationEnabled: CalibrationFlagAdvertisement,
+    calibrationArtifactPromotionEnabled: CalibrationFlagAdvertisement,
   })
   .passthrough();
 export type CalibrationCapabilityFlagAdvertisement = z.infer<

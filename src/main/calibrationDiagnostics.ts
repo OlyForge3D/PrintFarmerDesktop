@@ -45,6 +45,7 @@ export interface CalibrationCapabilitySnapshot {
     calibrationOfflineDraftEnabled: boolean;
     calibrationPhotoUploadEnabled: boolean;
     calibrationGenerationEnabled: boolean;
+    calibrationArtifactPromotionEnabled: boolean;
   };
   /**
    * Per-flag advertisement state (#493): whether the server explicitly said
