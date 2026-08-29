@@ -46,19 +46,19 @@ production-contract E2E are deployed and healthy.
 
 ## Flag vocabulary: client flags are not server switches
 
-The six flags PFD reasons about are **not** the six switches an operator
+The six flags PFD reasons about are **not** the five switches an operator
 sets. `RemoteCalibrationCapabilities` normalises the wire names into the
 negotiation shape the feature gate consumes, so callers never depend on raw
 wire naming.
 
-| Client flag (`CalibrationCapabilityFlags`) | Server switch (`RemoteCalibrationCapabilities`) | What it gates                                                                                                                                                                                                                   |
-| ------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `calibrationApiEnabled`                    | `calibrationPersistenceEnabled`                 | Calibration persistence API — the discovery/read surface every later stage stands on                                                                                                                                            |
-| `calibrationChangeFeedEnabled`             | `calibrationSyncEnabled`                        | Change-feed / sync path — cursors and replay                                                                                                                                                                                    |
-| `calibrationOfflineDraftEnabled`           | `calibrationSyncEnabled`                        | Offline draft replay travels through the same sync/change-feed path                                                                                                                                                             |
-| `calibrationPhotoUploadEnabled`            | `calibrationPhotosEnabled`                      | Staged calibration photo upload                                                                                                                                                                                                 |
-| `calibrationGenerationEnabled`             | `calibrationSlicingEnabled`                     | Generation and G-code promotion. The server deleted its own `calibrationGenerationEnabled` field with the generator subsystem (PrintFarmer 7169f1d32 / #1995); the client flag keeps its name and now reads the slicing switch. |
-| `calibrationArtifactPromotionEnabled`      | `calibrationArtifactPromotionEnabled`           | Artifact promotion — gates `applyPatch` independently of slicing, so a deployment can produce G-code without being able to promote it.                                                                                          |
+| Client flag (`CalibrationCapabilityFlags`) | Server switch (`RemoteCalibrationCapabilities`) | What it gates                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `calibrationApiEnabled`                    | `calibrationPersistenceEnabled`                 | Calibration persistence API — the discovery/read surface every later stage stands on                                                                                                                                                                                                               |
+| `calibrationChangeFeedEnabled`             | `calibrationSyncEnabled`                        | Change-feed / sync path — cursors and replay                                                                                                                                                                                                                                                       |
+| `calibrationOfflineDraftEnabled`           | `calibrationSyncEnabled`                        | Offline draft replay travels through the same sync/change-feed path                                                                                                                                                                                                                                |
+| `calibrationPhotoUploadEnabled`            | `calibrationPhotosEnabled`                      | Staged calibration photo upload                                                                                                                                                                                                                                                                    |
+| `calibrationGenerationEnabled`             | `calibrationSlicingEnabled`                     | Generation and slicing — the server deleted its own `calibrationGenerationEnabled` field with the generator subsystem (PrintFarmer 7169f1d32 / #1995); the client flag keeps its name and now reads the slicing switch. Does not gate promotion — see `calibrationArtifactPromotionEnabled` below. |
+| `calibrationArtifactPromotionEnabled`      | `calibrationArtifactPromotionEnabled`           | Artifact promotion — gates promoting a generated patch independently of slicing, so a deployment can produce G-code without being able to promote it.                                                                                                                                              |
 
 **Two consequences an operator must know before starting.**
 
@@ -142,8 +142,8 @@ next.
 
 ### Stage 4 — Production upstream-Orca worker path and artifact promotion
 
-- **Capability flags:** `calibrationArtifactPromotionEnabled` — gates artifact
-  promotion (`applyPatch`) independently of slicing. `calibrationGenerationEnabled`
+- **Capability flags:** `calibrationArtifactPromotionEnabled` — gates
+  promoting a generated patch independently of slicing. `calibrationGenerationEnabled`
   is deliberately held until stage 5, so the worker path can be proven healthy
   before any user can reach it.
 - **Precondition:** stage 3 healthy. The pinned upstream-Orca binary or

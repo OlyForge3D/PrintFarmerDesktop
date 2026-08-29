@@ -279,6 +279,7 @@ function installApi(overrides: Partial<PrintFarmerApi> = {}): void {
         calibrationOfflineDraftEnabled: false,
         calibrationPhotoUploadEnabled: false,
         calibrationGenerationEnabled: false,
+        calibrationArtifactPromotionEnabled: false,
       },
       grantedScopes: [],
       offlineEditingEnabled: false,
