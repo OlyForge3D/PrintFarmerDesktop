@@ -799,6 +799,27 @@
   min-width: 240px;
 }
 
+.cal-button--secondary {
+  justify-self: start;
+  min-width: 0;
+}
+
+.cal-method-disposition {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #8a97a3);
+}
+
+.cal-method--skipped {
+  opacity: 0.72;
+}
+
+.cal-method--skipped .cal-method-disposition {
+  color: #e0a63a;
+}
+
 /* The card is now a fixed 880px column, so this switches on card width. */
 @media (min-width: 760px) {
   .cal-method-list > li {

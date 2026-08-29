@@ -44,6 +44,8 @@ import type {
   RemoteCustomProfilesList,
   RemotePrinterDetailsDto,
   RemoteCalibrationProjectRecord,
+  RemoteCalibrationMethodGuidance,
+  RemoteCalibrationMethodProgress,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -69,6 +71,8 @@ import {
   RemoteCustomProfilesList as CustomProfilesListSchema,
   RemotePrinterDetailsDto as PrinterDetailsSchema,
   RemoteCalibrationProjectRecord as ProjectRecordSchema,
+  RemoteCalibrationMethodGuidance as MethodGuidanceSchema,
+  RemoteCalibrationMethodProgress as MethodProgressSchema,
 } from './calibrationWire.js';
 
 // --- Issue-#138 route templates (single authoritative source) ----------------
@@ -187,6 +191,19 @@ const ROUTES = {
   projects: '/api/calibration-projects',
   project: (id: string) =>
     `/api/calibration-projects/${encodeURIComponent(id)}`,
+  /**
+   * GET — server-owned per-method guidance catalog (issue #797 / PrintFarmer#2180 gap 3).
+   * Not project-scoped: one catalog serves every project.
+   */
+  methodGuidance: '/api/calibration-projects/method-guidance',
+  /**
+   * GET — project-owned method-progress list; PUT `{method}` sets a disposition
+   * (issue #797 / PrintFarmer#2180 gap 2).
+   */
+  methodProgress: (projectId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/method-progress`,
+  methodDisposition: (projectId: string, method: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/method-progress/${encodeURIComponent(method)}`,
   attempt: (id: string) =>
     `/api/calibration-attempts/${encodeURIComponent(id)}`,
   photo: (id: string) => `/api/calibration-photos/${encodeURIComponent(id)}`,
@@ -1937,6 +1954,104 @@ export class CalibrationHttpClient {
         );
       }
       return await this.parse(pending, ProjectRecordSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `GET /api/calibration-projects/method-guidance` — the server-owned per-method guidance
+   * catalog (issue #797 / PrintFarmer#2180 gap 3). Verified against
+   * `CalibrationProjectsController.GetMethodGuidanceCatalog` /
+   * `CalibrationMethodGuidanceCatalog.ForMethod` at PrintFarmer commit
+   * `b6a754c989e76edd71891e632bd940f1a81f3918` (blobs `dbe9c1f90b1357d96a6bca0422af629945ed61ec`,
+   * `5e8b44cb860e353e0c4cd100164186313b157204`). Not project-scoped — one catalog for every
+   * project — so this is the desktop's server-authoritative replacement for the
+   * client-hardcoded `FILAMENT_METHOD_META` table.
+   */
+  async getMethodGuidanceCatalog(
+    profileId: string,
+    baseUrl: string,
+    signal: AbortSignal,
+  ): Promise<readonly RemoteCalibrationMethodGuidance[]> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.methodGuidance,
+      z.array(MethodGuidanceSchema).max(64),
+      signal,
+    );
+  }
+
+  /**
+   * `GET /api/calibration-projects/{id}/method-progress` — the project-owned (not
+   * device-scoped) list of per-method dispositions (issue #797 / PrintFarmer#2180 gap 2),
+   * verified against `CalibrationProjectsController.GetMethodProgressAsync` at the commit/blobs
+   * cited on `getMethodGuidanceCatalog`. A project resumed on any device reads the same
+   * pending/skipped/completed state back from here — never from local wizard JSON.
+   */
+  async getMethodProgress(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    signal: AbortSignal,
+  ): Promise<readonly RemoteCalibrationMethodProgress[]> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.methodProgress(projectId),
+      z.array(MethodProgressSchema).max(CalibrationSliceMethod.options.length),
+      signal,
+    );
+  }
+
+  /**
+   * `PUT /api/calibration-projects/{id}/method-progress/{method}` — explicitly sets a method's
+   * disposition to `Skipped` or `Pending` (issue #797 / PrintFarmer#2180 gap 2), verified
+   * against `CalibrationProjectsController.SetMethodDispositionAsync` /
+   * `CalibrationProjectService.SetMethodDispositionAsync` at the commit/blobs cited on
+   * `getMethodGuidanceCatalog`.
+   *
+   * `Completed` is never sent by this client — the server rejects it as client-settable with
+   * `method_disposition_invalid`, since completion is only ever derived from an accepted
+   * selection observation. `baseRevision` is optional: the server allows creating a method's
+   * first progress row without one, but requires it (returning
+   * `method_progress_not_found_for_precondition`) if supplied before any row exists — so callers
+   * should only pass a `baseRevision` they already fetched from a prior `getMethodProgress`.
+   */
+  async setMethodDisposition(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    method: string,
+    disposition: 'Pending' | 'Skipped',
+    baseRevision: number | null,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationMethodProgress> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    const body = JSON.stringify({
+      baseRevision: baseRevision ?? null,
+      disposition,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.methodDisposition(projectId, method),
+      { method: 'PUT', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      return await this.parse(pending, MethodProgressSchema);
     } finally {
       pending.dispose();
     }

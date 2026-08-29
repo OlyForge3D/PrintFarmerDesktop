@@ -336,6 +336,24 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationGetMethodGuidanceCatalog,
+    request: (profileId) => ({ profileId }),
+  },
+  {
+    channel: IpcChannel.CalibrationGetMethodProgress,
+    request: (profileId) => ({ profileId, projectId: uuid(5) }),
+  },
+  {
+    channel: IpcChannel.CalibrationSetMethodDisposition,
+    request: (profileId) => ({
+      profileId,
+      projectId: uuid(5),
+      method: 'flow_rate_pass_1',
+      disposition: 'Skipped',
+      baseRevision: null,
+    }),
+  },
+  {
     channel: IpcChannel.CalibrationResolveSystemProfile,
     request: (profileId) => ({
       profileId,

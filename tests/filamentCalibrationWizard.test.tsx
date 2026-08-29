@@ -22,6 +22,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -246,6 +247,15 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
         revision: 1,
       },
     }),
+    getCalibrationMethodGuidanceCatalog: vi
+      .fn()
+      .mockResolvedValue({ status: 'ok' as const, catalog: [] }),
+    getCalibrationMethodProgress: vi
+      .fn()
+      .mockResolvedValue({ status: 'ok' as const, progress: [] }),
+    setCalibrationMethodDisposition: vi
+      .fn()
+      .mockResolvedValue(notImplemented('setCalibrationMethodDisposition')),
     cloneCalibrationFilamentProfile: vi.fn().mockResolvedValue({
       status: 'ok',
       clone: {
@@ -1436,5 +1446,170 @@ describe('FilamentCalibrationWizard capability refusal gate (issue #798)', () =>
     await openWizardAndPickPrinter();
     await screen.findByRole('combobox', { name: /machine profile/i });
     expect(screen.queryByText(/could not be reached/i)).toBeNull();
+  });
+});
+
+describe('FilamentCalibrationWizard server-authoritative method disposition (issue #797)', () => {
+  it('persists a skip via setCalibrationMethodDisposition (not local JSON) and marks the step Skipped without blocking completion', async () => {
+    const api = wizardApi({
+      setCalibrationMethodDisposition: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: {
+          id: '55555555-5555-4555-8555-555555555501',
+          projectId: projectGuid,
+          method: 'flow_rate_pass_1',
+          disposition: 'Skipped',
+          currentStepId: null,
+          revision: 2,
+          createdAtUtc: '2026-01-01T00:00:00.000Z',
+          updatedAtUtc: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const skipButton = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    fireEvent.click(skipButton);
+    const startButtonForScope = await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+    const methodItem = startButtonForScope.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Skipped');
+
+    const calls = (
+      api.setCalibrationMethodDisposition as ReturnType<typeof vi.fn>
+    ).mock.calls as [
+      {
+        profileId: string;
+        projectId: string;
+        method: string;
+        disposition: string;
+        baseRevision: number | null;
+      },
+    ][];
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0].profileId).toBe(profileId);
+    expect(calls[0]?.[0].projectId).toBe(projectGuid);
+    expect(calls[0]?.[0].method).toBe('flow_rate_pass_1');
+    expect(calls[0]?.[0].disposition).toBe('Skipped');
+    // No progress row existed yet for this method — server semantics require
+    // a null baseRevision on the first disposition write for it.
+    expect(calls[0]?.[0].baseRevision).toBeNull();
+
+    // Skip never blocks completion — the operator can still run the step.
+    const startButton = await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+    expect(startButton).not.toBeDisabled();
+  });
+
+  it('control: un-skips a skipped step back to Pending, sending the existing revision as baseRevision', async () => {
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '55555555-5555-4555-8555-555555555502',
+            projectId: projectGuid,
+            method: 'flow_rate_pass_1',
+            disposition: 'Skipped',
+            currentStepId: null,
+            revision: 3,
+            createdAtUtc: '2026-01-01T00:00:00.000Z',
+            updatedAtUtc: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      }),
+      setCalibrationMethodDisposition: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: {
+          id: '55555555-5555-4555-8555-555555555502',
+          projectId: projectGuid,
+          method: 'flow_rate_pass_1',
+          disposition: 'Pending',
+          currentStepId: null,
+          revision: 4,
+          createdAtUtc: '2026-01-01T00:00:00.000Z',
+          updatedAtUtc: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await screen.findByText('Skipped');
+    const unskipButton = await screen.findByRole('button', {
+      name: /Un-skip Flow rate — pass 1/i,
+    });
+    fireEvent.click(unskipButton);
+    const methodItem = unskipButton.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Pending');
+
+    const calls = (
+      api.setCalibrationMethodDisposition as ReturnType<typeof vi.fn>
+    ).mock.calls as [{ disposition: string; baseRevision: number | null }][];
+    expect(calls[0]?.[0].disposition).toBe('Pending');
+    expect(calls[0]?.[0].baseRevision).toBe(3);
+  });
+
+  it('consumes server method-guidance for title/purpose instead of the client-hardcoded stand-in text', async () => {
+    const api = wizardApi({
+      getCalibrationMethodGuidanceCatalog: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        catalog: [
+          {
+            method: 'flow_rate_pass_1',
+            title: 'Server Flow Rate Title',
+            purpose: 'Server-sourced purpose text.',
+            wikiUrl: 'https://wiki.example/flow-rate',
+            setupInputs: [],
+            measureQuantity: null,
+            steps: ['setup', 'print', 'measure'],
+          },
+        ],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    const cloneButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(cloneButton);
+
+    await screen.findByRole('button', {
+      name: /Start Server Flow Rate Title/i,
+    });
+    await screen.findByText('Server-sourced purpose text.');
+    expect(
+      screen.queryByRole('button', { name: /Start Flow rate — pass 1$/i }),
+    ).toBeNull();
+  });
+
+  it('falls back to FILAMENT_METHOD_META when the guidance catalog fetch fails', async () => {
+    const api = wizardApi({
+      getCalibrationMethodGuidanceCatalog: vi
+        .fn()
+        .mockRejectedValue(new Error('network unreachable')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    // The wizard still renders and remains usable with the client stand-in
+    // text — a guidance-catalog failure degrades gracefully rather than
+    // blocking the step picker.
+    await screen.findByRole('button', { name: /Start Flow rate — pass 1/i });
   });
 });

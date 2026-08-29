@@ -210,6 +210,15 @@ function apiWith(coverage: Coverage): CalibrationApi {
     createCalibrationProject: vi
       .fn()
       .mockResolvedValue(notImplemented('createCalibrationProject')),
+    getCalibrationMethodGuidanceCatalog: vi
+      .fn()
+      .mockResolvedValue(notImplemented('getCalibrationMethodGuidanceCatalog')),
+    getCalibrationMethodProgress: vi
+      .fn()
+      .mockResolvedValue(notImplemented('getCalibrationMethodProgress')),
+    setCalibrationMethodDisposition: vi
+      .fn()
+      .mockResolvedValue(notImplemented('setCalibrationMethodDisposition')),
     cloneCalibrationFilamentProfile: vi
       .fn()
       .mockResolvedValue(notImplemented('cloneCalibrationFilamentProfile')),

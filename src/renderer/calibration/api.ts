@@ -39,6 +39,17 @@ export type CalibrationApi = Pick<
   // `CalibrationProject` in Coach mode before the profile clone, gated on
   // `store.availability.capabilityFlags.calibrationGenerationEnabled`.
   | 'createCalibrationProject'
+  // --- Server-authoritative method guidance/disposition (issue #797) ------
+  //
+  // Consumed by `FilamentCalibrationWizard`: `getCalibrationMethodGuidanceCatalog`
+  // replaces the client-hardcoded `FILAMENT_METHOD_META`/`SCALAR_MEASUREMENT_SPECS`
+  // stand-ins with the server-owned catalog; `getCalibrationMethodProgress` reads
+  // the server-persisted per-method disposition (Pending/Skipped/Completed);
+  // `setCalibrationMethodDisposition` is the Skip/un-skip action, persisted
+  // server-side so it is visible from any device attached to the project.
+  | 'getCalibrationMethodGuidanceCatalog'
+  | 'getCalibrationMethodProgress'
+  | 'setCalibrationMethodDisposition'
   // --- Filament calibration slice pipeline (Bishop PR #752, PR #1952) -----
   //
   // Consumed by the filament calibration wizard. `submitCalibrationSlice`
