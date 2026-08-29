@@ -64,6 +64,7 @@ import type {
   CalibrationSliceMethod,
 } from '@shared/ipc';
 import {
+  CALIBRATION_MAX_PROJECT_NAME,
   CalibrationFilamentMeasurement,
   PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
 } from '@shared/ipc';
@@ -305,16 +306,35 @@ export function FilamentCalibrationWizard(): React.JSX.Element {
   // Gated strictly on an explicit `false`: `capabilityFlags` is `null` (or
   // `calibrationGenerationEnabled` simply unconfirmed) before availability
   // negotiation completes, and that "not yet known" state is not the same
-  // claim as "the server said no" — only the latter blocks entry here.
+  // claim as "the server said no". This handler-level check is the only
+  // capability gate on this path — `calibration:createProject` in
+  // `main/ipc.ts` is a thin bridge that does not re-check
+  // `calibrationGenerationEnabled` itself, so an "unconfirmed" state here
+  // would reach the server rather than being refused. Blocking on
+  // "unconfirmed" too would be more conservative, but availability is
+  // negotiated once, up front, by the dashboard this wizard is always
+  // reached from (see `CalibrationDashboard`'s `creationBlocked`), so by the
+  // time this component mounts the flag is expected to already be settled
+  // one way or the other; only a confirmed `false` blocks entry here.
   if (
     store.availability?.capabilityFlags?.calibrationGenerationEnabled === false
   ) {
-    const slicingReasons = (
+    // Both `slicing` and `calibrationGeneration` reasons explain why
+    // generation is disabled (per the server's capability negotiation
+    // model — see `capabilitiesLiveResponse.snapshot.ts`); a deployment can
+    // report either depending on which dependency failed.
+    // `calibrationArtifactPromotion` reasons are about write-back/promotion
+    // (out of scope here, blocked on #795) and are deliberately excluded.
+    const relevantReasons = (
       store.availability.serverUnavailableReasons ?? []
-    ).filter((reason) => reason.feature === 'slicing');
+    ).filter(
+      (reason) =>
+        reason.feature === 'slicing' ||
+        reason.feature === 'calibrationGeneration',
+    );
     const message =
-      slicingReasons.length > 0
-        ? slicingReasons.map((reason) => reason.message).join(' ')
+      relevantReasons.length > 0
+        ? relevantReasons.map((reason) => reason.message).join(' ')
         : GENERATION_DISABLED_FALLBACK_MESSAGE;
     return (
       <section
@@ -401,6 +421,14 @@ function FilamentCalibrationWizardInner(
     useState<PrinterListState>(emptyPrinterList);
   const printerListEpochRef = useRef(0);
   const unmountedRef = useRef(false);
+  // Issue #798: the server's create-project route is idempotent on
+  // `(clientId, requestId)` — a retry that reuses the same pair returns the
+  // already-created project instead of minting a duplicate. This id must
+  // stay stable across a failed create/clone retry *within the same
+  // attempt* (the operator clicking "Clone" again after a transient error)
+  // and only roll over once a genuinely new attempt starts, at
+  // `proceedToCloneName`.
+  const createProjectRequestIdRef = useRef<string | null>(null);
   useEffect(
     () => () => {
       unmountedRef.current = true;
@@ -549,6 +577,9 @@ function FilamentCalibrationWizardInner(
   );
 
   const proceedToCloneName = useCallback(() => {
+    // A new attempt at naming the clone starts a fresh idempotency key —
+    // any project created under the *previous* attempt's key is done with.
+    createProjectRequestIdRef.current = null;
     setWorking((current) => {
       const nameSeed =
         current.picks?.filamentName !== null &&
@@ -622,9 +653,24 @@ function FilamentCalibrationWizardInner(
       // (out of scope here, see #798 scope note 3); no material metadata is
       // available client-side for a profile pick, so a documented
       // placeholder is sent — the field just needs to be non-empty.
+      //
+      // `requestId` is memoized in a ref across retries of this same
+      // attempt (reset only in `proceedToCloneName`) so a retry after a
+      // transient failure hits the server's idempotency key instead of
+      // minting an orphaned duplicate project.
+      const requestId =
+        createProjectRequestIdRef.current ?? environment.createId();
+      createProjectRequestIdRef.current = requestId;
+      const projectNameSuffix = ' (calibration project)';
+      const trimmedCloneName = cloneName.trim();
+      const projectName = `${trimmedCloneName}${projectNameSuffix}`.slice(
+        0,
+        CALIBRATION_MAX_PROJECT_NAME,
+      );
       const projectResponse = await calibrationApi().createCalibrationProject({
         profileId,
-        name: `${cloneName.trim()} (calibration project)`,
+        requestId,
+        name: projectName,
         printerId,
         filamentProvider: 'printfarmer',
         filamentProductId: sourceProfileId,
@@ -679,7 +725,7 @@ function FilamentCalibrationWizardInner(
     } finally {
       if (!unmountedRef.current) setBusy(false);
     }
-  }, [profileId, working]);
+  }, [profileId, working, environment]);
 
   const beginMethod = useCallback(
     async (method: CalibrationSliceMethod): Promise<void> => {

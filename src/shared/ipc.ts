@@ -6030,12 +6030,29 @@ export type CalibrationSliceJobTerminalOutcome = z.infer<
 // write-back model: reconciling the two lifecycles depends on
 // draft/promotion semantics blocked on #795 and is out of scope here.
 
+/**
+ * Server-enforced cap on `CalibrationCreateProjectRequest.name`. Exported so
+ * callers can truncate a client-composed name (which may be built from a
+ * much longer clone-name field) before it ever reaches the wire, instead of
+ * discovering the cap as a runtime Zod-parse failure.
+ */
+export const CALIBRATION_MAX_PROJECT_NAME = 200;
+
 export const CalibrationCreateProjectRequest = z
   .object({
     /** Selected PrintFarmer server profile Guid. */
     profileId: z.string().uuid(),
+    /**
+     * Client-chosen idempotency key, paired with a fixed `clientId` on the
+     * main-process side: retrying a create with the same
+     * `(clientId, requestId)` returns the already-created project rather
+     * than minting a duplicate. Callers must keep this stable across a
+     * retry of the *same* attempt and only mint a fresh one when a
+     * genuinely new attempt starts.
+     */
+    requestId: z.string().uuid(),
     /** Display name for the created project. */
-    name: z.string().min(1).max(200),
+    name: z.string().min(1).max(CALIBRATION_MAX_PROJECT_NAME),
     /** Target printer Guid — the printer the calibration will run on. */
     printerId: z.string().uuid(),
     /** Base filament identity the project is bound to at creation. */

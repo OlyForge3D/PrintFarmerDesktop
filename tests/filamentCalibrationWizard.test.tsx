@@ -1250,6 +1250,7 @@ describe('FilamentCalibrationWizard server-side CalibrationProject entry point (
     const [request] = createCalls[0] as [
       {
         profileId: string;
+        requestId: string;
         printerId: string;
         filamentProvider: string;
         filamentProductId: string;
@@ -1263,6 +1264,71 @@ describe('FilamentCalibrationWizard server-side CalibrationProject entry point (
     expect(request.filamentProductId).toBe(filamentGuid);
     expect(request.filamentProductName).toBe(SAMPLE_FILAMENT_NAME);
     expect(request.filamentMaterial.length).toBeGreaterThan(0);
+    // Issue #798 follow-up: `requestId` is the server's idempotency key —
+    // must be a real, non-empty id, distinct per attempt.
+    expect(request.requestId.length).toBeGreaterThan(0);
+  });
+
+  it('reuses the same requestId across a retry after a project-creation failure, so a retry cannot mint a duplicate server-side project', async () => {
+    const api = wizardApi({
+      createCalibrationProject: vi
+        .fn()
+        .mockResolvedValueOnce(notImplemented('createCalibrationProject'))
+        .mockResolvedValueOnce({
+          status: 'ok' as const,
+          project: {
+            id: projectGuid,
+            name: 'PLA — Prusament Galaxy Black (calibration project)',
+            lifecycleStatus: 'Active',
+            experienceMode: 'Coach',
+            printerId: printerIdA,
+            revision: 1,
+          },
+        }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    const cloneButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(cloneButton);
+    await screen.findByText(
+      /createCalibrationProject: not implemented in wizard test\./i,
+    );
+
+    // Retry — same attempt, same wizard-visible naming step.
+    const retryButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(retryButton);
+    await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+
+    const createCalls = (
+      api.createCalibrationProject as ReturnType<typeof vi.fn>
+    ).mock.calls as [{ requestId: string }][];
+    expect(createCalls).toHaveLength(2);
+    expect(createCalls[1]?.[0].requestId).toBe(createCalls[0]?.[0].requestId);
+  });
+
+  it('truncates an overlong clone name so the created-project request never exceeds the server-side cap', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    const nameInput = await screen.findByRole('textbox', {
+      name: /Clone name/i,
+    });
+    fireEvent.change(nameInput, { target: { value: 'x'.repeat(512) } });
+    await performCloneStep();
+
+    const [request] = (api.createCalibrationProject as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [{ name: string }];
+    expect(request.name.length).toBeLessThanOrEqual(200);
   });
 
   it('surfaces a project-creation failure without ever calling cloneCalibrationFilamentProfile', async () => {
@@ -1324,6 +1390,43 @@ describe('FilamentCalibrationWizard capability refusal gate (issue #798)', () =>
     expect(
       (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
         .calls,
+    ).toHaveLength(0);
+  });
+
+  it("refuses to start, with the server's own reason text, when only a calibrationGeneration reason is reported", async () => {
+    const api = wizardApi({
+      getCalibrationAvailability: vi.fn().mockResolvedValue({
+        ...availability(),
+        capabilityFlags: {
+          ...availability().capabilityFlags,
+          calibrationGenerationEnabled: false,
+        },
+        serverUnavailableReasons: [
+          {
+            feature: 'calibrationGeneration',
+            code: 'split_routing_unavailable',
+            message:
+              'Calibration generation requires the deterministic core, authorized model storage, the canonical slice path, an allow-listed attested worker, operational promotion, a durable orchestration store and a healthy recovery loop.',
+          },
+          {
+            feature: 'calibrationArtifactPromotion',
+            code: 'artifact_source_unroutable',
+            message: 'Artifact promotion requires routable artifacts.',
+          },
+        ],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    await screen.findByText(/Calibration generation requires the/i);
+    // The unrelated artifact-promotion reason (out of scope, #795) must not
+    // leak into this message.
+    expect(screen.queryByText(/Artifact promotion requires/i)).toBeNull();
+    expect(
+      (api.createCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
     ).toHaveLength(0);
   });
 

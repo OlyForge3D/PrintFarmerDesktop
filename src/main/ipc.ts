@@ -3902,7 +3902,12 @@ export function registerIpcHandlers(
           ctx.profile.baseUrl,
           {
             clientId: 'desktop',
-            requestId: correlationId,
+            // The renderer-supplied `requestId` is the idempotency key, kept
+            // stable by the caller across a retry of the same attempt — do
+            // NOT substitute `correlationId` here, which is minted fresh on
+            // every invocation and would defeat that idempotency (see the
+            // doc comment on `CalibrationHttpClient.createProject`).
+            requestId: request.requestId,
             name: request.name,
             printerId: request.printerId,
             filamentProvider: request.filamentProvider,
