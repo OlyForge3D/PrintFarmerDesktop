@@ -991,10 +991,11 @@ export const CalibrationCapabilityFlags = z
     /** Server can accept staged photo uploads for calibration. Optional. */
     calibrationPhotoUploadEnabled: z.boolean(),
     /**
-     * Server supports generation and G-code promotion. Optional: this needs an
-     * online slicing worker attesting a pinned upstream OrcaSlicer build, which
-     * many deployments will not run. Recording measured results by hand stays
-     * available when it is false.
+     * Server supports calibration generation and slicing. Optional: this needs
+     * an online slicing worker attesting a pinned upstream OrcaSlicer build,
+     * which many deployments will not run. Recording measured results by hand
+     * stays available when it is false. Does not gate promotion of a produced
+     * artifact — see `calibrationArtifactPromotionEnabled` below.
      */
     calibrationGenerationEnabled: z.boolean(),
     /**
