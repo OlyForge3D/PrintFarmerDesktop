@@ -620,39 +620,52 @@ function FilamentCalibrationWizardInner(
         projectId,
       });
       if (unmountedRef.current) return;
-      if (methodProgressSeqRef.current !== seq) {
-        // Superseded by a newer write or fetch. Its own outcome — a
-        // successful write's fresher row, or a newer fetch's own
-        // resolution — is the current truth, so this stale response is
-        // dropped. Importantly, status must NOT be left at the `'loading'`
-        // this call itself set above: if the operation that superseded us
-        // was a successful *write* rather than a fetch, nothing else will
-        // ever move status off `'loading'`, permanently disabling every
-        // Skip/Un-skip button for the rest of the session. A newer fetch
-        // still in flight will simply overwrite this with its own result
-        // when it resolves, so restoring `'ready'` here is always safe.
-        setMethodProgressStatus('ready');
-        return;
-      }
       if (response.status === 'ok') {
-        const byMethod: Record<string, CalibrationMethodProgressRecord> = {};
-        for (const entry of response.progress) {
-          byMethod[entry.method] = entry;
-        }
-        setMethodProgress(byMethod);
+        // Merge per-method by revision rather than replacing the whole map
+        // wholesale. A "stale" read (one that started before a concurrent
+        // write elsewhere bumped `methodProgressSeqRef`) is not stale for
+        // *every* method it covers — it may be exactly the reconciliation a
+        // different method's rejected write is waiting on (e.g. a
+        // stale-revision conflict refetch for method A must still land A's
+        // fresher row even if an unrelated write to method B resolved in
+        // between and advanced the shared sequence counter; discarding the
+        // whole response would leave A's retry stuck resubmitting the same
+        // stale revision forever). The per-entry revision comparison is
+        // what keeps this safe: it never *downgrades* a method whose
+        // locally-known revision is already at least as new — that only
+        // happens when a write for that exact method resolved after this
+        // read was issued, in which case the write's row is already the
+        // freshest available truth for it.
+        setMethodProgress((current) => {
+          const merged: Record<string, CalibrationMethodProgressRecord> = {
+            ...current,
+          };
+          for (const entry of response.progress) {
+            const existing = merged[entry.method];
+            if (existing === undefined || entry.revision >= existing.revision) {
+              merged[entry.method] = entry;
+            }
+          }
+          return merged;
+        });
+        // Applying this response's data is always safe (see above), so the
+        // sync indicator can always advance to `'ready'` here regardless of
+        // whether a newer fetch has since been kicked off — that newer
+        // fetch will simply merge its own (at-least-as-fresh) data on top
+        // when it resolves.
         setMethodProgressStatus('ready');
-      } else {
+      } else if (methodProgressSeqRef.current === seq) {
         // A row-shaped error response — treat the same as a thrown error
         // below: we do NOT know the real disposition, so it must not be
-        // presented as Pending.
+        // presented as Pending. Unlike the ok-path above, an error carries
+        // no data to merge, so it is only surfaced when nothing fresher is
+        // already in flight or already landed (a newer fetch already
+        // holds — or will hold — the current truth).
         setMethodProgressStatus('error');
       }
     } catch {
       if (unmountedRef.current) return;
-      if (methodProgressSeqRef.current !== seq) {
-        setMethodProgressStatus('ready');
-        return;
-      }
+      if (methodProgressSeqRef.current !== seq) return;
       // Unlike the guidance catalog, a progress-read failure is NOT
       // presented as "every step defaults to Pending" — that would make a
       // step skipped from another device silently look Pending here, which

@@ -1802,16 +1802,21 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
     expect(getProgress).toHaveBeenCalledTimes(2);
   });
 
-  it('does not leave Skip/Un-skip permanently disabled when a concurrent successful write supersedes a slower conflict-refetch', async () => {
-    // Method A (pass 1): its write is rejected, which kicks off a refetch —
-    // held open here so we control exactly when it resolves. Method B
-    // (pass 2): its write succeeds first, bumping the shared sequence
-    // counter and updating `methodProgress` directly without going through
-    // `fetchMethodProgress`. When A's stale refetch finally resolves, it
-    // must discard its now-superseded result WITHOUT leaving
-    // `methodProgressStatus` stuck at `'loading'` — otherwise every
-    // Skip/Un-skip button in the list, including B's, stays disabled
-    // forever with no recovery short of reopening the wizard.
+  it('reconciles a conflicted method from its refetch even when an unrelated method writes concurrently (not just re-enabling toggles)', async () => {
+    // Method A (pass 1): its write is rejected as a stale-revision conflict,
+    // which kicks off a refetch — held open here so we control exactly when
+    // it resolves. Method B (pass 2): its write succeeds first, bumping the
+    // shared sequence counter and updating `methodProgress` directly without
+    // going through `fetchMethodProgress`. A's refetch is therefore "stale"
+    // by sequence number, but it is still the only thing that can hand A's
+    // retry the fresher revision it needs. Discarding it outright (an
+    // earlier version of this fix did exactly that, restoring only the sync
+    // status) would leave A silently disabled-then-re-enabled but still
+    // holding its rejected, superseded revision — so a retry would
+    // resubmit the same stale `baseRevision` and hit the same conflict
+    // forever. This test asserts A's row is actually updated from the
+    // refetch (someone else skipped it — the real-world cause of a
+    // stale-revision conflict), not merely that the UI stops looking stuck.
     interface ProgressReadResult {
       status: 'ok';
       progress: Array<{
@@ -1941,14 +1946,20 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
     fireEvent.click(skipButtonA);
     fireEvent.click(skipButtonB);
 
+    const methodItemA = skipButtonA.closest('li');
     const methodItemB = skipButtonB.closest('li');
-    if (methodItemB === null) throw new Error('expected a method <li>');
+    if (methodItemA === null || methodItemB === null) {
+      throw new Error('expected a method <li>');
+    }
     await within(methodItemB).findByText('Skipped');
     await waitFor(() => expect(getProgress).toHaveBeenCalledTimes(2));
 
-    // Now let A's stale refetch resolve. Its data must be discarded (B's
-    // fresher write already reflects the true state), but the sync status
-    // must NOT be left stuck at "loading".
+    // Now let A's refetch resolve, reporting that someone else skipped A
+    // (the realistic cause of a stale-revision conflict) at a fresher
+    // revision. Even though B's unrelated write advanced the shared
+    // sequence counter in between, A's own row must still be applied —
+    // proving the fix reconciles per-method rather than only clearing the
+    // UI's busy/loading indicator.
     expect(staleRefetch.resolve).not.toBeNull();
     staleRefetch.resolve?.({
       status: 'ok' as const,
@@ -1957,9 +1968,9 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
           id: '55555555-5555-4555-8555-555555555506',
           projectId: projectGuid,
           method: 'flow_rate_pass_1',
-          disposition: 'Pending',
+          disposition: 'Skipped',
           currentStepId: null,
-          revision: 1,
+          revision: 2,
           createdAtUtc: '2026-01-01T00:00:00.000Z',
           updatedAtUtc: '2026-01-01T00:00:00.000Z',
         },
@@ -1969,8 +1980,10 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
     await waitFor(() => {
       expect(screen.queryByText('Sync failed')).toBeNull();
     });
-    // Both toggles must remain interactive — neither is permanently
-    // disabled by the discarded stale refetch.
+    // A's row reflects the reconciled server state (a subsequent retry
+    // would now send `baseRevision: 2`, not the original stale `1`), and
+    // neither toggle is left permanently disabled.
+    await within(methodItemA).findByText('Skipped');
     await waitFor(() => expect(skipButtonA).not.toBeDisabled());
     expect(skipButtonB).not.toBeDisabled();
   });
