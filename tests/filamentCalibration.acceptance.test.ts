@@ -41,6 +41,8 @@ import {
   CalibrationHttpClient,
   type CalibrationTokenProvider,
 } from '../src/main/calibrationHttp.js';
+import { applyFilamentMeasurement } from '../src/main/filamentMeasurementWriteBack.js';
+import type { CalibrationFilamentMeasurement } from '../src/shared/ipc.js';
 import {
   FakeFilamentCalibrationServer,
   SUPPORTED_CALIBRATION_METHODS,
@@ -366,32 +368,27 @@ async function runOperatorFlow(
 
 /**
  * Apply a measurement to a filament profile JSON — the write-back the
- * operator does after "print and analyze". Matches the OrcaSlicer wire:
- * `filament_flow_ratio` and `nozzle_temperature` are arrays of string
- * numbers (`src/main/orcaProfileGenerator.ts` handles the same shape for
- * the retired generation path).
+ * operator does after "print and analyze". This delegates to the real
+ * production merge (`applyFilamentMeasurement` in
+ * `src/main/filamentMeasurementWriteBack.ts`) instead of maintaining a
+ * second, private reimplementation of it — see issue #791. Only the method
+ * -> measurement-shape mapping is local to this harness, because the fake
+ * server only speaks the three methods in `SUPPORTED_CALIBRATION_METHODS`.
  */
 function applyMeasurement(
   rawJson: Record<string, unknown>,
   method: SupportedCalibrationMethod,
   measurement: number,
 ): Record<string, unknown> {
-  const next = { ...rawJson };
-  if (method === 'flow_rate_pass_1' || method === 'flow_rate_pass_2') {
-    next['filament_flow_ratio'] = [measurement.toFixed(3)];
-    return next;
-  }
-  // temperature_tower
-  const existing = next['nozzle_temperature'];
-  const others = Array.isArray(existing)
-    ? existing.slice(1).map((v) => String(v))
-    : [];
-  next['nozzle_temperature'] = [
-    String(Math.round(measurement)),
-    ...(others.length > 0 ? others : [String(Math.round(measurement))]),
-  ];
-  next['nozzle_temperature_initial_layer'] = [String(Math.round(measurement))];
-  return next;
+  const typed: CalibrationFilamentMeasurement =
+    method === 'temperature_tower'
+      ? {
+          method,
+          nozzleTemperature: Math.round(measurement),
+          nozzleTemperatureInitialLayer: Math.round(measurement),
+        }
+      : { method, filamentFlowRatio: measurement };
+  return applyFilamentMeasurement(rawJson, typed);
 }
 
 // ---------------------------------------------------------------------------
