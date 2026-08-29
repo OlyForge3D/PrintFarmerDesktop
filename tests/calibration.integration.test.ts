@@ -182,13 +182,11 @@ function fakeHttp(
       .fn()
       .mockResolvedValue({ kind: 'success', value: { serverRevision: 1 } }),
     getProject: vi.fn().mockResolvedValue(null),
-    getProjectSteps: vi.fn().mockResolvedValue([]),
     getAttempt: vi.fn().mockResolvedValue(null),
     getPhoto: vi.fn().mockResolvedValue(null),
     getPrinters: vi.fn().mockResolvedValue([]),
     getPrinterContext: vi.fn().mockResolvedValue(null),
     uploadPhoto: vi.fn().mockResolvedValue(undefined),
-    startGeneration: vi.fn().mockResolvedValue({ generationJobId: 'gen-123' }),
     acknowledgeBedClear: vi.fn().mockResolvedValue(undefined),
     startPrint: vi.fn().mockResolvedValue({ jobId: 'print-123' }),
     ...overrides,
