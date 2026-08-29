@@ -432,37 +432,3 @@ export interface CalibrationWorkflowViewModel {
   readonly stages: readonly CalibrationStageViewModel[];
   readonly diagnostics: readonly CalibrationDiagnostic[];
 }
-
-export type OrcaPatchTarget = 'filament' | 'printer' | 'process';
-
-export interface OrcaPatchScope {
-  readonly backendPrinterId: string;
-  readonly printerConfigurationId: string;
-  readonly printerConfigurationRevision: number;
-  readonly snapshotId: string;
-  readonly toolId: string;
-  readonly toolheadId: string;
-  readonly nozzleId: string;
-  readonly filamentProjectId: string;
-  readonly filamentSku: string;
-  readonly spoolId?: string | undefined;
-}
-
-export interface OrcaProfilePatchEntry {
-  readonly target: OrcaPatchTarget;
-  readonly key: string;
-  readonly value: number | boolean | string;
-  readonly unit: CalibrationUnit;
-  readonly sourceStageId: CalibrationStageId;
-  readonly sourceAttemptId: string;
-  readonly sourceObservationId: string;
-  readonly scope: OrcaPatchScope;
-}
-
-export interface OrcaProfilePatch {
-  readonly projectId: string;
-  readonly basePrinterConfigurationRevision: number;
-  readonly snapshotId: string;
-  readonly entries: readonly OrcaProfilePatchEntry[];
-  readonly diagnostics: readonly CalibrationDiagnostic[];
-}
