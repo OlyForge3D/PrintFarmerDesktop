@@ -619,7 +619,19 @@ function FilamentCalibrationWizardInner(
         profileId,
         projectId,
       });
-      if (unmountedRef.current || methodProgressSeqRef.current !== seq) {
+      if (unmountedRef.current) return;
+      if (methodProgressSeqRef.current !== seq) {
+        // Superseded by a newer write or fetch. Its own outcome — a
+        // successful write's fresher row, or a newer fetch's own
+        // resolution — is the current truth, so this stale response is
+        // dropped. Importantly, status must NOT be left at the `'loading'`
+        // this call itself set above: if the operation that superseded us
+        // was a successful *write* rather than a fetch, nothing else will
+        // ever move status off `'loading'`, permanently disabling every
+        // Skip/Un-skip button for the rest of the session. A newer fetch
+        // still in flight will simply overwrite this with its own result
+        // when it resolves, so restoring `'ready'` here is always safe.
+        setMethodProgressStatus('ready');
         return;
       }
       if (response.status === 'ok') {
@@ -636,7 +648,9 @@ function FilamentCalibrationWizardInner(
         setMethodProgressStatus('error');
       }
     } catch {
-      if (unmountedRef.current || methodProgressSeqRef.current !== seq) {
+      if (unmountedRef.current) return;
+      if (methodProgressSeqRef.current !== seq) {
+        setMethodProgressStatus('ready');
         return;
       }
       // Unlike the guidance catalog, a progress-read failure is NOT
@@ -644,7 +658,8 @@ function FilamentCalibrationWizardInner(
       // step skipped from another device silently look Pending here, which
       // is exactly the failure mode issue #797 exists to prevent. `Skip`
       // stays disabled (see `canToggleSkip` in `MethodStep`) until a
-      // successful read establishes real state.
+      // successful read establishes real state — either the next automatic
+      // fetch, or the operator's explicit "Retry sync" action.
       setMethodProgressStatus('error');
     }
   }, [profileId, working.calibrationProjectId]);
@@ -1382,6 +1397,7 @@ function FilamentCalibrationWizardInner(
           methodProgressStatus={methodProgressStatus}
           methodProgressBusyMethods={methodProgressBusyMethods}
           onToggleSkip={(method) => void toggleMethodDisposition(method)}
+          onRetrySync={() => void fetchMethodProgress()}
           methodGuidance={methodGuidance}
         />
       ) : null}
@@ -1634,6 +1650,12 @@ interface MethodStepProps {
   readonly methodProgressBusyMethods: ReadonlySet<string>;
   readonly onToggleSkip: (method: CalibrationSliceMethod) => void;
   /**
+   * Re-runs `getMethodProgress` on demand. Surfaced as an explicit "Retry
+   * sync" action when `methodProgressStatus === 'error'` — reopening the
+   * wizard would otherwise be the only way to recover from a failed read.
+   */
+  readonly onRetrySync: () => void;
+  /**
    * Server-sourced method metadata (issue #797), keyed by method. Replaces
    * the client-hardcoded `FILAMENT_METHOD_META` title/purpose text wherever
    * present; a method absent here (catalog fetch still in flight, or the
@@ -1653,6 +1675,7 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
     methodProgressStatus,
     methodProgressBusyMethods,
     onToggleSkip,
+    onRetrySync,
     methodGuidance,
   } = props;
   const isActive = working.phase === 'methodPicker';
@@ -1676,6 +1699,23 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
         behaviour, so there is nothing for them to write back to a filament
         profile. Run those in OrcaSlicer directly.
       </p>
+      {methodProgressStatus === 'error' ? (
+        <div className="cal-alert cal-alert--warning" role="status">
+          <p>
+            Couldn&apos;t read step status from the server. Skip and Un-skip are
+            disabled here until this succeeds — the last-known skipped/pending
+            state may be stale or unavailable.
+          </p>
+          <button
+            type="button"
+            className="cal-button cal-button--secondary"
+            onClick={onRetrySync}
+            disabled={!isActive || busy}
+          >
+            Retry sync
+          </button>
+        </div>
+      ) : null}
       <ul className="cal-method-list">
         {FILAMENT_WIZARD_METHODS.map((method) => {
           const meta = FILAMENT_METHOD_META[method];

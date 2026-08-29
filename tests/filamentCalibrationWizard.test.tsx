@@ -1670,6 +1670,50 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
     expect(skipButton).toBeDisabled();
   });
 
+  it('recovers from a failed initial read via the "Retry sync" action, without requiring the wizard to be reopened', async () => {
+    const getProgress = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('network unreachable'))
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          status: 'ok' as const,
+          progress: [
+            {
+              id: '55555555-5555-4555-8555-555555555505',
+              projectId: projectGuid,
+              method: 'flow_rate_pass_1',
+              disposition: 'Pending',
+              currentStepId: null,
+              revision: 1,
+              createdAtUtc: '2026-01-01T00:00:00.000Z',
+              updatedAtUtc: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+      );
+    const api = wizardApi({ getCalibrationMethodProgress: getProgress });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const retryButton = await screen.findByRole('button', {
+      name: /Retry sync/i,
+    });
+    fireEvent.click(retryButton);
+
+    const skipButton = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    const methodItem = skipButton.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Pending');
+    expect(screen.queryByText('Sync failed')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Retry sync/i })).toBeNull();
+    expect(skipButton).not.toBeDisabled();
+    expect(getProgress).toHaveBeenCalledTimes(2);
+  });
+
   it('control: a successful read shows Pending normally (not "Sync failed") and Skip is enabled', async () => {
     const api = wizardApi();
     mount(api);
@@ -1756,5 +1800,178 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
     if (methodItem === null) throw new Error('expected a method <li>');
     await within(methodItem).findByText('Skipped');
     expect(getProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not leave Skip/Un-skip permanently disabled when a concurrent successful write supersedes a slower conflict-refetch', async () => {
+    // Method A (pass 1): its write is rejected, which kicks off a refetch —
+    // held open here so we control exactly when it resolves. Method B
+    // (pass 2): its write succeeds first, bumping the shared sequence
+    // counter and updating `methodProgress` directly without going through
+    // `fetchMethodProgress`. When A's stale refetch finally resolves, it
+    // must discard its now-superseded result WITHOUT leaving
+    // `methodProgressStatus` stuck at `'loading'` — otherwise every
+    // Skip/Un-skip button in the list, including B's, stays disabled
+    // forever with no recovery short of reopening the wizard.
+    interface ProgressReadResult {
+      status: 'ok';
+      progress: Array<{
+        id: string;
+        projectId: string;
+        method: string;
+        disposition: string;
+        currentStepId: null;
+        revision: number;
+        createdAtUtc: string;
+        updatedAtUtc: string;
+      }>;
+    }
+    const staleRefetch: {
+      resolve: ((value: ProgressReadResult) => void) | null;
+    } = { resolve: null };
+    const getProgress = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          status: 'ok' as const,
+          progress: [
+            {
+              id: '55555555-5555-4555-8555-555555555506',
+              projectId: projectGuid,
+              method: 'flow_rate_pass_1',
+              disposition: 'Pending',
+              currentStepId: null,
+              revision: 1,
+              createdAtUtc: '2026-01-01T00:00:00.000Z',
+              updatedAtUtc: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: '55555555-5555-4555-8555-555555555507',
+              projectId: projectGuid,
+              method: 'flow_rate_pass_2',
+              disposition: 'Pending',
+              currentStepId: null,
+              revision: 1,
+              createdAtUtc: '2026-01-01T00:00:00.000Z',
+              updatedAtUtc: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<ProgressReadResult>((resolve) => {
+            staleRefetch.resolve = resolve;
+          }),
+      );
+    const setDisposition = vi.fn().mockImplementation(
+      (request: {
+        method: string;
+      }): Promise<
+        | {
+            status: 'ok';
+            progress: {
+              id: string;
+              projectId: string;
+              method: string;
+              disposition: string;
+              currentStepId: null;
+              revision: number;
+              createdAtUtc: string;
+              updatedAtUtc: string;
+            };
+          }
+        | {
+            status: 'error';
+            error: {
+              code: string;
+              message: string;
+              retryable: boolean;
+              retryAfterSeconds: number | null;
+              reference: string | null;
+            };
+          }
+      > => {
+        if (request.method === 'flow_rate_pass_1') {
+          return Promise.resolve({
+            status: 'error' as const,
+            error: {
+              code: 'revisionConflict',
+              message: 'The method disposition changed since it was last read.',
+              retryable: true,
+              retryAfterSeconds: null,
+              reference: null,
+            },
+          });
+        }
+        return Promise.resolve({
+          status: 'ok' as const,
+          progress: {
+            id: '55555555-5555-4555-8555-555555555508',
+            projectId: projectGuid,
+            method: 'flow_rate_pass_2',
+            disposition: 'Skipped',
+            currentStepId: null,
+            revision: 2,
+            createdAtUtc: '2026-01-01T00:00:00.000Z',
+            updatedAtUtc: '2026-01-01T00:00:00.000Z',
+          },
+        });
+      },
+    );
+    const api = wizardApi({
+      getCalibrationMethodProgress: getProgress,
+      setCalibrationMethodDisposition: setDisposition,
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const skipButtonA = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    const skipButtonB = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 2/i,
+    });
+
+    // A's write is rejected first, starting the (held-open) refetch. B's
+    // write is fired immediately afterward, before either promise settles —
+    // this mirrors the real race: both toggles are still enabled (status is
+    // `'ready'`) until the first `await` inside either handler yields.
+    fireEvent.click(skipButtonA);
+    fireEvent.click(skipButtonB);
+
+    const methodItemB = skipButtonB.closest('li');
+    if (methodItemB === null) throw new Error('expected a method <li>');
+    await within(methodItemB).findByText('Skipped');
+    await waitFor(() => expect(getProgress).toHaveBeenCalledTimes(2));
+
+    // Now let A's stale refetch resolve. Its data must be discarded (B's
+    // fresher write already reflects the true state), but the sync status
+    // must NOT be left stuck at "loading".
+    expect(staleRefetch.resolve).not.toBeNull();
+    staleRefetch.resolve?.({
+      status: 'ok' as const,
+      progress: [
+        {
+          id: '55555555-5555-4555-8555-555555555506',
+          projectId: projectGuid,
+          method: 'flow_rate_pass_1',
+          disposition: 'Pending',
+          currentStepId: null,
+          revision: 1,
+          createdAtUtc: '2026-01-01T00:00:00.000Z',
+          updatedAtUtc: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Sync failed')).toBeNull();
+    });
+    // Both toggles must remain interactive — neither is permanently
+    // disabled by the discarded stale refetch.
+    await waitFor(() => expect(skipButtonA).not.toBeDisabled());
+    expect(skipButtonB).not.toBeDisabled();
   });
 });
