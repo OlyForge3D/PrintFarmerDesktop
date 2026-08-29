@@ -1035,6 +1035,7 @@ describe('PrintFarmer Orca profile discovery projection', () => {
       flags: {
         calibrationApiEnabled: true,
         calibrationGenerationEnabled: true,
+        calibrationArtifactPromotionEnabled: true,
       },
     };
     const binding = {

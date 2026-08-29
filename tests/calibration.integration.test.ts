@@ -112,6 +112,7 @@ function fakeCapabilities() {
       calibrationOfflineDraftEnabled: true,
       calibrationPhotoUploadEnabled: true,
       calibrationGenerationEnabled: true,
+      calibrationArtifactPromotionEnabled: true,
     },
   };
 }
@@ -1789,6 +1790,7 @@ describe('Calibration IPC schema additive compatibility', () => {
           calibrationOfflineDraftEnabled: true,
           calibrationPhotoUploadEnabled: true,
           calibrationGenerationEnabled: true,
+          calibrationArtifactPromotionEnabled: true,
         },
         grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
         offlineEditingEnabled: true,

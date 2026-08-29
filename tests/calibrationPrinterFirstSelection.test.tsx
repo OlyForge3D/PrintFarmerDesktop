@@ -185,6 +185,7 @@ function makeApi(
         calibrationOfflineDraftEnabled: true,
         calibrationPhotoUploadEnabled: true,
         calibrationGenerationEnabled: true,
+        calibrationArtifactPromotionEnabled: true,
       },
       grantedScopes: ['calibration:read', 'calibration:create'],
       offlineEditingEnabled: true,

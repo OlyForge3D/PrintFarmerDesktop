@@ -128,6 +128,10 @@ const RIPLEY_MISFIX_ALIAS_SOURCES: Record<CalibrationFlagName, string> = {
   calibrationOfflineDraftEnabled: 'operatorFeatures.offlineWriteReplayEnabled',
   calibrationPhotoUploadEnabled: 'calibrationPhotosEnabled',
   calibrationGenerationEnabled: 'calibrationGenerationEnabled',
+  // Not part of the historical mis-fix — this flag did not exist when Ripley's
+  // binding was in tree. Bound identically to the current map so it is inert
+  // for this counterfactual (REQUIRED_CALIBRATION_FLAGS never includes it).
+  calibrationArtifactPromotionEnabled: 'calibrationArtifactPromotionEnabled',
 };
 
 /**

@@ -570,6 +570,7 @@ describe('diagnostics command', () => {
             calibrationSyncEnabled: true,
             calibrationPhotosEnabled: true,
             calibrationGenerationEnabled: true,
+            calibrationArtifactPromotionEnabled: true,
             operatorFeatures: { offlineWriteReplayEnabled: true },
             supportedFirmwareFamilies: ['Klipper'],
             supportedGcodeDialects: ['Klipper'],

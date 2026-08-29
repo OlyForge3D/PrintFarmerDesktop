@@ -991,12 +991,22 @@ export const CalibrationCapabilityFlags = z
     /** Server can accept staged photo uploads for calibration. Optional. */
     calibrationPhotoUploadEnabled: z.boolean(),
     /**
-     * Server supports generation and G-code promotion. Optional: this needs an
-     * online slicing worker attesting a pinned upstream OrcaSlicer build, which
-     * many deployments will not run. Recording measured results by hand stays
-     * available when it is false.
+     * Server supports calibration generation and slicing. Optional: this needs
+     * an online slicing worker attesting a pinned upstream OrcaSlicer build,
+     * which many deployments will not run. Recording measured results by hand
+     * stays available when it is false. Does not gate promotion of a produced
+     * artifact — see `calibrationArtifactPromotionEnabled` below.
      */
     calibrationGenerationEnabled: z.boolean(),
+    /**
+     * Server accepts promotion of a produced calibration artifact. Optional
+     * and distinct from `calibrationGenerationEnabled`: a deployment can have
+     * a working slicing fleet (so `generate` succeeds) while its promotion
+     * checkpoint store or reconciler is unhealthy, in which case a produced
+     * artifact cannot be promoted. `applyPatch` requires this flag in
+     * addition to generation; `generate` does not.
+     */
+    calibrationArtifactPromotionEnabled: z.boolean(),
   })
   .passthrough();
 export type CalibrationCapabilityFlags = z.infer<
@@ -1028,6 +1038,7 @@ export const CalibrationCapabilityFlagAdvertisement = z
     calibrationOfflineDraftEnabled: CalibrationFlagAdvertisement,
     calibrationPhotoUploadEnabled: CalibrationFlagAdvertisement,
     calibrationGenerationEnabled: CalibrationFlagAdvertisement,
+    calibrationArtifactPromotionEnabled: CalibrationFlagAdvertisement,
   })
   .passthrough();
 export type CalibrationCapabilityFlagAdvertisement = z.infer<
