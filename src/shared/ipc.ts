@@ -6455,16 +6455,23 @@ export type CalibrationSendSliceToPrinterResponse = z.infer<
 // a value the desktop accepts is never one the server would reject.
 
 /**
- * Internal fallback ceiling for a nozzle temperature measurement, in °C.
+ * PrintFarmer's own nozzle-temperature measurement band, in °C: 150-320.
  *
- * Used only when no per-printer `maximumNozzleTemperatureC` is known. Mirrors
- * `WorkspaceBaseline.nozzleTemperatureC`'s ceiling exactly (see above) so
- * this wire boundary and that one describe the same "no plausible hotend
- * exceeds this" fact rather than two numbers that can drift apart. It is
- * NOT a claim that 2000°C is a realistic printer limit — it is the point past
- * which a value is nonsensical regardless of which printer sent it.
+ * This mirrors the server's real `CalibrationMeasurementRanges` band per the
+ * comment above, the same way every sibling bound in this union does — it is
+ * NOT the per-printer `maximumNozzleTemperatureC` (`CalibrationPrinterContext
+ * .safety.maximumNozzleTemperatureC`, reduced from the printer's toolheads in
+ * `calibrationWire.ts`), which this flow has no way to read (see the
+ * `temperature_tower` bound below for why). A wider "internal ceiling" such
+ * as `WorkspaceBaseline.nozzleTemperatureC`'s 2000 is deliberately NOT used
+ * here: nothing downstream of this schema clamps a filament-measurement
+ * value against a real per-printer limit before it is written into the
+ * profile and used to drive hotend heating, so the schema bound is the only
+ * safety-relevant guard this flow has. 320 is the widest value this
+ * boundary can accept without also being able to accept a value no printer
+ * could safely reach.
  */
-export const NOZZLE_TEMPERATURE_CEILING_C = 2_000;
+export const PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C = 320;
 
 export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
   z
@@ -6511,25 +6518,15 @@ export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
     .object({
       method: z.literal('temperature_tower'),
       /**
-       * Print temperature in °C.
-       *
-       * The lower bound (150) is a physical floor below which no supported
-       * filament sensibly prints. There is deliberately no fixed upper bound
-       * here below `NOZZLE_TEMPERATURE_CEILING_C`: PrintFarmer's own band is
-       * 150-320, wider than the 300 this used to hard-cap at, and the real
-       * ceiling is per-printer (`CalibrationPrinterContext.safety
-       * .maximumNozzleTemperatureC`, reduced from the printer's toolheads in
-       * `calibrationWire.ts`) rather than a constant every printer shares.
-       * `NOZZLE_TEMPERATURE_CEILING_C` is the internal fallback ceiling used
-       * when no per-printer limit is known — the same ceiling
-       * `WorkspaceBaseline.nozzleTemperatureC` already uses — so the wire
-       * boundary never rejects a value a real hotend could safely reach.
+       * Print temperature in °C, bounded to `PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C`
+       * (PrintFarmer's real 150-320 band) rather than the 300 this used to
+       * hard-cap at.
        */
       nozzleTemperature: z
         .number()
         .int()
         .min(150)
-        .max(NOZZLE_TEMPERATURE_CEILING_C),
+        .max(PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C),
       /**
        * Initial-layer temperature in °C. Same band as `nozzleTemperature`.
        */
@@ -6537,7 +6534,7 @@ export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
         .number()
         .int()
         .min(150)
-        .max(NOZZLE_TEMPERATURE_CEILING_C),
+        .max(PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C),
     })
     .strict(),
   z

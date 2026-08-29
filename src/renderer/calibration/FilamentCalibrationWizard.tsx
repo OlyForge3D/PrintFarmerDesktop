@@ -65,7 +65,7 @@ import type {
 } from '@shared/ipc';
 import {
   CalibrationFilamentMeasurement,
-  NOZZLE_TEMPERATURE_CEILING_C,
+  PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
 } from '@shared/ipc';
 import { browserCalibrationEnvironment, calibrationApi } from './api';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
@@ -1422,9 +1422,9 @@ function SendToPrinterStep(props: SendToPrinterStepProps): React.JSX.Element {
       <div className="cal-alert cal-alert--warning" role="status">
         <p>
           <strong>Starting a print moves the machine.</strong> The printer will
-          heat the bed and nozzle (up to 300 °C for some materials) and the
-          toolhead will move. Make sure the bed is clear, the spool is loaded,
-          and nothing is in the way of the head.
+          heat the bed and nozzle (up to {PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C}{' '}
+          °C for some materials) and the toolhead will move. Make sure the bed
+          is clear, the spool is loaded, and nothing is in the way of the head.
         </p>
       </div>
       <label>
@@ -1513,8 +1513,8 @@ function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
       // literal band here, for the same reason the scalar-measurement path
       // above does: the schema is what the IPC boundary actually enforces,
       // and a hand-copied bound is how the UI and the wire drift apart (this
-      // is exactly how the band went stale at 300 °C instead of the real
-      // `NOZZLE_TEMPERATURE_CEILING_C`).
+      // is exactly how the band went stale at 300 °C instead of PrintFarmer's
+      // real `PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C`).
       const parsed = CalibrationFilamentMeasurement.safeParse({
         method: 'temperature_tower',
         nozzleTemperature: nozzle,
@@ -1522,7 +1522,7 @@ function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
       });
       if (!parsed.success) {
         setFormError(
-          `Both temperatures must be integers between 150 and ${NOZZLE_TEMPERATURE_CEILING_C} °C.`,
+          `Both temperatures must be integers between 150 and ${PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C} °C.`,
         );
         return;
       }

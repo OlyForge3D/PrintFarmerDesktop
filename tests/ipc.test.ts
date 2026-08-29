@@ -4,7 +4,7 @@ import {
   IPC_CONTRACT_VERSION,
   ipcSchemas,
   IpcChannel,
-  NOZZLE_TEMPERATURE_CEILING_C,
+  PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
   ServerCapabilities,
 } from '@shared/ipc';
 
@@ -664,12 +664,10 @@ describe('ipc contract', () => {
   });
 });
 
-// Issue #789: `temperature_tower` used to hard-cap at 300 °C, below both
-// PrintFarmer's own 150-320 °C band and the printer's actual hotend limit.
-// The upper bound is now `NOZZLE_TEMPERATURE_CEILING_C` (2000, matching the
-// `WorkspaceBaseline.nozzleTemperatureC` internal ceiling used elsewhere) —
-// a value the real per-printer maximum is checked against downstream, not a
-// number this wire boundary should be rejecting on its own.
+// Issue #789: `temperature_tower` used to hard-cap at 300 °C, below
+// PrintFarmer's own real 150-320 °C band. The upper bound is now
+// `PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C` (320), mirroring the server's real
+// band the same way every sibling bound in this union does.
 describe('CalibrationFilamentMeasurement temperature_tower bounds', () => {
   it('accepts 310 °C, which PrintFarmer permits but the old 300 °C cap rejected', () => {
     const parsed = CalibrationFilamentMeasurement.safeParse({
@@ -698,10 +696,10 @@ describe('CalibrationFilamentMeasurement temperature_tower bounds', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('control: still rejects a value above the internal ceiling — the schema is wide, not unbounded', () => {
+  it('control: still rejects a value above PrintFarmer\u2019s real band — the schema is wider than 300, not unbounded', () => {
     const parsed = CalibrationFilamentMeasurement.safeParse({
       method: 'temperature_tower',
-      nozzleTemperature: NOZZLE_TEMPERATURE_CEILING_C + 1,
+      nozzleTemperature: PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C + 1,
       nozzleTemperatureInitialLayer: 200,
     });
     expect(parsed.success).toBe(false);
@@ -711,7 +709,7 @@ describe('CalibrationFilamentMeasurement temperature_tower bounds', () => {
     const parsed = CalibrationFilamentMeasurement.safeParse({
       method: 'temperature_tower',
       nozzleTemperature: 200,
-      nozzleTemperatureInitialLayer: NOZZLE_TEMPERATURE_CEILING_C + 1,
+      nozzleTemperatureInitialLayer: PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C + 1,
     });
     expect(parsed.success).toBe(false);
   });

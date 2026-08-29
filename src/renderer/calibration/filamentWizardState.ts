@@ -62,7 +62,7 @@
  * interrupted step.
  */
 
-import { NOZZLE_TEMPERATURE_CEILING_C } from '@shared/ipc';
+import { PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C } from '@shared/ipc';
 import type {
   CalibrationFilamentMeasurement,
   CalibrationSliceJobStatus,
@@ -273,7 +273,7 @@ export const FILAMENT_METHOD_META: Record<
       'A tower with each block printed at a different nozzle temperature. Identify the temperature that gave the cleanest bridging, retraction, and layer adhesion.',
     measurementPrompt:
       'Enter the best-print nozzle temperature (°C) and the initial-layer nozzle temperature (°C). ' +
-      `Both are integers between 150 and ${NOZZLE_TEMPERATURE_CEILING_C} °C.`,
+      `Both are integers between 150 and ${PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C} °C.`,
     measurementSchema: 'temperature',
   },
   flow_rate_pass_2: {
