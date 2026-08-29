@@ -24,30 +24,37 @@
  * *relative* order of the methods that exist rather than adjacency, because
  * the two categories the pipeline implements are not neighbours upstream.
  *
- * ## Why only three
+ * ## Which categories are here, and why
  *
- * Of the guide's eight categories the pipeline implements two: temperature and
- * flow. Within flow, upstream offers four entries — YOLO (Recommended), YOLO
- * (Perfectionist), Pass 1, Pass 2 — and only the legacy two-pass pair is here.
- * `Farm.Slicer.Module.Models.CalibrationMethod` declares `FlowRatePass1`,
- * `FlowRatePass2`, `TemperatureTower`, and `CalibrationMethods.TryParse`
- * rejects every other wire name so the request fails fast rather than dying on
- * the worker.
+ * Two of the guide's eight categories: temperature (1) and flow (4). Within
+ * flow, upstream offers four entries and all four are now present — YOLO
+ * (Recommended), YOLO (Perfectionist), Pass 1, Pass 2 (#775, #776).
  *
- * That is a server capability boundary, not a desktop omission, so this suite
- * asserts the boundary rather than a wished-for list. Tracked in
- * PrintFarmer#2051; when the pipeline gains a method, this test should fail and
- * be updated deliberately — including `CalibrationSliceMethod` in
- * `src/shared/ipc.ts` and the `.max(3)` ceiling on `completedMethods`, which
- * both hard-code the current count.
+ * Max volumetric speed (2), pressure advance (3) and retraction (5) are
+ * implemented server-side and are being adopted separately (#777, #778, #779).
+ *
+ * Cornering (6), input shaping (7) and VFA (8) are excluded on purpose and are
+ * not coming: they are *machine* calibrations whose results are firmware motion
+ * settings, and the only thing this wizard writes is a filament profile. See
+ * #786 and OlyForge3D/PrintFarmer#2162.
+ *
+ * The server no longer gates any catalogued method — `IsSlicerSupported`
+ * returns `true` for all of them — so the boundary this suite asserts is now
+ * the desktop's own adoption state rather than a server capability limit.
  */
 
 import { describe, expect, it } from 'vitest';
-import { CalibrationSliceMethod, FilamentWizardStateRecord } from '@shared/ipc';
+import {
+  CalibrationFilamentMeasurement,
+  CalibrationSliceMethod,
+  FilamentWizardStateRecord,
+} from '@shared/ipc';
 import type { FilamentWizardStateRecord as FilamentWizardStateRecordType } from '@shared/ipc';
 import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
+  SCALAR_MEASUREMENT_SPECS,
+  isFlowRatioMethod,
 } from '../src/renderer/calibration/filamentWizardState';
 
 describe('filament calibration method catalogue', () => {
@@ -103,6 +110,188 @@ describe('filament calibration method catalogue', () => {
     expect(FILAMENT_METHOD_META.flow_rate_pass_2.measurementSchema).toBe(
       'flowRatio',
     );
+    expect(
+      FILAMENT_METHOD_META.flow_rate_yolo_recommended.measurementSchema,
+    ).toBe('flowRatio');
+    expect(
+      FILAMENT_METHOD_META.flow_rate_yolo_perfectionist.measurementSchema,
+    ).toBe('flowRatio');
+  });
+
+  it('offers YOLO (Recommended) before the legacy two-pass method', () => {
+    // Recommended is the default choice; listing it after the legacy pair
+    // implies the passes are the primary route, which is the opposite of the
+    // guidance in the summaries.
+    const recommended = FILAMENT_WIZARD_METHODS.indexOf(
+      'flow_rate_yolo_recommended',
+    );
+    const pass1 = FILAMENT_WIZARD_METHODS.indexOf('flow_rate_pass_1');
+    expect(recommended).toBeGreaterThanOrEqual(0);
+    expect(recommended).toBeLessThan(pass1);
+  });
+
+  it('offers YOLO (Recommended) before YOLO (Perfectionist)', () => {
+    // Perfectionist refines whatever Recommended landed on, so the reverse
+    // order has nothing to refine — the same dependency the two legacy passes
+    // have between them.
+    expect(
+      FILAMENT_WIZARD_METHODS.indexOf('flow_rate_yolo_recommended'),
+    ).toBeLessThan(
+      FILAMENT_WIZARD_METHODS.indexOf('flow_rate_yolo_perfectionist'),
+    );
+  });
+
+  it('gives all four flow methods distinguishable summaries', () => {
+    // Four near-identical flow entries with copy-pasted metadata is worse for
+    // the operator than the two we shipped before. Distinct summaries are what
+    // make the choice possible at all.
+    const flowMethods = FILAMENT_WIZARD_METHODS.filter((method) =>
+      isFlowRatioMethod(method),
+    );
+    expect(flowMethods.length).toBe(4);
+
+    const summaries = flowMethods.map(
+      (method) => FILAMENT_METHOD_META[method].summary,
+    );
+    expect(new Set(summaries).size).toBe(summaries.length);
+
+    // Control: the check above only proves the strings differ, which two
+    // typo-divergent copies would also satisfy. Each summary must actually
+    // name its own role in the choice.
+    expect(
+      FILAMENT_METHOD_META.flow_rate_yolo_recommended.summary.toLowerCase(),
+    ).toContain('default');
+    expect(
+      FILAMENT_METHOD_META.flow_rate_yolo_perfectionist.summary.toLowerCase(),
+    ).toContain('after recommended');
+    expect(
+      FILAMENT_METHOD_META.flow_rate_pass_1.summary.toLowerCase(),
+    ).toContain('legacy');
+    expect(
+      FILAMENT_METHOD_META.flow_rate_pass_2.summary.toLowerCase(),
+    ).toContain('legacy');
+  });
+
+  it('agrees with the wire measurement union about which methods are flow ratios', () => {
+    // `isFlowRatioMethod` answers at runtime from the metadata catalogue but is
+    // *typed* from the wire union, so the two are independent sources that must
+    // agree. If they drift, the measurement step renders a flow-ratio input for
+    // a method whose IPC payload expects temperatures — which typechecks,
+    // because the predicate asserts the narrowing rather than proving it.
+    const flowFromCatalogue = CalibrationSliceMethod.options
+      .filter((method) => isFlowRatioMethod(method))
+      .sort();
+
+    const flowFromWireUnion = CalibrationFilamentMeasurement.options
+      .filter((branch) => 'filamentFlowRatio' in branch.shape)
+      .map((branch) => branch.shape.method.value as string)
+      .sort();
+
+    expect(flowFromCatalogue).toStrictEqual(flowFromWireUnion);
+
+    // Control: the comparison must be capable of failing. Temperature tower is
+    // in neither list, and a predicate that returned true for everything would
+    // put it in the first.
+    expect(flowFromCatalogue).not.toContain('temperature_tower');
+    expect(flowFromWireUnion).not.toContain('temperature_tower');
+    expect(flowFromCatalogue.length).toBeGreaterThan(0);
+  });
+
+  it('follows the guide order across all five adopted categories', () => {
+    // Guide order is Temperature (1) → Max volumetric speed (2) → Pressure
+    // advance (3) → Flow (4) → Retraction (5). Appending a method rather than
+    // slotting it by guide position silently inverts the recommended sequence,
+    // which is the whole reason this file exists.
+    const at = (method: string): number =>
+      FILAMENT_WIZARD_METHODS.indexOf(method as never);
+
+    expect(at('temperature_tower')).toBeLessThan(at('max_volumetric_speed'));
+    expect(at('max_volumetric_speed')).toBeLessThan(
+      at('pressure_advance_tower'),
+    );
+    expect(at('pressure_advance_tower')).toBeLessThan(
+      at('flow_rate_yolo_recommended'),
+    );
+    expect(at('flow_rate_pass_2')).toBeLessThan(at('retraction'));
+
+    // Control: every method named above is actually in the list. `indexOf`
+    // returns -1 for an absent method, and -1 < anything, so the assertions
+    // above would pass vacuously against a list that had lost an entry.
+    for (const method of [
+      'temperature_tower',
+      'max_volumetric_speed',
+      'pressure_advance_tower',
+      'flow_rate_yolo_recommended',
+      'flow_rate_pass_2',
+      'retraction',
+    ]) {
+      expect(
+        at(method),
+        `${method} missing from the wizard list`,
+      ).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('labels each scalar measurement with the band the wire schema actually enforces', () => {
+    // The spec's min/max are presentation only — the measurement step validates
+    // by parsing `CalibrationFilamentMeasurement`. If the label and the schema
+    // disagree, the operator is told one band and rejected against another.
+    // Probing both edges is what makes this an agreement test rather than a
+    // restatement of the spec.
+    const methodForSchema = new Map<string, string>();
+    for (const method of CalibrationSliceMethod.options) {
+      methodForSchema.set(
+        FILAMENT_METHOD_META[method].measurementSchema,
+        method,
+      );
+    }
+
+    for (const [schema, spec] of Object.entries(SCALAR_MEASUREMENT_SPECS)) {
+      const method = methodForSchema.get(schema);
+      expect(method, `no method uses the ${schema} schema`).toBeDefined();
+      if (method === undefined) continue;
+
+      const parse = (value: number): boolean =>
+        CalibrationFilamentMeasurement.safeParse({
+          method,
+          [spec.field]: value,
+        }).success;
+
+      // Inside the advertised band, at both edges.
+      expect(parse(spec.min), `${schema}: min ${spec.min} rejected`).toBe(true);
+      expect(parse(spec.max), `${schema}: max ${spec.max} rejected`).toBe(true);
+
+      // Outside it — the control. A schema with no bounds at all would pass
+      // the two assertions above and fail these.
+      const outside = Math.max(Math.abs(spec.max - spec.min) * 0.5, 0.001);
+      expect(
+        parse(spec.min - outside),
+        `${schema}: below-band value accepted`,
+      ).toBe(false);
+      expect(
+        parse(spec.max + outside),
+        `${schema}: above-band value accepted`,
+      ).toBe(false);
+    }
+  });
+
+  it('gives the three new-quantity methods their own measurement schemas', () => {
+    expect(FILAMENT_METHOD_META.max_volumetric_speed.measurementSchema).toBe(
+      'maxVolumetricSpeed',
+    );
+    expect(FILAMENT_METHOD_META.pressure_advance_tower.measurementSchema).toBe(
+      'pressureAdvance',
+    );
+    expect(FILAMENT_METHOD_META.retraction.measurementSchema).toBe(
+      'retractionLength',
+    );
+
+    // Control: these must not be flow ratios. Reusing `flowRatio` would render
+    // a flow-ratio input and submit a payload the IPC boundary rejects.
+    expect(isFlowRatioMethod('max_volumetric_speed')).toBe(false);
+    expect(isFlowRatioMethod('pressure_advance_tower')).toBe(false);
+    expect(isFlowRatioMethod('retraction')).toBe(false);
+    expect(isFlowRatioMethod('flow_rate_yolo_recommended')).toBe(true);
   });
 });
 

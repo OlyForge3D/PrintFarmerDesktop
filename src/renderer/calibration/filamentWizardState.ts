@@ -63,13 +63,14 @@
  */
 
 import type {
+  CalibrationFilamentMeasurement,
   CalibrationSliceJobStatus,
   CalibrationSliceMethod,
   FilamentWizardStateRecord,
 } from '@shared/ipc';
 
 /**
- * The three methods this build supports, ordered to match the OrcaSlicer
+ * The methods this build supports, ordered to match the OrcaSlicer
  * calibration guide.
  *
  * The guide's full recommended order is:
@@ -82,10 +83,14 @@ import type {
  * (plus Tolerance, listed outside the numbered sequence.)
  * https://www.orcaslicer.com/wiki/guides/calibration_guide
  *
- * Of those eight categories the PrintFarmer slice pipeline implements two —
- * temperature and flow — so this list is the correct *relative* order of what
- * is available, not the whole guide. Steps 2 and 3 fall between them and are
- * simply absent; the wizard must not imply the sequence is complete.
+ * Of those eight categories this list now covers five: temperature (1), max
+ * volumetric speed (2), pressure advance (3), flow (4) and retraction (5), in
+ * exactly that order.
+ *
+ * Categories 6-8 (cornering, input shaping, VFA) are deliberately excluded and
+ * are not coming: they are *machine* calibrations whose results are firmware
+ * motion settings, and this wizard's only output is a patched filament profile,
+ * so there is nowhere to write them. See #786 and OlyForge3D/PrintFarmer#2162.
  *
  * Temperature leads because the dependency is physical and one-way: nozzle
  * temperature changes filament viscosity and therefore how it flows, so a flow
@@ -93,17 +98,27 @@ import type {
  * This list previously ran `flow_rate_pass_1` first while claiming to be in
  * wiki order; it was not, and that ordering discarded its own result.
  *
- * Flow also has more upstream than the two passes here — YOLO (Recommended)
- * and YOLO (Perfectionist). Their absence, and that of categories 2, 3 and
- * 5-8, is a server capability boundary rather than a wizard omission:
- * `Farm.Slicer.Module.Models.CalibrationMethod` declares exactly these three
- * wire names and `CalibrationMethods.TryParse` rejects anything else. See
- * PrintFarmer#2051.
+ * Within flow (4) upstream offers four entries, all present here: YOLO
+ * (Recommended) and YOLO (Perfectionist) — the current method — plus the legacy
+ * Pass 1 / Pass 2 pair, kept because operators mid-workflow depend on them.
+ * They are alternatives, not a sequence: the wizard's `methodPicker` phase
+ * offers this list and the operator chooses one per round. Recommended is
+ * listed before the legacy passes because it is the default choice.
+ *
+ * Pressure advance is Tower only. PA Line and PA Pattern stay unsupported
+ * upstream on licensing grounds (GPL-3.0 provenance and vendor-specific
+ * respectively), so the summary names the variant rather than "pressure
+ * advance" generally.
  */
 export const FILAMENT_WIZARD_METHODS: readonly CalibrationSliceMethod[] = [
   'temperature_tower',
+  'max_volumetric_speed',
+  'pressure_advance_tower',
+  'flow_rate_yolo_recommended',
+  'flow_rate_yolo_perfectionist',
   'flow_rate_pass_1',
   'flow_rate_pass_2',
+  'retraction',
 ];
 
 /**
@@ -121,7 +136,102 @@ export interface FilamentMethodMeta {
   readonly title: string;
   readonly summary: string;
   readonly measurementPrompt: string;
-  readonly measurementSchema: 'flowRatio' | 'temperature';
+  readonly measurementSchema: FilamentMeasurementSchema;
+}
+
+/**
+ * Which physical quantity a method's measurement step collects.
+ *
+ * Everything except `temperature` is a single bounded number, which is why the
+ * measurement step renders them from one generic branch rather than one branch
+ * per method — the shape that made every earlier method addition touch the
+ * component.
+ */
+export type FilamentMeasurementSchema =
+  | 'flowRatio'
+  | 'temperature'
+  | 'maxVolumetricSpeed'
+  | 'pressureAdvance'
+  | 'retractionLength';
+
+/**
+ * Presentation for a single-value measurement.
+ *
+ * `min`/`max` here are for the operator-facing label and nothing else —
+ * enforcement is the wire schema's job, and the measurement step validates by
+ * parsing through `CalibrationFilamentMeasurement` rather than re-checking
+ * these numbers. `filamentCalibrationMethodOrder.test.ts` asserts the two
+ * agree at both edges, so a label that drifts from the enforced band fails
+ * rather than misleading the operator.
+ */
+export interface ScalarMeasurementSpec {
+  /** Property name on the wire measurement branch. */
+  readonly field:
+    | 'filamentFlowRatio'
+    | 'maxVolumetricSpeed'
+    | 'pressureAdvance'
+    | 'retractionLength';
+  readonly label: string;
+  readonly ariaLabel: string;
+  readonly step: string;
+  readonly min: number;
+  readonly max: number;
+  /** Shown when the entered value falls outside the band. */
+  readonly rangeMessage: string;
+}
+
+export const SCALAR_MEASUREMENT_SPECS: Readonly<
+  Record<
+    Exclude<FilamentMeasurementSchema, 'temperature'>,
+    ScalarMeasurementSpec
+  >
+> = {
+  flowRatio: {
+    field: 'filamentFlowRatio',
+    label: 'Corrected filament flow ratio (0.5–1.5)',
+    ariaLabel: 'Flow ratio',
+    step: '0.001',
+    min: 0.5,
+    max: 1.5,
+    rangeMessage:
+      'The flow ratio must be between 0.5 and 1.5 — values outside that band are physically implausible.',
+  },
+  maxVolumetricSpeed: {
+    field: 'maxVolumetricSpeed',
+    label: 'Observed maximum volumetric speed (1–60 mm³/s)',
+    ariaLabel: 'Maximum volumetric speed',
+    step: '0.1',
+    min: 1,
+    max: 60,
+    rangeMessage:
+      'The maximum volumetric speed must be between 1 and 60 mm³/s. The slicing-time ceiling is 50 mm³/s; the band allows a little above it for filaments that tolerate more.',
+  },
+  pressureAdvance: {
+    field: 'pressureAdvance',
+    label: 'Pressure advance coefficient (0.0–2.0)',
+    ariaLabel: 'Pressure advance',
+    step: '0.001',
+    min: 0,
+    max: 2,
+    rangeMessage:
+      'The pressure advance coefficient must be between 0.0 and 2.0.',
+  },
+  retractionLength: {
+    field: 'retractionLength',
+    label: 'Retraction length (0–10 mm)',
+    ariaLabel: 'Retraction length',
+    step: '0.05',
+    min: 0,
+    max: 10,
+    rangeMessage: 'The retraction length must be between 0 and 10 mm.',
+  },
+};
+
+/** The scalar spec for a schema, or `null` for the two-field temperature case. */
+export function scalarSpecFor(
+  schema: FilamentMeasurementSchema,
+): ScalarMeasurementSpec | null {
+  return schema === 'temperature' ? null : SCALAR_MEASUREMENT_SPECS[schema];
 }
 
 export const FILAMENT_METHOD_META: Record<
@@ -132,9 +242,27 @@ export const FILAMENT_METHOD_META: Record<
     method: 'flow_rate_pass_1',
     title: 'Flow rate — pass 1',
     summary:
-      'Nine blocks with the flow ratio stepped from −20% to +20%. Pick the block whose top surface is smoothest, then apply the corresponding multiplier to the current flow ratio.',
+      'Legacy two-pass method, kept for continuity — prefer YOLO (Recommended) for new work. Nine blocks with the flow ratio stepped from −20% to +20%. Pick the block whose top surface is smoothest, then apply the corresponding multiplier to the current flow ratio.',
     measurementPrompt:
       'Enter the corrected filament flow ratio. Multiply the current flow ratio by (1 + selected step ÷ 100). Values outside 0.5–1.5 are physically implausible for pass 1.',
+    measurementSchema: 'flowRatio',
+  },
+  flow_rate_yolo_recommended: {
+    method: 'flow_rate_yolo_recommended',
+    title: 'Flow rate — YOLO (Recommended)',
+    summary:
+      'The current OrcaSlicer flow method and the default choice: a single print that resolves the flow ratio in one pass, with no second print to centre. Pick the band with the smoothest top surface and apply its modifier. Use this unless you have a specific reason not to.',
+    measurementPrompt:
+      'Enter the corrected filament flow ratio — the current ratio adjusted by the selected band modifier. Values outside 0.5–1.5 are physically implausible.',
+    measurementSchema: 'flowRatio',
+  },
+  flow_rate_yolo_perfectionist: {
+    method: 'flow_rate_yolo_perfectionist',
+    title: 'Flow rate — YOLO (Perfectionist)',
+    summary:
+      'A finer sweep than Recommended, in smaller steps. Run it after Recommended to squeeze out the remaining error — it refines that result rather than replacing it, so running it alone wastes the finer resolution.',
+    measurementPrompt:
+      'Enter the refined filament flow ratio from the finer sweep. Same 0.5–1.5 physical band as Recommended.',
     measurementSchema: 'flowRatio',
   },
   temperature_tower: {
@@ -150,12 +278,68 @@ export const FILAMENT_METHOD_META: Record<
     method: 'flow_rate_pass_2',
     title: 'Flow rate — pass 2',
     summary:
-      'Finer flow-ratio steps (±9%) around the value pass 1 landed on. Same selection procedure — pick the smoothest top surface, apply the multiplier.',
+      'Second half of the legacy two-pass method — finer flow-ratio steps (±9%) around the value pass 1 landed on. Same selection procedure. Prefer YOLO (Perfectionist) for new work.',
     measurementPrompt:
       'Enter the refined filament flow ratio. Same 0.5–1.5 physical band as pass 1.',
     measurementSchema: 'flowRatio',
   },
+  max_volumetric_speed: {
+    method: 'max_volumetric_speed',
+    title: 'Max volumetric speed',
+    summary:
+      'A tower whose extrusion rate climbs with height, printed with the flow ceiling lifted so the slicer does not clamp the sweep. Find the height where extrusion first degrades and read off the rate below it.',
+    measurementPrompt:
+      'Enter the highest volumetric speed that still extruded cleanly, in mm³/s. The band is 1–60; the slice itself runs against a 50 mm³/s ceiling.',
+    measurementSchema: 'maxVolumetricSpeed',
+  },
+  pressure_advance_tower: {
+    method: 'pressure_advance_tower',
+    title: 'Pressure advance — tower',
+    summary:
+      'A tower stepping the pressure-advance coefficient per band, emitted as Klipper SET_PRESSURE_ADVANCE or Marlin M900 K. Pick the band with the sharpest corners and least bulging. Tower only — PA Line and PA Pattern are not available upstream.',
+    measurementPrompt:
+      'Enter the pressure advance coefficient from the best band (0.0–2.0). Saving also enables pressure advance on the profile, since a coefficient alone leaves it switched off.',
+    measurementSchema: 'pressureAdvance',
+  },
+  retraction: {
+    method: 'retraction',
+    title: 'Retraction',
+    summary:
+      'A tower stepping retraction length per band. Pick the shortest length that still leaves no stringing between the towers — longer is not better, and over-retraction causes its own defects.',
+    measurementPrompt:
+      'Enter the chosen retraction length in millimetres (0–10). This is written as a per-filament override, not to the machine profile.',
+    measurementSchema: 'retractionLength',
+  },
 };
+
+/**
+ * The methods whose measurement is a flow ratio, derived from the wire union
+ * rather than listed. A flow method added to `CalibrationFilamentMeasurement`
+ * joins this automatically, so no call site has to be found and updated.
+ */
+export type FlowRatioMethod = Extract<
+  CalibrationFilamentMeasurement,
+  { filamentFlowRatio: number }
+>['method'];
+
+/**
+ * Narrowing predicate for "does this method measure a flow ratio".
+ *
+ * The runtime answer comes from the method catalogue and the *type* comes from
+ * the wire union, so the two are independent sources that must agree.
+ * `filamentCalibrationMethodOrder.test.ts` asserts they do, in both directions
+ * — a metadata entry that disagrees with the schema becomes a test failure
+ * rather than an input that silently asks the operator for the wrong quantity.
+ *
+ * Call sites must use this rather than comparing against method literals: the
+ * literal form is what caused every flow method added after the original two
+ * to fall through to the temperature branch.
+ */
+export function isFlowRatioMethod(
+  method: CalibrationSliceMethod,
+): method is FlowRatioMethod {
+  return FILAMENT_METHOD_META[method].measurementSchema === 'flowRatio';
+}
 
 /**
  * Where the operator is in the loop right now. The wizard is a linear

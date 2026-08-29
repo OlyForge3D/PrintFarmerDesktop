@@ -106,6 +106,7 @@ import {
 import type { CalibrationCorrelationOrigin } from './calibrationLog.js';
 import { calibrationCorrelation } from './calibrationCorrelation.js';
 import { calibrationDiagnostics } from './calibrationDiagnostics.js';
+import { applyFilamentMeasurement } from './filamentMeasurementWriteBack.js';
 import {
   computeSlicePollHint,
   classifySliceJobTerminalOutcome,
@@ -4406,41 +4407,17 @@ export function registerIpcHandlers(
             parsed = {};
           }
         }
-        // OrcaSlicer's wire schema stores per-key vectors as arrays of
-        // strings — even single-extruder profiles carry a 1-element array.
-        // `filament_flow_ratio` is `[<value>.toFixed(3)]`;
-        // `nozzle_temperature` / `nozzle_temperature_initial_layer` are
-        // arrays of stringified integer °C. Writing a bare number is silent
-        // wire drift that OrcaSlicer will accept and mis-interpret.
-        if (
-          request.measurement.method === 'flow_rate_pass_1' ||
-          request.measurement.method === 'flow_rate_pass_2'
-        ) {
-          parsed.filament_flow_ratio = [
-            request.measurement.filamentFlowRatio.toFixed(3),
-          ];
-        } else {
-          // temperature_tower — preserve any tail extruder indices already
-          // present on the profile, so a multi-tool profile is not
-          // truncated by a measurement on tool 0.
-          const existingNozzle = parsed.nozzle_temperature;
-          const tail = Array.isArray(existingNozzle)
-            ? existingNozzle.slice(1).map((v) => String(v))
-            : [];
-          const nozzleHead = String(request.measurement.nozzleTemperature);
-          parsed.nozzle_temperature =
-            tail.length > 0 ? [nozzleHead, ...tail] : [nozzleHead];
-          parsed.nozzle_temperature_initial_layer = [
-            String(request.measurement.nozzleTemperatureInitialLayer),
-          ];
-        }
+        // The merge lives in `filamentMeasurementWriteBack.ts` so it can be
+        // asserted directly on the emitted profile rather than only through a
+        // reimplementation in a test.
+        const merged = applyFilamentMeasurement(parsed, request.measurement);
         const writeSignal = AbortSignal.timeout(15_000);
         const updated = await calibrationHttp.updateCustomProfile(
           selectedId,
           ctx.profile.baseUrl,
           request.customProfileId,
           {
-            rawJson: JSON.stringify(parsed),
+            rawJson: JSON.stringify(merged),
             idempotencyKey: correlationId,
           },
           writeSignal,
