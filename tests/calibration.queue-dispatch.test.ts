@@ -212,6 +212,10 @@ describe('ROUTES constant — dead routes absent (issue #54)', () => {
     const templates = Object.values(
       CALIBRATION_QUEUE_ROUTE_TEMPLATES,
     ) as string[];
+    expect(
+      templates.length,
+      'non-vacuous: must have templates',
+    ).toBeGreaterThan(0);
     const hasGenerateJobTerminal = templates.some((t) =>
       /\/generate-job$/.test(t),
     );
@@ -225,6 +229,16 @@ describe('ROUTES constant — dead routes absent (issue #54)', () => {
         'generateJob',
       ),
     ).toBe(false);
+    // Positive control: the same hasOwnProperty predicate must still find a
+    // template that legitimately belongs on this object. Without this, the
+    // absence check above would pass vacuously against an emptied-out
+    // CALIBRATION_QUEUE_ROUTE_TEMPLATES.
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        CALIBRATION_QUEUE_ROUTE_TEMPLATES,
+        'jobQueue',
+      ),
+    ).toBe(true);
   });
 });
 
@@ -236,13 +250,18 @@ describe('CalibrationHttpClient — dead calibration-projects methods absent (is
   it('no longer exposes startGeneration, getProjectSteps, or getProjectAttempts', () => {
     const fetchMock = vi.fn();
     const client = makeClient(fetchMock) as unknown as Record<string, unknown>;
-    // Positive control: these four routes/methods targeted server endpoints
-    // that do not exist (steps, per-step attempts, profile-revisions,
-    // generate-job) and had no production caller, so they were deleted
-    // rather than repointed.
+    // These three methods targeted server endpoints that do not exist
+    // (per-step attempts, steps, generate-job) and had no production
+    // caller, so they were deleted rather than repointed.
     expect(client.startGeneration).toBeUndefined();
     expect(client.getProjectSteps).toBeUndefined();
     expect(client.getProjectAttempts).toBeUndefined();
+    // Positive control: the same `undefined`-checking predicate, applied to
+    // a method that legitimately remains on the client, must return the
+    // opposite result. Without this, the three assertions above would pass
+    // vacuously against a client stub that exposes nothing at all.
+    expect(client.getProject).toEqual(expect.any(Function));
+    expect(client.getAttempt).toEqual(expect.any(Function));
   });
 });
 
