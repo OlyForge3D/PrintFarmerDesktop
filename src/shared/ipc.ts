@@ -6454,6 +6454,18 @@ export type CalibrationSendSliceToPrinterResponse = z.infer<
 // `CalibrationMeasurementRanges` verbatim rather than being invented here, so
 // a value the desktop accepts is never one the server would reject.
 
+/**
+ * Internal fallback ceiling for a nozzle temperature measurement, in °C.
+ *
+ * Used only when no per-printer `maximumNozzleTemperatureC` is known. Mirrors
+ * `WorkspaceBaseline.nozzleTemperatureC`'s ceiling exactly (see above) so
+ * this wire boundary and that one describe the same "no plausible hotend
+ * exceeds this" fact rather than two numbers that can drift apart. It is
+ * NOT a claim that 2000°C is a realistic printer limit — it is the point past
+ * which a value is nonsensical regardless of which printer sent it.
+ */
+export const NOZZLE_TEMPERATURE_CEILING_C = 2_000;
+
 export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
   z
     .object({
@@ -6499,14 +6511,33 @@ export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
     .object({
       method: z.literal('temperature_tower'),
       /**
-       * Print temperature in °C. Bounded to the physically-plausible band
-       * PrintFarmer already enforces for printer heat safety.
+       * Print temperature in °C.
+       *
+       * The lower bound (150) is a physical floor below which no supported
+       * filament sensibly prints. There is deliberately no fixed upper bound
+       * here below `NOZZLE_TEMPERATURE_CEILING_C`: PrintFarmer's own band is
+       * 150-320, wider than the 300 this used to hard-cap at, and the real
+       * ceiling is per-printer (`CalibrationPrinterContext.safety
+       * .maximumNozzleTemperatureC`, reduced from the printer's toolheads in
+       * `calibrationWire.ts`) rather than a constant every printer shares.
+       * `NOZZLE_TEMPERATURE_CEILING_C` is the internal fallback ceiling used
+       * when no per-printer limit is known — the same ceiling
+       * `WorkspaceBaseline.nozzleTemperatureC` already uses — so the wire
+       * boundary never rejects a value a real hotend could safely reach.
        */
-      nozzleTemperature: z.number().int().min(150).max(300),
+      nozzleTemperature: z
+        .number()
+        .int()
+        .min(150)
+        .max(NOZZLE_TEMPERATURE_CEILING_C),
       /**
        * Initial-layer temperature in °C. Same band as `nozzleTemperature`.
        */
-      nozzleTemperatureInitialLayer: z.number().int().min(150).max(300),
+      nozzleTemperatureInitialLayer: z
+        .number()
+        .int()
+        .min(150)
+        .max(NOZZLE_TEMPERATURE_CEILING_C),
     })
     .strict(),
   z

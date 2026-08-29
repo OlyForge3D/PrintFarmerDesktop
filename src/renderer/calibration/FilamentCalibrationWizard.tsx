@@ -63,7 +63,10 @@ import type {
   CalibrationSliceJobSnapshot,
   CalibrationSliceMethod,
 } from '@shared/ipc';
-import { CalibrationFilamentMeasurement } from '@shared/ipc';
+import {
+  CalibrationFilamentMeasurement,
+  NOZZLE_TEMPERATURE_CEILING_C,
+} from '@shared/ipc';
 import { browserCalibrationEnvironment, calibrationApi } from './api';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
 import {
@@ -1506,17 +1509,24 @@ function MeasurementStep(props: MeasurementStepProps): React.JSX.Element {
         setFormError('Enter whole numbers for both temperatures.');
         return;
       }
-      if (nozzle < 150 || nozzle > 300 || initial < 150 || initial > 300) {
-        setFormError(
-          'Both temperatures must be integers between 150 and 300 °C.',
-        );
-        return;
-      }
-      onSubmit({
+      // Validate by parsing the wire schema rather than re-checking a
+      // literal band here, for the same reason the scalar-measurement path
+      // above does: the schema is what the IPC boundary actually enforces,
+      // and a hand-copied bound is how the UI and the wire drift apart (this
+      // is exactly how the band went stale at 300 °C instead of the real
+      // `NOZZLE_TEMPERATURE_CEILING_C`).
+      const parsed = CalibrationFilamentMeasurement.safeParse({
         method: 'temperature_tower',
         nozzleTemperature: nozzle,
         nozzleTemperatureInitialLayer: initial,
       });
+      if (!parsed.success) {
+        setFormError(
+          `Both temperatures must be integers between 150 and ${NOZZLE_TEMPERATURE_CEILING_C} °C.`,
+        );
+        return;
+      }
+      onSubmit(parsed.data);
     } catch (cause) {
       setFormError(
         cause instanceof Error ? cause.message : 'The measurement is invalid.',
