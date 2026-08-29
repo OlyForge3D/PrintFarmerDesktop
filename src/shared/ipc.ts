@@ -6465,6 +6465,25 @@ export type CalibrationSendSliceToPrinterResponse = z.infer<
 // `CalibrationMeasurementRanges` verbatim rather than being invented here, so
 // a value the desktop accepts is never one the server would reject.
 
+/**
+ * PrintFarmer's own nozzle-temperature measurement band, in °C: 150-320.
+ *
+ * This mirrors the server's real `CalibrationMeasurementRanges` band per the
+ * comment above, the same way every sibling bound in this union does — it is
+ * NOT the per-printer `maximumNozzleTemperatureC` (`CalibrationPrinterContext
+ * .safety.maximumNozzleTemperatureC`, reduced from the printer's toolheads in
+ * `calibrationWire.ts`), which this flow has no way to read (see the
+ * `temperature_tower` bound below for why). A wider "internal ceiling" such
+ * as `WorkspaceBaseline.nozzleTemperatureC`'s 2000 is deliberately NOT used
+ * here: nothing downstream of this schema clamps a filament-measurement
+ * value against a real per-printer limit before it is written into the
+ * profile and used to drive hotend heating, so the schema bound is the only
+ * safety-relevant guard this flow has. 320 is the widest value this
+ * boundary can accept without also being able to accept a value no printer
+ * could safely reach.
+ */
+export const PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C = 320;
+
 export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
   z
     .object({
@@ -6510,14 +6529,23 @@ export const CalibrationFilamentMeasurement = z.discriminatedUnion('method', [
     .object({
       method: z.literal('temperature_tower'),
       /**
-       * Print temperature in °C. Bounded to the physically-plausible band
-       * PrintFarmer already enforces for printer heat safety.
+       * Print temperature in °C, bounded to `PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C`
+       * (PrintFarmer's real 150-320 band) rather than the 300 this used to
+       * hard-cap at.
        */
-      nozzleTemperature: z.number().int().min(150).max(300),
+      nozzleTemperature: z
+        .number()
+        .int()
+        .min(150)
+        .max(PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C),
       /**
        * Initial-layer temperature in °C. Same band as `nozzleTemperature`.
        */
-      nozzleTemperatureInitialLayer: z.number().int().min(150).max(300),
+      nozzleTemperatureInitialLayer: z
+        .number()
+        .int()
+        .min(150)
+        .max(PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C),
     })
     .strict(),
   z

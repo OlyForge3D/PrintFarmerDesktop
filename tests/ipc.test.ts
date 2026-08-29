@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CalibrationFilamentMeasurement,
   IPC_CONTRACT_VERSION,
   ipcSchemas,
   IpcChannel,
+  PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
   ServerCapabilities,
 } from '@shared/ipc';
 
@@ -659,5 +661,56 @@ describe('ipc contract', () => {
         { id: 'c', name: 'C', sharedToFarm: false, memberCount: -1 },
       ]),
     ).toThrow();
+  });
+});
+
+// Issue #789: `temperature_tower` used to hard-cap at 300 °C, below
+// PrintFarmer's own real 150-320 °C band. The upper bound is now
+// `PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C` (320), mirroring the server's real
+// band the same way every sibling bound in this union does.
+describe('CalibrationFilamentMeasurement temperature_tower bounds', () => {
+  it('accepts 310 °C, which PrintFarmer permits but the old 300 °C cap rejected', () => {
+    const parsed = CalibrationFilamentMeasurement.safeParse({
+      method: 'temperature_tower',
+      nozzleTemperature: 310,
+      nozzleTemperatureInitialLayer: 310,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts 320 °C, the top of PrintFarmer\u2019s real band', () => {
+    const parsed = CalibrationFilamentMeasurement.safeParse({
+      method: 'temperature_tower',
+      nozzleTemperature: 320,
+      nozzleTemperatureInitialLayer: 320,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('still rejects a value below the 150 °C physical floor', () => {
+    const parsed = CalibrationFilamentMeasurement.safeParse({
+      method: 'temperature_tower',
+      nozzleTemperature: 149,
+      nozzleTemperatureInitialLayer: 200,
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('control: still rejects a value above PrintFarmer\u2019s real band — the schema is wider than 300, not unbounded', () => {
+    const parsed = CalibrationFilamentMeasurement.safeParse({
+      method: 'temperature_tower',
+      nozzleTemperature: PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C + 1,
+      nozzleTemperatureInitialLayer: 200,
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('exposes the same ceiling for both fields, so nozzleTemperatureInitialLayer cannot drift from nozzleTemperature', () => {
+    const parsed = CalibrationFilamentMeasurement.safeParse({
+      method: 'temperature_tower',
+      nozzleTemperature: 200,
+      nozzleTemperatureInitialLayer: PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C + 1,
+    });
+    expect(parsed.success).toBe(false);
   });
 });
