@@ -111,6 +111,8 @@ import {
   type CalibrationListCustomProfilesResponse,
   type CalibrationResolveSystemProfileRequest,
   type CalibrationResolveSystemProfileResponse,
+  type CalibrationCreateProjectRequest,
+  type CalibrationCreateProjectResponse,
   type CalibrationCloneFilamentProfileRequest,
   type CalibrationCloneFilamentProfileResponse,
   type CalibrationSubmitCalibrationSliceRequest,
@@ -513,6 +515,12 @@ const api: PrintFarmerApi = {
         IpcChannel.CalibrationResolveSystemProfile,
         request,
       ),
+    ),
+  createCalibrationProject: async (
+    request: CalibrationCreateProjectRequest,
+  ): Promise<CalibrationCreateProjectResponse> =>
+    ipcSchemas[IpcChannel.CalibrationCreateProject].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationCreateProject, request),
     ),
   cloneCalibrationFilamentProfile: async (
     request: CalibrationCloneFilamentProfileRequest,

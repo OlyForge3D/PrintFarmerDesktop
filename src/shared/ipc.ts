@@ -55,6 +55,13 @@ export const IpcChannel = {
   // resolves it by name on demand, and the server imports it transparently
   // if needed. See `CalibrationSlicerProfileRef.guid` below.
   CalibrationResolveSystemProfile: 'calibration:resolveSystemProfile',
+  // --- Server-side CalibrationProject entry point (issue #798) --------------
+  // Creates a `CalibrationProject` in Coach mode, bound to the chosen base
+  // profile and printer, BEFORE any profile clone or local wizard state is
+  // written. Alongside the clone-based write-back model for now — #795
+  // (draft/promotion semantics) is what would let this project become the
+  // write-back target; reconciling the two lifecycles is out of scope here.
+  CalibrationCreateProject: 'calibration:createProject',
   // --- Filament calibration slice pipeline (owner reframe 2026-08-23) -------
   CalibrationCloneFilamentProfile: 'calibration:cloneFilamentProfile',
   CalibrationSubmitCalibrationSlice: 'calibration:submitCalibrationSlice',
@@ -6001,6 +6008,86 @@ export type CalibrationSliceJobTerminalOutcome = z.infer<
   typeof CalibrationSliceJobTerminalOutcome
 >;
 
+// --- calibration:createProject (issue #798) ---
+//
+// Backing: `POST /api/calibration-projects`.
+// DTO: `CalibrationProjectCreateRequest` / response `CalibrationProjectDto`,
+// verified directly against `OlyForge3D/PrintFarmer`'s
+// `Farm.Modules.Calibration/Contracts/CalibrationProjectContracts.cs` and
+// `CalibrationProjectsController.cs` at commit
+// `0720b9d146256c69fa2780c029ab5982bba509a1` (contracts blob
+// `48353af39c7f6b4d9d5e0062254e5fa648860e39`, controller blob
+// `657e551a6b75fd2dfdc2a2fe85d8329d6aac7f69`), cross-checked against that
+// commit's `RouteTableSnapshot.txt` — not one of #784's four dead routes.
+// See `tests/fixtures/server-contract/calibrationProjectContracts.snapshot.ts`
+// for the pinned provenance.
+//
+// Created at calibration start, in `Coach` mode, bound to the chosen base
+// filament profile and printer (Spoolman/local-spool ids when a spool has
+// been picked — no spool-selection UI exists in the filament wizard yet, so
+// those three fields are `null` for now; see #798's scope note 3). This is
+// deliberately additive alongside the existing clone-on-completion
+// write-back model: reconciling the two lifecycles depends on
+// draft/promotion semantics blocked on #795 and is out of scope here.
+
+/**
+ * Server-enforced cap on `CalibrationCreateProjectRequest.name`. Exported so
+ * callers can truncate a client-composed name (which may be built from a
+ * much longer clone-name field) before it ever reaches the wire, instead of
+ * discovering the cap as a runtime Zod-parse failure.
+ */
+export const CALIBRATION_MAX_PROJECT_NAME = 200;
+
+export const CalibrationCreateProjectRequest = z
+  .object({
+    /** Selected PrintFarmer server profile Guid. */
+    profileId: z.string().uuid(),
+    /**
+     * Client-chosen idempotency key, paired with a fixed `clientId` on the
+     * main-process side: retrying a create with the same
+     * `(clientId, requestId)` returns the already-created project rather
+     * than minting a duplicate. Callers must keep this stable across a
+     * retry of the *same* attempt and only mint a fresh one when a
+     * genuinely new attempt starts.
+     */
+    requestId: z.string().uuid(),
+    /** Display name for the created project. */
+    name: z.string().min(1).max(CALIBRATION_MAX_PROJECT_NAME),
+    /** Target printer Guid — the printer the calibration will run on. */
+    printerId: z.string().uuid(),
+    /** Base filament identity the project is bound to at creation. */
+    filamentProvider: z.string().min(1).max(64),
+    filamentProductId: z.string().min(1).max(256),
+    filamentProductName: z.string().min(1).max(256),
+    filamentMaterial: z.string().min(1).max(64),
+  })
+  .strict();
+export type CalibrationCreateProjectRequest = z.infer<
+  typeof CalibrationCreateProjectRequest
+>;
+
+export const CalibrationCreateProjectResponse = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ok'),
+      project: z
+        .object({
+          id: z.string().uuid(),
+          name: z.string().min(1).max(200),
+          lifecycleStatus: z.string().min(1).max(64),
+          experienceMode: z.string().min(1).max(32),
+          printerId: z.string().uuid(),
+          revision: z.number().int().nonnegative(),
+        })
+        .passthrough(),
+    })
+    .strict(),
+  z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
+]);
+export type CalibrationCreateProjectResponse = z.infer<
+  typeof CalibrationCreateProjectResponse
+>;
+
 // --- calibration:cloneFilamentProfile ---
 //
 // Backing: `POST /api/slicer/profiles/clone`
@@ -7044,6 +7131,10 @@ export const ipcSchemas = {
     request: CalibrationResolveSystemProfileRequest,
     response: CalibrationResolveSystemProfileResponse,
   },
+  [IpcChannel.CalibrationCreateProject]: {
+    request: CalibrationCreateProjectRequest,
+    response: CalibrationCreateProjectResponse,
+  },
   [IpcChannel.CalibrationCloneFilamentProfile]: {
     request: CalibrationCloneFilamentProfileRequest,
     response: CalibrationCloneFilamentProfileResponse,
@@ -7229,6 +7320,10 @@ export interface PrintFarmerApi {
   resolveSystemProfile(
     request: CalibrationResolveSystemProfileRequest,
   ): Promise<CalibrationResolveSystemProfileResponse>;
+  // --- Server-side CalibrationProject entry point (issue #798) -------------
+  createCalibrationProject(
+    request: CalibrationCreateProjectRequest,
+  ): Promise<CalibrationCreateProjectResponse>;
   // --- Filament calibration slice pipeline (PR #1952) ---------------------
   cloneCalibrationFilamentProfile(
     request: CalibrationCloneFilamentProfileRequest,

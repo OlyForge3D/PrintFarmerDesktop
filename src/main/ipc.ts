@@ -3871,6 +3871,107 @@ export function registerIpcHandlers(
   // the filament-calibration workflow this desktop targets does not persist
   // profile Guids server-side.)
 
+  // --- Server-side CalibrationProject entry point (issue #798) --------------
+  //
+  // Creates a `CalibrationProject` in Coach mode at calibration start,
+  // before any profile clone or local wizard state is written. The renderer
+  // gates this call on the server's own `calibrationGenerationEnabled`
+  // capability flag (see `store.availability`) before it is ever invoked —
+  // this handler is a thin bridge onto `CalibrationHttpClient.createProject`,
+  // following the same correlation-logging + error-remapping shape as the
+  // slice-pipeline handlers below.
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationCreateProject,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationCreateProject].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const project = await calibrationHttp.createProject(
+          selectedId,
+          ctx.profile.baseUrl,
+          {
+            clientId: 'desktop',
+            // The renderer-supplied `requestId` is the idempotency key, kept
+            // stable by the caller across a retry of the same attempt — do
+            // NOT substitute `correlationId` here, which is minted fresh on
+            // every invocation and would defeat that idempotency (see the
+            // doc comment on `CalibrationHttpClient.createProject`).
+            requestId: request.requestId,
+            name: request.name,
+            printerId: request.printerId,
+            filamentProvider: request.filamentProvider,
+            filamentProductId: request.filamentProductId,
+            filamentProductName: request.filamentProductName,
+            filamentMaterial: request.filamentMaterial,
+            experienceMode: 'Coach',
+          },
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'projects.created',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[IpcChannel.CalibrationCreateProject].response.parse({
+          status: 'ok',
+          project: {
+            id: project.id,
+            name: project.name,
+            lifecycleStatus: project.lifecycleStatus,
+            experienceMode: project.experienceMode,
+            printerId: project.printerId,
+            revision: project.revision,
+          },
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'projects.created',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration project creation failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[IpcChannel.CalibrationCreateProject].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
+    },
+  );
+
   // --- Filament calibration slice pipeline (PR #1952) -----------------------
   //
   // Five handlers, one per stage of the OrcaSlicer-wiki workflow the owner

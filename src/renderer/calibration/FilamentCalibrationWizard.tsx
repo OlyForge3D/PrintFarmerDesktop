@@ -64,6 +64,7 @@ import type {
   CalibrationSliceMethod,
 } from '@shared/ipc';
 import {
+  CALIBRATION_MAX_PROJECT_NAME,
   CalibrationFilamentMeasurement,
   PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
 } from '@shared/ipc';
@@ -259,6 +260,9 @@ function bannerFromApiError(error: CalibrationApiError): WizardBanner {
 // Top-level component
 // --------------------------------------------------------------------------
 
+const GENERATION_DISABLED_FALLBACK_MESSAGE =
+  'This PrintFarmer server cannot slice right now, so filament calibration cannot start.';
+
 export function FilamentCalibrationWizard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
   const environment = store.environment ?? browserCalibrationEnvironment;
@@ -281,6 +285,73 @@ export function FilamentCalibrationWizard(): React.JSX.Element {
         </header>
         <p className="cal-alert" role="alert">
           Select a PrintFarmer profile before starting a filament calibration.
+        </p>
+        <button
+          type="button"
+          className="cal-button"
+          onClick={() => void store.navigate('dashboard')}
+        >
+          Back to calibration dashboard
+        </button>
+      </section>
+    );
+  }
+
+  // Step 0 (issue #798): refuse to start before any profile-selection UI is
+  // shown, rendering the server's own reason text, when the deployment
+  // cannot slice. Checked here — before `FilamentCalibrationWizardInner`
+  // mounts and before a single pick, clone, or local wizard-state write can
+  // happen — rather than deferring the refusal to slice submission.
+  //
+  // Gated strictly on an explicit `false`: `capabilityFlags` is `null` (or
+  // `calibrationGenerationEnabled` simply unconfirmed) before availability
+  // negotiation completes, and that "not yet known" state is not the same
+  // claim as "the server said no". This handler-level check is the only
+  // capability gate on this path — `calibration:createProject` in
+  // `main/ipc.ts` is a thin bridge that does not re-check
+  // `calibrationGenerationEnabled` itself, so an "unconfirmed" state here
+  // would reach the server rather than being refused. Blocking on
+  // "unconfirmed" too would be more conservative, but availability is
+  // negotiated once, up front, by the dashboard this wizard is always
+  // reached from (see `CalibrationDashboard`'s `creationBlocked`), so by the
+  // time this component mounts the flag is expected to already be settled
+  // one way or the other; only a confirmed `false` blocks entry here.
+  if (
+    store.availability?.capabilityFlags?.calibrationGenerationEnabled === false
+  ) {
+    // Both `slicing` and `calibrationGeneration` reasons explain why
+    // generation is disabled (per the server's capability negotiation
+    // model — see `capabilitiesLiveResponse.snapshot.ts`); a deployment can
+    // report either depending on which dependency failed.
+    // `calibrationArtifactPromotion` reasons are about write-back/promotion
+    // (out of scope here, blocked on #795) and are deliberately excluded.
+    const relevantReasons = (
+      store.availability.serverUnavailableReasons ?? []
+    ).filter(
+      (reason) =>
+        reason.feature === 'slicing' ||
+        reason.feature === 'calibrationGeneration',
+    );
+    const message =
+      relevantReasons.length > 0
+        ? relevantReasons.map((reason) => reason.message).join(' ')
+        : GENERATION_DISABLED_FALLBACK_MESSAGE;
+    return (
+      <section
+        className="cal-view cal-view--form"
+        aria-labelledby="filament-cal-title"
+        data-testid="filament-calibration-wizard"
+      >
+        <header className="cal-view-heading">
+          <h1 id="filament-cal-title" data-cal-heading tabIndex={-1}>
+            Filament calibration wizard
+          </h1>
+          <p className="cal-subtitle">
+            Calibrate a filament spool using the OrcaSlicer wiki workflow.
+          </p>
+        </header>
+        <p className="cal-alert" role="alert">
+          {message}
         </p>
         <button
           type="button"
@@ -350,6 +421,14 @@ function FilamentCalibrationWizardInner(
     useState<PrinterListState>(emptyPrinterList);
   const printerListEpochRef = useRef(0);
   const unmountedRef = useRef(false);
+  // Issue #798: the server's create-project route is idempotent on
+  // `(clientId, requestId)` — a retry that reuses the same pair returns the
+  // already-created project instead of minting a duplicate. This id must
+  // stay stable across a failed create/clone retry *within the same
+  // attempt* (the operator clicking "Clone" again after a transient error)
+  // and only roll over once a genuinely new attempt starts, at
+  // `proceedToCloneName`.
+  const createProjectRequestIdRef = useRef<string | null>(null);
   useEffect(
     () => () => {
       unmountedRef.current = true;
@@ -498,6 +577,9 @@ function FilamentCalibrationWizardInner(
   );
 
   const proceedToCloneName = useCallback(() => {
+    // A new attempt at naming the clone starts a fresh idempotency key —
+    // any project created under the *previous* attempt's key is done with.
+    createProjectRequestIdRef.current = null;
     setWorking((current) => {
       const nameSeed =
         current.picks?.filamentName !== null &&
@@ -562,6 +644,45 @@ function FilamentCalibrationWizardInner(
         }
         sourceProfileId = resolution.profileId;
       }
+      // Issue #798: create the server-side `CalibrationProject` (Coach
+      // mode) BEFORE the profile clone and before any local wizard state is
+      // written (persistence only begins once `cloneId !== null` — see
+      // `buildPersistedState` in `filamentWizardState.ts`). Best-effort
+      // filament-identity mapping: no spool-selection UI exists in this
+      // wizard yet, so Spoolman/local-spool ids are left `null` server-side
+      // (out of scope here, see #798 scope note 3); no material metadata is
+      // available client-side for a profile pick, so a documented
+      // placeholder is sent — the field just needs to be non-empty.
+      //
+      // `requestId` is memoized in a ref across retries of this same
+      // attempt (reset only in `proceedToCloneName`) so a retry after a
+      // transient failure hits the server's idempotency key instead of
+      // minting an orphaned duplicate project.
+      const requestId =
+        createProjectRequestIdRef.current ?? environment.createId();
+      createProjectRequestIdRef.current = requestId;
+      const projectNameSuffix = ' (calibration project)';
+      const trimmedCloneName = cloneName.trim();
+      const projectName = `${trimmedCloneName}${projectNameSuffix}`.slice(
+        0,
+        CALIBRATION_MAX_PROJECT_NAME,
+      );
+      const projectResponse = await calibrationApi().createCalibrationProject({
+        profileId,
+        requestId,
+        name: projectName,
+        printerId,
+        filamentProvider: 'printfarmer',
+        filamentProductId: sourceProfileId,
+        filamentProductName: picks.filamentName,
+        filamentMaterial: 'unknown',
+      });
+      if (unmountedRef.current) return;
+      if (projectResponse.status === 'error') {
+        setBanner(bannerFromApiError(projectResponse.error));
+        setWorking((current) => ({ ...current, phase: 'cloneName' }));
+        return;
+      }
       const response = await calibrationApi().cloneCalibrationFilamentProfile({
         profileId,
         sourceProfileId,
@@ -604,7 +725,7 @@ function FilamentCalibrationWizardInner(
     } finally {
       if (!unmountedRef.current) setBusy(false);
     }
-  }, [profileId, working]);
+  }, [profileId, working, environment]);
 
   const beginMethod = useCallback(
     async (method: CalibrationSliceMethod): Promise<void> => {

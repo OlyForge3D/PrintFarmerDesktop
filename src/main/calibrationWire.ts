@@ -2225,6 +2225,104 @@ export const RemoteCalibrationProject = z
   });
 export type RemoteCalibrationProject = z.infer<typeof RemoteCalibrationProject>;
 
+/**
+ * `CalibrationFilamentIdentityDto` — nested filament identity on the real
+ * `POST /api/calibration-projects` response. Verified against PrintFarmer's
+ * `Farm.Modules.Calibration/Contracts/CalibrationProjectContracts.cs` at
+ * commit `0720b9d146256c69fa2780c029ab5982bba509a1`
+ * (blob `48353af39c7f6b4d9d5e0062254e5fa648860e39`); see
+ * `tests/fixtures/server-contract/calibrationProjectContracts.snapshot.ts`.
+ */
+export const RemoteCalibrationFilamentIdentity = z
+  .object({
+    provider: z.string().min(1).max(64),
+    productId: z.string().min(1).max(256),
+    sku: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    vendor: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    productName: z.string().min(1).max(256),
+    material: z.string().min(1).max(64),
+    diameter: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? null),
+    color: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    filamentTypeId: ServerGuid.nullish().transform((v) => v ?? null),
+    spoolmanFilamentId: ServerGuid.nullish().transform((v) => v ?? null),
+    localSpoolId: ServerGuid.nullish().transform((v) => v ?? null),
+    spoolmanSpoolId: ServerGuid.nullish().transform((v) => v ?? null),
+    snapshot: z.unknown(),
+  })
+  .passthrough();
+export type RemoteCalibrationFilamentIdentity = z.infer<
+  typeof RemoteCalibrationFilamentIdentity
+>;
+
+/**
+ * `CalibrationProjectDto` — the real response body of
+ * `POST /api/calibration-projects` (`CalibrationProjectsController
+ * .CreateProjectAsync`, verified at the commit/blob cited above).
+ *
+ * Deliberately NOT {@link RemoteCalibrationProject} above: that schema's
+ * fields (`displayName`/`status`/`printerSnapshot`/`concurrencyToken`/
+ * `workspaceState`/`createdAt`/`updatedAt`) do not exist anywhere on the
+ * real DTO — a pre-existing drift between this desktop's `getProject()` and
+ * the live server, out of scope for the issue that added this schema
+ * (#798). This schema instead mirrors the verified shape exactly, field for
+ * field, so a create-project response that no longer matches the real DTO
+ * fails loudly here instead of silently wearing the wrong shape.
+ */
+export const RemoteCalibrationProjectRecord = z
+  .object({
+    id: ServerGuid,
+    name: z.string().min(1).max(200),
+    lifecycleStatus: z.string().min(1).max(64),
+    experienceMode: z.string().min(1).max(32),
+    printerId: ServerGuid,
+    selectedToolheadId: ServerGuid.nullish().transform((v) => v ?? null),
+    selectedToolheadIndex: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+    filament: RemoteCalibrationFilamentIdentity,
+    orderedSteps: z.unknown(),
+    currentStep: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    currentSelections: z.unknown(),
+    revision: z.number().int().nonnegative(),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+    completedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    deletedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationProjectRecord = z.infer<
+  typeof RemoteCalibrationProjectRecord
+>;
+
 /** Remote calibration step from `GET /api/calibration-projects/{id}/steps`. */
 export const RemoteCalibrationStep = z
   .object({

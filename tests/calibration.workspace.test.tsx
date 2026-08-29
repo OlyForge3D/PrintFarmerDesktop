@@ -579,6 +579,11 @@ function makeApi(savedRecord = record()) {
       .mockRejectedValue(
         new Error('resolveSystemProfile not stubbed in this test'),
       ),
+    createCalibrationProject: vi
+      .fn<CalibrationApi['createCalibrationProject']>()
+      .mockRejectedValue(
+        new Error('createCalibrationProject not stubbed in this test'),
+      ),
     cloneCalibrationFilamentProfile: vi
       .fn<CalibrationApi['cloneCalibrationFilamentProfile']>()
       .mockRejectedValue(

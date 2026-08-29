@@ -323,6 +323,19 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationCreateProject,
+    request: (profileId) => ({
+      profileId,
+      requestId: uuid(7),
+      name: 'PolyLite PLA Blue (calibration project)',
+      printerId: uuid(3),
+      filamentProvider: 'printfarmer',
+      filamentProductId: uuid(9),
+      filamentProductName: 'PolyLite PLA Blue',
+      filamentMaterial: 'unknown',
+    }),
+  },
+  {
     channel: IpcChannel.CalibrationResolveSystemProfile,
     request: (profileId) => ({
       profileId,
