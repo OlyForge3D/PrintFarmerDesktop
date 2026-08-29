@@ -45,6 +45,8 @@ export function CalibrationDashboard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const unavailableReason = store.availability?.unavailableReason;
+  const serverUnavailableReasons =
+    store.availability?.serverUnavailableReasons ?? [];
   const creationBlocked =
     store.profileId === null ||
     store.offline ||
@@ -162,6 +164,22 @@ export function CalibrationDashboard(): React.JSX.Element {
           {store.availability?.unavailableDetail ??
             availabilityCopy[unavailableReason]}
         </p>
+      ) : null}
+      {serverUnavailableReasons.length > 0 ? (
+        <div className="cal-alert cal-alert--warning" role="alert">
+          <p>
+            The server reports one or more calibration capabilities are
+            unavailable right now. Cloning a profile may not let you finish
+            calibration:
+          </p>
+          <ul>
+            {serverUnavailableReasons.map((reason, index) => (
+              <li key={`${reason.feature}:${reason.code}:${index}`}>
+                {reason.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       <section
