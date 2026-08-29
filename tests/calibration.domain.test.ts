@@ -220,6 +220,7 @@ function runtime(
     bedClearConfirmed: true,
     operatorPresent: true,
     serverGenerationEnabled: true,
+    serverArtifactPromotionEnabled: true,
     ...overrides,
   };
 }
@@ -435,6 +436,40 @@ describe('printer eligibility and action gates', () => {
         (blocker) => blocker.code,
       ),
     ).not.toContain('SERVER_GENERATION_DISABLED');
+  });
+
+  it('blocks applyPatch alone, never generate, when slicing is operational but artifact promotion is not (#785)', () => {
+    const state = initial();
+    // Slicing up, promotion down — the exact split the issue names: a
+    // deployment where a slicing fleet can produce G-code/profile artifacts
+    // but the promotion checkpoint store or reconciler cannot accept them.
+    const slicingOnlyRuntime = runtime({
+      serverGenerationEnabled: true,
+      serverArtifactPromotionEnabled: false,
+    });
+
+    const applyPatchDecision = decideCalibrationAction(
+      state,
+      slicingOnlyRuntime,
+      'applyPatch',
+    );
+    expect(applyPatchDecision.allowed).toBe(false);
+    expect(
+      applyPatchDecision.blockers.map((blocker) => blocker.code),
+    ).toContain('SERVER_ARTIFACT_PROMOTION_DISABLED');
+
+    // Control: `generate` is unaffected — it is gated on slicing alone, and
+    // slicing is enabled in this fixture, so it must stay allowed and must
+    // never see the promotion-specific blocker.
+    const generateDecision = decideCalibrationAction(
+      state,
+      slicingOnlyRuntime,
+      'generate',
+    );
+    expect(generateDecision.allowed).toBe(true);
+    expect(
+      generateDecision.blockers.map((blocker) => blocker.code),
+    ).not.toContain('SERVER_ARTIFACT_PROMOTION_DISABLED');
   });
 });
 

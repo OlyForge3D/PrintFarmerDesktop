@@ -54,6 +54,7 @@ function fakeCapabilities() {
       calibrationOfflineDraftEnabled: true,
       calibrationPhotoUploadEnabled: true,
       calibrationGenerationEnabled: true,
+      calibrationArtifactPromotionEnabled: true,
     },
   };
 }

@@ -94,6 +94,7 @@ function availability() {
       calibrationOfflineDraftEnabled: true,
       calibrationPhotoUploadEnabled: true,
       calibrationGenerationEnabled: true,
+      calibrationArtifactPromotionEnabled: true,
     },
     grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
     offlineEditingEnabled: true,

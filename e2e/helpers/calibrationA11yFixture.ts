@@ -237,6 +237,8 @@ export async function applyCalibrationScenario(
           calibrationPhotoUploadEnabled: true,
           calibrationGenerationEnabled:
             availabilityKind !== 'missingCapabilityFlags',
+          calibrationArtifactPromotionEnabled:
+            availabilityKind !== 'missingCapabilityFlags',
         },
         // Canonical `resource:action` permissions, exactly as PrintFarmer's
         // capability payload spells them in `effectivePermissions`. The former

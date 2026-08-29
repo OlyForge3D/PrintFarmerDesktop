@@ -116,6 +116,7 @@ describe('CalibrationHttpClient capability contract', () => {
       calibrationOfflineDraftEnabled: true,
       calibrationPhotoUploadEnabled: true,
       calibrationGenerationEnabled: true,
+      calibrationArtifactPromotionEnabled: true,
     });
     expect(supportsKlipper(caps)).toBe(true);
     expect(supportsOrcaSlicer(caps)).toBe(true);

@@ -40,6 +40,16 @@
  * authoritative selected-context binding; bed-clear dispatch additionally
  * consumes a single-use main-process acknowledgement ledger.
  *
+ * `calibrationArtifactPromotionEnabled` is a separate, distinct flag covering
+ * promotion of a produced artifact (issue #785). It is carried on
+ * {@link CalibrationCapabilityEvidence} so the evidence this gate receives is
+ * complete, but this gate has no `applyPatch` action to apply it to — no
+ * main-process channel dispatches profile-patch application through this
+ * interlock today. The renderer's own eligibility gate
+ * (`src/renderer/calibration/domain/eligibility.ts`) is what actually decides
+ * `applyPatch` eligibility, and consults this flag directly rather than
+ * through here.
+ *
  * ## What this gate uses as evidence
  *
  * Only evidence that actually exists in the real contract:
@@ -210,6 +220,16 @@ export interface CalibrationCapabilityEvidence {
   readonly flags: {
     readonly calibrationApiEnabled: boolean;
     readonly calibrationGenerationEnabled: boolean;
+    /**
+     * Server switch for promoting a produced calibration artifact. Distinct
+     * from `calibrationGenerationEnabled`: a deployment can have slicing
+     * operational (so `generate` succeeds) while promotion is unavailable.
+     * Not consulted by this gate today — no `applyPatch` action is dispatched
+     * through the main process yet — but carried here so capability evidence
+     * stays complete and any future gated action can read it without a
+     * separate plumbing change.
+     */
+    readonly calibrationArtifactPromotionEnabled: boolean;
     readonly [flag: string]: boolean;
   };
 }

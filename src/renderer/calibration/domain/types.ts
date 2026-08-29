@@ -384,6 +384,16 @@ export interface RuntimeCalibrationContext {
    * the server has no slicing path to satisfy them.
    */
   readonly serverGenerationEnabled: boolean;
+  /**
+   * Whether the negotiated server advertises
+   * `calibrationArtifactPromotionEnabled`. Distinct from
+   * `serverGenerationEnabled`: a deployment can produce a G-code/profile
+   * artifact (slicing operational) while its artifact-promotion checkpoint
+   * store or reconciler is unhealthy, so a produced artifact cannot be
+   * promoted into the active profile. `applyPatch` is withheld when this is
+   * false even though `generate` may still succeed.
+   */
+  readonly serverArtifactPromotionEnabled: boolean;
 }
 
 export type GuardedCalibrationAction =
