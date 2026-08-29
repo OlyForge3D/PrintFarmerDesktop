@@ -879,7 +879,8 @@ function jsonResponse(
 /**
  * A minimal OrcaSlicer filament profile shape the calibration workflow
  * touches. Field encodings match the OrcaSlicer convention that the desktop
- * already handles in `orcaProfileGenerator.ts`:
+ * already handles in `applyFilamentMeasurement`
+ * (`src/main/filamentMeasurementWriteBack.ts`), the live write-back path:
  *
  *   - `filament_flow_ratio` is an array-of-string-numbers.
  *   - `nozzle_temperature` is an array-of-string-numbers with the first-layer

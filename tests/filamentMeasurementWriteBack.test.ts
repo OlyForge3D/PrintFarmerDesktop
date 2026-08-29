@@ -4,24 +4,19 @@
  * ## Why this file exists
  *
  * `applyFilamentMeasurement` is the only live path by which a calibration
- * measurement reaches a filament profile. Two other modules look like they do
- * this job and do not:
+ * measurement reaches a filament profile. Two other modules used to look
+ * like they did this job and did not — both were deleted in #791 because
+ * neither ever had a production caller:
  *
- *   - `renderer/calibration/domain/patches.ts` (`buildOrcaProfilePatch`) has
- *     zero production callers.
- *   - `main/orcaProfileGenerator.ts` (`generateOrcaProfile`) has zero
- *     production callers.
+ *   - `renderer/calibration/domain/patches.ts` (`buildOrcaProfilePatch`).
+ *   - the bulk of `main/orcaProfileGenerator.ts` (`generateOrcaProfile`).
  *
- * Both are residue of the retired printer-calibration saga. `SUPPORTED_
- * CALIBRATION_FIELDS` and `PATCH_MAPPINGS` therefore gate nothing on the
- * wizard's path — a key present in them is not evidence the value is written,
- * and a key absent from them is not evidence it is dropped.
+ * Both were residue of the retired printer-calibration saga.
  *
- * Before this suite the only coverage of the write-back was
- * `filamentCalibration.acceptance.test.ts`, which *reimplements* the merge in
- * its own `applyMeasurement` helper rather than calling the production one. A
- * production bug and a matching test bug could coexist indefinitely without
- * either being visible. These tests call the real function.
+ * `filamentCalibration.acceptance.test.ts` now delegates to this same
+ * production function rather than reimplementing the merge, so a production
+ * bug and a matching test bug can no longer coexist indefinitely without
+ * either being visible. These tests call the real function directly.
  */
 
 import { describe, expect, it } from 'vitest';
