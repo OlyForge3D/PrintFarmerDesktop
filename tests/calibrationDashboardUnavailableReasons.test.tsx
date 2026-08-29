@@ -160,7 +160,12 @@ describe('CalibrationDashboard serverUnavailableReasons', () => {
       .mockResolvedValue(availability({ serverUnavailableReasons: [] }));
     mount(apiWith({ getCalibrationAvailability }));
 
-    await screen.findByRole('button', { name: 'Calibrate a filament spool' });
+    // The "Calibrate a filament spool" button renders unconditionally from
+    // first paint, so waiting on it alone would not prove the availability
+    // fetch (and therefore the reasons block) ever resolved. Wait for the
+    // "Available" status text, which only appears after `getCalibrationAvailability`
+    // resolves and `store.availability` is populated.
+    await screen.findByText('Available');
     expect(
       screen.queryByText(/calibration capabilities are unavailable/i),
     ).not.toBeInTheDocument();
