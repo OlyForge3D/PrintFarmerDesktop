@@ -6178,7 +6178,16 @@ export const CalibrationMethodGuidanceRecord = z
     method: z.string().min(1).max(128),
     title: z.string().min(1).max(256),
     purpose: z.string().min(1).max(4096),
-    wikiUrl: z.string().max(2048),
+    // https?-only (or empty, meaning "no wiki reference"): this is the only external
+    // anchor href in the renderer (rendered as `<a href={wikiUrl} target="_blank">`),
+    // fed directly from server data.
+    wikiUrl: z
+      .string()
+      .max(2048)
+      .refine(
+        (value) => value === '' || /^https?:\/\//i.test(value),
+        'wikiUrl must be empty or an http(s) URL',
+      ),
     setupInputs: z.array(CalibrationMethodSetupInput).max(16),
     measureQuantity: CalibrationMethodMeasureQuantity.nullable(),
     steps: z.array(z.string().min(1).max(64)).max(16),
@@ -6226,7 +6235,7 @@ export const CalibrationGetMethodProgressResponse = z.discriminatedUnion(
     z
       .object({
         status: z.literal('ok'),
-        progress: z.array(CalibrationMethodProgressRecord),
+        progress: z.array(CalibrationMethodProgressRecord).max(64),
       })
       .strict(),
     z

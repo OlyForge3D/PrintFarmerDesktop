@@ -1612,4 +1612,149 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
     // blocking the step picker.
     await screen.findByRole('button', { name: /Start Flow rate — pass 1/i });
   });
+
+  it('renders a server-Completed method as Completed, distinct from Pending, and disables its Skip toggle', async () => {
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '55555555-5555-4555-8555-555555555503',
+            projectId: projectGuid,
+            method: 'flow_rate_pass_1',
+            disposition: 'Completed',
+            currentStepId: null,
+            revision: 5,
+            createdAtUtc: '2026-01-01T00:00:00.000Z',
+            updatedAtUtc: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const skipButton = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    const methodItem = skipButton.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Completed');
+    // Completed must never be conflated with the default Pending label.
+    expect(within(methodItem).queryByText('Pending')).toBeNull();
+    expect(skipButton).toBeDisabled();
+  });
+
+  it('shows a distinct "Sync failed" disposition (never Pending) and disables Skip when getCalibrationMethodProgress fails', async () => {
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi
+        .fn()
+        .mockRejectedValue(new Error('network unreachable')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const skipButton = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    const methodItem = skipButton.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Sync failed');
+    // A read failure must never be presented as the default Pending state —
+    // that would make a step skipped on another device look Pending here.
+    expect(within(methodItem).queryByText('Pending')).toBeNull();
+    expect(skipButton).toBeDisabled();
+  });
+
+  it('control: a successful read shows Pending normally (not "Sync failed") and Skip is enabled', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const skipButton = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    const methodItem = skipButton.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Pending');
+    expect(within(methodItem).queryByText('Sync failed')).toBeNull();
+    expect(skipButton).not.toBeDisabled();
+  });
+
+  it('refetches method-progress after a rejected disposition write (e.g. a stale-revision conflict), instead of leaving a retry stuck on the same revision', async () => {
+    const getProgress = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          status: 'ok' as const,
+          progress: [
+            {
+              id: '55555555-5555-4555-8555-555555555504',
+              projectId: projectGuid,
+              method: 'flow_rate_pass_1',
+              disposition: 'Pending',
+              currentStepId: null,
+              revision: 1,
+              createdAtUtc: '2026-01-01T00:00:00.000Z',
+              updatedAtUtc: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          status: 'ok' as const,
+          progress: [
+            {
+              id: '55555555-5555-4555-8555-555555555504',
+              projectId: projectGuid,
+              method: 'flow_rate_pass_1',
+              // Someone else already skipped it — this is the fresher
+              // revision the retry should now be based on.
+              disposition: 'Skipped',
+              currentStepId: null,
+              revision: 2,
+              createdAtUtc: '2026-01-01T00:00:00.000Z',
+              updatedAtUtc: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+      );
+    const api = wizardApi({
+      getCalibrationMethodProgress: getProgress,
+      setCalibrationMethodDisposition: vi.fn().mockResolvedValue({
+        status: 'error' as const,
+        error: {
+          code: 'revisionConflict',
+          message: 'The method disposition changed since it was last read.',
+          retryable: true,
+          retryAfterSeconds: null,
+          reference: null,
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const skipButton = await screen.findByRole('button', {
+      name: /Skip Flow rate — pass 1/i,
+    });
+    fireEvent.click(skipButton);
+
+    // The rejected write triggers a refetch, which lands the fresher
+    // Skipped/revision-2 row — a stuck stale-revision retry would instead
+    // leave this method showing Pending forever.
+    const methodItem = skipButton.closest('li');
+    if (methodItem === null) throw new Error('expected a method <li>');
+    await within(methodItem).findByText('Skipped');
+    expect(getProgress).toHaveBeenCalledTimes(2);
+  });
 });

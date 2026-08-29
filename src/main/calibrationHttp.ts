@@ -2000,7 +2000,10 @@ export class CalibrationHttpClient {
       profileId,
       baseUrl,
       ROUTES.methodProgress(projectId),
-      z.array(MethodProgressSchema).max(CalibrationSliceMethod.options.length),
+      // Capped like the guidance catalog above, not `CalibrationSliceMethod.options.length`:
+      // progress rows are server-owned and not bounded by which methods this desktop build
+      // currently offers in its wizard.
+      z.array(MethodProgressSchema).max(64),
       signal,
     );
   }

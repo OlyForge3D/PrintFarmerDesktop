@@ -547,9 +547,19 @@ function FilamentCalibrationWizardInner(
   const [methodProgress, setMethodProgress] = useState<
     Readonly<Record<string, CalibrationMethodProgressRecord>>
   >({});
-  const [methodProgressBusyMethod, setMethodProgressBusyMethod] = useState<
-    string | null
-  >(null);
+  // Distinguishes "no row yet, defaults to Pending" from "we don't actually
+  // know, the read failed" — a read failure must never render a step that
+  // was skipped on another device as Pending (see `MethodStep` below).
+  const [methodProgressStatus, setMethodProgressStatus] = useState<
+    'loading' | 'ready' | 'error'
+  >('loading');
+  // A `Set`, not a single method: two skip/un-skip clicks on different
+  // methods fired in quick succession must each independently gate their own
+  // button until their own round trip settles, rather than one request's
+  // completion re-enabling every other in-flight request's button.
+  const [methodProgressBusyMethods, setMethodProgressBusyMethods] = useState<
+    ReadonlySet<string>
+  >(new Set());
 
   // ------------------ server-authoritative method guidance (issue #797) -----
   //
@@ -563,6 +573,11 @@ function FilamentCalibrationWizardInner(
   const [methodGuidance, setMethodGuidance] = useState<
     Readonly<Record<string, CalibrationMethodGuidanceRecord>>
   >({});
+  // Bumped on every progress fetch *and* every successful skip/un-skip write.
+  // A fetch in flight when a write lands is thereby made "stale": when it
+  // eventually resolves, the sequence number it captured no longer matches,
+  // so it is discarded instead of clobbering the write's fresher result.
+  const methodProgressSeqRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -590,38 +605,53 @@ function FilamentCalibrationWizardInner(
     };
   }, [profileId]);
 
-  useEffect(() => {
+  const fetchMethodProgress = useCallback(async (): Promise<void> => {
     const projectId = working.calibrationProjectId;
+    const seq = ++methodProgressSeqRef.current;
     if (projectId === null) {
       setMethodProgress({});
+      setMethodProgressStatus('ready');
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await calibrationApi().getCalibrationMethodProgress({
-          profileId,
-          projectId,
-        });
-        if (cancelled || unmountedRef.current) return;
-        if (response.status === 'ok') {
-          const byMethod: Record<string, CalibrationMethodProgressRecord> = {};
-          for (const entry of response.progress) {
-            byMethod[entry.method] = entry;
-          }
-          setMethodProgress(byMethod);
-        }
-        // A read failure just leaves every step showing as Pending (the
-        // default when no entry exists yet) — not worth a banner for a
-        // background refresh.
-      } catch {
-        // Best-effort, same reasoning as above.
+    setMethodProgressStatus('loading');
+    try {
+      const response = await calibrationApi().getCalibrationMethodProgress({
+        profileId,
+        projectId,
+      });
+      if (unmountedRef.current || methodProgressSeqRef.current !== seq) {
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+      if (response.status === 'ok') {
+        const byMethod: Record<string, CalibrationMethodProgressRecord> = {};
+        for (const entry of response.progress) {
+          byMethod[entry.method] = entry;
+        }
+        setMethodProgress(byMethod);
+        setMethodProgressStatus('ready');
+      } else {
+        // A row-shaped error response — treat the same as a thrown error
+        // below: we do NOT know the real disposition, so it must not be
+        // presented as Pending.
+        setMethodProgressStatus('error');
+      }
+    } catch {
+      if (unmountedRef.current || methodProgressSeqRef.current !== seq) {
+        return;
+      }
+      // Unlike the guidance catalog, a progress-read failure is NOT
+      // presented as "every step defaults to Pending" — that would make a
+      // step skipped from another device silently look Pending here, which
+      // is exactly the failure mode issue #797 exists to prevent. `Skip`
+      // stays disabled (see `canToggleSkip` in `MethodStep`) until a
+      // successful read establishes real state.
+      setMethodProgressStatus('error');
+    }
   }, [profileId, working.calibrationProjectId]);
+
+  useEffect(() => {
+    void fetchMethodProgress();
+  }, [fetchMethodProgress]);
 
   const toggleMethodDisposition = useCallback(
     async (method: CalibrationSliceMethod): Promise<void> => {
@@ -630,7 +660,7 @@ function FilamentCalibrationWizardInner(
       const existing = methodProgress[method] ?? null;
       const nextDisposition =
         existing?.disposition === 'Skipped' ? 'Pending' : 'Skipped';
-      setMethodProgressBusyMethod(method);
+      setMethodProgressBusyMethods((current) => new Set(current).add(method));
       try {
         const response = await calibrationApi().setCalibrationMethodDisposition(
           {
@@ -643,12 +673,21 @@ function FilamentCalibrationWizardInner(
         );
         if (unmountedRef.current) return;
         if (response.status === 'ok') {
+          // Invalidate any progress GET still in flight (see
+          // `methodProgressSeqRef`) so it cannot land after this write and
+          // clobber it with stale data.
+          methodProgressSeqRef.current += 1;
           setMethodProgress((current) => ({
             ...current,
             [method]: response.progress,
           }));
         } else {
           setBanner(bannerFromApiError(response.error));
+          // A rejection is very often a stale `baseRevision` (someone else
+          // skipped/un-skipped this method since our last read) — refetch so
+          // the next click retries against the current revision instead of
+          // repeating the same conflict forever.
+          void fetchMethodProgress();
         }
       } catch (cause) {
         if (unmountedRef.current) return;
@@ -663,10 +702,22 @@ function FilamentCalibrationWizardInner(
           reference: null,
         });
       } finally {
-        if (!unmountedRef.current) setMethodProgressBusyMethod(null);
+        if (!unmountedRef.current) {
+          setMethodProgressBusyMethods((current) => {
+            if (!current.has(method)) return current;
+            const next = new Set(current);
+            next.delete(method);
+            return next;
+          });
+        }
       }
     },
-    [profileId, working.calibrationProjectId, methodProgress],
+    [
+      profileId,
+      working.calibrationProjectId,
+      methodProgress,
+      fetchMethodProgress,
+    ],
   );
 
   const loadPrinters = useCallback(async (): Promise<void> => {
@@ -1328,7 +1379,8 @@ function FilamentCalibrationWizardInner(
           busy={busy}
           onPickMethod={(method) => void beginMethod(method)}
           methodProgress={methodProgress}
-          methodProgressBusyMethod={methodProgressBusyMethod}
+          methodProgressStatus={methodProgressStatus}
+          methodProgressBusyMethods={methodProgressBusyMethods}
           onToggleSkip={(method) => void toggleMethodDisposition(method)}
           methodGuidance={methodGuidance}
         />
@@ -1569,8 +1621,17 @@ interface MethodStepProps {
   readonly methodProgress: Readonly<
     Record<string, CalibrationMethodProgressRecord>
   >;
-  /** The method currently awaiting a `setMethodDisposition` round trip, if any. */
-  readonly methodProgressBusyMethod: string | null;
+  /**
+   * Whether the last `getMethodProgress` read for the current project
+   * succeeded. `'error'` must NOT be presented as "every step is Pending" —
+   * that would make a step skipped on another device look Pending here,
+   * exactly the failure #797 exists to prevent — so `MethodStep` renders a
+   * distinct "Sync failed" state and disables Skip/Un-skip until a
+   * subsequent read succeeds.
+   */
+  readonly methodProgressStatus: 'loading' | 'ready' | 'error';
+  /** Methods currently awaiting their own `setMethodDisposition` round trip. */
+  readonly methodProgressBusyMethods: ReadonlySet<string>;
   readonly onToggleSkip: (method: CalibrationSliceMethod) => void;
   /**
    * Server-sourced method metadata (issue #797), keyed by method. Replaces
@@ -1589,7 +1650,8 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
     busy,
     onPickMethod,
     methodProgress,
-    methodProgressBusyMethod,
+    methodProgressStatus,
+    methodProgressBusyMethods,
     onToggleSkip,
     methodGuidance,
   } = props;
@@ -1627,13 +1689,23 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           const purpose = guidance?.purpose ?? meta.summary;
           const done = working.completedMethods.includes(method);
           const progress = methodProgress[method] ?? null;
-          const skipped = progress?.disposition === 'Skipped';
-          const skipToggleBusy = methodProgressBusyMethod === method;
+          const disposition = progress?.disposition ?? 'Pending';
+          const skipped = disposition === 'Skipped';
+          const skipToggleBusy = methodProgressBusyMethods.has(method);
           const canToggleSkip =
             working.calibrationProjectId !== null &&
+            methodProgressStatus === 'ready' &&
             !busy &&
             !skipToggleBusy &&
-            progress?.disposition !== 'Completed';
+            disposition !== 'Completed';
+          const dispositionLabel =
+            methodProgressStatus === 'error'
+              ? 'Sync failed'
+              : disposition === 'Completed'
+                ? 'Completed'
+                : disposition === 'Skipped'
+                  ? 'Skipped'
+                  : 'Pending';
           return (
             <li key={method} className={skipped ? 'cal-method--skipped' : ''}>
               <button
@@ -1651,14 +1723,19 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
                 the "— completed" suffix above, which is local-JSON-only and
                 legacy. `Skipped` never blocks completion — the button stays
                 enabled on a skipped step so the operator can still run it.
+                `methodProgressStatus === 'error'` overrides `disposition`
+                entirely here — an unreadable server state must never be
+                presented as the default `Pending`.
               */}
               <span
                 className="cal-method-disposition"
                 aria-label={
-                  skipped ? `${title} is skipped` : `${title} is pending`
+                  methodProgressStatus === 'error'
+                    ? `${title} disposition could not be read from the server`
+                    : `${title} is ${dispositionLabel.toLowerCase()}`
                 }
               >
-                {skipped ? 'Skipped' : 'Pending'}
+                {dispositionLabel}
               </span>
               <button
                 type="button"

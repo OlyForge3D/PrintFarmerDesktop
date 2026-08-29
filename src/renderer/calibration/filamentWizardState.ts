@@ -602,7 +602,7 @@ export function validateSetupInputs(
   specification: Readonly<Record<string, unknown>>,
 ): SetupInputValidationError | null {
   for (const input of setupInputs) {
-    if (!(input.key in specification)) {
+    if (!Object.hasOwn(specification, input.key)) {
       return { code: 'setup_input_missing', input };
     }
     const value = specification[input.key];
