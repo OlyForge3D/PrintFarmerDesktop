@@ -4,8 +4,6 @@
  * All evidence is fixture- and mock-based; there is no live PrintFarmer server.
  *
  * Tests cover:
- * - startGeneration calls the per-attempt route with attemptId in the URL and
- *   method/options in the body.
  * - No dead routes remain in ROUTES (generation, queue, bedClear, printStart).
  * - acknowledgeBedClearAndStart sends all THREE required precondition headers.
  * - 412 response body is parsed to extract current ETags (revisionConflict).
@@ -205,110 +203,46 @@ describe('ROUTES constant — dead routes absent (issue #54)', () => {
       'a template ending with /generation was found — this is the dead project-scoped generation route',
     ).toBe(false);
   });
+
+  it('route templates contain no per-attempt generate-job route (issue #784)', () => {
+    // The server removed this route (and the whole deterministic generation
+    // pipeline it fronted) in OlyForge3D/PrintFarmer#1979/#1993, so the
+    // desktop's generateJob template and its startGeneration caller were
+    // deleted as dead code rather than repointed.
+    const templates = Object.values(
+      CALIBRATION_QUEUE_ROUTE_TEMPLATES,
+    ) as string[];
+    const hasGenerateJobTerminal = templates.some((t) =>
+      /\/generate-job$/.test(t),
+    );
+    expect(
+      hasGenerateJobTerminal,
+      'a template ending with /generate-job was found — the server route was removed by PrintFarmer#1979/#1993',
+    ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        CALIBRATION_QUEUE_ROUTE_TEMPLATES,
+        'generateJob',
+      ),
+    ).toBe(false);
+  });
 });
 
 // ==========================================================================
-// startGeneration — per-attempt route and body fields
+// Dead client methods removed (issue #784)
 // ==========================================================================
 
-describe('startGeneration — per-attempt route', () => {
-  it('calls the correct per-attempt route containing both projectId and attemptId', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(ORCHESTRATION_FIXTURE));
-    const client = makeClient(fetchMock);
-    const signal = AbortSignal.timeout(5000);
-
-    await client.startGeneration(
-      PROFILE_ID,
-      BASE_URL,
-      PROJECT_ID,
-      ATTEMPT_ID,
-      'temperature',
-      undefined,
-      undefined,
-      OPERATION_ID,
-      null,
-      signal,
-    );
-
-    const url = getCallUrl(fetchMock);
-    expect(url).toContain(PROJECT_ID);
-    expect(url).toContain(ATTEMPT_ID);
-    expect(url).toContain('generate-job');
-  });
-
-  it('sends method in the request body', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(ORCHESTRATION_FIXTURE));
-    const client = makeClient(fetchMock);
-    const signal = AbortSignal.timeout(5000);
-
-    await client.startGeneration(
-      PROFILE_ID,
-      BASE_URL,
-      PROJECT_ID,
-      ATTEMPT_ID,
-      'flow',
-      '1.1',
-      { startRatio: 0.9, endRatio: 1.1 },
-      OPERATION_ID,
-      5,
-      signal,
-    );
-
-    const init = getCallInit(fetchMock);
-    const body = JSON.parse(init.body as string) as {
-      method: string;
-      definitionVersion?: string;
-      options?: { startRatio?: number; endRatio?: number };
-      baseRevision?: number;
-    };
-    expect(body.method).toBe('flow');
-    expect(body.definitionVersion).toBe('1.1');
-    expect(body.options).toMatchObject({ startRatio: 0.9, endRatio: 1.1 });
-    expect(body.baseRevision).toBe(5);
-  });
-
-  it('sends operationId as Idempotency-Key header', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(ORCHESTRATION_FIXTURE));
-    const client = makeClient(fetchMock);
-    const signal = AbortSignal.timeout(5000);
-
-    await client.startGeneration(
-      PROFILE_ID,
-      BASE_URL,
-      PROJECT_ID,
-      ATTEMPT_ID,
-      'temperature',
-      undefined,
-      undefined,
-      OPERATION_ID,
-      null,
-      signal,
-    );
-
-    const init = getCallInit(fetchMock);
-    const headers = new Headers(init.headers);
-    expect(headers.get('idempotency-key')).toBe(OPERATION_ID);
-  });
-
-  it('returns orchestrationId from the response body', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(ORCHESTRATION_FIXTURE));
-    const client = makeClient(fetchMock);
-    const signal = AbortSignal.timeout(5000);
-
-    const result = await client.startGeneration(
-      PROFILE_ID,
-      BASE_URL,
-      PROJECT_ID,
-      ATTEMPT_ID,
-      'temperature',
-      undefined,
-      undefined,
-      OPERATION_ID,
-      null,
-      signal,
-    );
-
-    expect(result.id).toBe(ORCHESTRATION_ID);
+describe('CalibrationHttpClient — dead calibration-projects methods absent (issue #784)', () => {
+  it('no longer exposes startGeneration, getProjectSteps, or getProjectAttempts', () => {
+    const fetchMock = vi.fn();
+    const client = makeClient(fetchMock) as unknown as Record<string, unknown>;
+    // Positive control: these four routes/methods targeted server endpoints
+    // that do not exist (steps, per-step attempts, profile-revisions,
+    // generate-job) and had no production caller, so they were deleted
+    // rather than repointed.
+    expect(client.startGeneration).toBeUndefined();
+    expect(client.getProjectSteps).toBeUndefined();
+    expect(client.getProjectAttempts).toBeUndefined();
   });
 });
 

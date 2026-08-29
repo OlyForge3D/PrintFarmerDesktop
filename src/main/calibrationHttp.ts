@@ -28,7 +28,6 @@ import type {
   RemoteCalibrationApplyResult,
   RemoteCalibrationChangesPage,
   RemoteCalibrationProject,
-  RemoteCalibrationStep,
   RemoteCalibrationAttempt,
   RemoteCalibrationPhoto,
   RemoteCalibrationCapabilities,
@@ -52,7 +51,6 @@ import {
   RemoteCalibrationChangesPage as ChangesPageSchema,
   RemoteCalibrationCapabilities as CapabilitiesSchema,
   RemoteCalibrationProject as ProjectSchema,
-  RemoteCalibrationStep as StepSchema,
   RemoteCalibrationAttempt as AttemptSchema,
   RemoteCalibrationPhoto as PhotoSchema,
   RemoteCalibrationPrinters as PrintersSchema,
@@ -72,27 +70,32 @@ import {
 } from './calibrationWire.js';
 
 // --- Issue-#138 route templates (single authoritative source) ----------------
-// The four parity-guarded contract routes are defined here as templates; ROUTES
-// derives those four entries from them. Mutating a template changes the actual
+// The parity-guarded contract routes are defined here as templates; ROUTES
+// derives those entries from them. Mutating a template changes the actual
 // HTTP call path and fails the executable fetch parity tests.
 
 /**
- * Normalized route templates for the four issue-#138 contract paths.
+ * Normalized route templates for the issue-#138 contract paths.
  * Parameters use `{name}` placeholders. Each template is the single source
  * from which the corresponding `ROUTES` entry (and executable HTTP call) is
  * derived via `buildRoute`. Exported so documentation-parity tests can compare
  * these values against admin guide §10.1 without a second policy table.
- * Source: OlyForge3D/PrintFarmer JobQueueController + CalibrationGenerationController,
- * verified at 167a3b134a678a0d9a8c10371da8333d03ddc636 and 9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0.
+ * Source: OlyForge3D/PrintFarmer JobQueueController, verified at
+ * 167a3b134a678a0d9a8c10371da8333d03ddc636.
+ *
+ * A fourth entry, `generateJob`
+ * (`/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job`),
+ * was removed here by issue #784: the server deleted that route (and the
+ * whole deterministic generation pipeline it fronted) in
+ * OlyForge3D/PrintFarmer#1979/#1993, so the desktop's builder and its
+ * `startGeneration` caller had no live handler to reach and were deleted as
+ * dead code rather than repointed.
  */
 export const CALIBRATION_QUEUE_ROUTE_TEMPLATES = {
   /** POST — create a FilamentCalibration queue job. */
   jobQueue: '/api/job-queue',
   /** GET — fetch a specific queue job by its ID. */
   jobQueueJob: '/api/job-queue/{jobId}',
-  /** POST — start generation for one immutable attempt; both IDs required. */
-  generateJob:
-    '/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job',
   /** POST — acknowledge bed clear and start dispatch for an exact job. */
   acknowledgeBedClear: '/api/job-queue/{jobId}/acknowledge-bed-clear-and-start',
 } as const;
@@ -147,7 +150,7 @@ function buildRoute(template: string, params: Record<string, string>): string {
 
 // --- Fixed API route constants -----------------------------------------------
 // These are the only routes this client will ever call. The renderer cannot
-// influence them. The four contract-critical routes derive from
+// influence them. The contract-critical routes derive from
 // CALIBRATION_QUEUE_ROUTE_TEMPLATES so a template mutation changes the call.
 
 const ROUTES = {
@@ -174,24 +177,12 @@ const ROUTES = {
   apply: '/api/calibration-sync/apply',
   project: (id: string) =>
     `/api/calibration-projects/${encodeURIComponent(id)}`,
-  projectSteps: (projectId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/steps`,
-  projectAttempts: (projectId: string, stepId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/steps/${encodeURIComponent(stepId)}/attempts`,
   attempt: (id: string) =>
     `/api/calibration-attempts/${encodeURIComponent(id)}`,
   photo: (id: string) => `/api/calibration-photos/${encodeURIComponent(id)}`,
   photoUpload: (id: string) =>
     `/api/calibration-photos/${encodeURIComponent(id)}/upload`,
-  profileRevisions: (projectId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/profile-revisions`,
   // --- Generation orchestration (issue #899) ---------------------------------
-  /** POST — starts generation for a specific attempt. */
-  generateJob: (projectId: string, attemptId: string) =>
-    buildRoute(CALIBRATION_QUEUE_ROUTE_TEMPLATES.generateJob, {
-      projectId,
-      attemptId,
-    }),
   /** GET — polls orchestration status by orchestration ID. */
   orchestrationStatus: (orchestrationId: string) =>
     `/api/calibration-orchestrations/${encodeURIComponent(orchestrationId)}`,
@@ -1847,21 +1838,6 @@ export class CalibrationHttpClient {
     );
   }
 
-  async getProjectSteps(
-    profileId: string,
-    baseUrl: string,
-    projectId: string,
-    signal: AbortSignal,
-  ): Promise<RemoteCalibrationStep[]> {
-    return this.get(
-      profileId,
-      baseUrl,
-      ROUTES.projectSteps(projectId),
-      z.array(StepSchema).max(50),
-      signal,
-    );
-  }
-
   async getAttempt(
     profileId: string,
     baseUrl: string,
@@ -1873,22 +1849,6 @@ export class CalibrationHttpClient {
       baseUrl,
       ROUTES.attempt(attemptId),
       AttemptSchema,
-      signal,
-    );
-  }
-
-  async getProjectAttempts(
-    profileId: string,
-    baseUrl: string,
-    projectId: string,
-    stepId: string,
-    signal: AbortSignal,
-  ): Promise<RemoteCalibrationAttempt[]> {
-    return this.get(
-      profileId,
-      baseUrl,
-      ROUTES.projectAttempts(projectId, stepId),
-      z.array(AttemptSchema).max(999),
       signal,
     );
   }
@@ -1965,57 +1925,6 @@ export class CalibrationHttpClient {
         );
       }
       await discard(pending.response);
-    } finally {
-      pending.dispose();
-    }
-  }
-
-  async startGeneration(
-    profileId: string,
-    baseUrl: string,
-    projectId: string,
-    attemptId: string,
-    method: string,
-    definitionVersion: string | undefined,
-    options: Record<string, unknown> | undefined,
-    operationId: string,
-    baseRevision: number | null,
-    signal: AbortSignal,
-  ): Promise<RemoteCalibrationOrchestrationStatus> {
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'idempotency-key': operationId,
-    };
-    const body: Record<string, unknown> = { method };
-    if (definitionVersion !== undefined)
-      body.definitionVersion = definitionVersion;
-    if (options !== undefined) body.options = options;
-    if (baseRevision !== null) body.baseRevision = baseRevision;
-
-    const pending = await this.request(
-      profileId,
-      baseUrl,
-      ROUTES.generateJob(projectId, attemptId),
-      { method: 'POST', headers, body: JSON.stringify(body) },
-      signal,
-      true,
-    );
-    try {
-      if (pending.response.status === 409 || pending.response.status === 412) {
-        throw await this.statusError(
-          pending.response,
-          true,
-          pending.timedOut(),
-        );
-      }
-      if (!pending.response.ok) {
-        throw await this.statusError(
-          pending.response,
-          true,
-          pending.timedOut(),
-        );
-      }
-      return await this.parse(pending, OrchestrationStatusSchema);
     } finally {
       pending.dispose();
     }
