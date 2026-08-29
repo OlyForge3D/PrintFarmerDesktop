@@ -2,10 +2,11 @@
  * Merging a calibration measurement into an OrcaSlicer filament profile.
  *
  * This is the *only* live write-back path for the filament calibration wizard.
- * `domain/patches.ts` (`buildOrcaProfilePatch`) and `orcaProfileGenerator.ts`
- * (`generateOrcaProfile`) both look like they do this job, but neither has a
- * production caller — they are residue of the retired printer-calibration saga.
- * A change made there does not affect what the wizard writes.
+ * `domain/patches.ts` (`buildOrcaProfilePatch`) and the bulk of
+ * `orcaProfileGenerator.ts` (`generateOrcaProfile`) used to look like they did
+ * this job; both have been deleted (see #791) because neither ever had a
+ * production caller — they were residue of the retired printer-calibration
+ * saga. A change made anywhere else does not affect what the wizard writes.
  *
  * Extracted from the IPC handler so the merge can be asserted directly on the
  * emitted profile. Before this, the only coverage reimplemented the merge in
