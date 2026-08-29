@@ -44,6 +44,7 @@ const machineGuid = '22222222-2222-4222-8222-222222222201';
 const processGuid = '22222222-2222-4222-8222-222222222202';
 const filamentGuid = '22222222-2222-4222-8222-222222222203';
 const cloneGuid = '44444444-4444-4444-8444-444444444444';
+const projectGuid = '66666666-6666-4666-8666-666666666601';
 const jobIdOne = '55555555-5555-4555-8555-555555555501';
 const jobIdTwo = '55555555-5555-4555-8555-555555555502';
 const now = '2026-08-24T02:29:44.441Z';
@@ -233,6 +234,17 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       status: 'ok' as const,
       profileId: filamentGuid,
       imported: false,
+    }),
+    createCalibrationProject: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      project: {
+        id: projectGuid,
+        name: 'PLA — Prusament Galaxy Black (calibration project)',
+        lifecycleStatus: 'Active',
+        experienceMode: 'Coach',
+        printerId: printerIdA,
+        revision: 1,
+      },
     }),
     cloneCalibrationFilamentProfile: vi.fn().mockResolvedValue({
       status: 'ok',
@@ -1201,5 +1213,125 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
         await Promise.resolve();
       });
     }
+  });
+});
+
+describe('FilamentCalibrationWizard server-side CalibrationProject entry point (issue #798)', () => {
+  it('creates the CalibrationProject before cloning the filament profile, with the resolved filament identity', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const createCalls = (
+      api.createCalibrationProject as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls).toHaveLength(1);
+    const cloneCalls = (
+      api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(cloneCalls).toHaveLength(1);
+
+    // The project must exist before any profile clone or local wizard state
+    // write — assert call ORDER via each mock's invocation index, not just
+    // that both were called.
+    const createOrder = (
+      api.createCalibrationProject as ReturnType<typeof vi.fn>
+    ).mock.invocationCallOrder[0];
+    const cloneOrder = (
+      api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>
+    ).mock.invocationCallOrder[0];
+    if (createOrder === undefined || cloneOrder === undefined) {
+      throw new Error('expected both mocks to have recorded an invocation');
+    }
+    expect(createOrder).toBeLessThan(cloneOrder);
+
+    const [request] = createCalls[0] as [
+      {
+        profileId: string;
+        printerId: string;
+        filamentProvider: string;
+        filamentProductId: string;
+        filamentProductName: string;
+        filamentMaterial: string;
+      },
+    ];
+    expect(request.profileId).toBe(profileId);
+    expect(request.printerId).toBe(printerIdA);
+    expect(request.filamentProvider).toBe('printfarmer');
+    expect(request.filamentProductId).toBe(filamentGuid);
+    expect(request.filamentProductName).toBe(SAMPLE_FILAMENT_NAME);
+    expect(request.filamentMaterial.length).toBeGreaterThan(0);
+  });
+
+  it('surfaces a project-creation failure without ever calling cloneCalibrationFilamentProfile', async () => {
+    const api = wizardApi({
+      createCalibrationProject: vi
+        .fn()
+        .mockResolvedValue(notImplemented('createCalibrationProject')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    const cloneButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(cloneButton);
+
+    await screen.findByText(
+      /createCalibrationProject: not implemented in wizard test\./i,
+    );
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(0);
+  });
+});
+
+describe('FilamentCalibrationWizard capability refusal gate (issue #798)', () => {
+  it("refuses to start, with the server's own reason text, when the deployment cannot slice", async () => {
+    const api = wizardApi({
+      getCalibrationAvailability: vi.fn().mockResolvedValue({
+        ...availability(),
+        capabilityFlags: {
+          ...availability().capabilityFlags,
+          calibrationGenerationEnabled: false,
+        },
+        serverUnavailableReasons: [
+          {
+            feature: 'slicing',
+            code: 'sliceEngineUnreachable',
+            message: 'The configured slicer engine could not be reached.',
+          },
+        ],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    await screen.findByText(
+      /The configured slicer engine could not be reached\./i,
+    );
+    expect(
+      screen.queryByRole('combobox', { name: /machine profile/i }),
+    ).toBeNull();
+    expect(
+      (api.createCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(0);
+  });
+
+  it('control: a slicing-enabled deployment proceeds normally into profile selection', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await screen.findByRole('combobox', { name: /machine profile/i });
+    expect(screen.queryByText(/could not be reached/i)).toBeNull();
   });
 });

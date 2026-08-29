@@ -256,6 +256,9 @@ function bannerFromApiError(error: CalibrationApiError): WizardBanner {
 // Top-level component
 // --------------------------------------------------------------------------
 
+const GENERATION_DISABLED_FALLBACK_MESSAGE =
+  'This PrintFarmer server cannot slice right now, so filament calibration cannot start.';
+
 export function FilamentCalibrationWizard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
   const environment = store.environment ?? browserCalibrationEnvironment;
@@ -278,6 +281,54 @@ export function FilamentCalibrationWizard(): React.JSX.Element {
         </header>
         <p className="cal-alert" role="alert">
           Select a PrintFarmer profile before starting a filament calibration.
+        </p>
+        <button
+          type="button"
+          className="cal-button"
+          onClick={() => void store.navigate('dashboard')}
+        >
+          Back to calibration dashboard
+        </button>
+      </section>
+    );
+  }
+
+  // Step 0 (issue #798): refuse to start before any profile-selection UI is
+  // shown, rendering the server's own reason text, when the deployment
+  // cannot slice. Checked here — before `FilamentCalibrationWizardInner`
+  // mounts and before a single pick, clone, or local wizard-state write can
+  // happen — rather than deferring the refusal to slice submission.
+  //
+  // Gated strictly on an explicit `false`: `capabilityFlags` is `null` (or
+  // `calibrationGenerationEnabled` simply unconfirmed) before availability
+  // negotiation completes, and that "not yet known" state is not the same
+  // claim as "the server said no" — only the latter blocks entry here.
+  if (
+    store.availability?.capabilityFlags?.calibrationGenerationEnabled === false
+  ) {
+    const slicingReasons = (
+      store.availability.serverUnavailableReasons ?? []
+    ).filter((reason) => reason.feature === 'slicing');
+    const message =
+      slicingReasons.length > 0
+        ? slicingReasons.map((reason) => reason.message).join(' ')
+        : GENERATION_DISABLED_FALLBACK_MESSAGE;
+    return (
+      <section
+        className="cal-view cal-view--form"
+        aria-labelledby="filament-cal-title"
+        data-testid="filament-calibration-wizard"
+      >
+        <header className="cal-view-heading">
+          <h1 id="filament-cal-title" data-cal-heading tabIndex={-1}>
+            Filament calibration wizard
+          </h1>
+          <p className="cal-subtitle">
+            Calibrate a filament spool using the OrcaSlicer wiki workflow.
+          </p>
+        </header>
+        <p className="cal-alert" role="alert">
+          {message}
         </p>
         <button
           type="button"
@@ -558,6 +609,30 @@ function FilamentCalibrationWizardInner(
           return;
         }
         sourceProfileId = resolution.profileId;
+      }
+      // Issue #798: create the server-side `CalibrationProject` (Coach
+      // mode) BEFORE the profile clone and before any local wizard state is
+      // written (persistence only begins once `cloneId !== null` — see
+      // `buildPersistedState` in `filamentWizardState.ts`). Best-effort
+      // filament-identity mapping: no spool-selection UI exists in this
+      // wizard yet, so Spoolman/local-spool ids are left `null` server-side
+      // (out of scope here, see #798 scope note 3); no material metadata is
+      // available client-side for a profile pick, so a documented
+      // placeholder is sent — the field just needs to be non-empty.
+      const projectResponse = await calibrationApi().createCalibrationProject({
+        profileId,
+        name: `${cloneName.trim()} (calibration project)`,
+        printerId,
+        filamentProvider: 'printfarmer',
+        filamentProductId: sourceProfileId,
+        filamentProductName: picks.filamentName,
+        filamentMaterial: 'unknown',
+      });
+      if (unmountedRef.current) return;
+      if (projectResponse.status === 'error') {
+        setBanner(bannerFromApiError(projectResponse.error));
+        setWorking((current) => ({ ...current, phase: 'cloneName' }));
+        return;
       }
       const response = await calibrationApi().cloneCalibrationFilamentProfile({
         profileId,

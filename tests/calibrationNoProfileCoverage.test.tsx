@@ -207,6 +207,9 @@ function apiWith(coverage: Coverage): CalibrationApi {
     resolveSystemProfile: vi
       .fn()
       .mockResolvedValue(notImplemented('resolveSystemProfile')),
+    createCalibrationProject: vi
+      .fn()
+      .mockResolvedValue(notImplemented('createCalibrationProject')),
     cloneCalibrationFilamentProfile: vi
       .fn()
       .mockResolvedValue(notImplemented('cloneCalibrationFilamentProfile')),

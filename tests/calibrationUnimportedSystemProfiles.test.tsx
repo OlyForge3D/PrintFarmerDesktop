@@ -250,6 +250,17 @@ function apiFor(options: {
         .mockRejectedValue(
           new Error('resolveSystemProfile must not be called in this test.'),
         ),
+    createCalibrationProject: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      project: {
+        id: '66666666-6666-4666-8666-666666666601',
+        name: `${filament.name} (calibration project)`,
+        lifecycleStatus: 'Active',
+        experienceMode: 'Coach',
+        printerId: (options.printer ?? printerCandidate()).printerId,
+        revision: 1,
+      },
+    }),
     cloneCalibrationFilamentProfile: vi.fn().mockResolvedValue({
       status: 'ok',
       clone: {

@@ -83,6 +83,7 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       .mockRejectedValue(notImplemented()),
     listCalibrationCustomProfiles: vi.fn().mockRejectedValue(notImplemented()),
     resolveSystemProfile: vi.fn().mockRejectedValue(notImplemented()),
+    createCalibrationProject: vi.fn().mockRejectedValue(notImplemented()),
     cloneCalibrationFilamentProfile: vi
       .fn()
       .mockRejectedValue(notImplemented()),

@@ -33,6 +33,12 @@ export type CalibrationApi = Pick<
   // at the point a Guid is actually required (today: the filament clone
   // step in `FilamentCalibrationWizard`).
   | 'resolveSystemProfile'
+  // --- Server-side CalibrationProject entry point (issue #798) -------------
+  //
+  // Consumed by `FilamentCalibrationWizard`'s `performClone`: creates a
+  // `CalibrationProject` in Coach mode before the profile clone, gated on
+  // `store.availability.capabilityFlags.calibrationGenerationEnabled`.
+  | 'createCalibrationProject'
   // --- Filament calibration slice pipeline (Bishop PR #752, PR #1952) -----
   //
   // Consumed by the filament calibration wizard. `submitCalibrationSlice`

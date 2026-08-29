@@ -43,6 +43,7 @@ import type {
   RemoteFilamentProfile,
   RemoteCustomProfilesList,
   RemotePrinterDetailsDto,
+  RemoteCalibrationProjectRecord,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -67,6 +68,7 @@ import {
   RemoteFilamentProfile as FilamentProfileSchema,
   RemoteCustomProfilesList as CustomProfilesListSchema,
   RemotePrinterDetailsDto as PrinterDetailsSchema,
+  RemoteCalibrationProjectRecord as ProjectRecordSchema,
 } from './calibrationWire.js';
 
 // --- Issue-#138 route templates (single authoritative source) ----------------
@@ -175,6 +177,14 @@ const ROUTES = {
   },
   changes: '/api/calibration-sync/changes',
   apply: '/api/calibration-sync/apply',
+  /**
+   * POST — create a `CalibrationProject`. Verified against
+   * `CalibrationProjectsController.CreateProjectAsync` at PrintFarmer
+   * commit `0720b9d146256c69fa2780c029ab5982bba509a1` and cross-checked
+   * against that commit's `RouteTableSnapshot.txt`; not one of #784's
+   * dead routes. See `createProject` below.
+   */
+  projects: '/api/calibration-projects',
   project: (id: string) =>
     `/api/calibration-projects/${encodeURIComponent(id)}`,
   attempt: (id: string) =>
@@ -1836,6 +1846,100 @@ export class CalibrationHttpClient {
       ProjectSchema,
       signal,
     );
+  }
+
+  /**
+   * `POST /api/calibration-projects` — creates a `CalibrationProject` bound
+   * to a printer and a filament identity, in the requested experience mode.
+   * Verified against `CalibrationProjectsController.CreateProjectAsync` and
+   * `CalibrationProjectService.CreateProjectAsync`/`ValidateProjectCreate`
+   * at PrintFarmer commit `0720b9d146256c69fa2780c029ab5982bba509a1`
+   * (contracts blob `48353af39c7f6b4d9d5e0062254e5fa648860e39`); see
+   * `tests/fixtures/server-contract/calibrationProjectContracts.snapshot.ts`.
+   *
+   * `printerConfigurationRevision` is sent as a constant `1`.
+   * `CreateProjectAsync`'s own source comment documents "Path D (#1981):
+   * filament calibration is context-free" — no printer configuration
+   * context is resolved for this workflow, so the server only floor-checks
+   * `>= 1` and never cross-validates the value against real printer state.
+   *
+   * Idempotent by `(clientId, requestId)` plus a server-computed hash of
+   * the body: a retried create carrying the same two ids returns the
+   * existing project rather than creating a duplicate, so callers should
+   * pass a fresh `requestId` only for a genuinely new attempt.
+   *
+   * `filamentSnapshot`/`orderedSteps`/`currentSelections` must be JSON
+   * containers (object or array) — the server rejects a primitive with
+   * `invalidData`. This desktop does not yet drive step ordering or
+   * selections from the created project (out of scope for #798; see #794),
+   * so empty containers are sent and the existing clone-based workflow
+   * continues to own those concerns until #795 lands.
+   */
+  async createProject(
+    profileId: string,
+    baseUrl: string,
+    request: {
+      clientId: string;
+      requestId: string;
+      name: string;
+      printerId: string;
+      filamentProvider: string;
+      filamentProductId: string;
+      filamentProductName: string;
+      filamentMaterial: string;
+      experienceMode: 'Coach' | 'Expert';
+    },
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationProjectRecord> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    const body = JSON.stringify({
+      clientId: request.clientId,
+      requestId: request.requestId,
+      name: request.name,
+      printerId: request.printerId,
+      printerConfigurationRevision: 1,
+      selectedToolheadId: null,
+      selectedToolheadIndex: null,
+      filamentProvider: request.filamentProvider,
+      filamentProductId: request.filamentProductId,
+      filamentSku: null,
+      filamentVendor: null,
+      filamentProductName: request.filamentProductName,
+      filamentMaterial: request.filamentMaterial,
+      filamentDiameter: null,
+      filamentColor: null,
+      filamentTypeId: null,
+      spoolmanFilamentId: null,
+      localSpoolId: null,
+      spoolmanSpoolId: null,
+      filamentSnapshot: {},
+      orderedSteps: [],
+      currentStep: null,
+      currentSelections: {},
+      experienceMode: request.experienceMode,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.projects,
+      { method: 'POST', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      return await this.parse(pending, ProjectRecordSchema);
+    } finally {
+      pending.dispose();
+    }
   }
 
   async getAttempt(
