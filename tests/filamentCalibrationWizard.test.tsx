@@ -822,7 +822,14 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('the "Finish calibration" action is disabled until at least one method has been completed', async () => {
-    const api = wizardApiFlowRatePass1Unlocked();
+    // Deliberately use a plain wizardApi() — not
+    // wizardApiFlowRatePass1Unlocked() — because that fixture's server rows
+    // pre-mark every method before flow_rate_pass_1 as Completed, which
+    // would make "Finish" correctly enabled from the start under #793's
+    // server-authoritative canFinish and defeat this test's premise. Instead
+    // exercise temperature tower, the first method in guided order, which is
+    // unlocked from a fresh project with no progress rows at all.
+    const api = wizardApi();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -834,9 +841,13 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     expect(finishButton).toBeDisabled();
 
     await runOneMethodEndToEnd(
-      /Start Flow rate — pass 1/i,
-      /Flow ratio/i,
-      '1.02',
+      /Start Temperature tower/i,
+      /^Nozzle temperature$/i,
+      '215',
+      {
+        secondFieldLabel: /Initial layer nozzle temperature/i,
+        secondValue: '220',
+      },
     );
 
     await waitFor(() => {
@@ -1903,6 +1914,238 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     expect(
       screen.queryByText(/This method was already completed\./i),
     ).not.toBeInTheDocument();
+  });
+
+  it('a resumed active step whose method has no progress row yet does not stay armed to wrongly intercept a later redo, after that method is legitimately finished this same session (Bishop review, round 2)', async () => {
+    // Regression for a residual of the original bug, caught in round 2:
+    // `resumeReconcileMethodRef` must be consumed the first time a
+    // successful progress read exists to judge the resumed method against —
+    // even when that read finds no row at all (the common case: you resume
+    // mid-method precisely because it isn't resolved yet). If the ref were
+    // only consumed on discovering a definite Completed/Skipped row, it
+    // would stay armed indefinitely across a resume with no row. Then, once
+    // the operator legitimately finishes that exact method later in the
+    // SAME session (no second device needed) and, still later, deliberately
+    // clicks "Start" to redo it, the effect would fire again with the ref
+    // still matching and incorrectly snap back to the picker with a false
+    // banner — reproducing the original bug via a different trigger path.
+    const getProgress = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'ok' as const, progress: [] })
+      .mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '99999999-9999-4999-8999-000000000005',
+            projectId: projectGuid,
+            method: 'temperature_tower' as const,
+            disposition: 'Completed' as const,
+            currentStepId: null,
+            revision: 1,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          },
+        ],
+      });
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi
+        .fn()
+        .mockResolvedValue(resumedSliceReadyRecord('temperature_tower')),
+      getCalibrationMethodProgress: getProgress,
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    // First read: no row for this method yet (`progress: []`) — Pending,
+    // nothing to correct. The resumed active-step screen is left alone, and
+    // the ref must still be consumed (this is the fixed behaviour under
+    // test), not merely skipped over.
+    await waitFor(() => expect(getProgress).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await getProgress.mock.results[0]?.value;
+    });
+    expect(
+      screen.getByRole('group', { name: /Step 5 — send to printer/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/This method was already completed\./i),
+    ).not.toBeInTheDocument();
+
+    // Legitimately finish this exact method this session — the second
+    // `getCalibrationMethodProgress` read (triggered by the observation
+    // submit) now reports it Completed.
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Upload gcode only/i }),
+    );
+    fireEvent.change(await screen.findByLabelText(/^Nozzle temperature$/i), {
+      target: { value: '215' },
+    });
+    fireEvent.change(
+      await screen.findByLabelText(/Initial layer nozzle temperature/i),
+      { target: { value: '220' } },
+    );
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Save measurement and continue/i,
+      }),
+    );
+    await screen.findByRole('button', {
+      name: /Start Temperature tower \(completed once\)/i,
+    });
+
+    // Now deliberately redo it. If the ref were still armed from the
+    // original resume, this click's own re-entry into an active-step phase
+    // would be wrongly intercepted and bounced straight back here with a
+    // false banner instead of ever reaching the purpose screen.
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Start Temperature tower \(completed once\)/i,
+      }),
+    );
+    expect(
+      await screen.findByRole('group', { name: /Step 3a — purpose/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/This method was already completed\./i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('canFinish and the completed badge become server-pure the moment an explicit server row contradicts a stale local completedMethods entry (Hicks review: the legacy-authority gap)', async () => {
+    // A stale local `completedMethods` entry is not merely "no answer yet"
+    // here — the server has an ACTUAL progress row for this method, and it
+    // explicitly disagrees (e.g. reset from another device). That is a real
+    // contradiction, distinct from a method that simply has no row yet (see
+    // the companion "no progress row" resume test above, and
+    // `deriveGuidedMethodStates`'s own documented precedence): the server
+    // row must win outright, and neither the completed badge nor "Finish
+    // calibration" may keep trusting the stale local record.
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue({
+        schemaVersion: 1 as const,
+        printerId: printerIdA,
+        printerModelId: null,
+        machineName: SAMPLE_MACHINE_NAME,
+        processName: SAMPLE_PROCESS_NAME,
+        baseFilamentName: SAMPLE_FILAMENT_NAME,
+        baseFilamentGuid: filamentGuid,
+        cloneId: cloneGuid,
+        cloneName: 'PLA — Prusament Galaxy Black',
+        calibrationProjectId: projectGuid,
+        completedMethods: ['temperature_tower'] as const,
+        currentMethod: null,
+        inFlightJob: null,
+        phase: 'methodPicker' as const,
+        updatedAt: now,
+      }),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '99999999-9999-4999-8999-000000000006',
+            projectId: projectGuid,
+            method: 'temperature_tower' as const,
+            disposition: 'Pending' as const,
+            currentStepId: null,
+            revision: 1,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          },
+        ],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    // Wait for the progress read to actually settle before asserting the
+    // negative — not merely that the request was issued.
+    await waitFor(() => {
+      expect(api.getCalibrationMethodProgress).toHaveBeenCalled();
+    });
+    const progressMock = api.getCalibrationMethodProgress as ReturnType<
+      typeof vi.fn
+    >;
+    await act(async () => {
+      await progressMock.mock.results[0]?.value;
+    });
+
+    // The picker's completed suffix must not survive an explicit
+    // server-Pending row for this method (a "recommended next step" suffix
+    // from the unrelated guided-order feature, issue #794, may still be
+    // present — that is not what this test is about).
+    expect(
+      await screen.findByRole('button', {
+        name: /^Start Temperature tower(?! \(completed once\))/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /completed once/i }),
+    ).not.toBeInTheDocument();
+
+    // "Finish calibration" must stay disabled — the server has zero
+    // confirmed methods for this project, regardless of the stale local
+    // completedMethods list.
+    expect(
+      screen.getByRole('button', { name: /Finish calibration/i }),
+    ).toBeDisabled();
+  });
+
+  it('control: canFinish and the completed badge still honor a local completedMethods entry when the server has no progress row at all for it — absence is not a contradiction', async () => {
+    // Companion control for the test above: a method completed before
+    // server-side progress tracking existed (or otherwise with no row yet)
+    // must not be treated as if the server actively disagreed. This mirrors
+    // `deriveGuidedMethodStates`'s own documented degrade-safe fallback.
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue({
+        schemaVersion: 1 as const,
+        printerId: printerIdA,
+        printerModelId: null,
+        machineName: SAMPLE_MACHINE_NAME,
+        processName: SAMPLE_PROCESS_NAME,
+        baseFilamentName: SAMPLE_FILAMENT_NAME,
+        baseFilamentGuid: filamentGuid,
+        cloneId: cloneGuid,
+        cloneName: 'PLA — Prusament Galaxy Black',
+        calibrationProjectId: projectGuid,
+        completedMethods: ['temperature_tower'] as const,
+        currentMethod: null,
+        inFlightJob: null,
+        phase: 'methodPicker' as const,
+        updatedAt: now,
+      }),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    await waitFor(() => {
+      expect(api.getCalibrationMethodProgress).toHaveBeenCalled();
+    });
+    const progressMock = api.getCalibrationMethodProgress as ReturnType<
+      typeof vi.fn
+    >;
+    await act(async () => {
+      await progressMock.mock.results[0]?.value;
+    });
+
+    expect(
+      await screen.findByRole('button', {
+        name: /Start Temperature tower \(completed once\)/i,
+      }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).not.toBeDisabled();
+    });
   });
 });
 

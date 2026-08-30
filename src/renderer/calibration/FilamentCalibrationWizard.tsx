@@ -742,7 +742,8 @@ function FilamentCalibrationWizardInner(
   // `method-progress` is project-owned, not device-scoped, so this reads the
   // same Skipped/Pending/Completed state a second device would see for the
   // same project — never from `working.completedMethods` (local-JSON-only,
-  // legacy from before this issue, left in place for #799 to reconcile).
+  // legacy from before this issue; `MethodStep`'s `canFinish`/`done` now
+  // only fall back to it for a method with no server row at all, see #793).
   const [methodProgress, setMethodProgress] = useState<
     Readonly<Record<string, CalibrationMethodProgressRecord>>
   >({});
@@ -931,6 +932,18 @@ function FilamentCalibrationWizardInner(
     if (method === null) return;
     if (!ACTIVE_STEP_PHASES.has(working.phase)) return;
     if (resumeReconcileMethodRef.current !== method) return;
+    // Consumed here, as soon as the resume window is over — the moment a
+    // successful (`'ready'`) progress read exists to judge this method
+    // against, whether or not that read actually contains a row for it. A
+    // missing row is itself a known answer (`Pending`; see `methodProgress`
+    // above), not an unresolved one — `'error'` is the only genuinely
+    // unknown case, already excluded by the `methodProgressStatus` check.
+    // Consuming any later than this (e.g. only after finding a
+    // `Completed`/`Skipped` row) would leave the ref armed for the common
+    // case of resuming into a method with no row yet, so a *later*
+    // deliberate redo of that same method this session — after it's since
+    // been completed or skipped — would still be wrongly intercepted.
+    resumeReconcileMethodRef.current = null;
     const progress = methodProgress[method] ?? null;
     if (progress === null) return;
     // Guards against a stale response from a since-abandoned project
@@ -939,25 +952,22 @@ function FilamentCalibrationWizardInner(
     // project's fresher truth.
     if (progress.projectId !== working.calibrationProjectId) return;
     const disposition = progress.disposition;
-    // Consumed here, unconditionally, the first time this method's
-    // disposition is actually known — whether or not it turns out to
-    // require a correction. A later deliberate re-selection of this exact
-    // method (e.g. an intentional redo) must never be re-intercepted.
-    resumeReconcileMethodRef.current = null;
     if (disposition !== 'Completed' && disposition !== 'Skipped') return;
-    // The guards above already established, from this effect's own fresh
-    // closure (`working.currentMethod === method` and
-    // `ACTIVE_STEP_PHASES.has(working.phase)`), that a correction applies
-    // here. Nothing can change `working` between those checks and the
-    // `setWorking` call below — this function runs to completion
-    // synchronously, and React only invokes an effect body with the
-    // freshest committed state for its dependencies (a superseded
-    // intermediate commit's effect is skipped rather than run stale). The
-    // functional updater's own re-check against `current` stays as
-    // defense-in-depth, but `setBanner` is safe to fire unconditionally
-    // alongside it: the two can never disagree about whether the state
-    // being reported by the banner (this method having just been read back
-    // as `Completed`/`Skipped`) actually holds.
+    // `setWorking` and `setBanner` below are both driven off `method`,
+    // captured from `working.currentMethod` at the top of this effect
+    // invocation. Nothing else in this component can change `working`
+    // between that read and here — this function body runs to completion
+    // synchronously with no `await`, so no other event-loop turn (a click
+    // handler, a resolved promise `.then`, another effect) can interleave.
+    // The only way `working.currentMethod`/`working.phase` could already
+    // disagree with `method`/this effect's own dependency values is if a
+    // *previous* effect earlier in this same commit's flush had changed
+    // them — but this effect's dependencies include those exact fields, so
+    // React would have already re-run it against the newer values before
+    // reaching this line, not stale ones. The functional updater's re-check
+    // against `current` therefore stays only as defense-in-depth against a
+    // future refactor, not a mechanism this fix load-bears on; `setBanner`
+    // is safe to fire unconditionally alongside it.
     setWorking((current) => {
       if (current.currentMethod !== method) return current;
       if (!ACTIVE_STEP_PHASES.has(current.phase)) return current;
@@ -2517,9 +2527,28 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
   const isActive = working.phase === 'methodPicker';
   const hasSyncFailures = working.draftObservationFailures.length > 0;
   const hasSyncPending = working.draftObservationPending.length > 0;
+  // Issue #793: "at least one method done" must give an explicit server
+  // disposition priority over the legacy local `completedMethods` list, for
+  // exactly the same reason and with the same precedence as `done` below
+  // and `deriveGuidedMethodStates` above — a method the server has an
+  // actual row for (`Pending` or `Skipped`) can never count as done just
+  // because a stale local record says so (e.g. progress reset from another
+  // device), but a method with NO row at all yet is not a contradiction,
+  // just no server answer to judge by, so the legacy local record still
+  // counts there. `methodProgressStatus !== 'ready'` (no successful read at
+  // all) falls back to the local list in full, so the button doesn't
+  // flicker disabled during an in-flight or failed progress read.
+  const hasServerCompletedMethod = FILAMENT_WIZARD_METHODS.some((method) => {
+    const progress = methodProgress[method] ?? null;
+    return progress !== null
+      ? progress.disposition === 'Completed'
+      : working.completedMethods.includes(method);
+  });
   const canFinish =
     working.calibrationProjectId !== null &&
-    working.completedMethods.length > 0 &&
+    (methodProgressStatus === 'ready'
+      ? hasServerCompletedMethod
+      : working.completedMethods.length > 0) &&
     !hasSyncFailures &&
     !hasSyncPending;
 
@@ -2613,14 +2642,23 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           const progress = methodProgress[method] ?? null;
           const disposition = progress?.disposition ?? 'Pending';
           const skipped = disposition === 'Skipped';
-          // `done` now recognises a server-Completed disposition in addition
-          // to the legacy local `completedMethods` JSON — either one is
-          // sufficient, so a method not yet migrated to server-tracked
-          // completion still reports done rather than perpetually locking
-          // every later guided step (see `deriveGuidedMethodStates`).
+          // `done` follows the exact same server-vs-legacy precedence as
+          // `deriveGuidedMethodStates` above (issue #793): an explicit
+          // server disposition (a progress row actually exists) always
+          // wins over the local `completedMethods` JSON — so a method the
+          // server now reports `Pending`/`Skipped` can never keep showing
+          // "— completed" from a stale or since-superseded local record.
+          // `working.completedMethods` is consulted ONLY when there is no
+          // row at all yet (`progress === null`) — that is not a
+          // contradiction, just no server answer yet to judge by (e.g. a
+          // method completed before server-side tracking existed, or while
+          // `methodProgressStatus !== 'ready'`), matching the graceful
+          // degrade `deriveGuidedMethodStates` already documents for
+          // exactly this case.
           const done =
-            disposition === 'Completed' ||
-            working.completedMethods.includes(method);
+            progress !== null
+              ? progress.disposition === 'Completed'
+              : working.completedMethods.includes(method);
           const skipToggleBusy = methodProgressBusyMethods.has(method);
           const canToggleSkip =
             working.calibrationProjectId !== null &&
