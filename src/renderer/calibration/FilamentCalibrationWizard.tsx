@@ -552,6 +552,18 @@ function FilamentCalibrationWizardInner(
   // and only roll over once a genuinely new attempt starts, at
   // `proceedToCloneName`.
   const createProjectRequestIdRef = useRef<string | null>(null);
+  // Issue #793: scopes the single-authority reconciliation effect below to
+  // ONLY the method/phase a restore just landed on, and only once. Without
+  // this, the effect would also fire whenever the operator deliberately
+  // navigates into an active-step screen for a method the server already
+  // reports Completed/Skipped (e.g. `selectMethod` on a "— completed"
+  // button, which is an intentional, allowed redo) and incorrectly snap
+  // straight back to the picker before the operator's own click ever
+  // renders. Armed with the resumed method by the restore effect; consumed
+  // (set back to `null`) by the reconciliation effect the first time it
+  // evaluates that method's disposition, whatever the outcome — so a later
+  // deliberate re-selection of the same method is never re-intercepted.
+  const resumeReconcileMethodRef = useRef<CalibrationSliceMethod | null>(null);
   useEffect(
     () => () => {
       unmountedRef.current = true;
@@ -590,6 +602,16 @@ function FilamentCalibrationWizardInner(
         if (cancelled || unmountedRef.current || record === null) return;
         const restored = restoredWorkingState(record);
         lastPersistedJsonRef.current = JSON.stringify(stripUpdatedAt(record));
+        // Issue #793: arm the single-authority reconciliation for exactly
+        // the method/phase this restore is about to land on — never for a
+        // method the operator later picks deliberately this session. See
+        // `resumeReconcileMethodRef`'s declaration for why this scoping
+        // exists.
+        resumeReconcileMethodRef.current =
+          restored.currentMethod !== null &&
+          ACTIVE_STEP_PHASES.has(restored.phase)
+            ? restored.currentMethod
+            : null;
         setWorking((current) => ({ ...current, ...restored }));
         setBanner({
           kind: 'info',
@@ -837,32 +859,60 @@ function FilamentCalibrationWizardInner(
   // cache: it may persist wizard bookmarks, but it must never let a resumed
   // local bookmark keep contradicting the server once the server has an
   // opinion. `deriveGuidedMethodStates` already enforces half of this for
-  // the method picker's per-step badges — server disposition always wins
-  // over the local `completedMethods` set. This effect closes the other
-  // half: the *screen* the operator is looking at. If the wizard restored
-  // directly into an active-step screen (past the method picker) for
-  // `working.currentMethod`, and a fresh `getCalibrationMethodProgress` read
-  // reports that method as `Completed` or `Skipped` — resolved from another
-  // device, or a stale local bookmark that outlived what it recorded — the
-  // active-step screen must not keep presenting it as still in progress.
-  // Snap back to the method picker, which renders the method as done/
-  // skipped from server data and lets the operator pick the next one. The
-  // persistence effect above then re-saves this corrected `phase`/
-  // `currentMethod`/`inFlightJob`, so the on-disk cache heals itself rather
-  // than staying stale — it never gets to keep asserting a resolved step is
-  // still open.
+  // the method picker's disposition badge — server disposition always wins
+  // over the local `completedMethods` set there. This effect closes the
+  // other half: the *screen* the operator is looking at immediately after a
+  // restore. If the wizard restored directly into an active-step screen
+  // (past the method picker) for `working.currentMethod`, and a fresh
+  // `getCalibrationMethodProgress` read reports that exact method as
+  // `Completed` or `Skipped` — resolved from another device, or a stale
+  // local bookmark that outlived what it recorded — the active-step screen
+  // must not keep presenting it as still in progress. Snap back to the
+  // method picker, which renders the method as done/skipped from server
+  // data and lets the operator pick the next one. The persistence effect
+  // above then re-saves this corrected `phase`/`currentMethod`/
+  // `inFlightJob`, so the on-disk cache heals itself rather than staying
+  // stale.
+  //
+  // Scoped to `resumeReconcileMethodRef` (see its declaration): this must
+  // fire ONLY for the specific method/phase a restore just landed on, and
+  // only once, never for a method the operator deliberately picks this
+  // session (redoing a completed/skipped method is an intentional, allowed
+  // action elsewhere in this component).
   useEffect(() => {
     if (methodProgressStatus !== 'ready') return;
     const method = working.currentMethod;
     if (method === null) return;
     if (!ACTIVE_STEP_PHASES.has(working.phase)) return;
-    const disposition = methodProgress[method]?.disposition ?? null;
+    if (resumeReconcileMethodRef.current !== method) return;
+    const progress = methodProgress[method] ?? null;
+    if (progress === null) return;
+    // Guards against a stale response from a since-abandoned project
+    // merging into `methodProgress` (the underlying map is not itself
+    // project-scoped — see `fetchMethodProgress`) and being misread as this
+    // project's fresher truth.
+    if (progress.projectId !== working.calibrationProjectId) return;
+    const disposition = progress.disposition;
+    // Consumed here, unconditionally, the first time this method's
+    // disposition is actually known — whether or not it turns out to
+    // require a correction. A later deliberate re-selection of this exact
+    // method (e.g. an intentional redo) must never be re-intercepted.
+    resumeReconcileMethodRef.current = null;
     if (disposition !== 'Completed' && disposition !== 'Skipped') return;
+    // The guards above already established, from this effect's own fresh
+    // closure (`working.currentMethod === method` and
+    // `ACTIVE_STEP_PHASES.has(working.phase)`), that a correction applies
+    // here. Nothing can change `working` between those checks and the
+    // `setWorking` call below — this function runs to completion
+    // synchronously, and React only invokes an effect body with the
+    // freshest committed state for its dependencies (a superseded
+    // intermediate commit's effect is skipped rather than run stale). The
+    // functional updater's own re-check against `current` stays as
+    // defense-in-depth, but `setBanner` is safe to fire unconditionally
+    // alongside it: the two can never disagree about whether the state
+    // being reported by the banner (this method having just been read back
+    // as `Completed`/`Skipped`) actually holds.
     setWorking((current) => {
-      // Re-check inside the updater: another change (e.g. the operator
-      // moving on, or `restartWizard`) may already have altered
-      // phase/currentMethod between this effect being scheduled and this
-      // updater running.
       if (current.currentMethod !== method) return current;
       if (!ACTIVE_STEP_PHASES.has(current.phase)) return current;
       return {
@@ -886,6 +936,7 @@ function FilamentCalibrationWizardInner(
   }, [
     methodProgress,
     methodProgressStatus,
+    working.calibrationProjectId,
     working.currentMethod,
     working.phase,
   ]);

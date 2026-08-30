@@ -1637,6 +1637,25 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     expect(
       await screen.findByText(/This method was already completed\./i),
     ).toBeInTheDocument();
+    // Bishop review (#793): the "cache heals itself" claim in the doc
+    // comments must have an assertion behind it, not just be read-derived.
+    // The corrected phase/currentMethod is re-persisted through the same
+    // save channel as every other wizard change.
+    await waitFor(() => {
+      const calls = (
+        api.saveFilamentCalibrationWizardState as ReturnType<typeof vi.fn>
+      ).mock.calls;
+      expect(
+        calls.some((call) => {
+          const state = (
+            call[0] as {
+              state: { phase: string; currentMethod: string | null };
+            }
+          ).state;
+          return state.phase === 'methodPicker' && state.currentMethod === null;
+        }),
+      ).toBe(true);
+    });
   });
 
   it('a resumed active step for a method the server now reports Skipped snaps back to the method picker instead of trusting the stale local bookmark', async () => {
@@ -1707,24 +1726,78 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     expect(
       await screen.findByRole('group', { name: /Step 5 — send to printer/i }),
     ).toBeInTheDocument();
-    // Give the reconciliation effect a chance to run before asserting the
-    // negative — it is driven by the same `getCalibrationMethodProgress`
-    // read that resolved to `Pending` above, so once that settles there is
-    // nothing left that could still flip the phase later in this test.
+    // Prove the reconciliation effect actually evaluated this Pending
+    // disposition (not merely that a request was issued) before asserting
+    // the negative: wait for the mocked read to be called, then await its
+    // own resolved promise inside `act` so every state update queued by its
+    // `.then` continuation (methodProgress, methodProgressStatus) has
+    // flushed. `calls.length > 0` alone would be satisfied synchronously on
+    // invocation, before the response — and therefore the reconciliation
+    // effect — had actually settled.
     await waitFor(() => {
-      expect(
-        (api.getCalibrationMethodProgress as ReturnType<typeof vi.fn>).mock
-          .calls.length,
-      ).toBeGreaterThan(0);
+      expect(api.getCalibrationMethodProgress).toHaveBeenCalled();
+    });
+    const progressMock = api.getCalibrationMethodProgress as ReturnType<
+      typeof vi.fn
+    >;
+    await act(async () => {
+      await progressMock.mock.results[0]?.value;
     });
     expect(
-      screen.queryByRole('group', { name: /Step 3 — calibration method/i }),
-    ).not.toBeInTheDocument();
+      screen.getByRole('group', { name: /Step 5 — send to printer/i }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(/This method was already completed\./i),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText(/This method was already skipped\./i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a resumed active step for a method the server now reports Completed is left alone once the operator deliberately re-selects it — a redo is not the same as a resume, and must not be intercepted', async () => {
+    // Regression for a bug caught in review: the reconciliation effect must
+    // be scoped to the specific method/phase a *restore* landed on, not to
+    // every subsequent active-step phase for any method. Otherwise a
+    // completely fresh session (no resume at all) in which the operator
+    // deliberately clicks "Start" to redo a server-Completed method — an
+    // intentional, allowed action (see the picker's "— completed" button,
+    // which stays enabled) — would incorrectly snap straight back to the
+    // picker before the operator's own click ever renders its screen.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '99999999-9999-4999-8999-000000000004',
+            projectId: projectGuid,
+            method: 'temperature_tower' as const,
+            disposition: 'Completed' as const,
+            currentStepId: null,
+            revision: 1,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          },
+        ],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Start Temperature tower \(completed once\)/i,
+      }),
+    );
+
+    // A deliberate redo must land on (and stay on) the method's purpose
+    // screen — never bounce straight back to the picker.
+    expect(
+      await screen.findByRole('group', { name: /Step 3a — purpose/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/This method was already completed\./i),
     ).not.toBeInTheDocument();
   });
 });

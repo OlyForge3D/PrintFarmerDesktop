@@ -72,6 +72,15 @@
  * all for a method). `FilamentCalibrationWizard.tsx` enforces the other
  * half — the active-step *screen* a resumed session lands on — with the
  * reconciliation effect declared next to `ACTIVE_STEP_PHASES` there.
+ *
+ * This does not yet cover every consumer of `working.completedMethods`: a
+ * few pre-existing call sites (`canFinish`'s gate on "at least one method
+ * done", and the `done` OR-fallback in the method-picker badge derivation)
+ * still read the local field directly rather than exclusively through
+ * `deriveGuidedMethodStates`. That gap predates and is out of scope for
+ * #793 — it is already tracked, with the local field explicitly called out
+ * as "legacy, left in place for #799 to reconcile" at its declaration in
+ * `FilamentCalibrationWizard.tsx`.
  */
 
 import { PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C } from '@shared/ipc';
