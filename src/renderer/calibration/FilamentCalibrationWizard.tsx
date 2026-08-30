@@ -286,22 +286,41 @@ function bannerFromApiError(error: CalibrationApiError): WizardBanner {
  * distinct from {@link bannerFromApiError} because that function's shared
  * `invalidData` copy ("Restart the wizard — the clone or its base profile
  * appears to have drifted…") is written for the clone/slice/project call
- * sites and is actively wrong advice here. A range-validation rejection of
- * a *measurement* is recoverable by entering a corrected value and
- * resubmitting — nothing about the clone or project is wrong. Every other
- * error code still delegates to the shared copy, since those genuinely are
- * the same category of failure regardless of which call raised them.
+ * sites and is wrong advice here. A range-validation rejection of a
+ * *measurement* is recoverable by entering a corrected value and
+ * resubmitting — nothing about the clone or project is wrong.
+ *
+ * Per issue #177, `error.message` is a client-authored literal catalogued by
+ * `error.code` — it is never the backend's own validation prose. The
+ * server's raw `detail` text (`serverDetail`) is deliberately withheld from
+ * the renderer and stays in the main-process log; only the diagnosed
+ * category ("Calibration data is invalid or unsafe.") and the opaque
+ * `reference` cross the IPC boundary. So this banner does not show the
+ * operator the exact range the server enforced — it shows the diagnosed
+ * category plus the reference the operator can quote for support, which is
+ * the #177-sanctioned recovery path.
+ *
+ * The method name is folded into the title because
+ * `latestObservationRequestRef` tracks "latest" per method: a rejection for
+ * method A can still be A's own latest outcome after the operator has
+ * already moved on to method B, so the banner must name the method it is
+ * about or it reads as though the method currently on screen was rejected.
+ *
+ * Every other error code delegates to the shared copy, since those
+ * genuinely are the same category of failure regardless of which call
+ * raised them.
  */
 function bannerFromObservationApiError(
+  method: CalibrationSliceMethod,
   error: CalibrationApiError,
 ): WizardBanner {
   if (error.code === 'invalidData') {
     return {
       kind: 'error',
-      title: 'The measurement was rejected by the server.',
+      title: `${FILAMENT_METHOD_META[method].title} — measurement rejected by the server.`,
       detail: error.message,
       recovery:
-        'Enter a corrected value within the allowed range and record it again.',
+        'Enter a corrected value within the allowed range and record it again; quote the reference below if it keeps failing.',
       reference: error.reference,
     };
   }
@@ -1685,22 +1704,26 @@ function FilamentCalibrationWizardInner(
               const isLatestRequest = markObservation(
                 observationResponse.status === 'error',
               );
-              // Issue #796: surface the server's actual range-validation
-              // (or other) rejection message to the operator instead of
-              // only the generic "N step(s) failed to sync" hint that
-              // `draftObservationFailures` alone renders later. Does not
-              // block or interrupt the wizard — the phase/banner set right
-              // below for the successful clone write-back is untouched;
-              // this banner simply replaces it once the (still-latest)
-              // background observation settles as an error, same as any
-              // other async banner update in this component.
+              // Issue #796: surface the diagnosed rejection (category +
+              // #177 opaque reference — see `bannerFromObservationApiError`
+              // for why this is not the server's raw validation text)
+              // instead of only the generic "N step(s) failed to sync"
+              // hint that `draftObservationFailures` alone renders later.
+              // Does not block or interrupt the wizard — the phase/banner
+              // set right below for the successful clone write-back is
+              // untouched; this banner simply replaces it once the
+              // (still-latest) background observation settles as an error,
+              // same as any other async banner update in this component.
               if (
                 observationResponse.status === 'error' &&
                 isLatestRequest &&
                 !unmountedRef.current
               ) {
                 setBanner(
-                  bannerFromObservationApiError(observationResponse.error),
+                  bannerFromObservationApiError(
+                    observedMethod,
+                    observationResponse.error,
+                  ),
                 );
               }
               // Issue #797's server-authoritative method disposition can
@@ -1729,7 +1752,7 @@ function FilamentCalibrationWizardInner(
               if (isLatestRequest && !unmountedRef.current) {
                 setBanner({
                   kind: 'error',
-                  title: 'The draft-profile observation could not be recorded.',
+                  title: `${FILAMENT_METHOD_META[observedMethod].title} — the draft-profile observation could not be recorded.`,
                   detail:
                     cause instanceof Error
                       ? cause.message
