@@ -442,6 +442,19 @@ export type FilamentWizardPhase =
   | 'cloning'
   /** Step 2. Clone exists; pick the next method. */
   | 'methodPicker'
+  /**
+   * Step 3, phase A (issue #799). A method has been picked; the operator
+   * sees what it measures/why before being asked for anything, per the
+   * four-phase purpose → inputs → slice/print → results mapping onto the
+   * server's `setup → print → measure → select` step structure.
+   */
+  | 'methodPurpose'
+  /**
+   * Step 3, phase B (issue #799). Collecting the method's declared setup
+   * inputs (from the server guidance catalog — issue #797 — falling back to
+   * none if the catalog has not loaded) before a slice is submitted.
+   */
+  | 'methodInputs'
   /** Submitting the slice job. */
   | 'submittingSlice'
   /** Step 3. Polling the slice job for a terminal status. */
@@ -521,6 +534,13 @@ export interface FilamentWizardWorkingSnapshot {
  * (in-flight-network) phase folds onto its nearest stable predecessor;
  * the pre-clone phases (`select`, `cloneName`, `cloning`) have nothing to
  * resume into yet and return `null`.
+ *
+ * `methodPurpose`/`methodInputs` (issue #799) fold onto `methodPicker` —
+ * neither is worth resuming into directly: nothing about them survives a
+ * restart usefully (the operator just re-picks the method, which re-shows
+ * its purpose and re-collects its inputs), and folding them here avoids
+ * widening the persisted-record wire schema for two screens that carry no
+ * server-side state of their own.
  */
 export function mapPhaseForPersistence(
   phase: FilamentWizardPhase,
@@ -536,6 +556,8 @@ export function mapPhaseForPersistence(
     case 'cloning':
       return null;
     case 'submittingSlice':
+    case 'methodPurpose':
+    case 'methodInputs':
       return 'methodPicker';
     case 'sendingToPrinter':
       return 'sliceReady';
@@ -556,10 +578,11 @@ export function mapPhaseForPersistence(
  * populated — which in practice only happens transiently during the
  * `select`/`cloneName`/`cloning` phases this never gets called for).
  *
- * `submittingSlice` folds to `methodPicker` and drops `currentMethod` /
- * `inFlightJob` — the submit never got a `jobId` back, so there is nothing
- * about that attempt worth resuming; the operator just picks the method
- * again.
+ * `submittingSlice`, `methodPurpose`, and `methodInputs` all fold to
+ * `methodPicker` and drop `currentMethod` / `inFlightJob` — none of the
+ * three has a `jobId` back from the server yet (issue #799's purpose/inputs
+ * screens are pre-submit), so there is nothing about that in-progress pick
+ * worth resuming; the operator just picks the method again.
  */
 export function buildPersistedState(
   snapshot: FilamentWizardWorkingSnapshot,
@@ -577,7 +600,10 @@ export function buildPersistedState(
   ) {
     return null;
   }
-  const submitNeverLanded = snapshot.phase === 'submittingSlice';
+  const submitNeverLanded =
+    snapshot.phase === 'submittingSlice' ||
+    snapshot.phase === 'methodPurpose' ||
+    snapshot.phase === 'methodInputs';
   return {
     schemaVersion: 1,
     printerId: snapshot.printerId,
