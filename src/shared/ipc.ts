@@ -6492,10 +6492,14 @@ const CALIBRATION_MAX_METHOD_PARAM_COUNT = 32;
  * the caller does not provide. We restrict values to finite numbers because
  * the only in-use params are numeric (`start_temp`, `flow_ratio_target`, ...)
  * and permitting anything else would let a caller send arbitrary JSON blobs
- * that the worker would either ignore or reject.
+ * that the worker would either ignore or reject. The key length ceiling
+ * matches `CalibrationMethodSetupInput.key`'s max(128) (#799): every key a
+ * caller legitimately sends here originates from a declared setup input's
+ * `key`, so a shorter ceiling here would let a validly-declared setup input
+ * produce a `params` payload this schema itself rejects.
  */
 export const CalibrationSliceMethodParams = z
-  .record(z.string().min(1).max(64), z.number().finite())
+  .record(z.string().min(1).max(128), z.number().finite())
   .refine(
     (record) =>
       Object.keys(record).length <= CALIBRATION_MAX_METHOD_PARAM_COUNT,
