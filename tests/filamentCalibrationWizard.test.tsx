@@ -46,6 +46,7 @@ const processGuid = '22222222-2222-4222-8222-222222222202';
 const filamentGuid = '22222222-2222-4222-8222-222222222203';
 const cloneGuid = '44444444-4444-4444-8444-444444444444';
 const projectGuid = '66666666-6666-4666-8666-666666666601';
+const spoolGuid = '77777777-7777-4777-8777-777777777701';
 const jobIdOne = '55555555-5555-4555-8555-555555555501';
 const jobIdTwo = '55555555-5555-4555-8555-555555555502';
 const now = '2026-08-24T02:29:44.441Z';
@@ -80,6 +81,27 @@ function printerCandidate(): CalibrationPrinterCandidate {
     printerModel: 'Klipper machine',
     printerModelId: null,
     isOnline: true,
+  };
+}
+
+/** Issue #805: one Spoolman spool candidate offered by the picker. */
+function spoolCandidate(): {
+  spoolmanSpoolId: string;
+  spoolmanFilamentId: string | null;
+  displayName: string;
+  material: string | null;
+  color: string | null;
+  vendor: string | null;
+  remainingWeightGrams: number | null;
+} {
+  return {
+    spoolmanSpoolId: spoolGuid,
+    spoolmanFilamentId: spoolGuid,
+    displayName: 'Prusament PLA — Galaxy Black (#12)',
+    material: 'PLA',
+    color: 'Galaxy Black',
+    vendor: 'Prusament',
+    remainingWeightGrams: 750,
   };
 }
 
@@ -326,6 +348,11 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      spools: [spoolCandidate()],
+      fetchedAt: now,
+    }),
   };
   return { ...base, ...overrides };
 }
@@ -1362,6 +1389,101 @@ describe('FilamentCalibrationWizard server-side CalibrationProject entry point (
       (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
         .calls,
     ).toHaveLength(0);
+  });
+});
+
+describe('FilamentCalibrationWizard Spoolman spool selection (issue #805)', () => {
+  it('defaults to proceeding without a spool and sends null for all three spool fields', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    const spoolSelector = await screen.findByRole('combobox', {
+      name: /Spoolman spool/i,
+    });
+    // The picker must have loaded the fixture spool as a real option, but
+    // the default value stays "No spool" — the operator opts in, not out.
+    await waitFor(() => {
+      const populated = Array.from(
+        spoolSelector.querySelectorAll('option'),
+      ).some((option) => option.value === spoolGuid);
+      if (!populated) throw new Error('spool selector not populated yet');
+    });
+    expect((spoolSelector as HTMLSelectElement).value).toBe('');
+
+    await performCloneStep();
+
+    const [request] = (api.createCalibrationProject as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [
+      {
+        spoolmanFilamentId: string | null;
+        spoolmanSpoolId: string | null;
+        localSpoolId: string | null;
+      },
+    ];
+    expect(request.spoolmanFilamentId).toBeNull();
+    expect(request.spoolmanSpoolId).toBeNull();
+    expect(request.localSpoolId).toBeNull();
+  });
+
+  it('threads the operator-picked spool into spoolmanFilamentId and spoolmanSpoolId, leaving localSpoolId null', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    const spoolSelector = await screen.findByRole('combobox', {
+      name: /Spoolman spool/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        spoolSelector.querySelectorAll('option'),
+      ).some((option) => option.value === spoolGuid);
+      if (!populated) throw new Error('spool selector not populated yet');
+    });
+    fireEvent.change(spoolSelector, { target: { value: spoolGuid } });
+
+    await performCloneStep();
+
+    const [request] = (api.createCalibrationProject as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [
+      {
+        spoolmanFilamentId: string | null;
+        spoolmanSpoolId: string | null;
+        localSpoolId: string | null;
+      },
+    ];
+    expect(request.spoolmanFilamentId).toBe(spoolGuid);
+    expect(request.spoolmanSpoolId).toBe(spoolGuid);
+    expect(request.localSpoolId).toBeNull();
+  });
+
+  it('lets the operator proceed without a spool even when the Spoolman list fails to load', async () => {
+    const api = wizardApi({
+      listCalibrationSpoolmanSpools: vi
+        .fn()
+        .mockResolvedValue(notImplemented('listCalibrationSpoolmanSpools')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    await screen.findByText(/Spoolman spools could not be loaded/i);
+    const spoolSelector = await screen.findByRole('combobox', {
+      name: /Spoolman spool/i,
+    });
+    expect((spoolSelector as HTMLSelectElement).value).toBe('');
+    expect(spoolSelector.hasAttribute('disabled')).toBe(false);
+
+    await performCloneStep();
+
+    const [request] = (api.createCalibrationProject as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [
+      { spoolmanFilamentId: string | null; spoolmanSpoolId: string | null },
+    ];
+    expect(request.spoolmanFilamentId).toBeNull();
+    expect(request.spoolmanSpoolId).toBeNull();
   });
 });
 

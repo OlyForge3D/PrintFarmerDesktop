@@ -463,6 +463,11 @@ function profileSelectionApi(): CalibrationApi {
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
+      status: 'ok',
+      spools: [],
+      fetchedAt: '2026-08-24T02:29:44.441Z',
+    }),
   } satisfies CalibrationApi;
 }
 

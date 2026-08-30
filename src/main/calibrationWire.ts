@@ -2324,6 +2324,69 @@ export type RemoteCalibrationProjectRecord = z.infer<
 >;
 
 /**
+ * One Spoolman spool, as PrintFarmer's server mirrors it (issue #805). Both
+ * IDs are PrintFarmer-side Guids — the same shape `CalibrationFilamentIdentityDto`
+ * already uses for `spoolmanSpoolId`/`spoolmanFilamentId` above — not
+ * Spoolman's own numeric IDs. Field names are the desktop's own projection
+ * (not verified against a live server DTO, since no such route has landed
+ * yet); `.passthrough()` and defensive `.nullish()` coercions keep this
+ * resilient to additional/renamed fields on the real server response.
+ */
+export const RemoteCalibrationSpoolmanSpool = z
+  .object({
+    spoolmanSpoolId: ServerGuid,
+    spoolmanFilamentId: ServerGuid.nullish().transform((v) => v ?? null),
+    displayName: z.string().min(1).max(256),
+    material: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    color: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    vendor: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    remainingWeightGrams: z
+      .number()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationSpoolmanSpool = z.infer<
+  typeof RemoteCalibrationSpoolmanSpool
+>;
+
+/**
+ * `GET` list-of-spools response. Accepts both `{ spools: [...] }` and a bare
+ * array, matching `RemoteCustomProfilesList`'s tolerance below for the same
+ * reason: different server builds have serialized either shape.
+ */
+export const RemoteCalibrationSpoolmanSpoolsList = z
+  .union([
+    z
+      .object({
+        spools: boundedWireList(RemoteCalibrationSpoolmanSpool),
+      })
+      .passthrough(),
+    boundedWireList(RemoteCalibrationSpoolmanSpool).transform((spools) => ({
+      spools,
+    })),
+  ])
+  .transform((v) => ({
+    spools: v.spools ?? [],
+  }));
+export type RemoteCalibrationSpoolmanSpoolsList = z.infer<
+  typeof RemoteCalibrationSpoolmanSpoolsList
+>;
+
+/**
  * `CalibrationSetupInputDto` — nested on `CalibrationMethodGuidanceDto` from
  * `GET /api/calibration-projects/method-guidance` (issue #797 / PrintFarmer#2180 gap 3/4).
  * Verified against `Farm.Modules.Calibration/Contracts/CalibrationProjectContracts.cs` at
