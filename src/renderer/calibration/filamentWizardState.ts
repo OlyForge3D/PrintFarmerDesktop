@@ -418,7 +418,7 @@ export function deriveGuidedMethodStates(
     if (disposition === 'Skipped') {
       return { method, status: 'skipped', locked: false };
     }
-    if (completedLocally.has(method)) {
+    if (disposition === null && completedLocally.has(method)) {
       return { method, status: 'done', locked: false };
     }
     if (!nextAssigned) {

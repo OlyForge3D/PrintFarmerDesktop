@@ -469,6 +469,27 @@ describe('deriveGuidedMethodStates (issue #794)', () => {
     expect(temperature?.locked).toBe(false);
   });
 
+  it('prefers a server-authoritative Pending disposition over a stale local completedMethods entry', () => {
+    // Regression: the local fallback must only fire when the server has NO
+    // recorded disposition at all (`null`), not merely when it isn't
+    // `Completed`/`Skipped`. An earlier fix pass only special-cased
+    // `Skipped`, leaving an explicit server `Pending` disposition to still
+    // fall through to the legacy local set and incorrectly report `done` —
+    // the same server-authority violation the Skipped case guards against.
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: ['temperature_tower'],
+      dispositionFor: (method) =>
+        method === 'temperature_tower' ? 'Pending' : null,
+      gatingAvailable: true,
+    });
+    const states = result ?? [];
+    const temperature = states.find((s) => s.method === 'temperature_tower');
+    expect(temperature?.status).not.toBe('done');
+    // Pending and first in order, so it becomes the recommended next step.
+    expect(temperature?.status).toBe('next');
+    expect(temperature?.locked).toBe(false);
+  });
+
   it('assigns `next` to exactly one method across the full guided order', () => {
     // Control against a broken implementation that marks every unresolved
     // method as `next` (which would defeat locking entirely) or none at all.
