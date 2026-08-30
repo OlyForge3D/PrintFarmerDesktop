@@ -789,6 +789,19 @@ function FilamentCalibrationWizardInner(
   // *failure* would make the mismatch swallow the error, leaving the sync
   // status stuck at `'loading'` forever with no "Retry sync" ever offered.
   const methodProgressSeqRef = useRef(0);
+  // Issue #793 (Bishop, round 3): which `calibrationProjectId` the CURRENT
+  // `methodProgressStatus === 'ready'` actually reflects. `fetchMethodProgress`
+  // reads `working.calibrationProjectId` fresh each call, but React commits
+  // this component's other state (e.g. a resume landing on a project +
+  // active step in one `setWorking`) and re-runs effects in declaration
+  // order within that same commit — so an effect that merely checks
+  // `methodProgressStatus === 'ready'` can observe a *stale* 'ready' left
+  // over from an earlier project (or the `projectId === null` bootstrap
+  // read) before this commit's own `fetchMethodProgress` re-run has had a
+  // chance to flip status back to 'loading'. Consumers that must not act on
+  // that stale 'ready' — the resume-vs-server reconciliation effect below —
+  // additionally require this to match `working.calibrationProjectId`.
+  const methodProgressReadyProjectIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -821,6 +834,7 @@ function FilamentCalibrationWizardInner(
     const seq = ++methodProgressSeqRef.current;
     if (projectId === null) {
       setMethodProgress({});
+      methodProgressReadyProjectIdRef.current = null;
       setMethodProgressStatus('ready');
       return;
     }
@@ -871,6 +885,7 @@ function FilamentCalibrationWizardInner(
         // newest read. Only the fetch that is STILL the latest by sequence
         // number may move the status.
         if (methodProgressSeqRef.current === seq) {
+          methodProgressReadyProjectIdRef.current = projectId;
           setMethodProgressStatus('ready');
         }
       } else if (methodProgressSeqRef.current === seq) {
@@ -932,17 +947,36 @@ function FilamentCalibrationWizardInner(
     if (method === null) return;
     if (!ACTIVE_STEP_PHASES.has(working.phase)) return;
     if (resumeReconcileMethodRef.current !== method) return;
+    // Bishop, round 3: `methodProgressStatus === 'ready'` alone is not
+    // enough — it can be a STALE 'ready' left over from an earlier project
+    // (or the `projectId === null` bootstrap read that also reports
+    // 'ready' with an empty map), observed by this effect's own closure
+    // before this commit's `fetchMethodProgress` re-run (a separate effect,
+    // declared earlier, triggered by the same `working.calibrationProjectId`
+    // change that armed the ref) has had a chance to flip status back to
+    // 'loading'. Consuming the one-shot ref against that stale 'ready'
+    // would silently and permanently lose the resume window before the
+    // real read for THIS project ever lands. Requiring the last
+    // successful read to have actually been FOR this project closes that
+    // race; the effect simply re-runs (status is a dependency) once the
+    // real read resolves.
+    if (
+      methodProgressReadyProjectIdRef.current !== working.calibrationProjectId
+    ) {
+      return;
+    }
     // Consumed here, as soon as the resume window is over — the moment a
-    // successful (`'ready'`) progress read exists to judge this method
-    // against, whether or not that read actually contains a row for it. A
-    // missing row is itself a known answer (`Pending`; see `methodProgress`
-    // above), not an unresolved one — `'error'` is the only genuinely
-    // unknown case, already excluded by the `methodProgressStatus` check.
-    // Consuming any later than this (e.g. only after finding a
-    // `Completed`/`Skipped` row) would leave the ref armed for the common
-    // case of resuming into a method with no row yet, so a *later*
-    // deliberate redo of that same method this session — after it's since
-    // been completed or skipped — would still be wrongly intercepted.
+    // successful (`'ready'`) progress read FOR THIS PROJECT exists to judge
+    // this method against, whether or not that read actually contains a
+    // row for it. A missing row is itself a known answer (`Pending`; see
+    // `methodProgress` above), not an unresolved one — `'error'` is the
+    // only genuinely unknown case, already excluded by the
+    // `methodProgressStatus` check. Consuming any later than this (e.g.
+    // only after finding a `Completed`/`Skipped` row) would leave the ref
+    // armed for the common case of resuming into a method with no row yet,
+    // so a *later* deliberate redo of that same method this session —
+    // after it's since been completed or skipped — would still be
+    // wrongly intercepted.
     resumeReconcileMethodRef.current = null;
     const progress = methodProgress[method] ?? null;
     if (progress === null) return;
@@ -959,15 +993,15 @@ function FilamentCalibrationWizardInner(
     // between that read and here — this function body runs to completion
     // synchronously with no `await`, so no other event-loop turn (a click
     // handler, a resolved promise `.then`, another effect) can interleave.
-    // The only way `working.currentMethod`/`working.phase` could already
-    // disagree with `method`/this effect's own dependency values is if a
-    // *previous* effect earlier in this same commit's flush had changed
-    // them — but this effect's dependencies include those exact fields, so
-    // React would have already re-run it against the newer values before
-    // reaching this line, not stale ones. The functional updater's re-check
-    // against `current` therefore stays only as defense-in-depth against a
-    // future refactor, not a mechanism this fix load-bears on; `setBanner`
-    // is safe to fire unconditionally alongside it.
+    // No effect in this component calls `setWorking` synchronously from
+    // within another effect's body during the same flush (the only other
+    // `setWorking` callers are event handlers and this component's own
+    // async continuations), so this effect's closure of `working` cannot
+    // already be stale by the time this line runs. The functional updater's
+    // re-check against `current` stays as defense-in-depth against a future
+    // refactor that might introduce such a caller, not a mechanism this fix
+    // load-bears on; `setBanner` is safe to fire unconditionally alongside
+    // it.
     setWorking((current) => {
       if (current.currentMethod !== method) return current;
       if (!ACTIVE_STEP_PHASES.has(current.phase)) return current;
@@ -2527,6 +2561,24 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
   const isActive = working.phase === 'methodPicker';
   const hasSyncFailures = working.draftObservationFailures.length > 0;
   const hasSyncPending = working.draftObservationPending.length > 0;
+  // Bishop, round 3 (non-blocking): `methodProgress` is not itself
+  // project-scoped — `fetchMethodProgress` merges responses by revision and
+  // only clears the map when the project id becomes `null` (see its
+  // comment) — so a late response from a since-abandoned project could
+  // otherwise contaminate a fresher project's read here. `canFinish` and
+  // `done` are now load-bearing on this map (issue #793), so both look up
+  // through this helper rather than `methodProgress[method]` directly, to
+  // stay consistent with the same guard the resume-vs-server reconciliation
+  // effect above already applies to its own row lookup.
+  const progressForCurrentProject = (
+    method: CalibrationSliceMethod,
+  ): CalibrationMethodProgressRecord | null => {
+    const progress = methodProgress[method] ?? null;
+    if (progress === null) return null;
+    return progress.projectId === working.calibrationProjectId
+      ? progress
+      : null;
+  };
   // Issue #793: "at least one method done" must give an explicit server
   // disposition priority over the legacy local `completedMethods` list, for
   // exactly the same reason and with the same precedence as `done` below
@@ -2535,20 +2587,26 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
   // because a stale local record says so (e.g. progress reset from another
   // device), but a method with NO row at all yet is not a contradiction,
   // just no server answer to judge by, so the legacy local record still
-  // counts there. `methodProgressStatus !== 'ready'` (no successful read at
-  // all) falls back to the local list in full, so the button doesn't
-  // flicker disabled during an in-flight or failed progress read.
+  // counts there. Deliberately NOT gated on `methodProgressStatus === 'ready'`
+  // overall (Hicks, round 3): `methodProgress` retains the last-known rows
+  // across a later 'loading'/'error' status (a refetch does not clear the
+  // map — see `fetchMethodProgress`), so a method already known Pending
+  // from a real row must keep overriding a stale local `completedMethods`
+  // entry even while an unrelated refetch is in flight or failing. The
+  // per-method fallback above already degrades gracefully on its own: with
+  // no rows fetched yet at all (the very first render, before any read
+  // completes), every method's `progress` is `null`, so this reduces
+  // exactly to the local-only check and the button does not flicker
+  // disabled while the first read is in flight.
   const hasServerCompletedMethod = FILAMENT_WIZARD_METHODS.some((method) => {
-    const progress = methodProgress[method] ?? null;
+    const progress = progressForCurrentProject(method);
     return progress !== null
       ? progress.disposition === 'Completed'
       : working.completedMethods.includes(method);
   });
   const canFinish =
     working.calibrationProjectId !== null &&
-    (methodProgressStatus === 'ready'
-      ? hasServerCompletedMethod
-      : working.completedMethods.length > 0) &&
+    hasServerCompletedMethod &&
     !hasSyncFailures &&
     !hasSyncPending;
 
@@ -2644,21 +2702,30 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           const skipped = disposition === 'Skipped';
           // `done` follows the exact same server-vs-legacy precedence as
           // `deriveGuidedMethodStates` above (issue #793): an explicit
-          // server disposition (a progress row actually exists) always
-          // wins over the local `completedMethods` JSON — so a method the
-          // server now reports `Pending`/`Skipped` can never keep showing
-          // "— completed" from a stale or since-superseded local record.
-          // `working.completedMethods` is consulted ONLY when there is no
-          // row at all yet (`progress === null`) — that is not a
-          // contradiction, just no server answer yet to judge by (e.g. a
-          // method completed before server-side tracking existed, or while
-          // `methodProgressStatus !== 'ready'`), matching the graceful
-          // degrade `deriveGuidedMethodStates` already documents for
-          // exactly this case.
-          const done =
-            progress !== null
-              ? progress.disposition === 'Completed'
+          // server disposition (a progress row actually exists FOR THIS
+          // PROJECT — see `progressForCurrentProject`) always wins over the
+          // local `completedMethods` JSON — so a method the server now
+          // reports `Pending`/`Skipped` can never keep showing "— completed"
+          // from a stale or since-superseded local record. `working.
+          // completedMethods` is consulted ONLY when there is no row at all
+          // yet for this project (`progressForCurrentProject(method) ===
+          // null`) — that is not a contradiction, just no server answer yet
+          // to judge by (e.g. a method completed before server-side
+          // tracking existed), matching the graceful degrade
+          // `deriveGuidedMethodStates` already documents for exactly this
+          // case. Deliberately keyed off `progressForCurrentProject` rather
+          // than the raw `progress` used for the disposition badge above —
+          // that badge already reflects whatever `fetchMethodProgress` last
+          // merged for this method regardless of project (a pre-existing,
+          // narrower concern out of this issue's scope), but `done` backs
+          // an authority claim and must not let a stale cross-project row
+          // masquerade as this project's truth.
+          const done = (() => {
+            const currentProjectProgress = progressForCurrentProject(method);
+            return currentProjectProgress !== null
+              ? currentProjectProgress.disposition === 'Completed'
               : working.completedMethods.includes(method);
+          })();
           const skipToggleBusy = methodProgressBusyMethods.has(method);
           const canToggleSkip =
             working.calibrationProjectId !== null &&
