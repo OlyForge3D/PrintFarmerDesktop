@@ -584,6 +584,23 @@ function makeApi(savedRecord = record()) {
       .mockRejectedValue(
         new Error('createCalibrationProject not stubbed in this test'),
       ),
+    getCalibrationMethodGuidanceCatalog: vi
+      .fn<CalibrationApi['getCalibrationMethodGuidanceCatalog']>()
+      .mockRejectedValue(
+        new Error(
+          'getCalibrationMethodGuidanceCatalog not stubbed in this test',
+        ),
+      ),
+    getCalibrationMethodProgress: vi
+      .fn<CalibrationApi['getCalibrationMethodProgress']>()
+      .mockRejectedValue(
+        new Error('getCalibrationMethodProgress not stubbed in this test'),
+      ),
+    setCalibrationMethodDisposition: vi
+      .fn<CalibrationApi['setCalibrationMethodDisposition']>()
+      .mockRejectedValue(
+        new Error('setCalibrationMethodDisposition not stubbed in this test'),
+      ),
     cloneCalibrationFilamentProfile: vi
       .fn<CalibrationApi['cloneCalibrationFilamentProfile']>()
       .mockRejectedValue(

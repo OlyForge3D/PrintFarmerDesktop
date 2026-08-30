@@ -2323,6 +2323,98 @@ export type RemoteCalibrationProjectRecord = z.infer<
   typeof RemoteCalibrationProjectRecord
 >;
 
+/**
+ * `CalibrationSetupInputDto` — nested on `CalibrationMethodGuidanceDto` from
+ * `GET /api/calibration-projects/method-guidance` (issue #797 / PrintFarmer#2180 gap 3/4).
+ * Verified against `Farm.Modules.Calibration/Contracts/CalibrationProjectContracts.cs` at
+ * PrintFarmer commit `b6a754c989e76edd71891e632bd940f1a81f3918` (contracts blob
+ * `e769d4a678ac950e53953a1f6c8eabbb3b7ca80e`).
+ */
+export const RemoteCalibrationSetupInput = z
+  .object({
+    key: z.string().min(1).max(128),
+    label: z.string().min(1).max(256),
+    unit: z.string().max(32),
+    minimum: z.number(),
+    maximum: z.number(),
+  })
+  .passthrough();
+export type RemoteCalibrationSetupInput = z.infer<
+  typeof RemoteCalibrationSetupInput
+>;
+
+/**
+ * `CalibrationMeasureQuantityDto` — nested on `CalibrationMethodGuidanceDto`, verified at the
+ * same commit/blob cited above.
+ */
+export const RemoteCalibrationMeasureQuantity = z
+  .object({
+    key: z.string().min(1).max(128),
+    minimum: z.number(),
+    maximum: z.number(),
+  })
+  .passthrough();
+export type RemoteCalibrationMeasureQuantity = z.infer<
+  typeof RemoteCalibrationMeasureQuantity
+>;
+
+/**
+ * `CalibrationMethodGuidanceDto[]` — the real response body of
+ * `GET /api/calibration-projects/method-guidance`
+ * (`CalibrationProjectsController.GetMethodGuidanceCatalog`), verified at the commit/blob
+ * cited above. Server-owned, per-method display title, purpose, wiki reference, required
+ * `setup` inputs, expected `measure` quantity, and canonical step sequence — the
+ * server-authoritative replacement for this desktop's client-hardcoded `FILAMENT_METHOD_META`
+ * stand-in (issue #797).
+ */
+export const RemoteCalibrationMethodGuidance = z
+  .object({
+    method: z.string().min(1).max(128),
+    title: z.string().min(1).max(256),
+    purpose: z.string().min(1).max(4096),
+    wikiUrl: z.string().max(2048),
+    setupInputs: z.array(RemoteCalibrationSetupInput).max(16),
+    measureQuantity: RemoteCalibrationMeasureQuantity.nullish().transform(
+      (v) => v ?? null,
+    ),
+    steps: z.array(z.string().min(1).max(64)).max(16),
+  })
+  .passthrough();
+export type RemoteCalibrationMethodGuidance = z.infer<
+  typeof RemoteCalibrationMethodGuidance
+>;
+
+/**
+ * `CalibrationMethodProgressDto` — the real response body of both
+ * `GET /api/calibration-projects/{id}/method-progress` (array) and
+ * `PUT /api/calibration-projects/{id}/method-progress/{method}` (single object), verified at
+ * the commit/blob cited above. Project-owned (not device-scoped) disposition tracking for one
+ * calibration method (issue #797 / PrintFarmer#2180 gap 2): a `Skipped` method is
+ * distinguishable from a `Pending` one and neither blocks project completion. `Completed` is
+ * only ever derived server-side from an accepted selection observation — it is never
+ * client-settable (enforced by `CalibrationProjectService.SetMethodDispositionAsync`, which
+ * rejects a client-submitted `Completed` with `method_disposition_invalid`).
+ */
+export const RemoteCalibrationMethodProgress = z
+  .object({
+    id: ServerGuid,
+    projectId: ServerGuid,
+    method: z.string().min(1).max(128),
+    disposition: z.enum(['Pending', 'Skipped', 'Completed']),
+    currentStepId: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    revision: z.number().int().nonnegative(),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+  })
+  .passthrough();
+export type RemoteCalibrationMethodProgress = z.infer<
+  typeof RemoteCalibrationMethodProgress
+>;
+
 /** Remote calibration step from `GET /api/calibration-projects/{id}/steps`. */
 export const RemoteCalibrationStep = z
   .object({

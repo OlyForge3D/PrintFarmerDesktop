@@ -62,6 +62,14 @@ export const IpcChannel = {
   // (draft/promotion semantics) is what would let this project become the
   // write-back target; reconciling the two lifecycles is out of scope here.
   CalibrationCreateProject: 'calibration:createProject',
+  // --- Server-authoritative method guidance/disposition (issue #797) --------
+  // Consumes real server step metadata (PrintFarmer#2180 gap 3) and persists
+  // the perform-or-skip disposition project-side (gap 2), replacing the
+  // client-hardcoded `FILAMENT_METHOD_META` stand-in and local-JSON-only
+  // "completed methods" tracking that #794/#799 use as an interim shape.
+  CalibrationGetMethodGuidanceCatalog: 'calibration:getMethodGuidanceCatalog',
+  CalibrationGetMethodProgress: 'calibration:getMethodProgress',
+  CalibrationSetMethodDisposition: 'calibration:setMethodDisposition',
   // --- Filament calibration slice pipeline (owner reframe 2026-08-23) -------
   CalibrationCloneFilamentProfile: 'calibration:cloneFilamentProfile',
   CalibrationSubmitCalibrationSlice: 'calibration:submitCalibrationSlice',
@@ -6101,6 +6109,194 @@ export type CalibrationCreateProjectResponse = z.infer<
   typeof CalibrationCreateProjectResponse
 >;
 
+// --- Server-authoritative method guidance/disposition (issue #797) ---------
+//
+// Verified against `Farm.Modules.Calibration.Contracts.CalibrationMethodGuidanceDto` /
+// `CalibrationMethodProgressDto` / `CalibrationMethodDispositionRequest` at PrintFarmer commit
+// `b6a754c989e76edd71891e632bd940f1a81f3918` (blobs `e769d4a678ac950e53953a1f6c8eabbb3b7ca80e`,
+// `dbe9c1f90b1357d96a6bca0422af629945ed61ec`). `GET method-guidance` is not project-scoped: it
+// serves the same server-owned catalog to every caller, replacing the client-hardcoded
+// `FILAMENT_METHOD_META` table (#794/#799's interim stand-in) with a single source of truth.
+// `method-progress` is project-owned, not device-scoped, so a skip persisted from one device
+// reads back correctly from any other.
+
+/** Every disposition a `CalibrationMethodProgressDto` may report. */
+export const CalibrationMethodProgressDisposition = z.enum([
+  'Pending',
+  'Skipped',
+  'Completed',
+]);
+export type CalibrationMethodProgressDisposition = z.infer<
+  typeof CalibrationMethodProgressDisposition
+>;
+
+/**
+ * Dispositions a client may explicitly assert. `Completed` is deliberately absent —
+ * `CalibrationProjectService.SetMethodDispositionAsync` rejects it with
+ * `method_disposition_invalid`; completion is only ever derived server-side from an accepted
+ * selection observation.
+ */
+export const CalibrationMethodClientDisposition = z.enum([
+  'Pending',
+  'Skipped',
+]);
+export type CalibrationMethodClientDisposition = z.infer<
+  typeof CalibrationMethodClientDisposition
+>;
+
+export const CalibrationMethodProgressRecord = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    method: z.string().min(1).max(128),
+    disposition: CalibrationMethodProgressDisposition,
+    currentStepId: z.string().max(128).nullable(),
+    revision: z.number().int().nonnegative(),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+  })
+  .strict();
+export type CalibrationMethodProgressRecord = z.infer<
+  typeof CalibrationMethodProgressRecord
+>;
+
+/** A required `setup`-step input declared for a calibration method. */
+export const CalibrationMethodSetupInput = z
+  .object({
+    key: z.string().min(1).max(128),
+    label: z.string().min(1).max(256),
+    unit: z.string().max(32),
+    minimum: z.number(),
+    maximum: z.number(),
+  })
+  .strict();
+export type CalibrationMethodSetupInput = z.infer<
+  typeof CalibrationMethodSetupInput
+>;
+
+/** The measurement quantity the `measure` step expects for a calibration method. */
+export const CalibrationMethodMeasureQuantity = z
+  .object({
+    key: z.string().min(1).max(128),
+    minimum: z.number(),
+    maximum: z.number(),
+  })
+  .strict();
+export type CalibrationMethodMeasureQuantity = z.infer<
+  typeof CalibrationMethodMeasureQuantity
+>;
+
+export const CalibrationMethodGuidanceRecord = z
+  .object({
+    method: z.string().min(1).max(128),
+    title: z.string().min(1).max(256),
+    purpose: z.string().min(1).max(4096),
+    // https?-only (or empty, meaning "no wiki reference"): this is the only external
+    // anchor href in the renderer (rendered as `<a href={wikiUrl} target="_blank">`),
+    // fed directly from server data.
+    wikiUrl: z
+      .string()
+      .max(2048)
+      .refine(
+        (value) => value === '' || /^https?:\/\//i.test(value),
+        'wikiUrl must be empty or an http(s) URL',
+      ),
+    setupInputs: z.array(CalibrationMethodSetupInput).max(16),
+    measureQuantity: CalibrationMethodMeasureQuantity.nullable(),
+    steps: z.array(z.string().min(1).max(64)).max(16),
+  })
+  .strict();
+export type CalibrationMethodGuidanceRecord = z.infer<
+  typeof CalibrationMethodGuidanceRecord
+>;
+
+export const CalibrationGetMethodGuidanceCatalogRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationGetMethodGuidanceCatalogRequest = z.infer<
+  typeof CalibrationGetMethodGuidanceCatalogRequest
+>;
+
+export const CalibrationGetMethodGuidanceCatalogResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        catalog: z.array(CalibrationMethodGuidanceRecord).max(64),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetMethodGuidanceCatalogResponse = z.infer<
+  typeof CalibrationGetMethodGuidanceCatalogResponse
+>;
+
+export const CalibrationGetMethodProgressRequest = z
+  .object({ profileId: z.string().uuid(), projectId: z.string().uuid() })
+  .strict();
+export type CalibrationGetMethodProgressRequest = z.infer<
+  typeof CalibrationGetMethodProgressRequest
+>;
+
+export const CalibrationGetMethodProgressResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        progress: z.array(CalibrationMethodProgressRecord).max(64),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetMethodProgressResponse = z.infer<
+  typeof CalibrationGetMethodProgressResponse
+>;
+
+export const CalibrationSetMethodDispositionRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    method: CalibrationSliceMethod,
+    disposition: CalibrationMethodClientDisposition,
+    /**
+     * Only meaningful once a progress row already exists for this method — the server rejects
+     * a non-null `baseRevision` with `method_progress_not_found_for_precondition` before one
+     * does. Pass the `revision` from a prior `getMethodProgress`/`setMethodDisposition` call, or
+     * `null` on the very first skip/un-skip of a method.
+     */
+    baseRevision: z.number().int().nonnegative().nullable().default(null),
+  })
+  .strict();
+export type CalibrationSetMethodDispositionRequest = z.infer<
+  typeof CalibrationSetMethodDispositionRequest
+>;
+
+export const CalibrationSetMethodDispositionResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        progress: CalibrationMethodProgressRecord,
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationSetMethodDispositionResponse = z.infer<
+  typeof CalibrationSetMethodDispositionResponse
+>;
+
 // --- calibration:cloneFilamentProfile ---
 //
 // Backing: `POST /api/slicer/profiles/clone`
@@ -6933,18 +7129,19 @@ export const FilamentWizardStateRecord = z
     cloneId: z.string().uuid(),
     cloneName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
     /**
-     * The `CalibrationProject` created at wizard start (issue #798),
-     * threaded through so a resumed wizard can keep submitting
-     * attempt/observation write-back (#795) against the SAME project
-     * instead of silently losing that binding across a restart. `nullish`
-     * for backward compatibility with records persisted by a build before
-     * #795 shipped, which never wrote this key at all.
+    /**
+     * The server `CalibrationProject` id created at wizard start (issue #798),
+     * used to scope `method-progress`/`method-guidance` calls (issue #797)
+     * AND (issue #795) to submit draft-profile write-back/completion against
+     * the same project across a restart. `.nullable().default(null)` — NOT a
+     * required field — so an on-disk record written before this issue (which
+     * has no such key at all) still parses: Zod applies the default when the
+     * key is absent, rather than failing `.strict()` validation. A restored
+     * wizard with `null` here simply has no project to re-attach
+     * skip/guidance/draft-write-back state to and starts that part of the
+     * flow fresh, exactly as it did before this issue.
      */
-    projectId: z
-      .string()
-      .uuid()
-      .nullish()
-      .transform((v) => v ?? null),
+    calibrationProjectId: z.string().uuid().nullable().default(null),
     completedMethods: z
       .array(CalibrationSliceMethod)
       .max(CalibrationSliceMethod.options.length),
@@ -7297,6 +7494,18 @@ export const ipcSchemas = {
     request: CalibrationCreateProjectRequest,
     response: CalibrationCreateProjectResponse,
   },
+  [IpcChannel.CalibrationGetMethodGuidanceCatalog]: {
+    request: CalibrationGetMethodGuidanceCatalogRequest,
+    response: CalibrationGetMethodGuidanceCatalogResponse,
+  },
+  [IpcChannel.CalibrationGetMethodProgress]: {
+    request: CalibrationGetMethodProgressRequest,
+    response: CalibrationGetMethodProgressResponse,
+  },
+  [IpcChannel.CalibrationSetMethodDisposition]: {
+    request: CalibrationSetMethodDispositionRequest,
+    response: CalibrationSetMethodDispositionResponse,
+  },
   [IpcChannel.CalibrationCloneFilamentProfile]: {
     request: CalibrationCloneFilamentProfileRequest,
     response: CalibrationCloneFilamentProfileResponse,
@@ -7494,6 +7703,16 @@ export interface PrintFarmerApi {
   createCalibrationProject(
     request: CalibrationCreateProjectRequest,
   ): Promise<CalibrationCreateProjectResponse>;
+  // --- Server-authoritative method guidance/disposition (issue #797) -------
+  getCalibrationMethodGuidanceCatalog(
+    request: CalibrationGetMethodGuidanceCatalogRequest,
+  ): Promise<CalibrationGetMethodGuidanceCatalogResponse>;
+  getCalibrationMethodProgress(
+    request: CalibrationGetMethodProgressRequest,
+  ): Promise<CalibrationGetMethodProgressResponse>;
+  setCalibrationMethodDisposition(
+    request: CalibrationSetMethodDispositionRequest,
+  ): Promise<CalibrationSetMethodDispositionResponse>;
   // --- Filament calibration slice pipeline (PR #1952) ---------------------
   cloneCalibrationFilamentProfile(
     request: CalibrationCloneFilamentProfileRequest,

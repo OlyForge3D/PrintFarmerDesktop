@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -38,7 +38,7 @@ function sampleRecord(): FilamentWizardStateRecord {
     baseFilamentGuid: '22222222-2222-4222-8222-222222222222',
     cloneId: '33333333-3333-4333-8333-333333333333',
     cloneName: 'PolyLite PLA Blue (calibration)',
-    projectId: '44444444-4444-4444-8444-444444444444',
+    calibrationProjectId: '44444444-4444-4444-8444-444444444444',
     completedMethods: ['flow_rate_pass_1'],
     currentMethod: 'temperature_tower',
     inFlightJob: {
@@ -176,5 +176,24 @@ describe('filament calibration wizard restart-resilience store (issue #754)', ()
     expect(finalRecord?.inFlightJob?.jobId).toBe(
       lastAttempt.inFlightJob?.jobId,
     );
+  });
+
+  it('reads a pre-#797 on-disk record missing calibrationProjectId, defaulting it to null (backward compatibility)', async () => {
+    // Records written before this issue never had `calibrationProjectId` —
+    // Zod's `.default(null)` on a `.strict()` schema must still fill it in
+    // during parse rather than rejecting the file as schema-violating, so an
+    // operator resuming a wizard across this deploy doesn't lose their
+    // in-flight progress bookmark.
+    const store = await temporaryStore();
+    const legacyRecord = sampleRecord() as Record<string, unknown>;
+    delete legacyRecord.calibrationProjectId;
+    const filePath = path.join(store.directory, `${PROFILE_ID}.json`);
+    await mkdir(store.directory, { recursive: true });
+    await writeFile(filePath, JSON.stringify(legacyRecord), 'utf8');
+
+    const restored = await store.read(PROFILE_ID);
+    expect(restored).not.toBeNull();
+    expect(restored?.calibrationProjectId).toBeNull();
+    expect(restored?.cloneId).toBe(legacyRecord.cloneId);
   });
 });

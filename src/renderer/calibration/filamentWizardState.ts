@@ -405,13 +405,16 @@ export interface FilamentWizardWorkingSnapshot {
   readonly cloneId: string | null;
   readonly cloneName: string;
   /**
-   * The `CalibrationProject` created at wizard start (issue #798). Threaded
-   * through persistence so a resumed wizard keeps submitting draft-profile
-   * write-back (#795) against the same project rather than losing the
-   * binding on restart. `null` only in the brief window before
-   * `performClone`'s project-creation call has returned.
+  /**
+   * The server `CalibrationProject` created at wizard start (issue #798),
+   * used to scope method-guidance/method-progress calls (issue #797), AND
+   * (#795) threaded through persistence so a resumed wizard keeps submitting
+   * draft-profile write-back against the same project rather than losing
+   * the binding on restart. `null` before the clone step runs, or if
+   * creation was skipped/failed and the wizard proceeded without one (see
+   * `performClone`).
    */
-  readonly projectId: string | null;
+  readonly calibrationProjectId: string | null;
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
@@ -499,7 +502,7 @@ export function buildPersistedState(
     baseFilamentGuid: snapshot.baseFilamentGuid,
     cloneId: snapshot.cloneId,
     cloneName: snapshot.cloneName,
-    projectId: snapshot.projectId,
+    calibrationProjectId: snapshot.calibrationProjectId,
     completedMethods: [...snapshot.completedMethods],
     currentMethod: submitNeverLanded ? null : snapshot.currentMethod,
     inFlightJob: submitNeverLanded ? null : snapshot.inFlightJob,
@@ -530,9 +533,10 @@ export interface RestoredFilamentWizardState {
   readonly printerModelId: string | null;
   readonly cloneId: string;
   readonly cloneName: string;
-  /** See {@link FilamentWizardWorkingSnapshot.projectId}. `null` when the
-   * persisted record predates #795 and never captured a project id. */
-  readonly projectId: string | null;
+  /** See {@link FilamentWizardWorkingSnapshot.calibrationProjectId}. `null`
+   * when the persisted record predates #795/#797 and never captured a
+   * project id. */
+  readonly calibrationProjectId: string | null;
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
@@ -557,7 +561,7 @@ export function restoredWorkingState(
     printerModelId: record.printerModelId,
     cloneId: record.cloneId,
     cloneName: record.cloneName,
-    projectId: record.projectId,
+    calibrationProjectId: record.calibrationProjectId,
     completedMethods: record.completedMethods,
     currentMethod: record.currentMethod,
     inFlightJob: record.inFlightJob,
@@ -568,4 +572,72 @@ export function restoredWorkingState(
     // supplies a record that skipped that parse.
     draftObservationFailures: record.draftObservationFailures ?? [],
   };
+}
+
+// --- Server-authoritative setup-input validation (issue #797) --------------
+//
+// `CalibrationMethodGuidanceCatalog.ValidateSetupInputs` (PrintFarmer,
+// `Farm.Modules.Calibration.Services.Calibration.CalibrationMethodClassification`,
+// verified at commit `b6a754c989e76edd71891e632bd940f1a81f3918`) is the
+// server's authoritative gate: for each setup input a method declares, the
+// operator-supplied specification must carry a finite number at that input's
+// `key`, within `[minimum, maximum]` inclusive. It runs server-side inside
+// `CreateAttemptAsync` (`POST /api/calibration-projects/{id}/attempts`) — a
+// route the desktop does not call anywhere yet (slice submission goes
+// through the unrelated `SliceJobController` path). `validateSetupInputs`
+// below is a client-side mirror of that same algorithm: plumbing for a
+// setup-collection UI that does not exist yet (that's issue #799's job), so
+// an operator gets the same rejection reasoning inline instead of only
+// discovering an out-of-range value after a round trip once #799 wires a
+// submission path through it.
+//
+// Deliberately independent of `ScalarMeasurementSpec` — that describes the
+// *measurement* step's client-owned bands (`SCALAR_MEASUREMENT_SPECS`), a
+// different phase of the wizard than the *setup* inputs a method's server
+// guidance record declares here.
+
+/** Renderer-side mirror of `CalibrationMethodSetupInput` (see `shared/ipc.ts`). */
+export interface CalibrationGuidanceSetupInput {
+  readonly key: string;
+  readonly label: string;
+  readonly unit: string;
+  readonly minimum: number;
+  readonly maximum: number;
+}
+
+/** Mirrors the three rejection codes `ValidateSetupInputs` returns server-side. */
+export type SetupInputValidationErrorCode =
+  'setup_input_missing' | 'setup_input_invalid' | 'setup_input_out_of_range';
+
+export interface SetupInputValidationError {
+  readonly code: SetupInputValidationErrorCode;
+  readonly input: CalibrationGuidanceSetupInput;
+}
+
+/**
+ * Validates a setup-input specification against a method's declared inputs,
+ * mirroring `CalibrationMethodGuidanceCatalog.ValidateSetupInputs` exactly:
+ * for each declared input, `specification[input.key]` must be a finite
+ * number within `[input.minimum, input.maximum]` inclusive. Returns the
+ * first failing input (server semantics evaluate in declaration order and
+ * return on first failure) or `null` if every declared input passes — or if
+ * the method declares none.
+ */
+export function validateSetupInputs(
+  setupInputs: readonly CalibrationGuidanceSetupInput[],
+  specification: Readonly<Record<string, unknown>>,
+): SetupInputValidationError | null {
+  for (const input of setupInputs) {
+    if (!Object.hasOwn(specification, input.key)) {
+      return { code: 'setup_input_missing', input };
+    }
+    const value = specification[input.key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return { code: 'setup_input_invalid', input };
+    }
+    if (value < input.minimum || value > input.maximum) {
+      return { code: 'setup_input_out_of_range', input };
+    }
+  }
+  return null;
 }
