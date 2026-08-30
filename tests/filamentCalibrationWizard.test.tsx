@@ -486,14 +486,8 @@ describe('FilamentCalibrationWizard step sequencing', () => {
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
 
-    // Step 1 — flow rate pass 1
-    await runOneMethodEndToEnd(
-      /Start Flow rate — pass 1/i,
-      /Flow ratio/i,
-      '1.02',
-    );
-
-    // Step 2 — temperature tower
+    // Step 1 — temperature tower (first in guided order; unlocked from a
+    // fresh project with no progress rows yet — see issue #794).
     await runOneMethodEndToEnd(
       /Start Temperature tower/i,
       /^Nozzle temperature$/i,
@@ -502,6 +496,17 @@ describe('FilamentCalibrationWizard step sequencing', () => {
         secondFieldLabel: /Initial layer nozzle temperature/i,
         secondValue: '220',
       },
+    );
+
+    // Step 2 — max volumetric speed, the actual second entry in guided
+    // order. Unlocked once temperature tower is marked done locally by the
+    // step above — `deriveGuidedMethodStates` treats the legacy
+    // `completedMethods` JSON as resolving a step even though this test's
+    // mocked server never reports a `Completed` disposition.
+    await runOneMethodEndToEnd(
+      /Start Max volumetric speed/i,
+      /Maximum volumetric speed/i,
+      '35',
     );
 
     // --- Assertions --------------------------------------------------------
@@ -531,8 +536,8 @@ describe('FilamentCalibrationWizard step sequencing', () => {
     ];
     expect(firstCall[0].customProfileId).toBe(cloneGuid);
     expect(secondCall[0].customProfileId).toBe(cloneGuid);
-    expect(firstCall[0].measurement.method).toBe('flow_rate_pass_1');
-    expect(secondCall[0].measurement.method).toBe('temperature_tower');
+    expect(firstCall[0].measurement.method).toBe('temperature_tower');
+    expect(secondCall[0].measurement.method).toBe('max_volumetric_speed');
   });
 });
 
@@ -588,7 +593,7 @@ describe('FilamentCalibrationWizard startPrint safety gate', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     // Wait through submit → poll → sliceReady.
@@ -652,7 +657,7 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     await screen.findByRole('progressbar', { name: /Slice progress/i });
@@ -855,13 +860,14 @@ describe('FilamentCalibrationWizard error surfacing', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    // The wizard is now at the method picker. Clicking pass 1 triggers
+    // The wizard is now at the method picker. Clicking temperature tower
+    // (first in guided order, unlocked from a fresh project) triggers
     // `submitCalibrationSlice`, which the stub answers with an
     // `unsupportedCalibrationMethod` error — the banner should surface
     // the actionable copy, never the raw code.
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     const alert = await screen.findByRole('alert');
@@ -931,15 +937,15 @@ describe('FilamentCalibrationWizard polling loop', () => {
 
     // Grab the Start button while real timers are still active — waitFor
     // uses setTimeout internally, so faked timers block findByRole.
-    const startPass1 = await screen.findByRole('button', {
-      name: /Start Flow rate — pass 1/i,
+    const startTemperatureTower = await screen.findByRole('button', {
+      name: /Start Temperature tower/i,
     });
 
     // Fake timers from here on so the polling schedule is observable. Only
     // fake setTimeout/clearTimeout — leaving `queueMicrotask` and everything
     // else real avoids stalling React's internal scheduling.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    fireEvent.click(startPass1);
+    fireEvent.click(startTemperatureTower);
     // Drain microtasks: submit resolves → phase transitions → effect fires
     // → first `runPoll()` awaits the mock → resolves. Each `await` yield
     // advances the promise chain by one step; the loop caps at a small
@@ -1033,7 +1039,7 @@ describe('FilamentCalibrationWizard polling loop', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
 
@@ -1049,7 +1055,7 @@ describe('FilamentCalibrationWizard polling loop', () => {
     // the same method dispatches a fresh submit. If the wizard stranded in
     // `pollingSlice` on failure, the operator would have no exit.
     const restartButton = await screen.findByRole('button', {
-      name: /Start Flow rate — pass 1/i,
+      name: /Start Temperature tower/i,
     });
     expect(restartButton).not.toBeDisabled();
   });
@@ -1078,7 +1084,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     const startButton = await screen.findByRole('button', {
@@ -1136,7 +1142,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     fireEvent.click(
@@ -1185,7 +1191,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     const uploadButton = await screen.findByRole('button', {
@@ -2188,5 +2194,109 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
       expect(screen.queryByText('Sync failed')).toBeNull();
     });
     expect(skipButtonB).not.toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guided order enforcement (issue #794)
+// ---------------------------------------------------------------------------
+
+describe('FilamentCalibrationWizard guided order enforcement (issue #794)', () => {
+  it('disables the Start button for a pending method that is not yet next, and enables the legitimately-next one', async () => {
+    // No progress rows at all — a fresh CalibrationProject with nothing
+    // resolved yet. Under guided-order gating this makes temperature_tower
+    // (first in `FILAMENT_WIZARD_METHODS`) the recommended `next` step and
+    // locks every later pending method, including max_volumetric_speed.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const nextButton = await screen.findByRole('button', {
+      name: /Start Temperature tower/i,
+    });
+    const lockedButton = await screen.findByRole('button', {
+      name: /Start Max volumetric speed/i,
+    });
+
+    // The negative case the acceptance criteria require: a later step is
+    // blocked while an earlier one is still unresolved.
+    expect(lockedButton).toBeDisabled();
+    const lockedItem = lockedButton.closest('li');
+    if (lockedItem === null) throw new Error('expected a method <li>');
+    expect(lockedItem.className).toContain('cal-method--locked');
+
+    // The paired positive control: the legitimately-next step is not
+    // blocked, and is visually/structurally distinct from the locked one.
+    expect(nextButton).not.toBeDisabled();
+    const nextItem = nextButton.closest('li');
+    if (nextItem === null) throw new Error('expected a method <li>');
+    expect(nextItem.className).toContain('cal-method--next');
+    expect(nextItem.className).not.toBe(lockedItem.className);
+  });
+
+  it('control: attempting the locked method does not dispatch a slice submission', async () => {
+    // Pairs with the disabled-attribute assertion above by proving the lock
+    // is not merely cosmetic — a click on a disabled button never reaches
+    // the submit handler, so no slice job is created for the jumped-ahead
+    // method.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const lockedButton = await screen.findByRole('button', {
+      name: /Start Max volumetric speed/i,
+    });
+    fireEvent.click(lockedButton);
+
+    expect(
+      (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
+
+  it('does not lock any method while gating is unavailable (a failed method-progress read)', async () => {
+    // Regression control for "existing local-state behavior for methods not
+    // yet migrated continues to function" — when the server progress read
+    // fails, `methodProgressStatus` is `'error'` (never a default Pending,
+    // per issue #797), so `deriveGuidedMethodStates` must return `null` and
+    // every method must stay reachable exactly as it was before #794.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi
+        .fn()
+        .mockRejectedValue(new Error('network unreachable')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    // Pin this to the failed (`'error'`) state specifically, not merely
+    // `'loading'` — the assertions below would otherwise pass just as well
+    // before the read has settled at all, which is a different code path.
+    await waitFor(() =>
+      expect(screen.getAllByText('Sync failed').length).toBeGreaterThan(0),
+    );
+
+    const laterMethodButton = await screen.findByRole('button', {
+      name: /Start Max volumetric speed/i,
+    });
+    expect(laterMethodButton).not.toBeDisabled();
+    const item = laterMethodButton.closest('li');
+    if (item === null) throw new Error('expected a method <li>');
+    expect(item.className).not.toContain('cal-method--locked');
+    expect(item.className).not.toContain('cal-method--next');
   });
 });
