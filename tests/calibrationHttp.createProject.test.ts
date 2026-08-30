@@ -152,7 +152,10 @@ describe('CalibrationHttpClient.createProject', () => {
     expect(parsed.filamentProductName).toBe('PolyLite PLA Blue');
     expect(parsed.filamentMaterial).toBe('unknown');
     expect(parsed.experienceMode).toBe('Coach');
-    // No spool-selection UI exists in the wizard yet (#798 scope note 3).
+    // Issue #805: the request omitted all three spool fields — they must
+    // default to `null` so a caller that hasn't been updated for spool
+    // selection (or an operator who explicitly skipped it) still creates a
+    // valid project.
     expect(parsed.spoolmanFilamentId).toBeNull();
     expect(parsed.localSpoolId).toBeNull();
     expect(parsed.spoolmanSpoolId).toBeNull();
@@ -162,6 +165,44 @@ describe('CalibrationHttpClient.createProject', () => {
     expect(parsed.orderedSteps).toEqual([]);
     expect(parsed.currentSelections).toEqual({});
     expect(parsed.currentStep).toBeNull();
+  });
+
+  it('POSTs the operator-selected Spoolman spool fields when the wizard supplies them (issue #805)', async () => {
+    const SPOOLMAN_SPOOL_ID = '99999999-9999-4999-8999-999999999999';
+    const fetchMock = vi.fn().mockResolvedValue(json(projectOk()));
+    const client = makeClient(fetchMock);
+
+    await client.createProject(
+      PROFILE_ID,
+      BASE_URL,
+      {
+        clientId: 'desktop',
+        requestId: REQUEST_ID,
+        name: 'PolyLite PLA Blue (calibration project)',
+        printerId: PRINTER_ID,
+        filamentProvider: 'printfarmer',
+        filamentProductId: FILAMENT_PRODUCT_ID,
+        filamentProductName: 'PolyLite PLA Blue',
+        filamentMaterial: 'unknown',
+        experienceMode: 'Coach',
+        spoolmanFilamentId: SPOOLMAN_SPOOL_ID,
+        spoolmanSpoolId: SPOOLMAN_SPOOL_ID,
+        localSpoolId: null,
+      },
+      AbortSignal.timeout(5_000),
+    );
+
+    const call = fetchMock.mock.calls[0] as [URL | string, RequestInit];
+    const parsed = JSON.parse(call[1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.spoolmanFilamentId).toBe(SPOOLMAN_SPOOL_ID);
+    expect(parsed.spoolmanSpoolId).toBe(SPOOLMAN_SPOOL_ID);
+    // Not populated by the wizard — this app tracks no local-spool
+    // inventory of its own — but explicit `null` must still round-trip,
+    // not be dropped from the request body.
+    expect(parsed.localSpoolId).toBeNull();
   });
 
   it('maps a 409 conflict to a CalibrationHttpError instead of throwing raw', async () => {

@@ -472,6 +472,11 @@ function profileSelectionApi(): CalibrationApi {
     deleteWorkingCloneProfile: vi
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
+    listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
+      status: 'ok',
+      spools: [],
+      fetchedAt: '2026-08-24T02:29:44.441Z',
+    }),
   } satisfies CalibrationApi;
 }
 

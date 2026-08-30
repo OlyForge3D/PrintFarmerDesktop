@@ -258,6 +258,11 @@ function apiWith(coverage: Coverage): CalibrationApi {
     deleteWorkingCloneProfile: vi
       .fn()
       .mockResolvedValue(notImplemented('deleteWorkingCloneProfile')),
+    listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
+      status: 'ok',
+      spools: [],
+      fetchedAt: '2026-08-24T02:29:44.441Z',
+    }),
   } satisfies CalibrationApi;
 }
 

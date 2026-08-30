@@ -281,6 +281,35 @@ function boundedWireList<T extends z.ZodTypeAny>(element: T) {
 }
 
 /**
+ * Like {@link boundedWireList}, but a single malformed element is dropped
+ * instead of failing the whole array.
+ *
+ * `boundedWireList`'s `.pipe(z.array(element))` re-validates the sliced list
+ * as one atomic value: any single element that fails `element`'s schema
+ * fails the entire parse, which is exactly the "one bad row erases every
+ * healthy row" failure mode the doc comment on `boundedWireList` itself
+ * warns about for the object-field case. For a list surfaced directly as
+ * operator-facing picker options (rather than fed into an identity lookup
+ * that needs every row to exist), a malformed element that the picker was
+ * never going to render correctly anyway should be quietly excluded, not
+ * take the rest of the list down with it.
+ */
+function filteredWireList<T extends z.ZodTypeAny>(element: T) {
+  return z
+    .array(z.unknown())
+    .nullish()
+    .transform((items) =>
+      (items ?? [])
+        .slice(0, WIRE_LIST_CEILING)
+        .map((item) => element.safeParse(item))
+        .filter(
+          (result): result is z.SafeParseSuccess<z.infer<T>> => result.success,
+        )
+        .map((result) => result.data),
+    );
+}
+
+/**
  * One structured rejection reason from `CalibrationRejectionReasonDto`.
  * Retained verbatim so an ineligible printer can explain itself instead of
  * vanishing from the list.
@@ -2321,6 +2350,72 @@ export const RemoteCalibrationProjectRecord = z
   .passthrough();
 export type RemoteCalibrationProjectRecord = z.infer<
   typeof RemoteCalibrationProjectRecord
+>;
+
+/**
+ * One Spoolman spool, as PrintFarmer's server mirrors it (issue #805). Both
+ * IDs are PrintFarmer-side Guids — the same shape `CalibrationFilamentIdentityDto`
+ * already uses for `spoolmanSpoolId`/`spoolmanFilamentId` above — not
+ * Spoolman's own numeric IDs. Field names are the desktop's own projection
+ * (not verified against a live server DTO, since no such route has landed
+ * yet); `.passthrough()` and defensive `.nullish()` coercions keep this
+ * resilient to additional/renamed fields on the real server response.
+ */
+export const RemoteCalibrationSpoolmanSpool = z
+  .object({
+    spoolmanSpoolId: ServerGuid,
+    spoolmanFilamentId: ServerGuid.nullish().transform((v) => v ?? null),
+    displayName: z.string().min(1).max(256),
+    material: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    color: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    vendor: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    remainingWeightGrams: z
+      .number()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationSpoolmanSpool = z.infer<
+  typeof RemoteCalibrationSpoolmanSpool
+>;
+
+/**
+ * `GET` list-of-spools response. Accepts both `{ spools: [...] }` and a bare
+ * array, matching `RemoteCustomProfilesList`'s tolerance below for the same
+ * reason: different server builds have serialized either shape. Uses
+ * {@link filteredWireList} rather than the object-field default so one
+ * malformed spool (missing its Guid, an over-long label) is dropped from the
+ * picker instead of blanking every healthy spool on the same printer.
+ */
+export const RemoteCalibrationSpoolmanSpoolsList = z
+  .union([
+    z
+      .object({
+        spools: filteredWireList(RemoteCalibrationSpoolmanSpool),
+      })
+      .passthrough(),
+    filteredWireList(RemoteCalibrationSpoolmanSpool).transform((spools) => ({
+      spools,
+    })),
+  ])
+  .transform((v) => ({
+    spools: v.spools,
+  }));
+export type RemoteCalibrationSpoolmanSpoolsList = z.infer<
+  typeof RemoteCalibrationSpoolmanSpoolsList
 >;
 
 /**

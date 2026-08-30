@@ -4011,6 +4011,12 @@ export function registerIpcHandlers(
             filamentProductName: request.filamentProductName,
             filamentMaterial: request.filamentMaterial,
             experienceMode: 'Coach',
+            // Issue #805: populated when the operator picked a Spoolman
+            // spool in the wizard's spool-picker step; `null` (the request
+            // schema's default) when they explicitly proceeded without one.
+            spoolmanFilamentId: request.spoolmanFilamentId ?? null,
+            localSpoolId: request.localSpoolId ?? null,
+            spoolmanSpoolId: request.spoolmanSpoolId ?? null,
           },
           signal,
         );
@@ -4064,6 +4070,93 @@ export function registerIpcHandlers(
           status: 'error',
           error: apiError,
         });
+      }
+    },
+  );
+
+  // --- Spoolman spool selection (issue #805) --------------------------------
+  //
+  // Lists the Spoolman spools known for the selected printer, so the
+  // wizard's spool-picker step (feeding `CalibrationCreateProject` above) has
+  // data to render. Same correlation-logging + error-remapping shape as the
+  // other list handlers in this file.
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationListSpoolmanSpools,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListSpoolmanSpools].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const spools = await calibrationHttp.listSpoolmanSpools(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.printerId,
+          signal,
+        );
+        const projected = spools.map((spool) => ({
+          spoolmanSpoolId: spool.spoolmanSpoolId,
+          spoolmanFilamentId: spool.spoolmanFilamentId,
+          displayName: spool.displayName,
+          material: spool.material,
+          color: spool.color,
+          vendor: spool.vendor,
+          remainingWeightGrams: spool.remainingWeightGrams,
+        }));
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'spools.spoolman.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationListSpoolmanSpools
+        ].response.parse({
+          status: 'ok',
+          spools: projected,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'spools.spoolman.listed',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Spoolman spool list failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationListSpoolmanSpools
+        ].response.parse({ status: 'error', error: apiError });
       }
     },
   );

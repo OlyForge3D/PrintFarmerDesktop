@@ -658,6 +658,13 @@ function makeApi(savedRecord = record()) {
       .mockRejectedValue(
         new Error('deleteWorkingCloneProfile not stubbed in this test'),
       ),
+    listCalibrationSpoolmanSpools: vi
+      .fn<CalibrationApi['listCalibrationSpoolmanSpools']>()
+      .mockResolvedValue({
+        status: 'ok',
+        spools: [],
+        fetchedAt: '2026-08-24T02:29:44.441Z',
+      }),
   } satisfies CalibrationApi;
   // Saga stubs removed in #756 — added outside satisfies so describe.skip blocks compile.
   return Object.assign(base, {

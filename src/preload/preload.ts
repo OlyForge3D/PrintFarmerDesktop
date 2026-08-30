@@ -113,6 +113,8 @@ import {
   type CalibrationResolveSystemProfileResponse,
   type CalibrationCreateProjectRequest,
   type CalibrationCreateProjectResponse,
+  type CalibrationListSpoolmanSpoolsRequest,
+  type CalibrationListSpoolmanSpoolsResponse,
   type CalibrationGetMethodGuidanceCatalogRequest,
   type CalibrationGetMethodGuidanceCatalogResponse,
   type CalibrationGetMethodProgressRequest,
@@ -533,6 +535,15 @@ const api: PrintFarmerApi = {
   ): Promise<CalibrationCreateProjectResponse> =>
     ipcSchemas[IpcChannel.CalibrationCreateProject].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationCreateProject, request),
+    ),
+  listCalibrationSpoolmanSpools: async (
+    request: CalibrationListSpoolmanSpoolsRequest,
+  ): Promise<CalibrationListSpoolmanSpoolsResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListSpoolmanSpools].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListSpoolmanSpools,
+        request,
+      ),
     ),
   getCalibrationMethodGuidanceCatalog: async (
     request: CalibrationGetMethodGuidanceCatalogRequest,
