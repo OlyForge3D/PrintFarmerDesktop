@@ -111,6 +111,13 @@ export const IpcChannel = {
   CalibrationSaveFilamentWizardState: 'calibration:saveFilamentWizardState',
   CalibrationGetFilamentWizardState: 'calibration:getFilamentWizardState',
   CalibrationClearFilamentWizardState: 'calibration:clearFilamentWizardState',
+  // --- Cross-device calibration hand-off (issue #792 / PrintFarmer#2181) ---
+  // Answers "is anything already underway on this project, and where was it
+  // started?" so the wizard can alert and offer a resume choice instead of
+  // silently rendering a fresh step list. `CalibrationDiscardDeviceDraft`
+  // backs the operator's explicit "discard the other machine's draft" choice.
+  CalibrationGetInFlightState: 'calibration:getInFlightState',
+  CalibrationDiscardDeviceDraft: 'calibration:discardDeviceDraft',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -6398,6 +6405,122 @@ export type CalibrationSetMethodDispositionResponse = z.infer<
   typeof CalibrationSetMethodDispositionResponse
 >;
 
+// --- calibration:getInFlightState / calibration:discardDeviceDraft ---------
+//
+// Issue #792 / PrintFarmer#2181 (PR #2187): the cross-device calibration
+// hand-off alert. `CalibrationOrchestrationRecord` mirrors the server's
+// `CalibrationOrchestrationDto` — the calibration-attempt saga checkpoint,
+// NOT the unrelated generation/slice-job orchestration shape from issue #899
+// (see `RemoteCalibrationOrchestrationStatus`'s doc-comment in
+// `calibrationWire.ts` for why those two are not interchangeable).
+// `CalibrationDraftExistenceRecord` is existence-only: it has no field
+// capable of carrying draft content, by design, so draft values structurally
+// cannot cross this IPC boundary.
+
+/**
+ * `currentStep`/`status` are free-form strings, not enums; render the raw
+ * value with a fallback for anything unrecognised. The renderer's one
+ * exception: treat a physical print as underway when
+ * `status === 'Running' && currentStep === 'awaiting-print'` — `printJobId`
+ * is a forward-compatible bonus signal only, not populated in production
+ * today.
+ */
+export const CalibrationOrchestrationRecord = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    currentStep: z.string(),
+    status: z.string(),
+    sliceJobId: z.string().uuid().nullable(),
+    gcodeFileId: z.string().uuid().nullable(),
+    printJobId: z.string().uuid().nullable(),
+    revision: z.number().int(),
+    updatedAtUtc: z.string().datetime(),
+  })
+  .strict();
+export type CalibrationOrchestrationRecord = z.infer<
+  typeof CalibrationOrchestrationRecord
+>;
+
+/**
+ * Existence-only signal that some device has an uncommitted draft for a
+ * step. `deviceLabel` is a human-presentable label the operator sees in the
+ * hand-off notice — never a raw value the renderer must decode. No field
+ * here can carry draft content (values/prerequisites/etc.); that is the
+ * structural guarantee behind issue #792's "do not fetch draft content".
+ */
+export const CalibrationDraftExistenceRecord = z
+  .object({
+    stepId: z.string(),
+    deviceLabel: z.string(),
+    updatedAtUtc: z.string().datetime(),
+  })
+  .strict();
+export type CalibrationDraftExistenceRecord = z.infer<
+  typeof CalibrationDraftExistenceRecord
+>;
+
+export const CalibrationGetInFlightStateRequest = z
+  .object({ profileId: z.string().uuid(), projectId: z.string().uuid() })
+  .strict();
+export type CalibrationGetInFlightStateRequest = z.infer<
+  typeof CalibrationGetInFlightStateRequest
+>;
+
+export const CalibrationGetInFlightStateResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        projectId: z.string().uuid(),
+        orchestration: CalibrationOrchestrationRecord.nullable(),
+        drafts: z.array(CalibrationDraftExistenceRecord).max(200),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetInFlightStateResponse = z.infer<
+  typeof CalibrationGetInFlightStateResponse
+>;
+
+export const CalibrationDiscardDeviceDraftRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    stepId: z.string().min(1).max(128),
+    /**
+     * The device-lineage id whose draft is being discarded. Deliberately not
+     * required to be the caller's own device — that is what makes "discard
+     * the other machine's draft" possible, matching
+     * `CalibrationProjectsController.DeleteDraftAsync`'s explicit query
+     * parameter.
+     */
+    deviceLineageId: z.string().min(1).max(256),
+    baseRevision: z.number().int().nonnegative().nullable().default(null),
+  })
+  .strict();
+export type CalibrationDiscardDeviceDraftRequest = z.infer<
+  typeof CalibrationDiscardDeviceDraftRequest
+>;
+
+export const CalibrationDiscardDeviceDraftResponse = z.discriminatedUnion(
+  'status',
+  [
+    z.object({ status: z.literal('ok'), discarded: z.literal(true) }).strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationDiscardDeviceDraftResponse = z.infer<
+  typeof CalibrationDiscardDeviceDraftResponse
+>;
+
 // --- calibration:cloneFilamentProfile ---
 //
 // Backing: `POST /api/slicer/profiles/clone`
@@ -7719,6 +7842,14 @@ export const ipcSchemas = {
     request: CalibrationClearFilamentWizardStateRequest,
     response: CalibrationClearFilamentWizardStateResponse,
   },
+  [IpcChannel.CalibrationGetInFlightState]: {
+    request: CalibrationGetInFlightStateRequest,
+    response: CalibrationGetInFlightStateResponse,
+  },
+  [IpcChannel.CalibrationDiscardDeviceDraft]: {
+    request: CalibrationDiscardDeviceDraftRequest,
+    response: CalibrationDiscardDeviceDraftResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -7925,4 +8056,11 @@ export interface PrintFarmerApi {
   clearFilamentCalibrationWizardState(
     request: CalibrationClearFilamentWizardStateRequest,
   ): Promise<CalibrationClearFilamentWizardStateResponse>;
+  // --- Cross-device calibration hand-off (issue #792) -----------------------
+  getCalibrationInFlightState(
+    request: CalibrationGetInFlightStateRequest,
+  ): Promise<CalibrationGetInFlightStateResponse>;
+  discardCalibrationDeviceDraft(
+    request: CalibrationDiscardDeviceDraftRequest,
+  ): Promise<CalibrationDiscardDeviceDraftResponse>;
 }

@@ -243,6 +243,8 @@ function apiWith(coverage: Coverage): CalibrationApi {
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockResolvedValue({ cleared: true }),
+    getCalibrationInFlightState: vi.fn(),
+    discardCalibrationDeviceDraft: vi.fn(),
     resolveCalibrationConflict: vi
       .fn()
       .mockResolvedValue(notImplemented('resolveCalibrationConflict')),

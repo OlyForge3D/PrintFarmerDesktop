@@ -143,6 +143,10 @@ import {
   type CalibrationGetFilamentWizardStateResponse,
   type CalibrationClearFilamentWizardStateRequest,
   type CalibrationClearFilamentWizardStateResponse,
+  type CalibrationGetInFlightStateRequest,
+  type CalibrationGetInFlightStateResponse,
+  type CalibrationDiscardDeviceDraftRequest,
+  type CalibrationDiscardDeviceDraftResponse,
 } from '@shared/ipc';
 
 const api: PrintFarmerApi = {
@@ -672,6 +676,21 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationClearFilamentWizardState].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationClearFilamentWizardState,
+        request,
+      ),
+    ),
+  getCalibrationInFlightState: async (
+    request: CalibrationGetInFlightStateRequest,
+  ): Promise<CalibrationGetInFlightStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetInFlightState].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationGetInFlightState, request),
+    ),
+  discardCalibrationDeviceDraft: async (
+    request: CalibrationDiscardDeviceDraftRequest,
+  ): Promise<CalibrationDiscardDeviceDraftResponse> =>
+    ipcSchemas[IpcChannel.CalibrationDiscardDeviceDraft].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationDiscardDeviceDraft,
         request,
       ),
     ),

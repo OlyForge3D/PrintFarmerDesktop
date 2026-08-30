@@ -304,6 +304,8 @@ function apiFor(options: {
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockResolvedValue({ cleared: true }),
+    getCalibrationInFlightState: vi.fn(),
+    discardCalibrationDeviceDraft: vi.fn(),
     resolveCalibrationConflict: vi
       .fn()
       .mockRejectedValue(new Error('notImplemented')),

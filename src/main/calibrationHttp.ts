@@ -34,6 +34,7 @@ import type {
   RemoteCalibrationPrinters,
   RemoteCalibrationPrinterContext,
   RemoteCalibrationOrchestrationStatus,
+  RemoteCalibrationInFlightState,
   RemoteJobQueueJob,
   RemoteJobQueueChangeFeedPage,
   RemoteQueueSubscriptionResources,
@@ -63,6 +64,7 @@ import {
   RemoteCalibrationPrinters as PrintersSchema,
   RemoteCalibrationPrinterContext as PrinterContextSchema,
   RemoteCalibrationOrchestrationStatus as OrchestrationStatusSchema,
+  RemoteCalibrationInFlightState as InFlightStateSchema,
   RemoteJobQueueJob as JobQueueJobSchema,
   RemoteAcknowledgeBedClearSuccess as AcknowledgeBedClearSuccessSchema,
   RemoteAcknowledgeBedClearConflict as AcknowledgeBedClearConflictSchema,
@@ -255,6 +257,27 @@ const ROUTES = {
   /** GET — polls orchestration status by orchestration ID. */
   orchestrationStatus: (orchestrationId: string) =>
     `/api/calibration-orchestrations/${encodeURIComponent(orchestrationId)}`,
+  // --- Cross-device calibration hand-off (issue #792 / PrintFarmer#2181) ----
+  /**
+   * GET — the single project-scoped in-flight-state query: highest-priority
+   * non-terminal calibration-attempt orchestration plus draft-existence
+   * metadata across devices. Verified against
+   * `CalibrationProjectsController.GetInFlightAsync`, added by merged
+   * PrintFarmer PR #2187 (closes PrintFarmer#2181). Not one of #784's dead
+   * routes — has a live controller action. See `getInFlightState` below.
+   */
+  inFlightState: (projectId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/in-flight`,
+  /**
+   * DELETE — soft-deletes a device's draft and emits a tombstone. Verified
+   * against `CalibrationProjectsController.DeleteDraftAsync`, which takes
+   * `deviceLineageId` as an explicit query parameter decoupled from the
+   * caller's own identity — any authorized caller may discard any device's
+   * draft, which is what makes the issue #792 "discard the other machine's
+   * draft" action possible. See `discardDraftForDevice` below.
+   */
+  draft: (projectId: string, stepId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(stepId)}`,
   // --- Primary job-queue REST (issue #900) — derived from CALIBRATION_QUEUE_ROUTE_TEMPLATES ----
   /** POST — create a queue job. */
   jobQueue: CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueue,
@@ -2564,6 +2587,79 @@ export class CalibrationHttpClient {
       OrchestrationStatusSchema,
       signal,
     );
+  }
+
+  /**
+   * `GET /api/calibration-projects/{projectId}/in-flight` — issue #792 /
+   * PrintFarmer#2181 (PR #2187): the single project-scoped answer to "is
+   * anything already underway here, and where was it started?" for a fresh
+   * device with no attempt or orchestration id to query by.
+   *
+   * Deliberately NOT {@link getOrchestrationStatus} above, which targets an
+   * unrelated generation/slice-job orchestration shape (issue #899) — see
+   * that method's schema doc-comment. This is the calibration-attempt
+   * checkpoint plus device-scoped draft *existence* metadata; draft content
+   * never crosses devices (enforced by `RemoteCalibrationDraftExistence`
+   * having no field capable of carrying it).
+   */
+  async getInFlightState(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationInFlightState> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.inFlightState(projectId),
+      InFlightStateSchema,
+      signal,
+    );
+  }
+
+  /**
+   * `DELETE /api/calibration-projects/{projectId}/drafts/{stepId}` — issue
+   * #792's "discard the other machine's draft" action. `deviceLineageId`
+   * identifies which device's draft to discard and need not be the caller's
+   * own device (verified against `CalibrationProjectsController.DeleteDraftAsync`,
+   * which takes it as an explicit query parameter). `baseRevision` is
+   * optional optimistic-concurrency protection, matching
+   * {@link setMethodDisposition}'s convention. A 204 is the only success
+   * status; there is no body to parse.
+   */
+  async discardDraftForDevice(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    stepId: string,
+    deviceLineageId: string,
+    baseRevision: number | null,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const query = new URLSearchParams({ deviceLineageId });
+    if (baseRevision !== null) {
+      query.set('baseRevision', String(baseRevision));
+    }
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      `${ROUTES.draft(projectId, stepId)}?${query.toString()}`,
+      { method: 'DELETE' },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      await discard(pending.response);
+    } finally {
+      pending.dispose();
+    }
   }
 
   async getQueueJob(

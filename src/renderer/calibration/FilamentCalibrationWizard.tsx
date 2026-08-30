@@ -59,8 +59,10 @@ import {
 } from 'react';
 import type {
   CalibrationApiError,
+  CalibrationDraftExistenceRecord,
   CalibrationMethodGuidanceRecord,
   CalibrationMethodProgressRecord,
+  CalibrationOrchestrationRecord,
   CalibrationPrinterCandidate,
   CalibrationSliceJobSnapshot,
   CalibrationSliceMethod,
@@ -279,6 +281,26 @@ function bannerFromApiError(error: CalibrationApiError): WizardBanner {
     recovery: copy.recovery,
     reference: error.reference,
   };
+}
+
+/**
+ * A small, dependency-free "how long ago" formatter for the hand-off notice
+ * (issue #792). Deliberately coarse — the operator only needs "a few minutes
+ * ago" versus "hours ago", not a precise duration.
+ */
+function formatRelativeAge(fromIso: string, nowMs: number): string {
+  const fromMs = Date.parse(fromIso);
+  if (Number.isNaN(fromMs)) return 'an unknown time ago';
+  const deltaMs = Math.max(0, nowMs - fromMs);
+  const minutes = Math.round(deltaMs / 60_000);
+  if (minutes < 1) return 'less than a minute ago';
+  if (minutes === 1) return '1 minute ago';
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours === 1) return '1 hour ago';
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
 // --------------------------------------------------------------------------
@@ -688,6 +710,35 @@ function FilamentCalibrationWizardInner(
   // status stuck at `'loading'` forever with no "Retry sync" ever offered.
   const methodProgressSeqRef = useRef(0);
 
+  // ------------------ cross-device calibration hand-off (issue #792) --------
+  //
+  // Project-scoped in-flight state — an active orchestration (if any) plus
+  // draft existence per step — read fresh whenever the project changes so a
+  // second machine sees work started elsewhere BEFORE the step list renders
+  // (per the acceptance criteria). Deliberately separate from
+  // `methodProgress`/`fetchMethodProgress` above: that endpoint reports
+  // Skipped/Pending/Completed *disposition*, this one reports *who else is
+  // touching this project right now* — a materially different question with
+  // its own endpoint (`GET .../in-flight`, PrintFarmer#2181 / PR #2187).
+  const [inFlightState, setInFlightState] = useState<{
+    readonly orchestration: CalibrationOrchestrationRecord | null;
+    readonly drafts: readonly CalibrationDraftExistenceRecord[];
+  } | null>(null);
+  const [inFlightStatus, setInFlightStatus] = useState<
+    'loading' | 'ready' | 'error'
+  >('loading');
+  // Steps whose hand-off notice the operator has explicitly dismissed
+  // ("Continue here" or "Wait") since the last successful fetch. Cleared on
+  // every fresh `fetchInFlightState` call so a notice re-appears if the
+  // condition is still true next time — dismissing is a per-observation
+  // acknowledgement, not a standing "never tell me about this step again".
+  const [dismissedHandoffSteps, setDismissedHandoffSteps] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const [discardingHandoffSteps, setDiscardingHandoffSteps] = useState<
+    ReadonlySet<string>
+  >(new Set());
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -797,6 +848,109 @@ function FilamentCalibrationWizardInner(
   useEffect(() => {
     void fetchMethodProgress();
   }, [fetchMethodProgress]);
+
+  // Cross-device calibration hand-off (issue #792): mirrors the
+  // `fetchMethodProgress` shape above, but against the `in-flight` endpoint.
+  // Runs whenever the project changes so opening calibration on a second
+  // machine sees an in-flight step started elsewhere BEFORE the step list
+  // renders.
+  const fetchInFlightState = useCallback(async (): Promise<void> => {
+    const projectId = working.calibrationProjectId;
+    if (projectId === null) {
+      setInFlightState(null);
+      setInFlightStatus('ready');
+      return;
+    }
+    setInFlightStatus('loading');
+    try {
+      const response = await calibrationApi().getCalibrationInFlightState({
+        profileId,
+        projectId,
+      });
+      if (unmountedRef.current) return;
+      if (response.status === 'ok') {
+        setInFlightState({
+          orchestration: response.orchestration,
+          drafts: response.drafts,
+        });
+        // A fresh read supersedes any earlier dismissal — a notice the
+        // operator dismissed last time re-evaluates against current server
+        // truth rather than staying suppressed forever.
+        setDismissedHandoffSteps(new Set());
+        setInFlightStatus('ready');
+      } else {
+        setInFlightStatus('error');
+      }
+    } catch {
+      if (unmountedRef.current) return;
+      setInFlightStatus('error');
+    }
+  }, [profileId, working.calibrationProjectId]);
+
+  useEffect(() => {
+    void fetchInFlightState();
+  }, [fetchInFlightState]);
+
+  /**
+   * "Discard their draft" (issue #792): any authorized caller may discard
+   * any device's draft — `deviceLineageId` is an explicit query parameter on
+   * the server route, independent of the caller's own identity — so this
+   * requires no new server capability. Never reads or forwards draft
+   * *content*; the in-flight DTO this reacts to has no field capable of
+   * carrying it.
+   */
+  const discardHandoffDraft = useCallback(
+    async (
+      stepId: string,
+      deviceLineageId: string,
+      baseRevision: number | null,
+    ): Promise<void> => {
+      const projectId = working.calibrationProjectId;
+      if (projectId === null) return;
+      setDiscardingHandoffSteps((current) => new Set(current).add(stepId));
+      try {
+        const response = await calibrationApi().discardCalibrationDeviceDraft({
+          profileId,
+          projectId,
+          stepId,
+          deviceLineageId,
+          baseRevision,
+        });
+        if (unmountedRef.current) return;
+        if (response.status === 'ok') {
+          void fetchInFlightState();
+        } else {
+          setBanner(bannerFromApiError(response.error));
+        }
+      } catch (cause) {
+        if (unmountedRef.current) return;
+        setBanner({
+          kind: 'error',
+          title: "The other machine's draft could not be discarded.",
+          detail:
+            cause instanceof Error
+              ? cause.message
+              : 'The desktop lost contact with the main process.',
+          recovery: 'Retry.',
+          reference: null,
+        });
+      } finally {
+        if (!unmountedRef.current) {
+          setDiscardingHandoffSteps((current) => {
+            if (!current.has(stepId)) return current;
+            const next = new Set(current);
+            next.delete(stepId);
+            return next;
+          });
+        }
+      }
+    },
+    [profileId, working.calibrationProjectId, fetchInFlightState],
+  );
+
+  const dismissHandoffNotice = useCallback((stepId: string): void => {
+    setDismissedHandoffSteps((current) => new Set(current).add(stepId));
+  }, []);
 
   const toggleMethodDisposition = useCallback(
     async (method: CalibrationSliceMethod): Promise<void> => {
@@ -1838,6 +1992,20 @@ function FilamentCalibrationWizardInner(
       });
   }, [profileId, working]);
 
+  // Cross-device calibration hand-off (issue #792): derived, not stored —
+  // recomputed from `inFlightState` on every render so it can never drift
+  // from what was actually fetched.
+  const runningPrintNotice: string | null =
+    inFlightState?.orchestration !== null &&
+    inFlightState?.orchestration !== undefined &&
+    inFlightState.orchestration.status === 'Running' &&
+    inFlightState.orchestration.currentStep === 'awaiting-print'
+      ? `A calibration print for this project is already running, started ${formatRelativeAge(inFlightState.orchestration.updatedAtUtc, Date.now())}.`
+      : null;
+  const handoffDrafts = (inFlightState?.drafts ?? []).filter(
+    (draft) => !dismissedHandoffSteps.has(draft.stepId),
+  );
+
   // ---------------------------------------------------------------- render
 
   return (
@@ -1919,12 +2087,41 @@ function FilamentCalibrationWizardInner(
         />
       ) : null}
 
+      {working.phase === 'methodPicker' && inFlightStatus === 'error' ? (
+        <p className="cal-hint" role="status">
+          Couldn&apos;t check whether another machine has work in progress on
+          this project. Proceeding is not blocked, but a hand-off notice may be
+          missing until this succeeds.
+        </p>
+      ) : null}
+
+      {working.phase === 'methodPicker'
+        ? handoffDrafts.map((draft) => (
+            <HandoffNotice
+              key={draft.stepId}
+              draft={draft}
+              busy={busy}
+              discarding={discardingHandoffSteps.has(draft.stepId)}
+              onContinue={() => dismissHandoffNotice(draft.stepId)}
+              onWait={() => dismissHandoffNotice(draft.stepId)}
+              onDiscard={() =>
+                void discardHandoffDraft(
+                  draft.stepId,
+                  draft.deviceLabel,
+                  inFlightState?.orchestration?.revision ?? null,
+                )
+              }
+            />
+          ))
+        : null}
+
       {working.phase === 'methodPicker' ? (
         <MethodStep
           working={working}
           busy={busy}
           onPickMethod={selectMethod}
           onFinish={() => void finishCalibration()}
+          runningPrintNotice={runningPrintNotice}
           methodProgress={methodProgress}
           methodProgressStatus={methodProgressStatus}
           methodProgressBusyMethods={methodProgressBusyMethods}
@@ -2223,11 +2420,87 @@ function CloneStep(props: CloneStepProps): React.JSX.Element {
   );
 }
 
+/**
+ * Cross-device hand-off notice (issue #792). Non-blocking: existence of
+ * another device's draft never prevents the operator from proceeding here —
+ * only an in-flight *print* does (see `runningPrintNotice` in `MethodStep`).
+ * Offers the three explicit choices the acceptance criteria requires;
+ * nothing here reads or renders draft *content* — `draft` only carries
+ * `stepId`/`deviceLabel`/`updatedAtUtc`.
+ */
+interface HandoffNoticeProps {
+  readonly draft: CalibrationDraftExistenceRecord;
+  readonly busy: boolean;
+  readonly discarding: boolean;
+  readonly onContinue: () => void;
+  readonly onDiscard: () => void;
+  readonly onWait: () => void;
+}
+
+function HandoffNotice(props: HandoffNoticeProps): React.JSX.Element {
+  const { draft, busy, discarding, onContinue, onDiscard, onWait } = props;
+  const stepTitle =
+    FILAMENT_METHOD_META[draft.stepId as CalibrationSliceMethod]?.title ??
+    draft.stepId;
+  return (
+    <div className="cal-alert cal-alert--warning" role="status">
+      <p>
+        <strong>{stepTitle}</strong> has an unfinished draft started{' '}
+        {formatRelativeAge(draft.updatedAtUtc, Date.now())} on{' '}
+        <strong>{draft.deviceLabel}</strong>.
+      </p>
+      <p className="cal-hint">
+        Continuing here does not touch that draft; discarding it clears it for
+        every device.
+      </p>
+      <div className="cal-actions">
+        <button
+          type="button"
+          className="cal-button"
+          onClick={onContinue}
+          disabled={busy}
+        >
+          Continue here
+        </button>
+        <button
+          type="button"
+          className="cal-button cal-button--secondary"
+          onClick={onDiscard}
+          disabled={busy || discarding}
+        >
+          {discarding ? 'Discarding…' : 'Discard their draft'}
+        </button>
+        <button
+          type="button"
+          className="cal-button"
+          onClick={onWait}
+          disabled={busy}
+        >
+          Wait
+        </button>
+      </div>
+    </div>
+  );
+}
+
 interface MethodStepProps {
   readonly working: WizardWorkingState;
   readonly busy: boolean;
   readonly onPickMethod: (method: CalibrationSliceMethod) => void;
   readonly onFinish: () => void;
+  /**
+   * Non-null when the in-flight orchestration for this project (issue #792)
+   * reports a physical print underway right now
+   * (`status === 'Running' && currentStep === 'awaiting-print'`). Blocks
+   * starting ANY step, not just the one the print belongs to: the server's
+   * `CalibrationOrchestrationDto` has no `Method` field, so the client
+   * cannot attribute a running print to a single entry in
+   * `FILAMENT_WIZARD_METHODS` — refusing every start is the load-bearing,
+   * conservative reading of "block re-running that step" the DTO actually
+   * supports. See `plan.md`'s "no printer name in the DTO" note for why the
+   * message below cannot name a printer either.
+   */
+  readonly runningPrintNotice: string | null;
   /**
    * Server-authoritative per-method disposition (issue #797), keyed by
    * method. A method absent here has no progress row yet and is treated as
@@ -2272,6 +2545,7 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
     busy,
     onPickMethod,
     onFinish,
+    runningPrintNotice,
     methodProgress,
     methodProgressStatus,
     methodProgressBusyMethods,
@@ -2325,6 +2599,17 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
         behaviour, so there is nothing for them to write back to a filament
         profile. Run those in OrcaSlicer directly.
       </p>
+      {runningPrintNotice !== null ? (
+        <div className="cal-alert cal-alert--warning" role="alert">
+          <p>
+            <strong>A calibration print is already running elsewhere.</strong>
+          </p>
+          <p>{runningPrintNotice}</p>
+          <p className="cal-hint">
+            Starting another step here is blocked until that print finishes.
+          </p>
+        </div>
+      ) : null}
       {methodProgressStatus === 'error' ? (
         <div className="cal-alert cal-alert--warning" role="status">
           <p>
@@ -2425,7 +2710,13 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
                 type="button"
                 className="cal-button"
                 onClick={() => onPickMethod(method)}
-                disabled={!isActive || busy || syncingThisMethod || locked}
+                disabled={
+                  !isActive ||
+                  busy ||
+                  syncingThisMethod ||
+                  locked ||
+                  runningPrintNotice !== null
+                }
                 aria-label={`Start ${title}${done ? ' (completed once)' : ''}${skipped ? ' (skipped)' : ''}${isNext ? ' (recommended next step)' : ''}${locked ? ' (locked — finish the earlier guided steps first)' : ''}`}
               >
                 {title}

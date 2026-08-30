@@ -1174,3 +1174,153 @@ describe('CalibrationHttpClient JWT security', () => {
     expect(typeof headers['authorization']).toBe('string');
   });
 });
+
+// ==========================================================================
+// Cross-device calibration hand-off (issue #792 / PrintFarmer#2181, PR #2187)
+// ==========================================================================
+
+describe('CalibrationHttpClient in-flight state (issue #792)', () => {
+  it('parses the empty in-flight state (control: nothing underway anywhere)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        projectId: PROJECT_ID,
+        orchestration: null,
+        drafts: [],
+      }),
+    );
+    const client = makeClient(fetchMock);
+
+    const state = await client.getInFlightState(
+      PROFILE_ID,
+      BASE_URL,
+      PROJECT_ID,
+      AbortSignal.timeout(5000),
+    );
+
+    expect(state.orchestration).toBeNull();
+    expect(state.drafts).toEqual([]);
+    const [url] = fetchMock.mock.calls[0]! as [URL];
+    expect(url.pathname).toBe(
+      `/api/calibration-projects/${PROJECT_ID}/in-flight`,
+    );
+  });
+
+  it('parses a running print orchestration (status=Running, currentStep=awaiting-print) without requiring printJobId', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        projectId: PROJECT_ID,
+        orchestration: {
+          id: '33333333-3333-4333-8333-333333333333',
+          projectId: PROJECT_ID,
+          attemptId: '44444444-4444-4444-8444-444444444444',
+          currentStep: 'awaiting-print',
+          status: 'Running',
+          retryCount: 0,
+          nextRetryAtUtc: null,
+          lastErrorCode: null,
+          sliceJobId: null,
+          gcodeFileId: null,
+          printJobId: null,
+          revision: 7,
+          createdAtUtc: '2024-01-01T00:00:00.000Z',
+          updatedAtUtc: '2024-01-01T00:05:00.000Z',
+          completedAtUtc: null,
+        },
+        drafts: [],
+      }),
+    );
+    const client = makeClient(fetchMock);
+
+    const state = await client.getInFlightState(
+      PROFILE_ID,
+      BASE_URL,
+      PROJECT_ID,
+      AbortSignal.timeout(5000),
+    );
+
+    expect(state.orchestration).not.toBeNull();
+    expect(state.orchestration?.status).toBe('Running');
+    expect(state.orchestration?.currentStep).toBe('awaiting-print');
+    expect(state.orchestration?.printJobId).toBeNull();
+    expect(state.orchestration?.revision).toBe(7);
+  });
+
+  it('parses draft-existence entries without ever carrying draft content', async () => {
+    const draftBody = {
+      stepId: 'flow_rate_pass_1',
+      deviceLabel: 'device-lineage-other-machine',
+      updatedAtUtc: '2024-01-01T00:10:00.000Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        projectId: PROJECT_ID,
+        orchestration: null,
+        drafts: [draftBody],
+      }),
+    );
+    const client = makeClient(fetchMock);
+
+    const state = await client.getInFlightState(
+      PROFILE_ID,
+      BASE_URL,
+      PROJECT_ID,
+      AbortSignal.timeout(5000),
+    );
+
+    expect(state.drafts).toHaveLength(1);
+    expect(state.drafts[0]).toEqual(draftBody);
+    // Structural guarantee, not just convention: the parsed record has
+    // exactly these three keys (plus whatever passthrough adds — none here)
+    // — there is no field capable of holding a draft's actual values.
+    expect(Object.keys(state.drafts[0]!).sort()).toEqual(
+      ['deviceLabel', 'stepId', 'updatedAtUtc'].sort(),
+    );
+  });
+
+  it('discardDraftForDevice sends DELETE with deviceLineageId and baseRevision as query params', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const client = makeClient(fetchMock);
+
+    await client.discardDraftForDevice(
+      PROFILE_ID,
+      BASE_URL,
+      PROJECT_ID,
+      'flow_rate_pass_1',
+      'device-lineage-other-machine',
+      7,
+      AbortSignal.timeout(5000),
+    );
+
+    const [url, init] = fetchMock.mock.calls[0]! as [URL, RequestInit];
+    expect(url.pathname).toBe(
+      `/api/calibration-projects/${PROJECT_ID}/drafts/flow_rate_pass_1`,
+    );
+    expect(url.searchParams.get('deviceLineageId')).toBe(
+      'device-lineage-other-machine',
+    );
+    expect(url.searchParams.get('baseRevision')).toBe('7');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('discardDraftForDevice omits baseRevision from the query string when null', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const client = makeClient(fetchMock);
+
+    await client.discardDraftForDevice(
+      PROFILE_ID,
+      BASE_URL,
+      PROJECT_ID,
+      'flow_rate_pass_1',
+      'device-lineage-other-machine',
+      null,
+      AbortSignal.timeout(5000),
+    );
+
+    const [url] = fetchMock.mock.calls[0]! as [URL];
+    expect(url.searchParams.has('baseRevision')).toBe(false);
+  });
+});
