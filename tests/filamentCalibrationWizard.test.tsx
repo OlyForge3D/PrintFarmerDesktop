@@ -717,6 +717,62 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     });
   });
 
+  it('surfaces the server range-validation message when submitCalibrationObservation is rejected, without blocking or interrupting the wizard (issue #796)', async () => {
+    const api = wizardApiFlowRatePass1Unlocked({
+      submitCalibrationObservation: vi.fn().mockResolvedValue({
+        status: 'error' as const,
+        error: {
+          code: 'invalidData' as const,
+          message:
+            'Flow ratio 1.02 is outside the allowed range 0.85-1.15 for this method.',
+          retryable: false,
+          retryAfterSeconds: null,
+          reference: null,
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // The operator sees the SERVER's own range-validation text, not just
+    // the generic "failed to sync" hint `draftObservationFailures` renders.
+    await screen.findByText(/rejected by the server/i);
+    await screen.findByText(
+      /Flow ratio 1\.02 is outside the allowed range 0\.85-1\.15/i,
+    );
+
+    // This is additive to — not a replacement of — #795's non-blocking
+    // dual-write design: the clone write-back still landed and the wizard
+    // still did not block or interrupt (method still shows completed).
+    expect(
+      (
+        api.updateCalibrationFilamentProfileMeasurement as ReturnType<
+          typeof vi.fn
+        >
+      ).mock.calls,
+    ).toHaveLength(1);
+    await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1 \(completed once\)/i,
+    });
+
+    // "Finish calibration" stays gated by the existing
+    // `draftObservationFailures` mechanism — unchanged by this issue.
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).toBeDisabled();
+    });
+    await screen.findByText(/failed to sync to the draft profile/i);
+  });
+
   it('the "Finish calibration" action is disabled until at least one method has been completed', async () => {
     const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
