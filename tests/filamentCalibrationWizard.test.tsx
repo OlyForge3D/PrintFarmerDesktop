@@ -2210,7 +2210,7 @@ describe('FilamentCalibrationWizard four-phase step UI (issue #799)', () => {
             method: 'flow_rate_pass_1',
             title: 'Flow rate — pass 1',
             purpose: 'Measures extrusion multiplier accuracy.',
-            wikiUrl: null,
+            wikiUrl: '',
             setupInputs: [
               {
                 key: 'start_temp_c',
@@ -2268,7 +2268,7 @@ describe('FilamentCalibrationWizard four-phase step UI (issue #799)', () => {
             method: 'flow_rate_pass_1',
             title: 'Flow rate — pass 1',
             purpose: 'Measures extrusion multiplier accuracy.',
-            wikiUrl: null,
+            wikiUrl: '',
             setupInputs: [
               {
                 key: 'start_temp_c',
@@ -2339,7 +2339,11 @@ describe('FilamentCalibrationWizard four-phase step UI (issue #799)', () => {
     const call = submit.mock.calls[0]?.[0] as {
       params?: Record<string, number>;
     };
-    expect(call.params).toBeUndefined();
+    // `not.toHaveProperty` (rather than `toBeUndefined`) also catches a
+    // regression that spread `params: undefined` onto the request object —
+    // the acceptance criterion is that the key is genuinely absent from the
+    // outgoing request, not merely `undefined`-valued.
+    expect(call).not.toHaveProperty('params');
   });
 
   it('blocks slicing with a validation message when a collected input is out of the declared bounds', async () => {
@@ -2360,7 +2364,7 @@ describe('FilamentCalibrationWizard four-phase step UI (issue #799)', () => {
             method: 'flow_rate_pass_1',
             title: 'Flow rate — pass 1',
             purpose: 'Measures extrusion multiplier accuracy.',
-            wikiUrl: null,
+            wikiUrl: '',
             setupInputs: [
               {
                 key: 'start_temp_c',

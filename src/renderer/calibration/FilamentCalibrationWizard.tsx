@@ -431,6 +431,9 @@ function FilamentCalibrationWizardInner(
     useState<PrinterListState>(emptyPrinterList);
   const printerListEpochRef = useRef(0);
   const unmountedRef = useRef(false);
+  // Guards `beginMethod` against a synchronous double-submit — see the
+  // comment at its call site. Mirrors `sendToPrinterInFlightRef` below.
+  const beginMethodInFlightRef = useRef(false);
   // Issue #798: the server's create-project route is idempotent on
   // `(clientId, requestId)` — a retry that reuses the same pair returns the
   // already-created project instead of minting a duplicate. This id must
@@ -1003,6 +1006,13 @@ function FilamentCalibrationWizardInner(
       method: CalibrationSliceMethod,
       params?: Readonly<Record<string, number>>,
     ): Promise<void> => {
+      // A synchronous double-submit (double-click, or Enter followed by a
+      // click before React commits `busy`) would otherwise fire this twice
+      // and dispatch two slice jobs — the same race `sendToPrinterInFlightRef`
+      // guards against below. `setBusy(true)` alone is not enough because the
+      // state update has not committed by the time a second synchronous
+      // handler invocation runs.
+      if (beginMethodInFlightRef.current) return;
       const { picks, printerId, cloneId, cloneName } = working;
       if (
         picks === null ||
@@ -1013,6 +1023,7 @@ function FilamentCalibrationWizardInner(
       ) {
         return;
       }
+      beginMethodInFlightRef.current = true;
       setBusy(true);
       setBanner(null);
       setSliceJobUi(emptySliceJobUi);
@@ -1068,6 +1079,7 @@ function FilamentCalibrationWizardInner(
         });
         setWorking((current) => ({ ...current, phase: 'methodPicker' }));
       } finally {
+        beginMethodInFlightRef.current = false;
         if (!unmountedRef.current) setBusy(false);
       }
     },
@@ -1939,7 +1951,7 @@ function MethodPurposeStep(props: MethodPurposeStepProps): React.JSX.Element {
       aria-label="Step 3a — purpose"
       disabled={busy}
     >
-      <legend>3. {title} — purpose</legend>
+      <legend>3a. {title} — purpose</legend>
       <p>{purpose}</p>
       {guidance?.wikiUrl ? (
         <p className="cal-hint">
@@ -2026,7 +2038,7 @@ function MethodInputsStep(props: MethodInputsStepProps): React.JSX.Element {
       aria-label="Step 3b — inputs"
       disabled={busy}
     >
-      <legend>3. {title} — inputs</legend>
+      <legend>3b. {title} — inputs</legend>
       {setupInputs.length === 0 ? (
         <p className="cal-hint">
           No additional inputs are required for this step.
@@ -2047,7 +2059,6 @@ function MethodInputsStep(props: MethodInputsStepProps): React.JSX.Element {
                   [input.key]: event.target.value,
                 }))
               }
-              aria-label={input.label}
             />
           </label>
         ))}
