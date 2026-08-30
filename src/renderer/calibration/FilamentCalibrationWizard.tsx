@@ -1550,29 +1550,34 @@ function FilamentCalibrationWizardInner(
       setSliceJobUi(emptySliceJobUi);
       setConfirmStart('');
       lastPersistedJsonRef.current = null;
-      void calibrationApi()
-        .clearFilamentCalibrationWizardState({ profileId })
-        .catch(() => {
-          // Best-effort: if this fails, the stale bookmark only affects a
-          // future restart. The live wizard has already returned to a clean
-          // in-memory state.
-        });
       // Issue #795 / PrintFarmer#2203: the working clone's only remaining
       // purpose — slicing continuity during calibration — ends the moment a
-      // durable promoted profile exists. Best-effort: a failure here leaves
-      // an unreachable-but-harmless duplicate clone; it must not undo or
-      // re-surface an error for the completion the operator already saw
-      // confirmed above.
-      if (working.cloneId !== null) {
-        void calibrationApi()
-          .deleteWorkingCloneProfile({
-            profileId,
-            customProfileId: working.cloneId,
-          })
-          .catch(() => {
-            // Best-effort cleanup only; see comment above.
-          });
-      }
+      // durable promoted profile exists. Best-effort overall: neither step
+      // blocks or re-surfaces an error for the completion the operator
+      // already saw confirmed above. But the two steps are CHAINED, not
+      // independent: the bookmark is cleared first, and the clone is only
+      // deleted once that clear is confirmed to have succeeded. If clearing
+      // the bookmark fails, the clone is deliberately left alone — a restart
+      // would otherwise resume a persisted bookmark that still names a clone
+      // that no longer exists, breaking resume outright instead of just
+      // leaving a harmless duplicate.
+      const cloneIdToDelete = working.cloneId;
+      void calibrationApi()
+        .clearFilamentCalibrationWizardState({ profileId })
+        .then(() => {
+          if (cloneIdToDelete === null) return;
+          return calibrationApi()
+            .deleteWorkingCloneProfile({
+              profileId,
+              customProfileId: cloneIdToDelete,
+            })
+            .then(() => undefined);
+        })
+        .catch(() => {
+          // Best-effort: if clearing failed, the clone is intentionally
+          // preserved (see comment above). If clearing succeeded but
+          // deletion failed, the stale clone is a harmless orphan.
+        });
     } catch (cause) {
       if (unmountedRef.current) return;
       setBanner({
@@ -1596,19 +1601,14 @@ function FilamentCalibrationWizardInner(
     // exists (there is no way to distinguish a mere navigate-away from a
     // genuine give-up; see the doc comment on
     // `CalibrationCompleteCalibrationProjectResponse` in `shared/ipc.ts`).
-    // Best-effort: a failure here must not block restarting, so it is
-    // fire-and-forget, matching the existing `clearFilamentCalibrationWizardState`
-    // call just below.
-    if (working.cloneId !== null) {
-      void calibrationApi()
-        .deleteWorkingCloneProfile({
-          profileId,
-          customProfileId: working.cloneId,
-        })
-        .catch(() => {
-          // Best-effort cleanup only; see comment above.
-        });
-    }
+    // Best-effort overall: a failure here must not block restarting. But
+    // the bookmark clear and the clone delete are CHAINED, not independent:
+    // the bookmark is cleared first, and the clone is only deleted once
+    // that clear is confirmed to have succeeded. If clearing fails, the
+    // clone is deliberately left alone — otherwise a future restart could
+    // resume a stale bookmark that names a clone that no longer exists,
+    // breaking resume outright instead of just leaving a harmless orphan.
+    const cloneIdToDelete = working.cloneId;
     setWorking(initialWorking);
     setBanner(null);
     setSliceJobUi(emptySliceJobUi);
@@ -1616,10 +1616,20 @@ function FilamentCalibrationWizardInner(
     lastPersistedJsonRef.current = null;
     void calibrationApi()
       .clearFilamentCalibrationWizardState({ profileId })
+      .then(() => {
+        if (cloneIdToDelete === null) return;
+        return calibrationApi()
+          .deleteWorkingCloneProfile({
+            profileId,
+            customProfileId: cloneIdToDelete,
+          })
+          .then(() => undefined);
+      })
       .catch(() => {
-        // Best-effort: if this fails, the stale bookmark only affects a
-        // future restart. The live wizard has already returned to a clean
-        // in-memory state.
+        // Best-effort: if clearing failed, the clone is intentionally
+        // preserved (see comment above). If clearing succeeded but deletion
+        // failed, the stale clone is a harmless orphan; the live wizard has
+        // already returned to a clean in-memory state either way.
       });
   }, [profileId, working]);
 

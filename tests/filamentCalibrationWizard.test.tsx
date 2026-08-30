@@ -755,10 +755,44 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
 
     fireEvent.click(await screen.findByRole('button', { name: 'Start over' }));
 
-    // The best-effort cleanup call was attempted and failed, but the wizard
-    // still resets — the operator is never stuck because a background
-    // cleanup call rejected.
+    // The best-effort cleanup call was attempted (proving this isn't
+    // silently a no-op) and failed, but the wizard still resets — the
+    // operator is never stuck because a background cleanup call rejected.
+    await waitFor(() => {
+      expect(
+        (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(1);
+    });
     await screen.findByText(/1\. Pick the printer, machine profile/i);
+  });
+
+  it('abandon (explicit, "Start over", issue #795 review finding): if clearing the persisted wizard bookmark fails, the working clone is deliberately NOT deleted — a stale bookmark must never outlive the clone it names', async () => {
+    const api = wizardApi({
+      clearFilamentCalibrationWizardState: vi
+        .fn()
+        .mockRejectedValue(new Error('disk write failed')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start over' }));
+
+    await waitFor(() => {
+      expect(
+        (api.clearFilamentCalibrationWizardState as ReturnType<typeof vi.fn>)
+          .mock.calls,
+      ).toHaveLength(1);
+    });
+    // The wizard still resets in-memory — the operator is never stuck.
+    await screen.findByText(/1\. Pick the printer, machine profile/i);
+    // But the clone delete must NEVER have been attempted: deleting it here
+    // would leave the (unclearable) persisted bookmark pointing at a
+    // now-deleted clone, breaking resume on next launch.
+    expect(
+      (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
   });
 
   it('control (issue #795 / PrintFarmer#2203): finishing calibration also deletes the working clone once promotion is confirmed', async () => {
@@ -787,6 +821,39 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     ).mock.calls[0] as [{ profileId: string; customProfileId: string }];
     expect(deleteRequest.profileId).toBe(profileId);
     expect(deleteRequest.customProfileId).toBe(cloneGuid);
+  });
+
+  it('finishing calibration (issue #795 review finding): if clearing the persisted wizard bookmark fails after a confirmed promotion, the working clone is deliberately NOT deleted', async () => {
+    const api = wizardApi({
+      clearFilamentCalibrationWizardState: vi
+        .fn()
+        .mockRejectedValue(new Error('disk write failed')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Finish calibration/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        (api.clearFilamentCalibrationWizardState as ReturnType<typeof vi.fn>)
+          .mock.calls,
+      ).toHaveLength(1);
+    });
+    // A stale bookmark that still names the clone must never coexist with a
+    // deleted clone — so deletion must never have been attempted here.
+    expect(
+      (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
   });
 
   it('control (issue #795): if promotion has NOT yet been confirmed (promotedProfileId: null), the working clone is NOT deleted — it is still the only durable record of the calibration', async () => {

@@ -5223,13 +5223,19 @@ export function registerIpcHandlers(
           emitCalibrationLog({
             level: 'info',
             component: 'calibration.http',
-            event: 'profiles.custom.deleted',
+            // Issue #795 round-10 review (Bishop): a distinct event name,
+            // not `errorCode: 'notFound'`, carries the "already deleted"
+            // fact. `calibrationLogMessage` resolves `errorCode` before
+            // `event`, so attaching `errorCode: 'notFound'` to an
+            // `outcome: 'ok'` record rendered the 404 failure message
+            // ("The requested resource does not exist on the server.") on a
+            // line that is not a failure — misleading at a glance.
+            event: 'profiles.custom.deleteAlreadySatisfied',
             correlationId,
             correlationOrigin,
             profileId: selectedId,
             outcome: 'ok',
             durationMs: Date.now() - startedAt,
-            errorCode: 'notFound',
           });
           return ipcSchemas[
             IpcChannel.CalibrationDeleteWorkingCloneProfile
