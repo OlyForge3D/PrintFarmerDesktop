@@ -436,15 +436,36 @@ async function performCloneStep(): Promise<void> {
   });
 }
 
+/**
+ * Picks a method and drives it through the purpose and inputs phases
+ * (issue #799) up to — but not including — the resulting slice submission.
+ * Every wizard test that starts a method now goes through these two
+ * screens first, since a method pick no longer submits a slice directly;
+ * with the default `wizardApi()` guidance catalog (`catalog: []`), the
+ * inputs phase falls back to declaring no setup inputs, so "Start slicing"
+ * is a single click away with nothing to fill in.
+ */
+async function beginMethodThroughPurposeAndInputs(
+  methodButtonName: RegExp,
+): Promise<void> {
+  fireEvent.click(
+    await screen.findByRole('button', { name: methodButtonName }),
+  );
+  fireEvent.click(
+    await screen.findByRole('button', { name: /Continue to inputs/i }),
+  );
+  fireEvent.click(
+    await screen.findByRole('button', { name: /Start slicing/i }),
+  );
+}
+
 async function runOneMethodEndToEnd(
   methodButtonName: RegExp,
   measurementFieldLabel: RegExp,
   measurementValue: string,
   extra?: { readonly secondFieldLabel: RegExp; readonly secondValue: string },
 ): Promise<void> {
-  fireEvent.click(
-    await screen.findByRole('button', { name: methodButtonName }),
-  );
+  await beginMethodThroughPurposeAndInputs(methodButtonName);
   await screen.findByRole('progressbar', { name: /Slice progress/i });
   const uploadOnly = await screen.findByRole('button', {
     name: /Upload gcode only/i,
@@ -586,11 +607,7 @@ describe('FilamentCalibrationWizard startPrint safety gate', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
     // Wait through submit → poll → sliceReady.
     const startPrintButton = await screen.findByRole('button', {
       name: /Start the calibration print now/i,
@@ -650,11 +667,7 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
     await screen.findByRole('progressbar', { name: /Slice progress/i });
 
     await waitFor(() => {
@@ -738,9 +751,7 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     // Continuing into the next method submits against the SAME resumed
     // clone and profile-selection names — the whole point of resuming
     // rather than starting over.
-    fireEvent.click(
-      await screen.findByRole('button', { name: /Start Temperature tower/i }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Temperature tower/i);
     await waitFor(() => {
       expect(
         (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
@@ -859,11 +870,7 @@ describe('FilamentCalibrationWizard error surfacing', () => {
     // `submitCalibrationSlice`, which the stub answers with an
     // `unsupportedCalibrationMethod` error — the banner should surface
     // the actionable copy, never the raw code.
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
     const alert = await screen.findByRole('alert');
     expect(alert.textContent ?? '').toMatch(/not supported by the server/i);
     // Control: the error banner must NEVER surface the raw wire code — that
@@ -929,17 +936,26 @@ describe('FilamentCalibrationWizard polling loop', () => {
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
 
-    // Grab the Start button while real timers are still active — waitFor
-    // uses setTimeout internally, so faked timers block findByRole.
-    const startPass1 = await screen.findByRole('button', {
-      name: /Start Flow rate — pass 1/i,
+    // Grab the Start-slicing button while real timers are still active —
+    // `findByRole` (used to navigate the purpose/inputs screens ahead of it)
+    // uses `waitFor`, which relies on real timers. Only the final click
+    // (the one that actually submits the slice and kicks off polling) needs
+    // to happen under faked timers.
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start Flow rate — pass 1/i }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Continue to inputs/i }),
+    );
+    const startSlicing = await screen.findByRole('button', {
+      name: /Start slicing/i,
     });
 
     // Fake timers from here on so the polling schedule is observable. Only
     // fake setTimeout/clearTimeout — leaving `queueMicrotask` and everything
     // else real avoids stalling React's internal scheduling.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    fireEvent.click(startPass1);
+    fireEvent.click(startSlicing);
     // Drain microtasks: submit resolves → phase transitions → effect fires
     // → first `runPoll()` awaits the mock → resolves. Each `await` yield
     // advances the promise chain by one step; the loop caps at a small
@@ -1031,11 +1047,7 @@ describe('FilamentCalibrationWizard polling loop', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
 
     // The banner surfaces the server's failure reason verbatim — the
     // operator needs to see what went wrong, not "poll returned failed".
@@ -1076,11 +1088,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
     const startButton = await screen.findByRole('button', {
       name: /Start the calibration print now/i,
     });
@@ -1134,11 +1142,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
     fireEvent.click(
       await screen.findByRole('button', { name: /Upload gcode only/i }),
     );
@@ -1183,11 +1187,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
-      }),
-    );
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
     const uploadButton = await screen.findByRole('button', {
       name: /Upload gcode only/i,
     });
@@ -2188,5 +2188,217 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
       expect(screen.queryByText('Sync failed')).toBeNull();
     });
     expect(skipButtonB).not.toBeDisabled();
+  });
+});
+
+describe('FilamentCalibrationWizard four-phase step UI (issue #799)', () => {
+  it('shows the purpose screen before any input or slice action — no submitCalibrationSlice call until "Start slicing"', async () => {
+    const submit = vi.fn().mockResolvedValue({
+      status: 'ok',
+      job: {
+        jobId: jobIdOne,
+        status: 'Queued' as const,
+        queuedAt: now,
+        queuePosition: 1,
+      },
+    });
+    const api = wizardApi({
+      getCalibrationMethodGuidanceCatalog: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        catalog: [
+          {
+            method: 'flow_rate_pass_1',
+            title: 'Flow rate — pass 1',
+            purpose: 'Measures extrusion multiplier accuracy.',
+            wikiUrl: null,
+            setupInputs: [
+              {
+                key: 'start_temp_c',
+                label: 'Starting nozzle temperature',
+                unit: '°C',
+                minimum: 190,
+                maximum: 250,
+              },
+            ],
+            measureQuantity: null,
+            steps: ['setup', 'print', 'measure'],
+          },
+        ],
+      }),
+      submitCalibrationSlice: submit,
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    // Picking the method lands on the purpose screen, not the inputs form
+    // and not a slice submission.
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start Flow rate — pass 1/i }),
+    );
+    await screen.findByText('Measures extrusion multiplier accuracy.');
+    expect(screen.queryByLabelText(/Starting nozzle temperature/i)).toBeNull();
+    expect(submit).not.toHaveBeenCalled();
+
+    // Continuing from purpose reveals the declared setup input — still no
+    // slice submission until the operator explicitly starts slicing.
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Continue to inputs/i }),
+    );
+    await screen.findByLabelText(/Starting nozzle temperature/i);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('populates `params` on the outgoing submitCalibrationSlice request from the collected setup inputs', async () => {
+    const submit = vi.fn().mockResolvedValue({
+      status: 'ok',
+      job: {
+        jobId: jobIdOne,
+        status: 'Queued' as const,
+        queuedAt: now,
+        queuePosition: 1,
+      },
+    });
+    const api = wizardApi({
+      getCalibrationMethodGuidanceCatalog: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        catalog: [
+          {
+            method: 'flow_rate_pass_1',
+            title: 'Flow rate — pass 1',
+            purpose: 'Measures extrusion multiplier accuracy.',
+            wikiUrl: null,
+            setupInputs: [
+              {
+                key: 'start_temp_c',
+                label: 'Starting nozzle temperature',
+                unit: '°C',
+                minimum: 190,
+                maximum: 250,
+              },
+            ],
+            measureQuantity: null,
+            steps: ['setup', 'print', 'measure'],
+          },
+        ],
+      }),
+      submitCalibrationSlice: submit,
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start Flow rate — pass 1/i }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Continue to inputs/i }),
+    );
+    fireEvent.change(
+      await screen.findByLabelText(/Starting nozzle temperature/i),
+      { target: { value: '215' } },
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start slicing/i }),
+    );
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+    const call = submit.mock.calls[0]?.[0] as {
+      params?: Record<string, number>;
+    };
+    expect(call.params).toEqual({ start_temp_c: 215 });
+  });
+
+  it('control: leaves `params` absent on submitCalibrationSlice for a method that declares no setup inputs', async () => {
+    // Default `wizardApi()` guidance catalog is `catalog: []`, so every
+    // method falls back to zero declared setup inputs — the negative
+    // control proving the assertion above is not vacuously true.
+    const submit = vi.fn().mockResolvedValue({
+      status: 'ok',
+      job: {
+        jobId: jobIdOne,
+        status: 'Queued' as const,
+        queuedAt: now,
+        queuePosition: 1,
+      },
+    });
+    const api = wizardApi({ submitCalibrationSlice: submit });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await beginMethodThroughPurposeAndInputs(/Start Flow rate — pass 1/i);
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+    const call = submit.mock.calls[0]?.[0] as {
+      params?: Record<string, number>;
+    };
+    expect(call.params).toBeUndefined();
+  });
+
+  it('blocks slicing with a validation message when a collected input is out of the declared bounds', async () => {
+    const submit = vi.fn().mockResolvedValue({
+      status: 'ok',
+      job: {
+        jobId: jobIdOne,
+        status: 'Queued' as const,
+        queuedAt: now,
+        queuePosition: 1,
+      },
+    });
+    const api = wizardApi({
+      getCalibrationMethodGuidanceCatalog: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        catalog: [
+          {
+            method: 'flow_rate_pass_1',
+            title: 'Flow rate — pass 1',
+            purpose: 'Measures extrusion multiplier accuracy.',
+            wikiUrl: null,
+            setupInputs: [
+              {
+                key: 'start_temp_c',
+                label: 'Starting nozzle temperature',
+                unit: '°C',
+                minimum: 190,
+                maximum: 250,
+              },
+            ],
+            measureQuantity: null,
+            steps: ['setup', 'print', 'measure'],
+          },
+        ],
+      }),
+      submitCalibrationSlice: submit,
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start Flow rate — pass 1/i }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Continue to inputs/i }),
+    );
+    fireEvent.change(
+      await screen.findByLabelText(/Starting nozzle temperature/i),
+      { target: { value: '999' } },
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start slicing/i }),
+    );
+
+    await screen.findByText(
+      /Starting nozzle temperature must be a number between 190 and 250/i,
+    );
+    expect(submit).not.toHaveBeenCalled();
   });
 });

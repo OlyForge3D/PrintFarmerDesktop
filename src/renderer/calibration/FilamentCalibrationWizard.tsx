@@ -82,6 +82,7 @@ import {
   buildPersistedState,
   restoredWorkingState,
   scalarSpecFor,
+  validateSetupInputs,
   type FilamentWizardInFlightJob,
   type FilamentWizardPersistedState,
   type FilamentWizardPhase,
@@ -962,8 +963,46 @@ function FilamentCalibrationWizardInner(
     }
   }, [profileId, working, environment]);
 
+  // ------------------ four-phase per-step UI (issue #799) -------------------
+  //
+  // A method pick no longer submits a slice directly. It now runs through
+  // purpose (what this measures/why, before asking for anything) and inputs
+  // (the method's declared setup inputs, from the server guidance catalog —
+  // issue #797 — falling back to none if that catalog has not loaded) before
+  // `beginMethod` below ever runs. Both screens are pure client-side
+  // navigation (no network call), so `selectMethod`/`backToMethodPicker`/
+  // `advanceToInputs`/`backToPurpose` only ever touch `working.phase` and
+  // `working.currentMethod`.
+  const selectMethod = useCallback((method: CalibrationSliceMethod): void => {
+    setBanner(null);
+    setWorking((current) => ({
+      ...current,
+      phase: 'methodPurpose',
+      currentMethod: method,
+    }));
+  }, []);
+
+  const backToMethodPicker = useCallback((): void => {
+    setWorking((current) => ({
+      ...current,
+      phase: 'methodPicker',
+      currentMethod: null,
+    }));
+  }, []);
+
+  const advanceToInputs = useCallback((): void => {
+    setWorking((current) => ({ ...current, phase: 'methodInputs' }));
+  }, []);
+
+  const backToPurpose = useCallback((): void => {
+    setWorking((current) => ({ ...current, phase: 'methodPurpose' }));
+  }, []);
+
   const beginMethod = useCallback(
-    async (method: CalibrationSliceMethod): Promise<void> => {
+    async (
+      method: CalibrationSliceMethod,
+      params?: Readonly<Record<string, number>>,
+    ): Promise<void> => {
       const { picks, printerId, cloneId, cloneName } = working;
       if (
         picks === null ||
@@ -990,6 +1029,13 @@ function FilamentCalibrationWizardInner(
           processProfileName: picks.processName,
           filamentProfileName: cloneName,
           method,
+          // Issue #799: populate `params` from the setup inputs collected in
+          // the inputs phase. Omitted entirely (rather than sent as `{}`)
+          // when the method declares none, so a method with no setup inputs
+          // leaves `params` absent on the wire rather than vacuously present.
+          ...(params !== undefined && Object.keys(params).length > 0
+            ? { params }
+            : {}),
         });
         if (unmountedRef.current) return;
         if (response.status === 'error') {
@@ -1026,6 +1072,15 @@ function FilamentCalibrationWizardInner(
       }
     },
     [profileId, working],
+  );
+
+  const submitInputsAndSlice = useCallback(
+    (params: Readonly<Record<string, number>>): void => {
+      const method = working.currentMethod;
+      if (method === null) return;
+      void beginMethod(method, params);
+    },
+    [working.currentMethod, beginMethod],
   );
 
   // ---- Polling loop
@@ -1415,13 +1470,33 @@ function FilamentCalibrationWizardInner(
         <MethodStep
           working={working}
           busy={busy}
-          onPickMethod={(method) => void beginMethod(method)}
+          onPickMethod={selectMethod}
           methodProgress={methodProgress}
           methodProgressStatus={methodProgressStatus}
           methodProgressBusyMethods={methodProgressBusyMethods}
           onToggleSkip={(method) => void toggleMethodDisposition(method)}
           onRetrySync={() => void fetchMethodProgress()}
           methodGuidance={methodGuidance}
+        />
+      ) : null}
+
+      {working.phase === 'methodPurpose' && working.currentMethod !== null ? (
+        <MethodPurposeStep
+          method={working.currentMethod}
+          guidance={methodGuidance[working.currentMethod] ?? null}
+          busy={busy}
+          onBack={backToMethodPicker}
+          onContinue={advanceToInputs}
+        />
+      ) : null}
+
+      {working.phase === 'methodInputs' && working.currentMethod !== null ? (
+        <MethodInputsStep
+          method={working.currentMethod}
+          guidance={methodGuidance[working.currentMethod] ?? null}
+          busy={busy}
+          onBack={backToPurpose}
+          onSubmit={submitInputsAndSlice}
         />
       ) : null}
 
@@ -1821,6 +1896,184 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           );
         })}
       </ul>
+    </fieldset>
+  );
+}
+
+// --------------------------------------------------------------------------
+// Four-phase per-step UI (issue #799): purpose → inputs → slice/print →
+// results. `MethodStep` above is the "pick a method" screen, not one of the
+// four phases itself; once a method is picked these two run before the
+// existing slice/print (`SliceProgress`/`SendToPrinterStep`) and results
+// (`MeasurementStep`) phases below.
+// --------------------------------------------------------------------------
+
+interface MethodPurposeStepProps {
+  readonly method: CalibrationSliceMethod;
+  /**
+   * Server-sourced guidance for this method (issue #797), or `null` while
+   * the catalog is still loading/failed — in which case this screen falls
+   * back to `FILAMENT_METHOD_META`, same as `MethodStep`.
+   */
+  readonly guidance: CalibrationMethodGuidanceRecord | null;
+  readonly busy: boolean;
+  readonly onBack: () => void;
+  readonly onContinue: () => void;
+}
+
+/**
+ * Phase A. Presents what this method measures and why — before the operator
+ * is asked for a single input or a slice is submitted, per the acceptance
+ * criterion "every step presents a purpose screen before any input or slice
+ * action". Purely a confirmation screen: no network call happens here.
+ */
+function MethodPurposeStep(props: MethodPurposeStepProps): React.JSX.Element {
+  const { method, guidance, busy, onBack, onContinue } = props;
+  const meta = FILAMENT_METHOD_META[method];
+  const title = guidance?.title ?? meta.title;
+  const purpose = guidance?.purpose ?? meta.summary;
+
+  return (
+    <fieldset
+      className="cal-step-fieldset"
+      aria-label="Step 3a — purpose"
+      disabled={busy}
+    >
+      <legend>3. {title} — purpose</legend>
+      <p>{purpose}</p>
+      {guidance?.wikiUrl ? (
+        <p className="cal-hint">
+          <a href={guidance.wikiUrl} target="_blank" rel="noreferrer">
+            OrcaSlicer wiki reference
+          </a>
+        </p>
+      ) : null}
+      <div className="cal-actions">
+        <button
+          type="button"
+          className="cal-button"
+          onClick={onBack}
+          disabled={busy}
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          className="cal-button cal-button--primary"
+          onClick={onContinue}
+          disabled={busy}
+        >
+          Continue to inputs
+        </button>
+      </div>
+    </fieldset>
+  );
+}
+
+interface MethodInputsStepProps {
+  readonly method: CalibrationSliceMethod;
+  readonly guidance: CalibrationMethodGuidanceRecord | null;
+  readonly busy: boolean;
+  readonly onBack: () => void;
+  /** Called with the validated, numeric setup-input specification. */
+  readonly onSubmit: (params: Readonly<Record<string, number>>) => void;
+}
+
+/**
+ * Phase B. Collects the method's declared setup inputs (issue #797's
+ * `getMethodGuidanceCatalog().setupInputs`) before a slice is submitted —
+ * "declared inputs are collected before slicing is invoked". A method that
+ * declares none (or whose guidance has not loaded yet — the catalog fetch
+ * degrades gracefully, same as `MethodStep`) shows a single continue action
+ * and submits with no `params`, which is the acceptance suite's control:
+ * `params` must stay empty/absent for a no-input method rather than the
+ * assertion on the positive case being vacuously true.
+ */
+function MethodInputsStep(props: MethodInputsStepProps): React.JSX.Element {
+  const { method, guidance, busy, onBack, onSubmit } = props;
+  const meta = FILAMENT_METHOD_META[method];
+  const title = guidance?.title ?? meta.title;
+  const setupInputs = guidance?.setupInputs ?? [];
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    setFormError(null);
+    const parsed: Record<string, number> = {};
+    for (const input of setupInputs) {
+      const raw = values[input.key] ?? '';
+      parsed[input.key] = raw.trim() === '' ? Number.NaN : Number(raw);
+    }
+    // Validated with the same server-mirroring algorithm #797 shipped for
+    // this exact purpose, rather than re-checking bounds ad hoc here — see
+    // `validateSetupInputs`'s own docblock.
+    const validationError = validateSetupInputs(setupInputs, parsed);
+    if (validationError !== null) {
+      const { input } = validationError;
+      const unitSuffix = input.unit.length > 0 ? ` ${input.unit}` : '';
+      setFormError(
+        `${input.label} must be a number between ${input.minimum} and ${input.maximum}${unitSuffix}.`,
+      );
+      return;
+    }
+    onSubmit(parsed);
+  };
+
+  return (
+    <fieldset
+      className="cal-step-fieldset"
+      aria-label="Step 3b — inputs"
+      disabled={busy}
+    >
+      <legend>3. {title} — inputs</legend>
+      {setupInputs.length === 0 ? (
+        <p className="cal-hint">
+          No additional inputs are required for this step.
+        </p>
+      ) : null}
+      <form onSubmit={submit}>
+        {setupInputs.map((input) => (
+          <label key={input.key}>
+            {input.label} ({input.minimum}–{input.maximum}
+            {input.unit.length > 0 ? ` ${input.unit}` : ''})
+            <input
+              type="number"
+              step="any"
+              value={values[input.key] ?? ''}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setValues((current) => ({
+                  ...current,
+                  [input.key]: event.target.value,
+                }))
+              }
+              aria-label={input.label}
+            />
+          </label>
+        ))}
+        {formError !== null ? (
+          <p className="cal-alert" role="alert">
+            {formError}
+          </p>
+        ) : null}
+        <div className="cal-actions">
+          <button
+            type="button"
+            className="cal-button"
+            onClick={onBack}
+            disabled={busy}
+          >
+            Back
+          </button>
+          <button
+            type="submit"
+            className="cal-button cal-button--primary"
+            disabled={busy}
+          >
+            Start slicing
+          </button>
+        </div>
+      </form>
     </fieldset>
   );
 }
