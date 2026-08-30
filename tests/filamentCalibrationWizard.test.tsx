@@ -28,11 +28,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationListPrintersResponse,
   type CalibrationCustomProfileRef,
+  type CalibrationMethodProgressRecord,
   type CalibrationPrinterCandidate,
   type CalibrationSliceJobSnapshot,
   type CalibrationSlicerProfileRef,
 } from '@shared/ipc';
 import { CalibrationWorkspace } from '../src/renderer/calibration';
+import { FILAMENT_WIZARD_METHODS } from '../src/renderer/calibration/filamentWizardState';
 import type {
   CalibrationApi,
   CalibrationEnvironment,
@@ -372,6 +374,31 @@ function mount(api: CalibrationApi) {
 }
 
 /**
+ * Server-authoritative progress rows (`Completed`) for every method that
+ * precedes `method` in `FILAMENT_WIZARD_METHODS`. Guided-order gating (issue
+ * #794) locks a pending method until every earlier one in the catalogue has
+ * resolved, so the many #795 write-back tests below — which deliberately
+ * exercise a single representative method in isolation rather than walking
+ * the full guided sequence — need their prerequisites pre-resolved to reach
+ * it at all.
+ */
+function progressCompletedBefore(
+  method: (typeof FILAMENT_WIZARD_METHODS)[number],
+): CalibrationMethodProgressRecord[] {
+  const index = FILAMENT_WIZARD_METHODS.indexOf(method);
+  return FILAMENT_WIZARD_METHODS.slice(0, index).map((priorMethod, i) => ({
+    id: `99999999-9999-4999-8999-${(i + 1).toString().padStart(12, '0')}`,
+    projectId: projectGuid,
+    method: priorMethod,
+    disposition: 'Completed' as const,
+    currentStepId: null,
+    revision: 1,
+    createdAtUtc: now,
+    updatedAtUtc: now,
+  }));
+}
+
+/**
  * Choose a printer from the wizard's printer dropdown by its visible label.
  * The picker is a `<select>`, so selection is a `change` carrying the option's
  * value (the printer id) rather than a click on a labelled radio.
@@ -500,14 +527,8 @@ describe('FilamentCalibrationWizard step sequencing', () => {
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
 
-    // Step 1 — flow rate pass 1
-    await runOneMethodEndToEnd(
-      /Start Flow rate — pass 1/i,
-      /Flow ratio/i,
-      '1.02',
-    );
-
-    // Step 2 — temperature tower
+    // Step 1 — temperature tower (first in guided order; unlocked from a
+    // fresh project with no progress rows yet — see issue #794).
     await runOneMethodEndToEnd(
       /Start Temperature tower/i,
       /^Nozzle temperature$/i,
@@ -516,6 +537,17 @@ describe('FilamentCalibrationWizard step sequencing', () => {
         secondFieldLabel: /Initial layer nozzle temperature/i,
         secondValue: '220',
       },
+    );
+
+    // Step 2 — max volumetric speed, the actual second entry in guided
+    // order. Unlocked once temperature tower is marked done locally by the
+    // step above — `deriveGuidedMethodStates` treats the legacy
+    // `completedMethods` JSON as resolving a step even though this test's
+    // mocked server never reports a `Completed` disposition.
+    await runOneMethodEndToEnd(
+      /Start Max volumetric speed/i,
+      /Maximum volumetric speed/i,
+      '35',
     );
 
     // --- Assertions --------------------------------------------------------
@@ -545,14 +577,32 @@ describe('FilamentCalibrationWizard step sequencing', () => {
     ];
     expect(firstCall[0].customProfileId).toBe(cloneGuid);
     expect(secondCall[0].customProfileId).toBe(cloneGuid);
-    expect(firstCall[0].measurement.method).toBe('flow_rate_pass_1');
-    expect(secondCall[0].measurement.method).toBe('temperature_tower');
+    expect(firstCall[0].measurement.method).toBe('temperature_tower');
+    expect(secondCall[0].measurement.method).toBe('max_volumetric_speed');
   });
 });
 
 describe('FilamentCalibrationWizard draft-profile write-back and completion (issue #795)', () => {
+  // These tests exercise flow_rate_pass_1 as their representative method —
+  // #795's write-back/promotion/cleanup logic is per-method and does not
+  // depend on which step the operator is on. Guided-order gating (issue
+  // #794) locks flow_rate_pass_1 until every earlier method resolves, so
+  // this default pre-resolves them rather than making every test below walk
+  // through five unrelated setup steps first.
+  function wizardApiFlowRatePass1Unlocked(
+    overrides: Partial<CalibrationApi> = {},
+  ): CalibrationApi {
+    return wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
+      ...overrides,
+    });
+  }
+
   it('dual-writes each measurement to submitCalibrationObservation using the projectId captured from project creation, alongside the existing clone write-back', async () => {
-    const api = wizardApi();
+    const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -595,7 +645,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('a failed draft-profile submission does not interrupt the wizard — the clone write-back already landed', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       submitCalibrationObservation: vi
         .fn()
         .mockRejectedValue(new Error('network blip')),
@@ -619,7 +669,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('the "Finish calibration" action is disabled until at least one method has been completed', async () => {
-    const api = wizardApi();
+    const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -644,7 +694,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('control: finishing calibration calls completeCalibrationProject with the project id and reports the promoted profile', async () => {
-    const api = wizardApi();
+    const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -675,7 +725,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('abandon (ambient walk-away): leaving the wizard without finishing or clicking "Start over" never calls completeCalibrationProject, so no SECOND (promoted) profile is created — the clone from step 1 remains a separate, disclosed limitation', async () => {
-    const api = wizardApi();
+    const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -710,7 +760,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('abandon (explicit, issue #795 / PrintFarmer#2203): clicking "Start over" deletes the working clone profile, satisfying "no orphan on abandon"', async () => {
-    const api = wizardApi();
+    const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -743,7 +793,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('abandon (explicit, "Start over"): a failed clone-deletion does not block restarting the wizard', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       deleteWorkingCloneProfile: vi
         .fn()
         .mockRejectedValue(new Error('server unreachable')),
@@ -767,7 +817,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('abandon (explicit, "Start over", issue #795 review finding): if clearing the persisted wizard bookmark fails, the working clone is deliberately NOT deleted — a stale bookmark must never outlive the clone it names', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       clearFilamentCalibrationWizardState: vi
         .fn()
         .mockRejectedValue(new Error('disk write failed')),
@@ -796,7 +846,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('control (issue #795 / PrintFarmer#2203): finishing calibration also deletes the working clone once promotion is confirmed', async () => {
-    const api = wizardApi();
+    const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
@@ -824,7 +874,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('finishing calibration (issue #795 review finding): if clearing the persisted wizard bookmark fails after a confirmed promotion, the working clone is deliberately NOT deleted', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       clearFilamentCalibrationWizardState: vi
         .fn()
         .mockRejectedValue(new Error('disk write failed')),
@@ -857,7 +907,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('control (issue #795): if promotion has NOT yet been confirmed (promotedProfileId: null), the working clone is NOT deleted — it is still the only durable record of the calibration', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       completeCalibrationProject: vi.fn().mockResolvedValue({
         status: 'ok' as const,
         lifecycleStatus: 'Completed',
@@ -888,7 +938,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     ).toHaveLength(0);
   });
   it('a method whose draft-profile submission failed blocks "Finish calibration" until it is redone', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       submitCalibrationObservation: vi.fn().mockResolvedValue({
         status: 'error' as const,
         error: {
@@ -942,7 +992,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
   });
 
   it('keeps the project id and lets the operator retry when completion reports an unconfirmed (null) promotion', async () => {
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       completeCalibrationProject: vi.fn().mockResolvedValue({
         status: 'ok' as const,
         lifecycleStatus: 'Completed',
@@ -997,7 +1047,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     }>((resolve) => {
       resolveObservation = resolve;
     });
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
     });
     mount(api);
@@ -1060,7 +1110,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     }>((resolve) => {
       resolveObservation = resolve;
     });
-    const api = wizardApi({
+    const api = wizardApiFlowRatePass1Unlocked({
       submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
     });
     mount(api);
@@ -1154,7 +1204,7 @@ describe('FilamentCalibrationWizard startPrint safety gate', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     // Wait through submit → poll → sliceReady.
@@ -1218,7 +1268,7 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     await screen.findByRole('progressbar', { name: /Slice progress/i });
@@ -1278,6 +1328,10 @@ describe('FilamentCalibrationWizard restart resilience', () => {
       resolveObservation = resolve;
     });
     const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
       submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
     });
     mount(api);
@@ -1487,13 +1541,14 @@ describe('FilamentCalibrationWizard error surfacing', () => {
     await openWizardAndPickPrinter();
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
-    // The wizard is now at the method picker. Clicking pass 1 triggers
+    // The wizard is now at the method picker. Clicking temperature tower
+    // (first in guided order, unlocked from a fresh project) triggers
     // `submitCalibrationSlice`, which the stub answers with an
     // `unsupportedCalibrationMethod` error — the banner should surface
     // the actionable copy, never the raw code.
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     const alert = await screen.findByRole('alert');
@@ -1563,15 +1618,15 @@ describe('FilamentCalibrationWizard polling loop', () => {
 
     // Grab the Start button while real timers are still active — waitFor
     // uses setTimeout internally, so faked timers block findByRole.
-    const startPass1 = await screen.findByRole('button', {
-      name: /Start Flow rate — pass 1/i,
+    const startTemperatureTower = await screen.findByRole('button', {
+      name: /Start Temperature tower/i,
     });
 
     // Fake timers from here on so the polling schedule is observable. Only
     // fake setTimeout/clearTimeout — leaving `queueMicrotask` and everything
     // else real avoids stalling React's internal scheduling.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    fireEvent.click(startPass1);
+    fireEvent.click(startTemperatureTower);
     // Drain microtasks: submit resolves → phase transitions → effect fires
     // → first `runPoll()` awaits the mock → resolves. Each `await` yield
     // advances the promise chain by one step; the loop caps at a small
@@ -1665,7 +1720,7 @@ describe('FilamentCalibrationWizard polling loop', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
 
@@ -1681,7 +1736,7 @@ describe('FilamentCalibrationWizard polling loop', () => {
     // the same method dispatches a fresh submit. If the wizard stranded in
     // `pollingSlice` on failure, the operator would have no exit.
     const restartButton = await screen.findByRole('button', {
-      name: /Start Flow rate — pass 1/i,
+      name: /Start Temperature tower/i,
     });
     expect(restartButton).not.toBeDisabled();
   });
@@ -1710,7 +1765,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     const startButton = await screen.findByRole('button', {
@@ -1768,7 +1823,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     fireEvent.click(
@@ -1817,7 +1872,7 @@ describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
     await performCloneStep();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: /Start Flow rate — pass 1/i,
+        name: /Start Temperature tower/i,
       }),
     );
     const uploadButton = await screen.findByRole('button', {
@@ -2291,11 +2346,12 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
       .fn()
       .mockResolvedValueOnce({
         status: 'ok' as const,
-        progress: [],
+        progress: progressCompletedBefore('flow_rate_pass_1'),
       })
       .mockResolvedValueOnce({
         status: 'ok' as const,
         progress: [
+          ...progressCompletedBefore('flow_rate_pass_1'),
           {
             id: '55555555-5555-4555-8555-555555555504',
             projectId: projectGuid,
@@ -2372,6 +2428,10 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
       resolveObservation = resolve;
     });
     const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
       submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
     });
     mount(api);
@@ -3050,5 +3110,109 @@ describe('FilamentCalibrationWizard server-authoritative method disposition (iss
       expect(screen.queryByText('Sync failed')).toBeNull();
     });
     expect(skipButtonB).not.toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guided order enforcement (issue #794)
+// ---------------------------------------------------------------------------
+
+describe('FilamentCalibrationWizard guided order enforcement (issue #794)', () => {
+  it('disables the Start button for a pending method that is not yet next, and enables the legitimately-next one', async () => {
+    // No progress rows at all — a fresh CalibrationProject with nothing
+    // resolved yet. Under guided-order gating this makes temperature_tower
+    // (first in `FILAMENT_WIZARD_METHODS`) the recommended `next` step and
+    // locks every later pending method, including max_volumetric_speed.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const nextButton = await screen.findByRole('button', {
+      name: /Start Temperature tower/i,
+    });
+    const lockedButton = await screen.findByRole('button', {
+      name: /Start Max volumetric speed/i,
+    });
+
+    // The negative case the acceptance criteria require: a later step is
+    // blocked while an earlier one is still unresolved.
+    expect(lockedButton).toBeDisabled();
+    const lockedItem = lockedButton.closest('li');
+    if (lockedItem === null) throw new Error('expected a method <li>');
+    expect(lockedItem.className).toContain('cal-method--locked');
+
+    // The paired positive control: the legitimately-next step is not
+    // blocked, and is visually/structurally distinct from the locked one.
+    expect(nextButton).not.toBeDisabled();
+    const nextItem = nextButton.closest('li');
+    if (nextItem === null) throw new Error('expected a method <li>');
+    expect(nextItem.className).toContain('cal-method--next');
+    expect(nextItem.className).not.toBe(lockedItem.className);
+  });
+
+  it('control: attempting the locked method does not dispatch a slice submission', async () => {
+    // Pairs with the disabled-attribute assertion above by proving the lock
+    // is not merely cosmetic — a click on a disabled button never reaches
+    // the submit handler, so no slice job is created for the jumped-ahead
+    // method.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [],
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const lockedButton = await screen.findByRole('button', {
+      name: /Start Max volumetric speed/i,
+    });
+    fireEvent.click(lockedButton);
+
+    expect(
+      (api.submitCalibrationSlice as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
+
+  it('does not lock any method while gating is unavailable (a failed method-progress read)', async () => {
+    // Regression control for "existing local-state behavior for methods not
+    // yet migrated continues to function" — when the server progress read
+    // fails, `methodProgressStatus` is `'error'` (never a default Pending,
+    // per issue #797), so `deriveGuidedMethodStates` must return `null` and
+    // every method must stay reachable exactly as it was before #794.
+    const api = wizardApi({
+      getCalibrationMethodProgress: vi
+        .fn()
+        .mockRejectedValue(new Error('network unreachable')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    // Pin this to the failed (`'error'`) state specifically, not merely
+    // `'loading'` — the assertions below would otherwise pass just as well
+    // before the read has settled at all, which is a different code path.
+    await waitFor(() =>
+      expect(screen.getAllByText('Sync failed').length).toBeGreaterThan(0),
+    );
+
+    const laterMethodButton = await screen.findByRole('button', {
+      name: /Start Max volumetric speed/i,
+    });
+    expect(laterMethodButton).not.toBeDisabled();
+    const item = laterMethodButton.closest('li');
+    if (item === null) throw new Error('expected a method <li>');
+    expect(item.className).not.toContain('cal-method--locked');
+    expect(item.className).not.toContain('cal-method--next');
   });
 });
