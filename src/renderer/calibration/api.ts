@@ -70,6 +70,10 @@ export type CalibrationApi = Pick<
   // new "finish calibration" action that triggers server-side promotion.
   | 'submitCalibrationObservation'
   | 'completeCalibrationProject'
+  // Clone cleanup (issue #795, unblocked by PrintFarmer#2203 / PR #2204):
+  // called best-effort from "Start over" (explicit abandon) and after a
+  // successful `completeCalibrationProject` promotion.
+  | 'deleteWorkingCloneProfile'
   // --- Filament calibration wizard restart resilience (issue #754) --------
   //
   // Persists which method/step/in-flight slice job the wizard is on so a

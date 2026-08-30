@@ -1557,6 +1557,22 @@ function FilamentCalibrationWizardInner(
           // future restart. The live wizard has already returned to a clean
           // in-memory state.
         });
+      // Issue #795 / PrintFarmer#2203: the working clone's only remaining
+      // purpose — slicing continuity during calibration — ends the moment a
+      // durable promoted profile exists. Best-effort: a failure here leaves
+      // an unreachable-but-harmless duplicate clone; it must not undo or
+      // re-surface an error for the completion the operator already saw
+      // confirmed above.
+      if (working.cloneId !== null) {
+        void calibrationApi()
+          .deleteWorkingCloneProfile({
+            profileId,
+            customProfileId: working.cloneId,
+          })
+          .catch(() => {
+            // Best-effort cleanup only; see comment above.
+          });
+      }
     } catch (cause) {
       if (unmountedRef.current) return;
       setBanner({
@@ -1575,6 +1591,24 @@ function FilamentCalibrationWizardInner(
   }, [profileId, working]);
 
   const restartWizard = useCallback(() => {
+    // Issue #795 / PrintFarmer#2203: "Start over" is the operator's explicit
+    // abandon action — the only reliable client-side abandon signal that
+    // exists (there is no way to distinguish a mere navigate-away from a
+    // genuine give-up; see the doc comment on
+    // `CalibrationCompleteCalibrationProjectResponse` in `shared/ipc.ts`).
+    // Best-effort: a failure here must not block restarting, so it is
+    // fire-and-forget, matching the existing `clearFilamentCalibrationWizardState`
+    // call just below.
+    if (working.cloneId !== null) {
+      void calibrationApi()
+        .deleteWorkingCloneProfile({
+          profileId,
+          customProfileId: working.cloneId,
+        })
+        .catch(() => {
+          // Best-effort cleanup only; see comment above.
+        });
+    }
     setWorking(initialWorking);
     setBanner(null);
     setSliceJobUi(emptySliceJobUi);
@@ -1587,7 +1621,7 @@ function FilamentCalibrationWizardInner(
         // future restart. The live wizard has already returned to a clean
         // in-memory state.
       });
-  }, [profileId]);
+  }, [profileId, working]);
 
   // ---------------------------------------------------------------- render
 

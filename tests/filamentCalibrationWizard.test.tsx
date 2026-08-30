@@ -325,6 +325,10 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       lifecycleStatus: 'Completed',
       promotedProfileId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
     }),
+    deleteWorkingCloneProfile: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      alreadyDeleted: false,
+    }),
     getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(null),
     saveFilamentCalibrationWizardState: vi
       .fn()
@@ -670,7 +674,42 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     await screen.findByText(/1\. Pick the printer, machine profile/i);
   });
 
-  it('abandon: leaving the wizard without finishing never calls completeCalibrationProject, so no SECOND (promoted) profile is created — the clone from step 1 remains a separate, disclosed limitation', async () => {
+  it('abandon (ambient walk-away): leaving the wizard without finishing or clicking "Start over" never calls completeCalibrationProject, so no SECOND (promoted) profile is created — the clone from step 1 remains a separate, disclosed limitation', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // Operator walks away — no explicit "Finish calibration" OR "Start over"
+    // click.
+    expect(
+      (api.completeCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+    // The clone created at step 1 IS a real custom filament profile, and it
+    // is NOT removed by merely navigating away — this test proves only that
+    // ambient abandonment does not ALSO trigger promotion of a second
+    // profile from the draft. Eliminating the clone on THIS specific path
+    // (no explicit operator action at all) remains a disclosed limitation:
+    // there is no reliable client-side signal to hook cleanup onto here. The
+    // explicit "Start over" action below is the client-initiated abandon
+    // path issue #795 / PrintFarmer#2203 actually closes.
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(1);
+    expect(
+      (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
+
+  it('abandon (explicit, issue #795 / PrintFarmer#2203): clicking "Start over" deletes the working clone profile, satisfying "no orphan on abandon"', async () => {
     const api = wizardApi();
     mount(api);
     await openWizardAndPickPrinter();
@@ -682,22 +721,105 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
       '1.02',
     );
 
-    // Operator walks away — no explicit "Finish calibration" click.
+    fireEvent.click(await screen.findByRole('button', { name: 'Start over' }));
+
+    await waitFor(() => {
+      expect(
+        (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(1);
+    });
+    const [deleteRequest] = (
+      api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as [{ profileId: string; customProfileId: string }];
+    expect(deleteRequest.profileId).toBe(profileId);
+    expect(deleteRequest.customProfileId).toBe(cloneGuid);
+    // "Start over" never calls completion/promotion — matches the ambient
+    // walk-away control above, just with the clone now also cleaned up.
     expect(
       (api.completeCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
     ).toHaveLength(0);
-    // The clone created at step 1 IS a real custom filament profile, and it
-    // is NOT removed by abandoning — this test proves only that abandoning
-    // does not ALSO trigger promotion of a second profile from the draft.
-    // Eliminating the clone itself is out of scope for this issue until
-    // OlyForge3D/PrintFarmer#2203 (non-admin clone cleanup) lands; see the
-    // doc comment on `CalibrationCompleteCalibrationProjectResponse`.
-    expect(
-      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
-        .calls,
-    ).toHaveLength(1);
+    // Back at step 1, ready to calibrate another spool.
+    await screen.findByText(/1\. Pick the printer, machine profile/i);
   });
 
+  it('abandon (explicit, "Start over"): a failed clone-deletion does not block restarting the wizard', async () => {
+    const api = wizardApi({
+      deleteWorkingCloneProfile: vi
+        .fn()
+        .mockRejectedValue(new Error('server unreachable')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start over' }));
+
+    // The best-effort cleanup call was attempted and failed, but the wizard
+    // still resets — the operator is never stuck because a background
+    // cleanup call rejected.
+    await screen.findByText(/1\. Pick the printer, machine profile/i);
+  });
+
+  it('control (issue #795 / PrintFarmer#2203): finishing calibration also deletes the working clone once promotion is confirmed', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Finish calibration/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(1);
+    });
+    const [deleteRequest] = (
+      api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as [{ profileId: string; customProfileId: string }];
+    expect(deleteRequest.profileId).toBe(profileId);
+    expect(deleteRequest.customProfileId).toBe(cloneGuid);
+  });
+
+  it('control (issue #795): if promotion has NOT yet been confirmed (promotedProfileId: null), the working clone is NOT deleted — it is still the only durable record of the calibration', async () => {
+    const api = wizardApi({
+      completeCalibrationProject: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        lifecycleStatus: 'Completed',
+        promotedProfileId: null,
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Finish calibration/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        (api.completeCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(1);
+    });
+    expect(
+      (api.deleteWorkingCloneProfile as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
   it('a method whose draft-profile submission failed blocks "Finish calibration" until it is redone', async () => {
     const api = wizardApi({
       submitCalibrationObservation: vi.fn().mockResolvedValue({

@@ -302,7 +302,16 @@ const ROUTES = {
   /** POST — send a completed slice job's gcode to its printer. Auth: Queue.Start. */
   sliceJobSendToPrinter: (jobId: string) =>
     `/api/slice/${encodeURIComponent(jobId)}/send-to-printer`,
-  /** PUT — mutate a custom slicer profile. Auth: interactive session + Slicing.Submit. */
+  /**
+   * PUT — mutate a custom slicer profile. Auth: interactive session +
+   * Slicing.Submit.
+   * DELETE — owner-scoped custom filament profile delete (PrintFarmer#2203 /
+   * PR #2204). Auth: `Calibration.Update` only — deliberately NOT gated by
+   * `InteractiveSessionRequirement`, since the calibration wizard reaches it
+   * with a short-lived desktop API-key exchange token. Same base path as the
+   * PUT above; the two are otherwise unrelated (different auth policy,
+   * different verb, different service method server-side).
+   */
   customProfile: (customProfileId: string) =>
     `/api/slicer/profiles/custom/${encodeURIComponent(customProfileId)}`,
 } as const;
@@ -1820,6 +1829,54 @@ export class CalibrationHttpClient {
         );
       }
       return await this.parse(pending, CustomProfileResponseSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `DELETE /api/slicer/profiles/custom/{id}` — deletes a custom filament
+   * profile owned by the calling user. PrintFarmer#2203 / PR #2204.
+   *
+   * Consumed by the filament calibration wizard to clean up the working
+   * clone from `cloneSingleProfile` once it is no longer needed: either the
+   * operator explicitly abandons the in-progress attempt ("Start over"), or
+   * the project completes and the draft profile has been promoted to a
+   * durable custom profile (issue #795's remaining, previously-blocked
+   * scope — see the doc comment on `CalibrationCompleteCalibrationProject`
+   * in `shared/ipc.ts`).
+   *
+   * Unlike `updateCustomProfile`, this endpoint is gated only by
+   * `Calibration.Update` — no `InteractiveSessionRequirement` — so no
+   * `remapInteractiveSession` here, matching `resolveProfileForModel`. A 204
+   * is the only success status; there is no body to parse. Idempotency is
+   * the caller's concern: a repeat delete of an already-deleted profile
+   * surfaces as a `notFound` `CalibrationHttpError`, which the IPC handler
+   * treats as an already-satisfied no-op rather than a hard failure.
+   */
+  async deleteCustomProfile(
+    profileId: string,
+    baseUrl: string,
+    customProfileId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.customProfile(customProfileId),
+      { method: 'DELETE' },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      await discard(pending.response);
     } finally {
       pending.dispose();
     }

@@ -5176,6 +5176,96 @@ export function registerIpcHandlers(
     },
   );
 
+  registerCalibrationHandler(
+    IpcChannel.CalibrationDeleteWorkingCloneProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationDeleteWorkingCloneProfile
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        await calibrationHttp.deleteCustomProfile(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.customProfileId,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.custom.deleted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationDeleteWorkingCloneProfile
+        ].response.parse({ status: 'ok', alreadyDeleted: false });
+      } catch (error) {
+        // A 404 means the goal ("this clone should not exist") is already
+        // satisfied — e.g. a retried best-effort call, or a clone the
+        // operator already removed by hand. Report success rather than an
+        // error the caller has no useful way to act on.
+        if (
+          error instanceof CalibrationHttpError &&
+          error.code === 'notFound'
+        ) {
+          emitCalibrationLog({
+            level: 'info',
+            component: 'calibration.http',
+            event: 'profiles.custom.deleted',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'ok',
+            durationMs: Date.now() - startedAt,
+            errorCode: 'notFound',
+          });
+          return ipcSchemas[
+            IpcChannel.CalibrationDeleteWorkingCloneProfile
+          ].response.parse({ status: 'ok', alreadyDeleted: true });
+        }
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.custom.deleted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Working clone profile deletion failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationDeleteWorkingCloneProfile
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
   // --- Filament calibration wizard restart resilience (issue #754) ---------
   //
   // Local-only: these three channels never touch `calibrationHttp` or the

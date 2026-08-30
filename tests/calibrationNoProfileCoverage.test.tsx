@@ -255,6 +255,9 @@ function apiWith(coverage: Coverage): CalibrationApi {
     completeCalibrationProject: vi
       .fn()
       .mockResolvedValue(notImplemented('completeCalibrationProject')),
+    deleteWorkingCloneProfile: vi
+      .fn()
+      .mockResolvedValue(notImplemented('deleteWorkingCloneProfile')),
   } satisfies CalibrationApi;
 }
 

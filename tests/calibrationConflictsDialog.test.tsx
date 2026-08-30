@@ -69,6 +69,7 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
     updateCalibrationFilamentProfileMeasurement: vi.fn(),
     submitCalibrationObservation: vi.fn(),
     completeCalibrationProject: vi.fn(),
+    deleteWorkingCloneProfile: vi.fn(),
     saveFilamentCalibrationWizardState: vi.fn(),
     getFilamentCalibrationWizardState: vi.fn(),
     clearFilamentCalibrationWizardState: vi.fn(),

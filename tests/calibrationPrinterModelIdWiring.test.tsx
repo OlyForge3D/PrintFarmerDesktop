@@ -300,6 +300,9 @@ function apiFor(candidate: CalibrationPrinterCandidate): CalibrationApi {
     completeCalibrationProject: vi
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
+    deleteWorkingCloneProfile: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
   } satisfies CalibrationApi;
 }
 

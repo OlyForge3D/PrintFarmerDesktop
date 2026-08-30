@@ -371,6 +371,13 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationDeleteWorkingCloneProfile,
+    request: (profileId) => ({
+      profileId,
+      customProfileId: uuid(9),
+    }),
+  },
+  {
     channel: IpcChannel.CalibrationResolveSystemProfile,
     request: (profileId) => ({
       profileId,

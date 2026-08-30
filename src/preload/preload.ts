@@ -133,6 +133,8 @@ import {
   type CalibrationSubmitCalibrationObservationResponse,
   type CalibrationCompleteCalibrationProjectRequest,
   type CalibrationCompleteCalibrationProjectResponse,
+  type CalibrationDeleteWorkingCloneProfileRequest,
+  type CalibrationDeleteWorkingCloneProfileResponse,
   type CalibrationSaveFilamentWizardStateRequest,
   type CalibrationSaveFilamentWizardStateResponse,
   type CalibrationGetFilamentWizardStateRequest,
@@ -623,6 +625,15 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationCompleteCalibrationProject].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationCompleteCalibrationProject,
+        request,
+      ),
+    ),
+  deleteWorkingCloneProfile: async (
+    request: CalibrationDeleteWorkingCloneProfileRequest,
+  ): Promise<CalibrationDeleteWorkingCloneProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationDeleteWorkingCloneProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationDeleteWorkingCloneProfile,
         request,
       ),
     ),

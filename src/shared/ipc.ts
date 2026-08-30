@@ -90,6 +90,15 @@ export const IpcChannel = {
     'calibration:submitCalibrationObservation',
   CalibrationCompleteCalibrationProject:
     'calibration:completeCalibrationProject',
+  // Clone cleanup (issue #795, unblocked by OlyForge3D/PrintFarmer#2203 /
+  // PR #2204): deletes the working clone profile once it is no longer
+  // needed. Consumed by `FilamentCalibrationWizard` from two call sites —
+  // "Start over" (explicit abandon) and after a successful
+  // `completeCalibrationProject` promotion — both best-effort, since a
+  // failure here must not block the user-visible action it accompanies. See
+  // `CalibrationCompleteCalibrationProjectResponse`'s doc comment for the
+  // remaining, narrower disclosed gap this does NOT close.
+  CalibrationDeleteWorkingCloneProfile: 'calibration:deleteWorkingCloneProfile',
   // --- Filament calibration wizard restart resilience (issue #754) ---------
   CalibrationSaveFilamentWizardState: 'calibration:saveFilamentWizardState',
   CalibrationGetFilamentWizardState: 'calibration:getFilamentWizardState',
@@ -7011,19 +7020,29 @@ export type CalibrationSubmitCalibrationObservationResponse = z.infer<
 // desktop never calls the slicer's `promote-from-calibration` route
 // directly.
 //
-// KNOWN, DISCLOSED SCOPE LIMITATION (issue #795): this is the only path that
-// creates a *promoted* custom filament profile from the accumulated draft.
-// It is NOT the only path that leaves a visible entry in the user's custom
-// filament profile list at all — `CalibrationCloneFilamentProfile` still
-// creates a real, named custom profile at wizard step 1 (kept because
-// slicing resolves profiles by name, not by project/draft reference; see
-// `createAttempt`'s doc comment in `calibrationHttp.ts`). An abandoned run
-// therefore still leaves that clone behind. What this change delivers is:
-// abandoning never creates a SECOND profile via promotion, and completing
-// reliably produces one via promotion — it does not yet make an abandoned
-// run leave zero profiles. Eliminating the clone itself is blocked on
-// OlyForge3D/PrintFarmer#2203 (a non-admin way to remove/archive it) or an
-// equivalent change letting slicing resolve profiles by reference.
+// PREVIOUSLY-DISCLOSED SCOPE LIMITATION (issue #795), NOW ADDRESSED: this is
+// the only path that creates a *promoted* custom filament profile from the
+// accumulated draft. It used NOT to be the only path that leaves a visible
+// entry in the user's custom filament profile list at all —
+// `CalibrationCloneFilamentProfile` also creates a real, named custom
+// profile at wizard step 1 (kept because slicing resolves profiles by name,
+// not by project/draft reference; see `createAttempt`'s doc comment in
+// `calibrationHttp.ts`), and that clone used to survive an abandoned run
+// with nothing to clean it up. `OlyForge3D/PrintFarmer#2203` / PR #2204
+// shipped a non-admin, owner-scoped `DELETE /api/slicer/profiles/custom/{id}`
+// specifically to close this gap; see `CalibrationDeleteWorkingCloneProfile`
+// below, which `FilamentCalibrationWizard` now calls (best-effort) both when
+// the operator clicks "Start over" (explicit abandon) and immediately after
+// a successful promotion here (the clone's only remaining purpose — slicing
+// continuity during calibration — ends once a durable promoted profile
+// exists).
+//
+// REMAINING, NARROWER GAP: this only covers the two client-initiated
+// lifecycle exits above. A user quitting the desktop app or navigating away
+// mid-attempt without clicking "Start over" leaves the clone behind, same as
+// before — there is no reliable client-side signal for that kind of ambient
+// abandonment, and inventing one (e.g. a server-side stale-clone reaper) is
+// out of scope for this issue.
 //
 // This handler best-effort reads the draft profile after a successful PATCH
 // to report `promotedProfileId`; a failure on that follow-up read does not
@@ -7063,6 +7082,56 @@ export const CalibrationCompleteCalibrationProjectResponse =
   ]);
 export type CalibrationCompleteCalibrationProjectResponse = z.infer<
   typeof CalibrationCompleteCalibrationProjectResponse
+>;
+
+// --- calibration:deleteWorkingCloneProfile (issue #795 / PrintFarmer#2203) --
+//
+// Backing: `DELETE /api/slicer/profiles/custom/{id}`. Auth:
+// `Calibration.Update` only (no `InteractiveSessionRequirement` — see the
+// doc comment on `CalibrationHttpClient.deleteCustomProfile`).
+//
+// Deletes the working clone created by `CalibrationCloneFilamentProfile` at
+// wizard step 1. Called best-effort from two `FilamentCalibrationWizard`
+// sites: "Start over" (the operator explicitly abandons the in-progress
+// attempt) and immediately after a successful `completeCalibrationProject`
+// promotion (the clone's only purpose — slicing continuity during
+// calibration — has ended once a durable promoted profile exists). Both
+// call sites swallow a failure here rather than surfacing it as a blocking
+// error: the user-visible action they accompany (restarting, or finishing
+// calibration) has already succeeded, and a stray unreachable clone is a
+// strictly better failure mode than losing that outcome.
+//
+// A 404 from the server (already deleted — e.g. a retried best-effort call,
+// or an operator who deleted it manually) is treated as `status: 'ok'`,
+// `alreadyDeleted: true` rather than an error: the caller's goal ("this
+// clone should not exist") is already satisfied.
+
+export const CalibrationDeleteWorkingCloneProfileRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /** The working clone's Guid, from `CalibrationCloneFilamentProfile`'s response. */
+    customProfileId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationDeleteWorkingCloneProfileRequest = z.infer<
+  typeof CalibrationDeleteWorkingCloneProfileRequest
+>;
+
+export const CalibrationDeleteWorkingCloneProfileResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** True when the server reported 404 (already gone) rather than 204. */
+        alreadyDeleted: z.boolean(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationDeleteWorkingCloneProfileResponse = z.infer<
+  typeof CalibrationDeleteWorkingCloneProfileResponse
 >;
 
 // --- Filament calibration wizard restart resilience (issue #754) -----------
@@ -7534,6 +7603,10 @@ export const ipcSchemas = {
     request: CalibrationCompleteCalibrationProjectRequest,
     response: CalibrationCompleteCalibrationProjectResponse,
   },
+  [IpcChannel.CalibrationDeleteWorkingCloneProfile]: {
+    request: CalibrationDeleteWorkingCloneProfileRequest,
+    response: CalibrationDeleteWorkingCloneProfileResponse,
+  },
   [IpcChannel.CalibrationSaveFilamentWizardState]: {
     request: CalibrationSaveFilamentWizardStateRequest,
     response: CalibrationSaveFilamentWizardStateResponse,
@@ -7736,6 +7809,9 @@ export interface PrintFarmerApi {
   completeCalibrationProject(
     request: CalibrationCompleteCalibrationProjectRequest,
   ): Promise<CalibrationCompleteCalibrationProjectResponse>;
+  deleteWorkingCloneProfile(
+    request: CalibrationDeleteWorkingCloneProfileRequest,
+  ): Promise<CalibrationDeleteWorkingCloneProfileResponse>;
   saveFilamentCalibrationWizardState(
     request: CalibrationSaveFilamentWizardStateRequest,
   ): Promise<CalibrationSaveFilamentWizardStateResponse>;
