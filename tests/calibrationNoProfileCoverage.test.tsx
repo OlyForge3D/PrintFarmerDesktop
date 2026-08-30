@@ -249,6 +249,11 @@ function apiWith(coverage: Coverage): CalibrationApi {
     listCalibrationConflicts: vi
       .fn()
       .mockResolvedValue(notImplemented('listCalibrationConflicts')),
+    listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
+      status: 'ok',
+      spools: [],
+      fetchedAt: '2026-08-24T02:29:44.441Z',
+    }),
   } satisfies CalibrationApi;
 }
 

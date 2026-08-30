@@ -74,6 +74,11 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       .fn()
       .mockRejectedValue(new Error('unexpected call in this test')),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
+      status: 'ok',
+      spools: [],
+      fetchedAt: '2026-08-24T02:29:44.441Z',
+    }),
   };
   return { ...base, ...overrides };
 }

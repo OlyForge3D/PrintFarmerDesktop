@@ -39,6 +39,14 @@ export type CalibrationApi = Pick<
   // `CalibrationProject` in Coach mode before the profile clone, gated on
   // `store.availability.capabilityFlags.calibrationGenerationEnabled`.
   | 'createCalibrationProject'
+  // --- Spoolman spool selection (issue #805) --------------------------------
+  //
+  // Consumed by `FilamentCalibrationWizard`'s spool-picker step: lists the
+  // Spoolman spools known for the selected printer so the operator can pick
+  // one (or explicitly proceed without one) before `createCalibrationProject`
+  // runs, populating its `spoolmanFilamentId`/`spoolmanSpoolId` fields
+  // instead of sending `null` for every project.
+  | 'listCalibrationSpoolmanSpools'
   // --- Server-authoritative method guidance/disposition (issue #797) ------
   //
   // Consumed by `FilamentCalibrationWizard`: `getCalibrationMethodGuidanceCatalog`

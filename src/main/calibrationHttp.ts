@@ -46,6 +46,7 @@ import type {
   RemoteCalibrationProjectRecord,
   RemoteCalibrationMethodGuidance,
   RemoteCalibrationMethodProgress,
+  RemoteCalibrationSpoolmanSpool,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -73,6 +74,7 @@ import {
   RemoteCalibrationProjectRecord as ProjectRecordSchema,
   RemoteCalibrationMethodGuidance as MethodGuidanceSchema,
   RemoteCalibrationMethodProgress as MethodProgressSchema,
+  RemoteCalibrationSpoolmanSpoolsList as SpoolmanSpoolsListSchema,
 } from './calibrationWire.js';
 
 // --- Issue-#138 route templates (single authoritative source) ----------------
@@ -191,6 +193,14 @@ const ROUTES = {
   projects: '/api/calibration-projects',
   project: (id: string) =>
     `/api/calibration-projects/${encodeURIComponent(id)}`,
+  /**
+   * GET — Spoolman spools known for a printer (issue #805), so the filament
+   * calibration wizard's spool picker has data before `createProject` runs.
+   * See `listSpoolmanSpools` below for the same not-yet-verified-against-a-
+   * live-server caveat that applies to its response schema.
+   */
+  spoolmanSpools: (printerId: string) =>
+    `/api/printers/${encodeURIComponent(printerId)}/spoolman-spools`,
   /**
    * GET — server-owned per-method guidance catalog (issue #797 / PrintFarmer#2180 gap 3).
    * Not project-scoped: one catalog serves every project.
@@ -1341,6 +1351,41 @@ export class CalibrationHttpClient {
   }
 
   /**
+   * `GET /api/printers/{printerId}/spoolman-spools` — Spoolman spools
+   * PrintFarmer's server knows about for a printer (issue #805), consumed by
+   * the filament calibration wizard's spool picker before `createProject`
+   * runs. Unlike the other routes in this file, this endpoint has not been
+   * verified against a live `OlyForge3D/PrintFarmer` checkout (no
+   * Spoolman-listing route existed anywhere in that codebase's contract
+   * snapshots at the time this issue was implemented) — `SpoolmanSpoolsListSchema`'s
+   * defensive `.passthrough()`/nullish coercions and this method's caught,
+   * remapped errors mean an unexpected real shape degrades to a picker the
+   * operator can skip past (see `createProject`'s spool fields, which stay
+   * `null` either way) rather than crashing the wizard. A `404` (the route
+   * not existing at all on a server that predates this feature, or simply
+   * not implementing it) is treated as "no Spoolman integration available"
+   * via `getOptional`, not surfaced as an error — reviewers flagged that
+   * every other outcome here degrades silently and a permanent error hint on
+   * every server lacking this still-unverified route would be the one loud
+   * exception.
+   */
+  async listSpoolmanSpools(
+    profileId: string,
+    baseUrl: string,
+    printerId: string,
+    signal: AbortSignal,
+  ): Promise<readonly RemoteCalibrationSpoolmanSpool[]> {
+    const result = await this.getOptional(
+      profileId,
+      baseUrl,
+      ROUTES.spoolmanSpools(printerId),
+      SpoolmanSpoolsListSchema,
+      signal,
+    );
+    return result?.spools ?? [];
+  }
+
+  /**
    * `GET /api/printers/{printerId}/details` — used only to source the catalog
    * `PrinterModel` Guid that the calibration-candidates list omits from the
    * wire.
@@ -1891,6 +1936,12 @@ export class CalibrationHttpClient {
    * selections from the created project (out of scope for #798; see #794),
    * so empty containers are sent and the existing clone-based workflow
    * continues to own those concerns until #795 lands.
+   *
+   * `spoolmanFilamentId`/`localSpoolId`/`spoolmanSpoolId` (issue #805): all
+   * three default to `null` when the caller omits them, preserving #798's
+   * original placeholder behaviour for any caller that does not offer a
+   * spool picker. `localSpoolId` in particular stays `null` for every caller
+   * today — no local-spool tracking producer exists in this desktop yet.
    */
   async createProject(
     profileId: string,
@@ -1905,6 +1956,9 @@ export class CalibrationHttpClient {
       filamentProductName: string;
       filamentMaterial: string;
       experienceMode: 'Coach' | 'Expert';
+      spoolmanFilamentId?: string | null;
+      localSpoolId?: string | null;
+      spoolmanSpoolId?: string | null;
     },
     signal: AbortSignal,
   ): Promise<RemoteCalibrationProjectRecord> {
@@ -1928,9 +1982,9 @@ export class CalibrationHttpClient {
       filamentDiameter: null,
       filamentColor: null,
       filamentTypeId: null,
-      spoolmanFilamentId: null,
-      localSpoolId: null,
-      spoolmanSpoolId: null,
+      spoolmanFilamentId: request.spoolmanFilamentId ?? null,
+      localSpoolId: request.localSpoolId ?? null,
+      spoolmanSpoolId: request.spoolmanSpoolId ?? null,
       filamentSnapshot: {},
       orderedSteps: [],
       currentStep: null,

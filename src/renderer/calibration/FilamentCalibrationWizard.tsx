@@ -64,6 +64,7 @@ import type {
   CalibrationPrinterCandidate,
   CalibrationSliceJobSnapshot,
   CalibrationSliceMethod,
+  CalibrationSpoolmanSpoolCandidate,
 } from '@shared/ipc';
 import {
   CALIBRATION_MAX_PROJECT_NAME,
@@ -111,6 +112,25 @@ const emptyPrinterList: PrinterListState = {
   loading: false,
   error: null,
   printers: [],
+};
+
+/**
+ * Spoolman spool list state for the wizard's spool-picker step (issue #805).
+ * Mirrors `PrinterListState`'s shape/loading pattern. A failed or empty load
+ * is not fatal to the wizard — the operator can still explicitly proceed
+ * without a spool, so `error` is surfaced as a hint rather than blocking
+ * `CloneStep`.
+ */
+interface SpoolListState {
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly spools: readonly CalibrationSpoolmanSpoolCandidate[];
+}
+
+const emptySpoolList: SpoolListState = {
+  loading: false,
+  error: null,
+  spools: [],
 };
 
 /**
@@ -400,6 +420,16 @@ interface WizardWorkingState {
    * calls added by issue #797. `null` before the clone step runs.
    */
   readonly calibrationProjectId: string | null;
+  /**
+   * The operator's Spoolman spool pick (issue #805), or `null` to explicitly
+   * proceed without one — the default, and the only option when the spool
+   * list is empty or failed to load. Reset to `null` whenever `printerId`
+   * changes, since a spool list is scoped to a printer. Consumed only by
+   * `performClone`'s `createCalibrationProject` call; never persisted (the
+   * clone-restart record only exists once a project has already been
+   * created with this value baked in).
+   */
+  readonly selectedSpoolmanSpoolId: string | null;
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
@@ -413,6 +443,7 @@ const initialWorking: WizardWorkingState = {
   cloneId: null,
   cloneName: '',
   calibrationProjectId: null,
+  selectedSpoolmanSpoolId: null,
   completedMethods: [],
   currentMethod: null,
   inFlightJob: null,
@@ -432,6 +463,9 @@ function FilamentCalibrationWizardInner(
   const [printerList, setPrinterList] =
     useState<PrinterListState>(emptyPrinterList);
   const printerListEpochRef = useRef(0);
+  // ------------------------------------------------------------------ spools
+  const [spoolList, setSpoolList] = useState<SpoolListState>(emptySpoolList);
+  const spoolListEpochRef = useRef(0);
   const unmountedRef = useRef(false);
   // Guards `beginMethod` against a synchronous double-submit — see the
   // comment at its call site. Mirrors `sendToPrinterInFlightRef` below.
@@ -793,6 +827,73 @@ function FilamentCalibrationWizardInner(
     }
   }, [loadPrinters, working.phase]);
 
+  // Issue #805: list Spoolman spools for the chosen printer so the operator
+  // can pick one in `CloneStep`. `printerId` is required by the server
+  // route, so this only fires once a printer has been picked (`cloneName`
+  // phase is unreachable without one — see `proceedToCloneName`).
+  const loadSpools = useCallback(async (): Promise<void> => {
+    if (working.printerId === null) {
+      setSpoolList(emptySpoolList);
+      return;
+    }
+    const printerId = working.printerId;
+    const epoch = ++spoolListEpochRef.current;
+    setSpoolList((current) => ({ ...current, loading: true, error: null }));
+    // Issue #805 (reviewer follow-up): if a reload no longer contains the
+    // previously selected spool (removed from the farm, or the reload
+    // failed outright), the picker's `<select>` would fall back to "No
+    // spool" visually while `performClone` still held the stale Guid. Clear
+    // the selection whenever the resolved list (successful or empty on
+    // failure) doesn't contain it, so the UI and the pending request agree.
+    const reconcileSelection = (
+      spools: readonly { spoolmanSpoolId: string }[],
+    ): void => {
+      setWorking((current) =>
+        current.selectedSpoolmanSpoolId !== null &&
+        !spools.some(
+          (spool) => spool.spoolmanSpoolId === current.selectedSpoolmanSpoolId,
+        )
+          ? { ...current, selectedSpoolmanSpoolId: null }
+          : current,
+      );
+    };
+    try {
+      const response = await calibrationApi().listCalibrationSpoolmanSpools({
+        profileId,
+        printerId,
+      });
+      if (spoolListEpochRef.current !== epoch || unmountedRef.current) return;
+      if (response.status === 'error') {
+        setSpoolList({
+          loading: false,
+          error: errorCopy(response.error).title,
+          spools: [],
+        });
+        reconcileSelection([]);
+        return;
+      }
+      setSpoolList({ loading: false, error: null, spools: response.spools });
+      reconcileSelection(response.spools);
+    } catch (cause) {
+      if (spoolListEpochRef.current !== epoch || unmountedRef.current) return;
+      const message =
+        cause instanceof Error && cause.message.length > 0
+          ? cause.message
+          : 'Spoolman spools could not be loaded.';
+      // Non-fatal: the operator can still explicitly proceed without a
+      // spool, so this surfaces as a hint in `CloneStep` rather than a
+      // blocking banner.
+      setSpoolList({ loading: false, error: message, spools: [] });
+      reconcileSelection([]);
+    }
+  }, [profileId, working.printerId]);
+
+  useEffect(() => {
+    if (working.phase === 'cloneName') {
+      void loadSpools();
+    }
+  }, [loadSpools, working.phase]);
+
   // ---------------------------------------------------------------- events
 
   const handleSelectionChange = useCallback(
@@ -808,6 +909,19 @@ function FilamentCalibrationWizardInner(
         ...current,
         printerId: candidate.printerId,
         printerModelId: candidate.printerModelId ?? null,
+        // A spool list is scoped to a printer (issue #805) — any prior pick
+        // no longer applies once the printer changes.
+        selectedSpoolmanSpoolId: null,
+      }));
+    },
+    [],
+  );
+
+  const handlePickSpool = useCallback(
+    (spoolmanSpoolId: string | null): void => {
+      setWorking((current) => ({
+        ...current,
+        selectedSpoolmanSpoolId: spoolmanSpoolId,
       }));
     },
     [],
@@ -832,7 +946,13 @@ function FilamentCalibrationWizardInner(
   }, []);
 
   const performClone = useCallback(async (): Promise<void> => {
-    const { picks, printerId, printerModelId, cloneName } = working;
+    const {
+      picks,
+      printerId,
+      printerModelId,
+      cloneName,
+      selectedSpoolmanSpoolId,
+    } = working;
     if (
       picks === null ||
       picks.filamentName === null ||
@@ -885,12 +1005,25 @@ function FilamentCalibrationWizardInner(
       // mode) BEFORE the profile clone and before any local wizard state is
       // written (persistence only begins once `cloneId !== null` — see
       // `buildPersistedState` in `filamentWizardState.ts`). Best-effort
-      // filament-identity mapping: no spool-selection UI exists in this
-      // wizard yet, so Spoolman/local-spool ids are left `null` server-side
-      // (out of scope here, see #798 scope note 3); no material metadata is
-      // available client-side for a profile pick, so a documented
-      // placeholder is sent — the field just needs to be non-empty.
+      // filament-identity mapping: no material metadata is available
+      // client-side for a profile pick, so a documented placeholder is
+      // sent — the field just needs to be non-empty.
       //
+      // Issue #805: `selectedSpoolmanSpoolId` comes from the spool picker
+      // in `CloneStep`. `spoolmanSpoolId` and `spoolmanFilamentId` are
+      // distinct PrintFarmer-side Guids (see `CalibrationSpoolmanSpoolCandidate`
+      // in `shared/ipc.ts`) — a spool's filament association is only `null`
+      // when PrintFarmer's Spoolman mirror hasn't resolved one yet, so the
+      // candidate's own `spoolmanFilamentId` is looked up and forwarded
+      // rather than duplicating the spool id into both fields.
+      // `localSpoolId` stays `null`: this app tracks no local-spool
+      // inventory of its own.
+      const selectedSpoolCandidate =
+        selectedSpoolmanSpoolId === null
+          ? null
+          : (spoolList.spools.find(
+              (spool) => spool.spoolmanSpoolId === selectedSpoolmanSpoolId,
+            ) ?? null);
       // `requestId` is memoized in a ref across retries of this same
       // attempt (reset only in `proceedToCloneName`) so a retry after a
       // transient failure hits the server's idempotency key instead of
@@ -913,6 +1046,9 @@ function FilamentCalibrationWizardInner(
         filamentProductId: sourceProfileId,
         filamentProductName: picks.filamentName,
         filamentMaterial: 'unknown',
+        spoolmanFilamentId: selectedSpoolCandidate?.spoolmanFilamentId ?? null,
+        spoolmanSpoolId: selectedSpoolmanSpoolId,
+        localSpoolId: null,
       });
       if (unmountedRef.current) return;
       if (projectResponse.status === 'error') {
@@ -966,7 +1102,7 @@ function FilamentCalibrationWizardInner(
     } finally {
       if (!unmountedRef.current) setBusy(false);
     }
-  }, [profileId, working, environment]);
+  }, [profileId, working, environment, spoolList]);
 
   // ------------------ four-phase per-step UI (issue #799) -------------------
   //
@@ -1477,6 +1613,8 @@ function FilamentCalibrationWizardInner(
             setWorking((current) => ({ ...current, phase: 'select' }))
           }
           busy={busy}
+          spoolList={spoolList}
+          onPickSpool={handlePickSpool}
         />
       ) : null}
 
@@ -1689,10 +1827,24 @@ interface CloneStepProps {
   readonly onConfirmClone: () => void;
   readonly onBack: () => void;
   readonly busy: boolean;
+  /** Issue #805: Spoolman spools available for the chosen printer. */
+  readonly spoolList: SpoolListState;
+  /** `null` explicitly proceeds without a spool. */
+  readonly onPickSpool: (spoolmanSpoolId: string | null) => void;
 }
 
+const NO_SPOOL_OPTION_VALUE = '';
+
 function CloneStep(props: CloneStepProps): React.JSX.Element {
-  const { working, onCloneNameChange, onConfirmClone, onBack, busy } = props;
+  const {
+    working,
+    onCloneNameChange,
+    onConfirmClone,
+    onBack,
+    busy,
+    spoolList,
+    onPickSpool,
+  } = props;
   const nameValid = working.cloneName.trim().length > 0;
 
   return (
@@ -1719,6 +1871,39 @@ function CloneStep(props: CloneStepProps): React.JSX.Element {
           maxLength={512}
         />
       </label>
+      <label>
+        Spoolman spool (optional)
+        <select
+          aria-label="Spoolman spool"
+          value={working.selectedSpoolmanSpoolId ?? NO_SPOOL_OPTION_VALUE}
+          onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+            onPickSpool(
+              event.target.value === NO_SPOOL_OPTION_VALUE
+                ? null
+                : event.target.value,
+            )
+          }
+          disabled={spoolList.loading}
+        >
+          <option value={NO_SPOOL_OPTION_VALUE}>
+            No spool — proceed without Spoolman data
+          </option>
+          {spoolList.spools.map((spool) => (
+            <option key={spool.spoolmanSpoolId} value={spool.spoolmanSpoolId}>
+              {spool.displayName}
+            </option>
+          ))}
+        </select>
+      </label>
+      {spoolList.loading ? (
+        <p className="cal-hint">Loading Spoolman spools…</p>
+      ) : null}
+      {spoolList.error !== null ? (
+        <p className="cal-hint">
+          Spoolman spools could not be loaded ({spoolList.error}). You can still
+          proceed without one.
+        </p>
+      ) : null}
       <div className="cal-actions">
         <button type="button" className="cal-button" onClick={onBack}>
           Back
@@ -1726,7 +1911,7 @@ function CloneStep(props: CloneStepProps): React.JSX.Element {
         <button
           type="button"
           className="cal-button cal-button--primary"
-          disabled={!nameValid || busy}
+          disabled={!nameValid || busy || spoolList.loading}
           onClick={onConfirmClone}
         >
           {busy ? 'Cloning…' : 'Clone this filament profile'}

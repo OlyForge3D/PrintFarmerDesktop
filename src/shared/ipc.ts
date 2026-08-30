@@ -62,6 +62,14 @@ export const IpcChannel = {
   // (draft/promotion semantics) is what would let this project become the
   // write-back target; reconciling the two lifecycles is out of scope here.
   CalibrationCreateProject: 'calibration:createProject',
+  // --- Spoolman spool selection (issue #805) --------------------------------
+  // Lists the Spoolman spools PrintFarmer knows about for the selected
+  // printer, so the filament calibration wizard can offer a spool picker
+  // before `CalibrationCreateProject` is called — the operator may pick a
+  // spool (populating `spoolmanFilamentId`/`spoolmanSpoolId` on the create
+  // request) or explicitly proceed without one (all three spool fields stay
+  // `null`, same as before this issue).
+  CalibrationListSpoolmanSpools: 'calibration:listSpoolmanSpools',
   // --- Server-authoritative method guidance/disposition (issue #797) --------
   // Consumes real server step metadata (PrintFarmer#2180 gap 3) and persists
   // the perform-or-skip disposition project-side (gap 2), replacing the
@@ -6068,6 +6076,19 @@ export const CalibrationCreateProjectRequest = z
     filamentProductId: z.string().min(1).max(256),
     filamentProductName: z.string().min(1).max(256),
     filamentMaterial: z.string().min(1).max(64),
+    /**
+     * Spool identity fields (issue #805). All three are optional and default
+     * to `null` when omitted, matching #798's original placeholder behaviour
+     * for a caller that never offers a spool picker. When the operator picks
+     * a Spoolman spool, the wizard sends that spool's
+     * `spoolmanSpoolId`/`spoolmanFilamentId` Guids here; `localSpoolId` is
+     * populated only once this desktop grows its own local-spool tracking
+     * (no such producer exists yet — see the issue's background note), so it
+     * stays `null` for every caller today.
+     */
+    spoolmanFilamentId: z.string().uuid().nullable().optional(),
+    localSpoolId: z.string().uuid().nullable().optional(),
+    spoolmanSpoolId: z.string().uuid().nullable().optional(),
   })
   .strict();
 export type CalibrationCreateProjectRequest = z.infer<
@@ -6094,6 +6115,77 @@ export const CalibrationCreateProjectResponse = z.discriminatedUnion('status', [
 ]);
 export type CalibrationCreateProjectResponse = z.infer<
   typeof CalibrationCreateProjectResponse
+>;
+
+// --- calibration:listSpoolmanSpools (issue #805) ---------------------------
+//
+// Lists the Spoolman spools PrintFarmer's server knows about for a given
+// printer, so the filament calibration wizard's spool-picker step has data
+// to render before `CalibrationCreateProject` is called. Every identifier on
+// the wire here is a PrintFarmer-side Guid (the same `spoolmanSpoolId`/
+// `spoolmanFilamentId` shape `CalibrationFilamentIdentityDto` already uses —
+// see `calibrationProjectContracts.snapshot.ts` — confirming PrintFarmer
+// mirrors Spoolman's inventory into its own DB under its own Guid identity
+// rather than exposing Spoolman's native numeric IDs directly), not
+// Spoolman's own numeric IDs.
+
+export const CalibrationListSpoolmanSpoolsRequest = z
+  .object({
+    /** Selected PrintFarmer server profile Guid. */
+    profileId: z.string().uuid(),
+    /** Printer the spool list is scoped to. */
+    printerId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationListSpoolmanSpoolsRequest = z.infer<
+  typeof CalibrationListSpoolmanSpoolsRequest
+>;
+
+/** One Spoolman spool offered by the picker. */
+export const CalibrationSpoolmanSpoolCandidate = z
+  .object({
+    /** PrintFarmer's Guid for this Spoolman spool. */
+    spoolmanSpoolId: z.string().uuid(),
+    /**
+     * PrintFarmer's Guid for the Spoolman filament this spool holds. `null`
+     * only if PrintFarmer's Spoolman mirror has not resolved a filament
+     * association for the spool yet.
+     */
+    spoolmanFilamentId: z.string().uuid().nullable(),
+    /** Operator-facing label — filament name and colour, spool ID as a fallback. */
+    displayName: z.string().min(1).max(256),
+    material: z.string().max(64).nullable(),
+    color: z.string().max(64).nullable(),
+    vendor: z.string().max(256).nullable(),
+    /** Remaining filament mass on the spool, when Spoolman tracks it. */
+    remainingWeightGrams: z.number().nonnegative().nullable(),
+  })
+  .strict();
+export type CalibrationSpoolmanSpoolCandidate = z.infer<
+  typeof CalibrationSpoolmanSpoolCandidate
+>;
+
+export const CalibrationListSpoolmanSpoolsResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        // 1024 matches `WIRE_LIST_CEILING` in `main/calibrationWire.ts`,
+        // which already truncates the main-process wire parse to that many
+        // spools — keep these in sync so a farm at the wire ceiling doesn't
+        // also fail this IPC response's own bound.
+        spools: z.array(CalibrationSpoolmanSpoolCandidate).max(1024),
+        fetchedAt: z.string().datetime(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationListSpoolmanSpoolsResponse = z.infer<
+  typeof CalibrationListSpoolmanSpoolsResponse
 >;
 
 // --- Server-authoritative method guidance/disposition (issue #797) ---------
@@ -7346,6 +7438,10 @@ export const ipcSchemas = {
     request: CalibrationCreateProjectRequest,
     response: CalibrationCreateProjectResponse,
   },
+  [IpcChannel.CalibrationListSpoolmanSpools]: {
+    request: CalibrationListSpoolmanSpoolsRequest,
+    response: CalibrationListSpoolmanSpoolsResponse,
+  },
   [IpcChannel.CalibrationGetMethodGuidanceCatalog]: {
     request: CalibrationGetMethodGuidanceCatalogRequest,
     response: CalibrationGetMethodGuidanceCatalogResponse,
@@ -7547,6 +7643,10 @@ export interface PrintFarmerApi {
   createCalibrationProject(
     request: CalibrationCreateProjectRequest,
   ): Promise<CalibrationCreateProjectResponse>;
+  // --- Spoolman spool selection (issue #805) --------------------------------
+  listCalibrationSpoolmanSpools(
+    request: CalibrationListSpoolmanSpoolsRequest,
+  ): Promise<CalibrationListSpoolmanSpoolsResponse>;
   // --- Server-authoritative method guidance/disposition (issue #797) -------
   getCalibrationMethodGuidanceCatalog(
     request: CalibrationGetMethodGuidanceCatalogRequest,
