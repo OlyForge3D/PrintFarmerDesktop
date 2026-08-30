@@ -80,11 +80,13 @@ import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
   buildPersistedState,
+  deriveGuidedMethodStates,
   restoredWorkingState,
   scalarSpecFor,
   type FilamentWizardInFlightJob,
   type FilamentWizardPersistedState,
   type FilamentWizardPhase,
+  type GuidedMethodState,
 } from './filamentWizardState';
 
 /**
@@ -1703,6 +1705,24 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
   } = props;
   const isActive = working.phase === 'methodPicker';
 
+  // Guided order (issue #794): drives which step is disabled/"locked" and
+  // which one is the recommended "Next" step, from server-authoritative
+  // progress (issue #797) rather than `working.completedMethods` alone.
+  // `deriveGuidedMethodStates` returns `null` — meaning "do not gate
+  // anything" — until there is a real project AND a successful progress
+  // read to gate against; see its docblock for why that degrades safely to
+  // the pre-#794 free-choice picker rather than locking against stale or
+  // absent data.
+  const guidedStates = deriveGuidedMethodStates(FILAMENT_WIZARD_METHODS, {
+    completedMethods: working.completedMethods,
+    dispositionFor: (method) => methodProgress[method]?.disposition ?? null,
+    gatingAvailable:
+      working.calibrationProjectId !== null && methodProgressStatus === 'ready',
+  });
+  const guidedByMethod = new Map<CalibrationSliceMethod, GuidedMethodState>(
+    guidedStates?.map((state) => [state.method, state]) ?? [],
+  );
+
   return (
     <fieldset
       className="cal-step-fieldset"
@@ -1750,10 +1770,17 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           // `measurementSchema` regardless, which is out of this issue's scope.
           const title = guidance?.title ?? meta.title;
           const purpose = guidance?.purpose ?? meta.summary;
-          const done = working.completedMethods.includes(method);
           const progress = methodProgress[method] ?? null;
           const disposition = progress?.disposition ?? 'Pending';
           const skipped = disposition === 'Skipped';
+          // `done` now recognises a server-Completed disposition in addition
+          // to the legacy local `completedMethods` JSON — either one is
+          // sufficient, so a method not yet migrated to server-tracked
+          // completion still reports done rather than perpetually locking
+          // every later guided step (see `deriveGuidedMethodStates`).
+          const done =
+            disposition === 'Completed' ||
+            working.completedMethods.includes(method);
           const skipToggleBusy = methodProgressBusyMethods.has(method);
           const canToggleSkip =
             working.calibrationProjectId !== null &&
@@ -1769,14 +1796,31 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
                 : disposition === 'Skipped'
                   ? 'Skipped'
                   : 'Pending';
+          // Guided order (issue #794): `guided` is `undefined` whenever
+          // gating is unavailable (see `deriveGuidedMethodStates`), in which
+          // case the picker renders exactly as it did before this issue —
+          // every method reachable, no "Next"/"Locked" badge.
+          const guided = guidedByMethod.get(method);
+          const locked = guided?.locked ?? false;
+          const isNext = guided?.status === 'next';
+          const statusClassName =
+            guided?.status === 'done'
+              ? 'cal-method--done'
+              : guided?.status === 'next'
+                ? 'cal-method--next'
+                : guided?.status === 'pending'
+                  ? 'cal-method--locked'
+                  : skipped
+                    ? 'cal-method--skipped'
+                    : '';
           return (
-            <li key={method} className={skipped ? 'cal-method--skipped' : ''}>
+            <li key={method} className={statusClassName}>
               <button
                 type="button"
                 className="cal-button"
                 onClick={() => onPickMethod(method)}
-                disabled={!isActive || busy}
-                aria-label={`Start ${title}${done ? ' (completed once)' : ''}${skipped ? ' (skipped)' : ''}`}
+                disabled={!isActive || busy || locked}
+                aria-label={`Start ${title}${done ? ' (completed once)' : ''}${skipped ? ' (skipped)' : ''}${isNext ? ' (recommended next step)' : ''}${locked ? ' (locked — finish the earlier guided steps first)' : ''}`}
               >
                 {title}
                 {done ? ' — completed' : ''}
@@ -1800,6 +1844,26 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
               >
                 {dispositionLabel}
               </span>
+              {/*
+                Guided-order status (issue #794): a distinct badge from the
+                disposition span above, so "next recommended" and "locked
+                until an earlier guided step resolves" are structurally
+                separate signals from "done/skipped/pending" rather than
+                overloading the same text.
+              */}
+              {isNext ? (
+                <span className="cal-method-guided-badge cal-method-guided-badge--next">
+                  Next
+                </span>
+              ) : null}
+              {guided?.status === 'pending' ? (
+                <span
+                  className="cal-method-guided-badge cal-method-guided-badge--locked"
+                  aria-label={`${title} is locked until the earlier guided steps are done or skipped`}
+                >
+                  Locked
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="cal-button cal-button--secondary"

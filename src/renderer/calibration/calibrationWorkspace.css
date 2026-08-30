@@ -820,6 +820,51 @@
   color: #e0a63a;
 }
 
+/*
+ * Guided order (issue #794). `--done`/`--next`/`--locked` are structurally
+ * distinct from `--skipped` above (different rendered badge, not just a
+ * colour swap) so the picker's order is legible without relying on colour
+ * alone.
+ */
+.cal-method--done {
+  opacity: 0.72;
+}
+
+.cal-method--done .cal-method-disposition {
+  color: #3ea862;
+}
+
+.cal-method--next {
+  background: color-mix(in srgb, var(--accent, #3a7be0) 8%, transparent);
+  border-radius: 4px;
+}
+
+.cal-method--locked {
+  opacity: 0.55;
+}
+
+.cal-method-guided-badge {
+  justify-self: start;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  width: fit-content;
+}
+
+.cal-method-guided-badge--next {
+  color: #fff;
+  background: var(--accent, #3a7be0);
+}
+
+.cal-method-guided-badge--locked {
+  color: var(--muted, #8a97a3);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
 /* The card is now a fixed 880px column, so this switches on card width. */
 @media (min-width: 760px) {
   .cal-method-list > li {

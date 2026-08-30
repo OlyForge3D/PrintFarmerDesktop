@@ -65,6 +65,7 @@
 import { PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C } from '@shared/ipc';
 import type {
   CalibrationFilamentMeasurement,
+  CalibrationMethodProgressDisposition,
   CalibrationSliceJobStatus,
   CalibrationSliceMethod,
   FilamentWizardStateRecord,
@@ -341,6 +342,80 @@ export function isFlowRatioMethod(
   method: CalibrationSliceMethod,
 ): method is FlowRatioMethod {
   return FILAMENT_METHOD_META[method].measurementSchema === 'flowRatio';
+}
+
+/**
+ * Guided-sequence status the picker renders for a single method (issue
+ * #794). This is layered ON TOP of the existing per-method disposition
+ * (Pending/Skipped/Completed, issue #797) rather than replacing it — the
+ * disposition label keeps rendering exactly as before, and `status` here
+ * only adds the "which one is recommended/locked right now" dimension.
+ *
+ * - `done` — resolved, either via a server-authoritative `Completed`
+ *   disposition or the legacy local `completedMethods` JSON. Kept reachable
+ *   (never locked) so the operator can rerun a step.
+ * - `skipped` — server-authoritative `Skipped` disposition (issue #797).
+ *   Also never locked — skipping never blocks completion.
+ * - `next` — the first method in `FILAMENT_WIZARD_METHODS` order that is
+ *   neither done nor skipped. The one the operator is recommended to run.
+ * - `pending` — unresolved, but not `next` — an earlier method in guided
+ *   order is still unresolved, so this one locks until that resolves.
+ */
+export type GuidedMethodStatus = 'done' | 'skipped' | 'next' | 'pending';
+
+export interface GuidedMethodState {
+  readonly method: CalibrationSliceMethod;
+  readonly status: GuidedMethodStatus;
+  /**
+   * Whether the picker should block starting this method right now. Only a
+   * `pending` (non-`next`) method locks; `done` and `skipped` methods stay
+   * reachable, matching the "skip never blocks completion" rule #797
+   * shipped and the same rerun affordance a completed step already has.
+   */
+  readonly locked: boolean;
+}
+
+/**
+ * Derives the guided order's per-method status from server-authoritative
+ * progress (issue #797) plus the legacy local `completedMethods` set, so a
+ * method not yet migrated to server-tracked completion still reports as
+ * `done` rather than perpetually blocking every method after it.
+ *
+ * Returns `null` — meaning "do not gate anything" — when the caller has no
+ * trustworthy server state to gate against: no `CalibrationProject` yet, or
+ * the last `getMethodProgress` read failed/is still loading. Locking against
+ * stale or absent data would either strand a first-run operator with no
+ * project yet, or make a step someone else resolved on a different device
+ * look falsely locked. A `null` result is exactly the local-JSON-only,
+ * ungated behaviour this issue requires to keep working in parallel for
+ * methods/projects not yet on the server-authoritative path.
+ */
+export function deriveGuidedMethodStates(
+  methods: readonly CalibrationSliceMethod[],
+  options: {
+    readonly completedMethods: readonly CalibrationSliceMethod[];
+    readonly dispositionFor: (
+      method: CalibrationSliceMethod,
+    ) => CalibrationMethodProgressDisposition | null;
+    readonly gatingAvailable: boolean;
+  },
+): readonly GuidedMethodState[] | null {
+  if (!options.gatingAvailable) return null;
+
+  const completedLocally = new Set(options.completedMethods);
+  let nextAssigned = false;
+  return methods.map((method) => {
+    const disposition = options.dispositionFor(method);
+    const done = disposition === 'Completed' || completedLocally.has(method);
+    if (done) return { method, status: 'done', locked: false };
+    const skipped = disposition === 'Skipped';
+    if (skipped) return { method, status: 'skipped', locked: false };
+    if (!nextAssigned) {
+      nextAssigned = true;
+      return { method, status: 'next', locked: false };
+    }
+    return { method, status: 'pending', locked: true };
+  });
 }
 
 /**

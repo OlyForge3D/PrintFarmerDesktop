@@ -54,6 +54,7 @@ import {
   FILAMENT_METHOD_META,
   FILAMENT_WIZARD_METHODS,
   SCALAR_MEASUREMENT_SPECS,
+  deriveGuidedMethodStates,
   isFlowRatioMethod,
 } from '../src/renderer/calibration/filamentWizardState';
 
@@ -345,5 +346,122 @@ describe('FilamentWizardStateRecord.completedMethods ceiling', () => {
     ];
     const record = sampleRecord(tooMany);
     expect(() => FilamentWizardStateRecord.parse(record)).toThrow();
+  });
+});
+
+describe('deriveGuidedMethodStates (issue #794)', () => {
+  // All tests below use a two-method slice of the real order —
+  // temperature_tower (first) and flow_rate_pass_1 (second) — so "jump
+  // ahead" has a single, unambiguous meaning: starting flow_rate_pass_1
+  // before temperature_tower resolves.
+  const methods: readonly (typeof FILAMENT_WIZARD_METHODS)[number][] = [
+    'temperature_tower',
+    'flow_rate_pass_1',
+  ];
+
+  const noneCompleted = (): readonly never[] => [];
+  const allPending = () => null;
+
+  it('gating unavailable: returns null so nothing is locked (no project yet, or a failed/loading progress read)', () => {
+    // Regression control for "existing local-state behavior for methods not
+    // yet migrated continues to function" — a caller with no trustworthy
+    // server state must get back "don't gate", not a guess.
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: noneCompleted(),
+      dispositionFor: allPending,
+      gatingAvailable: false,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('blocks jumping ahead: the second method locks while the first is still unresolved', () => {
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: noneCompleted(),
+      dispositionFor: allPending,
+      gatingAvailable: true,
+    });
+    expect(result).not.toBeNull();
+    const states = result ?? [];
+    const temperature = states.find((s) => s.method === 'temperature_tower');
+    const flow = states.find((s) => s.method === 'flow_rate_pass_1');
+    expect(temperature?.status).toBe('next');
+    expect(temperature?.locked).toBe(false);
+    // The negative case this issue's acceptance criteria require: jumping
+    // ahead to the second step is blocked while the first is unresolved.
+    expect(flow?.status).toBe('pending');
+    expect(flow?.locked).toBe(true);
+  });
+
+  it('control: allows the legitimately-next method once the prior one is done', () => {
+    // Paired positive control for the test above, proving the lock is
+    // order-sensitive rather than a blanket "everything after index 0 is
+    // locked" bug — resolving the first method unlocks the second as `next`.
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: ['temperature_tower'],
+      dispositionFor: allPending,
+      gatingAvailable: true,
+    });
+    expect(result).not.toBeNull();
+    const states = result ?? [];
+    const temperature = states.find((s) => s.method === 'temperature_tower');
+    const flow = states.find((s) => s.method === 'flow_rate_pass_1');
+    expect(temperature?.status).toBe('done');
+    expect(temperature?.locked).toBe(false);
+    expect(flow?.status).toBe('next');
+    expect(flow?.locked).toBe(false);
+  });
+
+  it('control: a server-Completed disposition also resolves a step, independent of local completedMethods', () => {
+    // Completed is server-derived only (issue #797) — the desktop client
+    // never writes it locally, so this exercises the other half of the
+    // "done" union that `completedMethods` above does not cover.
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: noneCompleted(),
+      dispositionFor: (method) =>
+        method === 'temperature_tower' ? 'Completed' : null,
+      gatingAvailable: true,
+    });
+    const states = result ?? [];
+    const flow = states.find((s) => s.method === 'flow_rate_pass_1');
+    expect(flow?.status).toBe('next');
+    expect(flow?.locked).toBe(false);
+  });
+
+  it('never locks a done or skipped method, regardless of its position in the order', () => {
+    // "Skip never blocks completion" (#797) and "a completed step stays
+    // reachable to rerun" both mean done/skipped must never be `locked`,
+    // even though they are not the `next` recommendation either.
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: [],
+      dispositionFor: (method) =>
+        method === 'temperature_tower' ? 'Skipped' : null,
+      gatingAvailable: true,
+    });
+    const states = result ?? [];
+    const temperature = states.find((s) => s.method === 'temperature_tower');
+    const flow = states.find((s) => s.method === 'flow_rate_pass_1');
+    expect(temperature?.status).toBe('skipped');
+    expect(temperature?.locked).toBe(false);
+    // Skipping the first step still promotes the second to `next`.
+    expect(flow?.status).toBe('next');
+    expect(flow?.locked).toBe(false);
+  });
+
+  it('assigns `next` to exactly one method across the full guided order', () => {
+    // Control against a broken implementation that marks every unresolved
+    // method as `next` (which would defeat locking entirely) or none at all.
+    const result = deriveGuidedMethodStates([...FILAMENT_WIZARD_METHODS], {
+      completedMethods: [],
+      dispositionFor: () => null,
+      gatingAvailable: true,
+    });
+    const states = result ?? [];
+    const nextCount = states.filter((s) => s.status === 'next').length;
+    expect(nextCount).toBe(1);
+    expect(states[0]?.status).toBe('next');
+    for (const state of states.slice(1)) {
+      expect(state.status).toBe('pending');
+      expect(state.locked).toBe(true);
+    }
   });
 });
