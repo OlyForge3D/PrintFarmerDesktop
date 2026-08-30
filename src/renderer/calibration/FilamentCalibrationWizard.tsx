@@ -314,6 +314,52 @@ function bannerFromApiError(error: CalibrationApiError): WizardBanner {
   };
 }
 
+/**
+ * Issue #796: banner for a `submitCalibrationObservation` failure —
+ * distinct from {@link bannerFromApiError} because that function's shared
+ * `invalidData` copy ("Restart the wizard — the clone or its base profile
+ * appears to have drifted…") is written for the clone/slice/project call
+ * sites and is wrong advice here. A range-validation rejection of a
+ * *measurement* is recoverable by entering a corrected value and
+ * resubmitting — nothing about the clone or project is wrong.
+ *
+ * Per issue #177, `error.message` is a client-authored literal catalogued by
+ * `error.code` — it is never the backend's own validation prose. The
+ * server's raw `detail` text (`serverDetail`) is deliberately withheld from
+ * the renderer and stays in the main-process log; only the diagnosed
+ * category ("Calibration data is invalid or unsafe.") and the opaque
+ * `reference` cross the IPC boundary. So this banner does not show the
+ * operator the exact range the server enforced — it shows the diagnosed
+ * category plus the reference the operator can quote for support, which is
+ * the #177-sanctioned recovery path.
+ *
+ * The method name is folded into the title because
+ * `latestObservationRequestRef` tracks "latest" per method: a rejection for
+ * method A can still be A's own latest outcome after the operator has
+ * already moved on to method B, so the banner must name the method it is
+ * about or it reads as though the method currently on screen was rejected.
+ *
+ * Every other error code delegates to the shared copy, since those
+ * genuinely are the same category of failure regardless of which call
+ * raised them.
+ */
+function bannerFromObservationApiError(
+  method: CalibrationSliceMethod,
+  error: CalibrationApiError,
+): WizardBanner {
+  if (error.code === 'invalidData') {
+    return {
+      kind: 'error',
+      title: `${FILAMENT_METHOD_META[method].title} — measurement rejected by the server.`,
+      detail: error.message,
+      recovery:
+        'Enter a corrected value within the allowed range and record it again; quote the reference below if it keeps failing.',
+      reference: error.reference,
+    };
+  }
+  return bannerFromApiError(error);
+}
+
 // --------------------------------------------------------------------------
 // Top-level component
 // --------------------------------------------------------------------------
@@ -1732,8 +1778,20 @@ function FilamentCalibrationWizardInner(
               observedMethod,
             ],
           }));
-          const markObservation = (failed: boolean): void => {
-            if (unmountedRef.current) return;
+          // Issue #796: the banner below must obey the SAME
+          // latest-request rule as the pending/failure bookkeeping — a
+          // stale (superseded) request settling after a newer redo was
+          // already issued carries no information about the method's
+          // CURRENT state, so it must not overwrite a banner that reflects
+          // a newer request's outcome. `markObservation` returns whether
+          // it just acted on the latest request so both concerns share one
+          // check rather than drifting apart.
+          const isLatestObservationRequest = (): boolean =>
+            latestObservationRequestRef.current[observedMethod] ===
+            requestToken;
+          const markObservation = (failed: boolean): boolean => {
+            const isLatestRequest = isLatestObservationRequest();
+            if (unmountedRef.current) return isLatestRequest;
             setWorking((current) => {
               const pendingIndex =
                 current.draftObservationPending.indexOf(observedMethod);
@@ -1753,9 +1811,6 @@ function FilamentCalibrationWizardInner(
               // its outcome could let an older failure clear a newer one's
               // failure, or (worse) let an older success clear a newer
               // request's still-pending or already-failed status.
-              const isLatestRequest =
-                latestObservationRequestRef.current[observedMethod] ===
-                requestToken;
               if (!isLatestRequest) {
                 return pendingIndex === -1
                   ? current
@@ -1778,6 +1833,7 @@ function FilamentCalibrationWizardInner(
                     ),
               };
             });
+            return isLatestRequest;
           };
           void calibrationApi()
             .submitCalibrationObservation({
@@ -1788,7 +1844,31 @@ function FilamentCalibrationWizardInner(
               measurement,
             })
             .then((observationResponse) => {
-              markObservation(observationResponse.status === 'error');
+              const isLatestRequest = markObservation(
+                observationResponse.status === 'error',
+              );
+              // Issue #796: surface the diagnosed rejection (category +
+              // #177 opaque reference — see `bannerFromObservationApiError`
+              // for why this is not the server's raw validation text)
+              // instead of only the generic "N step(s) failed to sync"
+              // hint that `draftObservationFailures` alone renders later.
+              // Does not block or interrupt the wizard — the phase/banner
+              // set right below for the successful clone write-back is
+              // untouched; this banner simply replaces it once the
+              // (still-latest) background observation settles as an error,
+              // same as any other async banner update in this component.
+              if (
+                observationResponse.status === 'error' &&
+                isLatestRequest &&
+                !unmountedRef.current
+              ) {
+                setBanner(
+                  bannerFromObservationApiError(
+                    observedMethod,
+                    observationResponse.error,
+                  ),
+                );
+              }
               // Issue #797's server-authoritative method disposition can
               // transition this method's row to `Completed` as a side
               // effect of the observation the server just accepted. The
@@ -1810,8 +1890,20 @@ function FilamentCalibrationWizardInner(
               // in flight.
               void fetchMethodProgress();
             })
-            .catch(() => {
-              markObservation(true);
+            .catch((cause: unknown) => {
+              const isLatestRequest = markObservation(true);
+              if (isLatestRequest && !unmountedRef.current) {
+                setBanner({
+                  kind: 'error',
+                  title: `${FILAMENT_METHOD_META[observedMethod].title} — the draft-profile observation could not be recorded.`,
+                  detail:
+                    cause instanceof Error
+                      ? cause.message
+                      : 'The desktop lost contact with the main process.',
+                  recovery: 'Redo this step to try again.',
+                  reference: null,
+                });
+              }
               void fetchMethodProgress();
             });
         }
