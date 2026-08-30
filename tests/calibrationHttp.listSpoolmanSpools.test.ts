@@ -184,11 +184,29 @@ describe('CalibrationHttpClient.listSpoolmanSpools', () => {
     expect(result).toEqual([]);
   });
 
-  it('maps a non-2xx response to a CalibrationHttpError instead of throwing raw', async () => {
+  it('treats a 404 as "no Spoolman integration for this server" and returns an empty list instead of throwing', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(
-        problem({ title: 'Not Found', errorCode: 'printerNotFound' }, 404),
+        problem({ title: 'Not Found', errorCode: 'routeNotFound' }, 404),
+      );
+    const client = makeClient(fetchMock);
+
+    const result = await client.listSpoolmanSpools(
+      PROFILE_ID,
+      BASE_URL,
+      PRINTER_ID,
+      AbortSignal.timeout(5_000),
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it('maps a non-404 error response to a CalibrationHttpError instead of throwing raw', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        problem({ title: 'Server Error', errorCode: 'internal' }, 500),
       );
     const client = makeClient(fetchMock);
 
@@ -204,22 +222,28 @@ describe('CalibrationHttpClient.listSpoolmanSpools', () => {
       caught = error as CalibrationHttpError;
     }
     expect(caught).toBeInstanceOf(CalibrationHttpError);
-    expect(caught?.status).toBe(404);
+    expect(caught?.status).toBe(500);
   });
 
-  it('rejects a spool missing its required spoolmanSpoolId instead of silently coercing it', async () => {
+  it('drops a spool missing its required spoolmanSpoolId instead of failing the whole list', async () => {
     const malformed = spoolFixture() as Record<string, unknown>;
     delete malformed.spoolmanSpoolId;
-    const fetchMock = vi.fn().mockResolvedValue(json({ spools: [malformed] }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json({ spools: [malformed, spoolFixture()] }));
     const client = makeClient(fetchMock);
 
-    await expect(
-      client.listSpoolmanSpools(
-        PROFILE_ID,
-        BASE_URL,
-        PRINTER_ID,
-        AbortSignal.timeout(5_000),
-      ),
-    ).rejects.toThrow();
+    const result = await client.listSpoolmanSpools(
+      PROFILE_ID,
+      BASE_URL,
+      PRINTER_ID,
+      AbortSignal.timeout(5_000),
+    );
+
+    // The malformed element is silently excluded; the well-formed sibling
+    // element in the same response is still offered to the picker (issue
+    // #805 review follow-up: one bad spool must not blank the whole list).
+    expect(result).toHaveLength(1);
+    expect(result[0]?.spoolmanSpoolId).toBe(SPOOL_ID);
   });
 });

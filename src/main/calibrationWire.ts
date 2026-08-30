@@ -281,6 +281,35 @@ function boundedWireList<T extends z.ZodTypeAny>(element: T) {
 }
 
 /**
+ * Like {@link boundedWireList}, but a single malformed element is dropped
+ * instead of failing the whole array.
+ *
+ * `boundedWireList`'s `.pipe(z.array(element))` re-validates the sliced list
+ * as one atomic value: any single element that fails `element`'s schema
+ * fails the entire parse, which is exactly the "one bad row erases every
+ * healthy row" failure mode the doc comment on `boundedWireList` itself
+ * warns about for the object-field case. For a list surfaced directly as
+ * operator-facing picker options (rather than fed into an identity lookup
+ * that needs every row to exist), a malformed element that the picker was
+ * never going to render correctly anyway should be quietly excluded, not
+ * take the rest of the list down with it.
+ */
+function filteredWireList<T extends z.ZodTypeAny>(element: T) {
+  return z
+    .array(z.unknown())
+    .nullish()
+    .transform((items) =>
+      (items ?? [])
+        .slice(0, WIRE_LIST_CEILING)
+        .map((item) => element.safeParse(item))
+        .filter(
+          (result): result is z.SafeParseSuccess<z.infer<T>> => result.success,
+        )
+        .map((result) => result.data),
+    );
+}
+
+/**
  * One structured rejection reason from `CalibrationRejectionReasonDto`.
  * Retained verbatim so an ineligible printer can explain itself instead of
  * vanishing from the list.
@@ -2366,21 +2395,24 @@ export type RemoteCalibrationSpoolmanSpool = z.infer<
 /**
  * `GET` list-of-spools response. Accepts both `{ spools: [...] }` and a bare
  * array, matching `RemoteCustomProfilesList`'s tolerance below for the same
- * reason: different server builds have serialized either shape.
+ * reason: different server builds have serialized either shape. Uses
+ * {@link filteredWireList} rather than the object-field default so one
+ * malformed spool (missing its Guid, an over-long label) is dropped from the
+ * picker instead of blanking every healthy spool on the same printer.
  */
 export const RemoteCalibrationSpoolmanSpoolsList = z
   .union([
     z
       .object({
-        spools: boundedWireList(RemoteCalibrationSpoolmanSpool),
+        spools: filteredWireList(RemoteCalibrationSpoolmanSpool),
       })
       .passthrough(),
-    boundedWireList(RemoteCalibrationSpoolmanSpool).transform((spools) => ({
+    filteredWireList(RemoteCalibrationSpoolmanSpool).transform((spools) => ({
       spools,
     })),
   ])
   .transform((v) => ({
-    spools: v.spools ?? [],
+    spools: v.spools,
   }));
 export type RemoteCalibrationSpoolmanSpoolsList = z.infer<
   typeof RemoteCalibrationSpoolmanSpoolsList

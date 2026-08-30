@@ -833,6 +833,24 @@ function FilamentCalibrationWizardInner(
     const printerId = working.printerId;
     const epoch = ++spoolListEpochRef.current;
     setSpoolList((current) => ({ ...current, loading: true, error: null }));
+    // Issue #805 (reviewer follow-up): if a reload no longer contains the
+    // previously selected spool (removed from the farm, or the reload
+    // failed outright), the picker's `<select>` would fall back to "No
+    // spool" visually while `performClone` still held the stale Guid. Clear
+    // the selection whenever the resolved list (successful or empty on
+    // failure) doesn't contain it, so the UI and the pending request agree.
+    const reconcileSelection = (
+      spools: readonly { spoolmanSpoolId: string }[],
+    ): void => {
+      setWorking((current) =>
+        current.selectedSpoolmanSpoolId !== null &&
+        !spools.some(
+          (spool) => spool.spoolmanSpoolId === current.selectedSpoolmanSpoolId,
+        )
+          ? { ...current, selectedSpoolmanSpoolId: null }
+          : current,
+      );
+    };
     try {
       const response = await calibrationApi().listCalibrationSpoolmanSpools({
         profileId,
@@ -845,9 +863,11 @@ function FilamentCalibrationWizardInner(
           error: errorCopy(response.error).title,
           spools: [],
         });
+        reconcileSelection([]);
         return;
       }
       setSpoolList({ loading: false, error: null, spools: response.spools });
+      reconcileSelection(response.spools);
     } catch (cause) {
       if (spoolListEpochRef.current !== epoch || unmountedRef.current) return;
       const message =
@@ -858,6 +878,7 @@ function FilamentCalibrationWizardInner(
       // spool, so this surfaces as a hint in `CloneStep` rather than a
       // blocking banner.
       setSpoolList({ loading: false, error: message, spools: [] });
+      reconcileSelection([]);
     }
   }, [profileId, working.printerId]);
 
@@ -983,13 +1004,20 @@ function FilamentCalibrationWizardInner(
       // sent — the field just needs to be non-empty.
       //
       // Issue #805: `selectedSpoolmanSpoolId` comes from the spool picker
-      // in `CloneStep`. The server's filament-identity fields are Guid
-      // strings (see `RemoteCalibrationFilamentIdentity` in
-      // `calibrationWire.ts`), so the same id is threaded through as both
-      // `spoolmanSpoolId` and `spoolmanFilamentId` when a spool is chosen —
-      // this app has no notion of a Spoolman *filament* distinct from the
-      // spool the operator physically picked. `localSpoolId` stays `null`:
-      // this app tracks no local-spool inventory of its own.
+      // in `CloneStep`. `spoolmanSpoolId` and `spoolmanFilamentId` are
+      // distinct PrintFarmer-side Guids (see `CalibrationSpoolmanSpoolCandidate`
+      // in `shared/ipc.ts`) — a spool's filament association is only `null`
+      // when PrintFarmer's Spoolman mirror hasn't resolved one yet, so the
+      // candidate's own `spoolmanFilamentId` is looked up and forwarded
+      // rather than duplicating the spool id into both fields.
+      // `localSpoolId` stays `null`: this app tracks no local-spool
+      // inventory of its own.
+      const selectedSpoolCandidate =
+        selectedSpoolmanSpoolId === null
+          ? null
+          : (spoolList.spools.find(
+              (spool) => spool.spoolmanSpoolId === selectedSpoolmanSpoolId,
+            ) ?? null);
       //
       // `requestId` is memoized in a ref across retries of this same
       // attempt (reset only in `proceedToCloneName`) so a retry after a
@@ -1013,7 +1041,7 @@ function FilamentCalibrationWizardInner(
         filamentProductId: sourceProfileId,
         filamentProductName: picks.filamentName,
         filamentMaterial: 'unknown',
-        spoolmanFilamentId: selectedSpoolmanSpoolId,
+        spoolmanFilamentId: selectedSpoolCandidate?.spoolmanFilamentId ?? null,
         spoolmanSpoolId: selectedSpoolmanSpoolId,
         localSpoolId: null,
       });
@@ -1069,7 +1097,7 @@ function FilamentCalibrationWizardInner(
     } finally {
       if (!unmountedRef.current) setBusy(false);
     }
-  }, [profileId, working, environment]);
+  }, [profileId, working, environment, spoolList]);
 
   const beginMethod = useCallback(
     async (method: CalibrationSliceMethod): Promise<void> => {

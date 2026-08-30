@@ -47,6 +47,7 @@ const filamentGuid = '22222222-2222-4222-8222-222222222203';
 const cloneGuid = '44444444-4444-4444-8444-444444444444';
 const projectGuid = '66666666-6666-4666-8666-666666666601';
 const spoolGuid = '77777777-7777-4777-8777-777777777701';
+const spoolFilamentGuid = '77777777-7777-4777-8777-777777777702';
 const jobIdOne = '55555555-5555-4555-8555-555555555501';
 const jobIdTwo = '55555555-5555-4555-8555-555555555502';
 const now = '2026-08-24T02:29:44.441Z';
@@ -96,7 +97,7 @@ function spoolCandidate(): {
 } {
   return {
     spoolmanSpoolId: spoolGuid,
-    spoolmanFilamentId: spoolGuid,
+    spoolmanFilamentId: spoolFilamentGuid,
     displayName: 'Prusament PLA — Galaxy Black (#12)',
     material: 'PLA',
     color: 'Galaxy Black',
@@ -1454,7 +1455,7 @@ describe('FilamentCalibrationWizard Spoolman spool selection (issue #805)', () =
         localSpoolId: string | null;
       },
     ];
-    expect(request.spoolmanFilamentId).toBe(spoolGuid);
+    expect(request.spoolmanFilamentId).toBe(spoolFilamentGuid);
     expect(request.spoolmanSpoolId).toBe(spoolGuid);
     expect(request.localSpoolId).toBeNull();
   });
@@ -1484,6 +1485,94 @@ describe('FilamentCalibrationWizard Spoolman spool selection (issue #805)', () =
     ];
     expect(request.spoolmanFilamentId).toBeNull();
     expect(request.spoolmanSpoolId).toBeNull();
+  });
+
+  it('clears a previously picked spool that disappears from a reloaded list, instead of silently resubmitting the stale id', async () => {
+    // Simulates: operator picks a spool, project creation fails (server
+    // sends the wizard back to `cloneName`), the spool list reloads on
+    // re-entry and the server no longer reports that spool (e.g. it was
+    // consumed/removed on another workstation in the meantime). The
+    // `<select>` visibly falls back to "No spool"; the retried
+    // `createCalibrationProject` call must agree and also send null rather
+    // than the Guid the UI no longer shows selected.
+    const api = wizardApi({
+      listCalibrationSpoolmanSpools: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'ok' as const,
+          spools: [spoolCandidate()],
+          fetchedAt: now,
+        })
+        .mockResolvedValueOnce({
+          status: 'ok' as const,
+          spools: [],
+          fetchedAt: now,
+        }),
+      createCalibrationProject: vi
+        .fn()
+        .mockResolvedValueOnce(notImplemented('createCalibrationProject'))
+        .mockResolvedValueOnce({
+          status: 'ok' as const,
+          project: {
+            id: projectGuid,
+            name: 'PLA — Prusament Galaxy Black (calibration project)',
+            lifecycleStatus: 'Active',
+            experienceMode: 'Coach',
+            printerId: printerIdA,
+            revision: 1,
+          },
+        }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+
+    const spoolSelector = await screen.findByRole('combobox', {
+      name: /Spoolman spool/i,
+    });
+    await waitFor(() => {
+      const populated = Array.from(
+        spoolSelector.querySelectorAll('option'),
+      ).some((option) => option.value === spoolGuid);
+      if (!populated) throw new Error('spool selector not populated yet');
+    });
+    fireEvent.change(spoolSelector, { target: { value: spoolGuid } });
+    expect((spoolSelector as HTMLSelectElement).value).toBe(spoolGuid);
+
+    const cloneButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(cloneButton);
+    await screen.findByText(
+      /createCalibrationProject: not implemented in wizard test\./i,
+    );
+
+    // Reload has now run a second time with an empty list; the selection
+    // must be reconciled away instead of pointing at an option that no
+    // longer exists.
+    await waitFor(() => {
+      expect((spoolSelector as HTMLSelectElement).value).toBe('');
+    });
+
+    const retryButton = await screen.findByRole('button', {
+      name: /Clone this filament profile/i,
+    });
+    fireEvent.click(retryButton);
+    await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+
+    const [, secondRequest] = (
+      api.createCalibrationProject as ReturnType<typeof vi.fn>
+    ).mock.calls.map(
+      (call) =>
+        call[0] as {
+          spoolmanFilamentId: string | null;
+          spoolmanSpoolId: string | null;
+        },
+    );
+    expect(secondRequest?.spoolmanFilamentId).toBeNull();
+    expect(secondRequest?.spoolmanSpoolId).toBeNull();
   });
 });
 

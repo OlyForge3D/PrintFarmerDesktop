@@ -6171,7 +6171,11 @@ export const CalibrationListSpoolmanSpoolsResponse = z.discriminatedUnion(
     z
       .object({
         status: z.literal('ok'),
-        spools: z.array(CalibrationSpoolmanSpoolCandidate).max(500),
+        // 1024 matches `WIRE_LIST_CEILING` in `main/calibrationWire.ts`,
+        // which already truncates the main-process wire parse to that many
+        // spools — keep these in sync so a farm at the wire ceiling doesn't
+        // also fail this IPC response's own bound.
+        spools: z.array(CalibrationSpoolmanSpoolCandidate).max(1024),
         fetchedAt: z.string().datetime(),
       })
       .strict(),

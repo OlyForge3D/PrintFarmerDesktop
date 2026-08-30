@@ -1361,7 +1361,13 @@ export class CalibrationHttpClient {
    * defensive `.passthrough()`/nullish coercions and this method's caught,
    * remapped errors mean an unexpected real shape degrades to a picker the
    * operator can skip past (see `createProject`'s spool fields, which stay
-   * `null` either way) rather than crashing the wizard.
+   * `null` either way) rather than crashing the wizard. A `404` (the route
+   * not existing at all on a server that predates this feature, or simply
+   * not implementing it) is treated as "no Spoolman integration available"
+   * via `getOptional`, not surfaced as an error — reviewers flagged that
+   * every other outcome here degrades silently and a permanent error hint on
+   * every server lacking this still-unverified route would be the one loud
+   * exception.
    */
   async listSpoolmanSpools(
     profileId: string,
@@ -1369,14 +1375,14 @@ export class CalibrationHttpClient {
     printerId: string,
     signal: AbortSignal,
   ): Promise<readonly RemoteCalibrationSpoolmanSpool[]> {
-    const result = await this.get(
+    const result = await this.getOptional(
       profileId,
       baseUrl,
       ROUTES.spoolmanSpools(printerId),
       SpoolmanSpoolsListSchema,
       signal,
     );
-    return result.spools;
+    return result?.spools ?? [];
   }
 
   /**
