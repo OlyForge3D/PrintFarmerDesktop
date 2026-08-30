@@ -1559,6 +1559,174 @@ describe('FilamentCalibrationWizard restart resilience', () => {
         .calls[0]?.[0],
     ).toEqual({ profileId });
   });
+
+  // Issue #793: `calibrationFilamentWizardState.ts` is a pure offline cache
+  // — it may persist a resume bookmark, but it must never keep the operator
+  // looking at an active-step screen for a method the server has already
+  // resolved (from another device, or a bookmark that outlived what it
+  // recorded). These three tests are the "single authority" acceptance
+  // proof: a resumed local record naming an active step is corrected the
+  // moment fresher server `method-progress` disagrees, and left alone when
+  // the server still agrees.
+  function resumedSliceReadyRecord(
+    currentMethod: (typeof FILAMENT_WIZARD_METHODS)[number],
+  ) {
+    return {
+      schemaVersion: 1 as const,
+      printerId: printerIdA,
+      printerModelId: null,
+      machineName: SAMPLE_MACHINE_NAME,
+      processName: SAMPLE_PROCESS_NAME,
+      baseFilamentName: SAMPLE_FILAMENT_NAME,
+      baseFilamentGuid: filamentGuid,
+      cloneId: cloneGuid,
+      cloneName: 'PLA — Prusament Galaxy Black',
+      calibrationProjectId: projectGuid,
+      completedMethods: [] as const,
+      currentMethod,
+      inFlightJob: {
+        jobId: jobIdOne,
+        method: currentMethod,
+        submittedAt: now,
+        pollAttempt: 3,
+        lastStatus: 'Completed' as const,
+      },
+      phase: 'sliceReady' as const,
+      updatedAt: now,
+    };
+  }
+
+  it('a resumed active step for a method the server now reports Completed snaps back to the method picker instead of trusting the stale local bookmark', async () => {
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi
+        .fn()
+        .mockResolvedValue(resumedSliceReadyRecord('temperature_tower')),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '99999999-9999-4999-8999-000000000001',
+            projectId: projectGuid,
+            method: 'temperature_tower' as const,
+            disposition: 'Completed' as const,
+            currentStepId: null,
+            revision: 1,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          },
+        ],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    // The stale bookmark named an active step (`sliceReady`) for a method
+    // the server now says is done — the wizard must not keep presenting
+    // that step. It snaps back to the method picker, showing the method as
+    // done from server data.
+    expect(
+      await screen.findByRole('button', {
+        name: /Start Temperature tower \(completed once\)/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', { name: /Step 5 — send to printer/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/This method was already completed\./i),
+    ).toBeInTheDocument();
+  });
+
+  it('a resumed active step for a method the server now reports Skipped snaps back to the method picker instead of trusting the stale local bookmark', async () => {
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi
+        .fn()
+        .mockResolvedValue(resumedSliceReadyRecord('flow_rate_pass_1')),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '99999999-9999-4999-8999-000000000002',
+            projectId: projectGuid,
+            method: 'flow_rate_pass_1' as const,
+            disposition: 'Skipped' as const,
+            currentStepId: null,
+            revision: 1,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          },
+        ],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    expect(
+      await screen.findByRole('button', {
+        name: /Start Flow rate — pass 1 \(skipped\)/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', { name: /Step 5 — send to printer/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/This method was already skipped\./i),
+    ).toBeInTheDocument();
+  });
+
+  it('control: a resumed active step for a method the server still reports Pending is left alone — the local bookmark is not second-guessed without contradicting evidence', async () => {
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi
+        .fn()
+        .mockResolvedValue(resumedSliceReadyRecord('temperature_tower')),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: [
+          {
+            id: '99999999-9999-4999-8999-000000000003',
+            projectId: projectGuid,
+            method: 'temperature_tower' as const,
+            disposition: 'Pending' as const,
+            currentStepId: null,
+            revision: 1,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          },
+        ],
+      }),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    expect(
+      await screen.findByRole('group', { name: /Step 5 — send to printer/i }),
+    ).toBeInTheDocument();
+    // Give the reconciliation effect a chance to run before asserting the
+    // negative — it is driven by the same `getCalibrationMethodProgress`
+    // read that resolved to `Pending` above, so once that settles there is
+    // nothing left that could still flip the phase later in this test.
+    await waitFor(() => {
+      expect(
+        (api.getCalibrationMethodProgress as ReturnType<typeof vi.fn>).mock
+          .calls.length,
+      ).toBeGreaterThan(0);
+    });
+    expect(
+      screen.queryByRole('group', { name: /Step 3 — calibration method/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/This method was already completed\./i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/This method was already skipped\./i),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('FilamentCalibrationWizard error surfacing', () => {

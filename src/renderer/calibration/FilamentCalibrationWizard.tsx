@@ -34,6 +34,18 @@
  *   record explicitly. The renderer stays presentation-only throughout:
  *   persistence is delegated to main over the same Zod-validated IPC
  *   boundary as every other wizard action.
+ * - **Single authority, not a second one (issue #793).** The persisted
+ *   bookmark above is a pure offline cache and must never keep contradicting
+ *   the server once the server has an opinion. Per-method disposition
+ *   already deferred to server `method-progress` since #797 (see
+ *   `deriveGuidedMethodStates` in `filamentWizardState.ts`). This build adds
+ *   the other half: the reconciliation effect declared next to
+ *   `ACTIVE_STEP_PHASES` below corrects a resumed active-step screen back to
+ *   the method picker the moment a fresh `method-progress` read reports the
+ *   resumed `currentMethod` as `Completed`/`Skipped` — e.g. resolved from
+ *   another device, or a bookmark that simply outlived what it recorded.
+ *   The persistence effect then re-saves the corrected state, so the cached
+ *   bookmark on disk heals rather than staying stale.
  * - **`startPrint` is an explicit operator choice.** The confirmation
  *   dialog names the physical consequence ("This will start a real print
  *   on a machine that heats to 300 °C and moves") and the operator has
@@ -101,6 +113,27 @@ import {
 const SUPPORTED_METHOD_NAMES: readonly string[] = Object.values(
   FILAMENT_METHOD_META,
 ).map((meta) => meta.title);
+
+/**
+ * Every `FilamentWizardPhase` in which a method is actively being worked —
+ * i.e. everything past the method picker for that method, up to (and
+ * excluding) landing back on the picker. Used by the single-authority
+ * reconciliation effect (issue #793) to decide whether a resumed screen for
+ * `working.currentMethod` needs to be corrected against fresher
+ * server-authoritative `method-progress`. Deliberately excludes `select`,
+ * `cloneName`, `cloning`, and `methodPicker` — those phases have no
+ * "current method in progress" to contradict.
+ */
+const ACTIVE_STEP_PHASES: ReadonlySet<FilamentWizardPhase> = new Set([
+  'methodPurpose',
+  'methodInputs',
+  'submittingSlice',
+  'pollingSlice',
+  'sliceReady',
+  'sendingToPrinter',
+  'awaitingMeasurement',
+  'writingBack',
+]);
 
 interface PrinterListState {
   readonly loading: boolean;
@@ -797,6 +830,65 @@ function FilamentCalibrationWizardInner(
   useEffect(() => {
     void fetchMethodProgress();
   }, [fetchMethodProgress]);
+
+  // --------- resume-vs-server single-authority reconciliation (issue #793) --
+  //
+  // `calibrationFilamentWizardState.ts` (main process) is a pure offline
+  // cache: it may persist wizard bookmarks, but it must never let a resumed
+  // local bookmark keep contradicting the server once the server has an
+  // opinion. `deriveGuidedMethodStates` already enforces half of this for
+  // the method picker's per-step badges — server disposition always wins
+  // over the local `completedMethods` set. This effect closes the other
+  // half: the *screen* the operator is looking at. If the wizard restored
+  // directly into an active-step screen (past the method picker) for
+  // `working.currentMethod`, and a fresh `getCalibrationMethodProgress` read
+  // reports that method as `Completed` or `Skipped` — resolved from another
+  // device, or a stale local bookmark that outlived what it recorded — the
+  // active-step screen must not keep presenting it as still in progress.
+  // Snap back to the method picker, which renders the method as done/
+  // skipped from server data and lets the operator pick the next one. The
+  // persistence effect above then re-saves this corrected `phase`/
+  // `currentMethod`/`inFlightJob`, so the on-disk cache heals itself rather
+  // than staying stale — it never gets to keep asserting a resolved step is
+  // still open.
+  useEffect(() => {
+    if (methodProgressStatus !== 'ready') return;
+    const method = working.currentMethod;
+    if (method === null) return;
+    if (!ACTIVE_STEP_PHASES.has(working.phase)) return;
+    const disposition = methodProgress[method]?.disposition ?? null;
+    if (disposition !== 'Completed' && disposition !== 'Skipped') return;
+    setWorking((current) => {
+      // Re-check inside the updater: another change (e.g. the operator
+      // moving on, or `restartWizard`) may already have altered
+      // phase/currentMethod between this effect being scheduled and this
+      // updater running.
+      if (current.currentMethod !== method) return current;
+      if (!ACTIVE_STEP_PHASES.has(current.phase)) return current;
+      return {
+        ...current,
+        phase: 'methodPicker',
+        currentMethod: null,
+        inFlightJob: null,
+      };
+    });
+    setBanner({
+      kind: 'info',
+      title:
+        disposition === 'Completed'
+          ? 'This method was already completed.'
+          : 'This method was already skipped.',
+      detail:
+        'The server recorded this outcome — possibly from another device — since this step was last open here.',
+      recovery: null,
+      reference: null,
+    });
+  }, [
+    methodProgress,
+    methodProgressStatus,
+    working.currentMethod,
+    working.phase,
+  ]);
 
   const toggleMethodDisposition = useCallback(
     async (method: CalibrationSliceMethod): Promise<void> => {
