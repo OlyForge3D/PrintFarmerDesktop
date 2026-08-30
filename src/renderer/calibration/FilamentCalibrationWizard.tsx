@@ -573,10 +573,17 @@ function FilamentCalibrationWizardInner(
   const [methodGuidance, setMethodGuidance] = useState<
     Readonly<Record<string, CalibrationMethodGuidanceRecord>>
   >({});
-  // Bumped on every progress fetch *and* every successful skip/un-skip write.
-  // A fetch in flight when a write lands is thereby made "stale": when it
-  // eventually resolves, the sequence number it captured no longer matches,
-  // so it is discarded instead of clobbering the write's fresher result.
+  // Fetch-only generation counter, bumped once per `fetchMethodProgress`
+  // call. A successful read is always safe to apply regardless of this
+  // counter (it merges per-method by revision — see `fetchMethodProgress`),
+  // so this guard exists solely to let a *newer fetch* suppress an *older
+  // fetch's* error/loading state without a genuine read failure ever being
+  // silently swallowed by an unrelated write. Deliberately NOT bumped by
+  // skip/un-skip writes (`toggleMethodDisposition`): an earlier version did
+  // that to invalidate in-flight reads, but that meant an unrelated write
+  // landing between a rejected write's conflict-refetch and that refetch's
+  // *failure* would make the mismatch swallow the error, leaving the sync
+  // status stuck at `'loading'` forever with no "Retry sync" ever offered.
   const methodProgressSeqRef = useRef(0);
 
   useEffect(() => {
@@ -622,20 +629,19 @@ function FilamentCalibrationWizardInner(
       if (unmountedRef.current) return;
       if (response.status === 'ok') {
         // Merge per-method by revision rather than replacing the whole map
-        // wholesale. A "stale" read (one that started before a concurrent
-        // write elsewhere bumped `methodProgressSeqRef`) is not stale for
-        // *every* method it covers — it may be exactly the reconciliation a
+        // wholesale. This is what makes it safe to apply this response even
+        // if a *newer fetch* has since been kicked off (see
+        // `methodProgressSeqRef`) — it may be exactly the reconciliation a
         // different method's rejected write is waiting on (e.g. a
         // stale-revision conflict refetch for method A must still land A's
         // fresher row even if an unrelated write to method B resolved in
-        // between and advanced the shared sequence counter; discarding the
-        // whole response would leave A's retry stuck resubmitting the same
-        // stale revision forever). The per-entry revision comparison is
-        // what keeps this safe: it never *downgrades* a method whose
-        // locally-known revision is already at least as new — that only
-        // happens when a write for that exact method resolved after this
-        // read was issued, in which case the write's row is already the
-        // freshest available truth for it.
+        // between; discarding the whole response would leave A's retry
+        // stuck resubmitting the same stale revision forever). The
+        // per-entry revision comparison is what keeps this safe: it never
+        // *downgrades* a method whose locally-known revision is already at
+        // least as new — that only happens when a write for that exact
+        // method resolved after this read was issued, in which case the
+        // write's row is already the freshest available truth for it.
         setMethodProgress((current) => {
           const merged: Record<string, CalibrationMethodProgressRecord> = {
             ...current,
@@ -701,10 +707,14 @@ function FilamentCalibrationWizardInner(
         );
         if (unmountedRef.current) return;
         if (response.status === 'ok') {
-          // Invalidate any progress GET still in flight (see
-          // `methodProgressSeqRef`) so it cannot land after this write and
-          // clobber it with stale data.
-          methodProgressSeqRef.current += 1;
+          // No need to invalidate an in-flight progress GET here: the
+          // per-method, revision-keyed merge in `fetchMethodProgress` already
+          // guarantees a slower read can never clobber this write's fresher
+          // row (its revision is definitionally the highest known for this
+          // method at the moment it lands). `methodProgressSeqRef` is a
+          // fetch-only generation counter — see its declaration — precisely
+          // so that a write settling here never suppresses a *different*
+          // in-flight fetch's error handling.
           setMethodProgress((current) => ({
             ...current,
             [method]: response.progress,
