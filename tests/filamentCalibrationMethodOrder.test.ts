@@ -310,9 +310,11 @@ function sampleRecord(
     baseFilamentGuid: PROFILE_ID,
     cloneId: '33333333-3333-4333-8333-333333333333',
     cloneName: 'PolyLite PLA Blue (calibration)',
+    projectId: '44444444-4444-4444-8444-444444444444',
     completedMethods,
     currentMethod: null,
     inFlightJob: null,
+    draftObservationFailures: [],
     phase: 'methodPicker',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -344,5 +346,32 @@ describe('FilamentWizardStateRecord.completedMethods ceiling', () => {
     ];
     const record = sampleRecord(tooMany);
     expect(() => FilamentWizardStateRecord.parse(record)).toThrow();
+  });
+});
+
+describe('FilamentWizardStateRecord.draftObservationFailures backward compatibility (issue #795)', () => {
+  // A record persisted by a build before #795 shipped this field never wrote
+  // the key at all. It must still parse — and default to "no known
+  // failures" — rather than reject the whole resume record and strand the
+  // operator's in-progress calibration.
+  it('defaults draftObservationFailures to an empty array when the key is absent from an older persisted record', () => {
+    const record = sampleRecord(['flow_rate_pass_1']);
+    const legacyRecord: Record<string, unknown> = { ...record };
+    delete legacyRecord.draftObservationFailures;
+
+    const parsed = FilamentWizardStateRecord.parse(legacyRecord);
+
+    expect(parsed.draftObservationFailures).toEqual([]);
+  });
+
+  it('round-trips a non-empty draftObservationFailures list', () => {
+    const record: FilamentWizardStateRecordType = {
+      ...sampleRecord(['flow_rate_pass_1']),
+      draftObservationFailures: ['flow_rate_pass_1'],
+    };
+
+    const parsed = FilamentWizardStateRecord.parse(record);
+
+    expect(parsed.draftObservationFailures).toEqual(['flow_rate_pass_1']);
   });
 });

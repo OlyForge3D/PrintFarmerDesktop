@@ -626,6 +626,16 @@ function makeApi(savedRecord = record()) {
     listCalibrationConflicts: vi
       .fn<CalibrationApi['listCalibrationConflicts']>()
       .mockResolvedValue({ conflicts: [] }),
+    submitCalibrationObservation: vi
+      .fn<CalibrationApi['submitCalibrationObservation']>()
+      .mockRejectedValue(
+        new Error('submitCalibrationObservation not stubbed in this test'),
+      ),
+    completeCalibrationProject: vi
+      .fn<CalibrationApi['completeCalibrationProject']>()
+      .mockRejectedValue(
+        new Error('completeCalibrationProject not stubbed in this test'),
+      ),
   } satisfies CalibrationApi;
   // Saga stubs removed in #756 — added outside satisfies so describe.skip blocks compile.
   return Object.assign(base, {

@@ -69,6 +69,19 @@ export const IpcChannel = {
   CalibrationSendSliceToPrinter: 'calibration:sendSliceToPrinter',
   CalibrationUpdateFilamentProfileMeasurement:
     'calibration:updateFilamentProfileMeasurement',
+  // --- Draft-profile write-back / completion promotion (issue #795) --------
+  // Moves per-method write-back off the live cloned profile onto the
+  // project's server-side draft profile (attempt + `selection` observation,
+  // merged server-side), and promotes the draft into a real custom filament
+  // profile only when the project's lifecycle transitions to `Completed`.
+  // The clone from `CalibrationCloneFilamentProfile` above remains the
+  // slicing target (slicing resolves profiles by name, not by project/draft
+  // reference — see `calibrationHttp.createAttempt`'s doc comment), so it is
+  // NOT removed; only the *write-back* destination moves.
+  CalibrationSubmitCalibrationObservation:
+    'calibration:submitCalibrationObservation',
+  CalibrationCompleteCalibrationProject:
+    'calibration:completeCalibrationProject',
   // --- Filament calibration wizard restart resilience (issue #754) ---------
   CalibrationSaveFilamentWizardState: 'calibration:saveFilamentWizardState',
   CalibrationGetFilamentWizardState: 'calibration:getFilamentWizardState',
@@ -6732,6 +6745,130 @@ export type CalibrationUpdateFilamentProfileMeasurementResponse = z.infer<
   typeof CalibrationUpdateFilamentProfileMeasurementResponse
 >;
 
+// --- calibration:submitCalibrationObservation (issue #795) ------------------
+//
+// Backing: `POST /api/calibration-projects/{projectId}/attempts` followed by
+// `POST /api/calibration-attempts/{attemptId}/observations` (a `selection`
+// observation). Both calls happen inside the main-process handler; the
+// renderer submits one measurement and gets back one attempt/observation
+// pair. Auth: `Calibration.Create` + `Calibration.Update` (both already held
+// by the desktop's existing scope bundle).
+//
+// This is the write-back target `CalibrationUpdateFilamentProfileMeasurement`
+// used to own alone: submitting here merges the measurement into the
+// project's *draft* profile, not any real custom profile, so an abandoned
+// project accumulates nothing an operator can see in their filament list.
+// The desktop still also calls `CalibrationUpdateFilamentProfileMeasurement`
+// to keep the live clone in sync for slicing continuity between methods
+// (slicing resolves profiles by name — see `createAttempt`'s doc comment in
+// `calibrationHttp.ts` for why the clone cannot be retired yet).
+
+export const CalibrationSubmitCalibrationObservationRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /** The `CalibrationProject` created at wizard start (issue #798). */
+    projectId: z.string().uuid(),
+    /**
+     * Idempotency key pair for the attempt-create call, paired with a fixed
+     * `clientId` on the main-process side. Kept stable across a retry of the
+     * *same* measurement submission; mint a fresh `requestId` only for a
+     * genuinely new attempt.
+     */
+    requestId: z.string().uuid(),
+    /** Idempotency key for the observation-append call. */
+    operationId: z.string().uuid(),
+    measurement: CalibrationFilamentMeasurement,
+  })
+  .strict();
+export type CalibrationSubmitCalibrationObservationRequest = z.infer<
+  typeof CalibrationSubmitCalibrationObservationRequest
+>;
+
+export const CalibrationSubmitCalibrationObservationResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        attemptId: z.string().uuid(),
+        observationId: z.string().uuid(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationSubmitCalibrationObservationResponse = z.infer<
+  typeof CalibrationSubmitCalibrationObservationResponse
+>;
+
+// --- calibration:completeCalibrationProject (issue #795) --------------------
+//
+// Backing: `GET /api/calibration-projects/{projectId}` (to source a fresh
+// `baseRevision`) followed by
+// `PATCH /api/calibration-projects/{projectId}` with
+// `lifecycleStatus: "Completed"`. Both calls happen inside the main-process
+// handler. Auth: `Calibration.Read` + `Calibration.Update`.
+//
+// A genuine `Active` → `Completed` transition triggers server-side
+// promotion of the accumulated draft profile into a brand-new real custom
+// filament profile (`IFilamentProfilePromotionGateway.PromoteAsync`); the
+// desktop never calls the slicer's `promote-from-calibration` route
+// directly.
+//
+// KNOWN, DISCLOSED SCOPE LIMITATION (issue #795): this is the only path that
+// creates a *promoted* custom filament profile from the accumulated draft.
+// It is NOT the only path that leaves a visible entry in the user's custom
+// filament profile list at all — `CalibrationCloneFilamentProfile` still
+// creates a real, named custom profile at wizard step 1 (kept because
+// slicing resolves profiles by name, not by project/draft reference; see
+// `createAttempt`'s doc comment in `calibrationHttp.ts`). An abandoned run
+// therefore still leaves that clone behind. What this change delivers is:
+// abandoning never creates a SECOND profile via promotion, and completing
+// reliably produces one via promotion — it does not yet make an abandoned
+// run leave zero profiles. Eliminating the clone itself is blocked on
+// OlyForge3D/PrintFarmer#2203 (a non-admin way to remove/archive it) or an
+// equivalent change letting slicing resolve profiles by reference.
+//
+// This handler best-effort reads the draft profile after a successful PATCH
+// to report `promotedProfileId`; a failure on that follow-up read does not
+// fail the completion itself (the project has already transitioned) and is
+// reported as `promotedProfileId: null`.
+
+export const CalibrationCompleteCalibrationProjectRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationCompleteCalibrationProjectRequest = z.infer<
+  typeof CalibrationCompleteCalibrationProjectRequest
+>;
+
+export const CalibrationCompleteCalibrationProjectResponse =
+  z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ok'),
+        lifecycleStatus: z.string().min(1).max(64),
+        /**
+         * The newly-promoted custom filament profile's Guid, when the
+         * follow-up draft-profile read succeeded and promotion had already
+         * occurred (immediately, since promotion is synchronous with the
+         * `Completed` transition). `null` when the follow-up read failed or
+         * a promotion claim was still in flight; the caller may re-invoke
+         * this channel (idempotent) or poll `getDraftProfile` separately.
+         */
+        promotedProfileId: z.string().uuid().nullable(),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ]);
+export type CalibrationCompleteCalibrationProjectResponse = z.infer<
+  typeof CalibrationCompleteCalibrationProjectResponse
+>;
+
 // --- Filament calibration wizard restart resilience (issue #754) -----------
 //
 // The wizard's in-flight progress (which method, which step, the in-flight
@@ -6795,11 +6932,36 @@ export const FilamentWizardStateRecord = z
     /** The clone id every write-back names — the identity that carries state across steps. */
     cloneId: z.string().uuid(),
     cloneName: z.string().min(1).max(CALIBRATION_MAX_PROFILE_NAME),
+    /**
+     * The `CalibrationProject` created at wizard start (issue #798),
+     * threaded through so a resumed wizard can keep submitting
+     * attempt/observation write-back (#795) against the SAME project
+     * instead of silently losing that binding across a restart. `nullish`
+     * for backward compatibility with records persisted by a build before
+     * #795 shipped, which never wrote this key at all.
+     */
+    projectId: z
+      .string()
+      .uuid()
+      .nullish()
+      .transform((v) => v ?? null),
     completedMethods: z
       .array(CalibrationSliceMethod)
       .max(CalibrationSliceMethod.options.length),
     currentMethod: CalibrationSliceMethod.nullable(),
     inFlightJob: FilamentWizardStateInFlightJob.nullable(),
+    /**
+     * See `WizardWorkingState.draftObservationFailures` in
+     * `FilamentCalibrationWizard.tsx` for the full rationale. `nullish` for
+     * backward compatibility with records persisted by a build before this
+     * field existed, which never wrote this key at all — treated as "no
+     * known failures" rather than failing to parse the whole record.
+     */
+    draftObservationFailures: z
+      .array(CalibrationSliceMethod)
+      .max(CalibrationSliceMethod.options.length)
+      .nullish()
+      .transform((v) => v ?? []),
     phase: FilamentWizardStatePhase,
     updatedAt: z.string().datetime(),
   })
@@ -7155,6 +7317,14 @@ export const ipcSchemas = {
     request: CalibrationUpdateFilamentProfileMeasurementRequest,
     response: CalibrationUpdateFilamentProfileMeasurementResponse,
   },
+  [IpcChannel.CalibrationSubmitCalibrationObservation]: {
+    request: CalibrationSubmitCalibrationObservationRequest,
+    response: CalibrationSubmitCalibrationObservationResponse,
+  },
+  [IpcChannel.CalibrationCompleteCalibrationProject]: {
+    request: CalibrationCompleteCalibrationProjectRequest,
+    response: CalibrationCompleteCalibrationProjectResponse,
+  },
   [IpcChannel.CalibrationSaveFilamentWizardState]: {
     request: CalibrationSaveFilamentWizardStateRequest,
     response: CalibrationSaveFilamentWizardStateResponse,
@@ -7340,6 +7510,13 @@ export interface PrintFarmerApi {
   updateCalibrationFilamentProfileMeasurement(
     request: CalibrationUpdateFilamentProfileMeasurementRequest,
   ): Promise<CalibrationUpdateFilamentProfileMeasurementResponse>;
+  // --- Draft-profile write-back / completion promotion (issue #795) -------
+  submitCalibrationObservation(
+    request: CalibrationSubmitCalibrationObservationRequest,
+  ): Promise<CalibrationSubmitCalibrationObservationResponse>;
+  completeCalibrationProject(
+    request: CalibrationCompleteCalibrationProjectRequest,
+  ): Promise<CalibrationCompleteCalibrationProjectResponse>;
   saveFilamentCalibrationWizardState(
     request: CalibrationSaveFilamentWizardStateRequest,
   ): Promise<CalibrationSaveFilamentWizardStateResponse>;

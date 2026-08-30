@@ -295,6 +295,12 @@ function apiFor(options: {
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    submitCalibrationObservation: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
+    completeCalibrationProject: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
   } satisfies CalibrationApi;
 }
 

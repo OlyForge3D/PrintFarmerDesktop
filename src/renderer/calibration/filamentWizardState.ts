@@ -404,9 +404,27 @@ export interface FilamentWizardWorkingSnapshot {
   readonly baseFilamentGuid: string | null;
   readonly cloneId: string | null;
   readonly cloneName: string;
+  /**
+   * The `CalibrationProject` created at wizard start (issue #798). Threaded
+   * through persistence so a resumed wizard keeps submitting draft-profile
+   * write-back (#795) against the same project rather than losing the
+   * binding on restart. `null` only in the brief window before
+   * `performClone`'s project-creation call has returned.
+   */
+  readonly projectId: string | null;
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
+  /**
+   * Methods whose draft-profile observation (issue #795) failed and has not
+   * been successfully redone. Persisted so a restart doesn't silently clear
+   * this and re-enable "Finish calibration" over a draft profile that is
+   * genuinely still missing a method's contribution. Deliberately does NOT
+   * include an in-flight/pending set — an in-flight promise cannot survive a
+   * restart, so there is nothing to resume it into; the operator just redoes
+   * that step if it turns out not to have landed.
+   */
+  readonly draftObservationFailures: readonly CalibrationSliceMethod[];
 }
 
 /**
@@ -481,9 +499,11 @@ export function buildPersistedState(
     baseFilamentGuid: snapshot.baseFilamentGuid,
     cloneId: snapshot.cloneId,
     cloneName: snapshot.cloneName,
+    projectId: snapshot.projectId,
     completedMethods: [...snapshot.completedMethods],
     currentMethod: submitNeverLanded ? null : snapshot.currentMethod,
     inFlightJob: submitNeverLanded ? null : snapshot.inFlightJob,
+    draftObservationFailures: [...snapshot.draftObservationFailures],
     phase: stablePhase,
     updatedAt: nowIso,
   };
@@ -510,9 +530,14 @@ export interface RestoredFilamentWizardState {
   readonly printerModelId: string | null;
   readonly cloneId: string;
   readonly cloneName: string;
+  /** See {@link FilamentWizardWorkingSnapshot.projectId}. `null` when the
+   * persisted record predates #795 and never captured a project id. */
+  readonly projectId: string | null;
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
+  /** See {@link FilamentWizardWorkingSnapshot.draftObservationFailures}. */
+  readonly draftObservationFailures: readonly CalibrationSliceMethod[];
 }
 
 export function restoredWorkingState(
@@ -532,8 +557,15 @@ export function restoredWorkingState(
     printerModelId: record.printerModelId,
     cloneId: record.cloneId,
     cloneName: record.cloneName,
+    projectId: record.projectId,
     completedMethods: record.completedMethods,
     currentMethod: record.currentMethod,
     inFlightJob: record.inFlightJob,
+    // Defensive default: production records are always Zod-parsed by the
+    // IPC boundary before reaching here (which already defaults a missing
+    // key to `[]` for backward compatibility — see `FilamentWizardStateRecord`
+    // in `src/shared/ipc.ts`), but guard here too in case a caller ever
+    // supplies a record that skipped that parse.
+    draftObservationFailures: record.draftObservationFailures ?? [],
   };
 }

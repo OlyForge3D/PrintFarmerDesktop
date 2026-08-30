@@ -44,6 +44,9 @@ import type {
   RemoteCustomProfilesList,
   RemotePrinterDetailsDto,
   RemoteCalibrationProjectRecord,
+  RemoteCalibrationAttemptRecord,
+  RemoteCalibrationObservationRecord,
+  RemoteCalibrationDraftProfileRecord,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -69,6 +72,9 @@ import {
   RemoteCustomProfilesList as CustomProfilesListSchema,
   RemotePrinterDetailsDto as PrinterDetailsSchema,
   RemoteCalibrationProjectRecord as ProjectRecordSchema,
+  RemoteCalibrationAttemptRecord as AttemptRecordSchema,
+  RemoteCalibrationObservationRecord as ObservationRecordSchema,
+  RemoteCalibrationDraftProfileRecord as DraftProfileRecordSchema,
 } from './calibrationWire.js';
 
 // --- Issue-#138 route templates (single authoritative source) ----------------
@@ -189,6 +195,32 @@ const ROUTES = {
     `/api/calibration-projects/${encodeURIComponent(id)}`,
   attempt: (id: string) =>
     `/api/calibration-attempts/${encodeURIComponent(id)}`,
+  /**
+   * POST — create an immutable attempt plan under a project. Verified
+   * against `CalibrationProjectsController.CreateAttemptAsync` at
+   * PrintFarmer commit `20630b47d593f90c6bc0c9ade4a1525a74d2b283`. Auth:
+   * `Calibration.Create` (#795).
+   */
+  attempts: (projectId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/attempts`,
+  /**
+   * POST — append an idempotent observation to an attempt. A `selection`
+   * observation's `measurements` are merged server-side into the project's
+   * draft profile. Verified against
+   * `CalibrationAttemptsController.AppendObservationAsync` at the commit
+   * cited above. Auth: `Calibration.Update` (#795).
+   */
+  observations: (attemptId: string) =>
+    `/api/calibration-attempts/${encodeURIComponent(attemptId)}/observations`,
+  /**
+   * GET — the project-owned draft filament profile document, accumulated
+   * from accepted `selection` observations and promoted into a real custom
+   * filament profile only once the project reaches `Completed`. Verified
+   * against `CalibrationProjectsController.GetDraftProfileAsync` at the
+   * commit cited above. Auth: `Calibration.Read` (#795).
+   */
+  draftProfile: (projectId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/draft-profile`,
   photo: (id: string) => `/api/calibration-photos/${encodeURIComponent(id)}`,
   photoUpload: (id: string) =>
     `/api/calibration-photos/${encodeURIComponent(id)}/upload`,
@@ -1955,6 +1987,262 @@ export class CalibrationHttpClient {
       AttemptSchema,
       signal,
     );
+  }
+
+  /**
+   * `GET /api/calibration-projects/{projectId}` — reads the current,
+   * server-authoritative project record, used to source a fresh `revision`
+   * immediately before {@link completeProject}'s PATCH so the optimistic
+   * concurrency precondition matches (#795).
+   *
+   * Deliberately not {@link getProject}: that method parses the dead,
+   * pre-#798 `RemoteCalibrationProject` shape (see the schema's own
+   * doc-comment). This uses the live `RemoteCalibrationProjectRecord` shape
+   * instead, verified at the same commit as {@link createProject}.
+   */
+  async getProjectRecord(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationProjectRecord | null> {
+    return this.getOptional(
+      profileId,
+      baseUrl,
+      ROUTES.project(projectId),
+      ProjectRecordSchema,
+      signal,
+    );
+  }
+
+  /**
+   * `POST /api/calibration-projects/{projectId}/attempts` — appends an
+   * immutable attempt plan under the project (#795). Verified against
+   * `CalibrationProjectsController.CreateAttemptAsync` /
+   * `CalibrationProjectService.CreateAttemptAsync` at PrintFarmer commit
+   * `20630b47d593f90c6bc0c9ade4a1525a74d2b283`. Auth: `Calibration.Create`.
+   *
+   * `definitionVersion` is a free-form, non-empty version tag; this client
+   * sends the established `"1"` convention used throughout PrintFarmer's own
+   * fixtures/tests for this field (verified via
+   * `CalibrationGuidedSessionTests.cs` / `CalibrationProjectServiceTests.cs`
+   * at the same commit) — there is no version-negotiation semantics to it.
+   *
+   * `specification` carries a recognized method's required `setup` inputs
+   * (`CalibrationMethodGuidanceCatalog.ForMethod(...).SetupInputs`), which
+   * today only `temperature_tower` (`start_temperature_c`/
+   * `end_temperature_c`) and `max_volumetric_speed` (`sweep_start_mm3_s`/
+   * `sweep_end_mm3_s`) declare. This desktop's wizard collects no setup-step
+   * input for either method yet (out of scope for #795 — the wizard drives
+   * a single fixed temperature/speed per attempt, not an operator-chosen
+   * sweep), so the full server-declared legal range is sent as a documented
+   * approximation until a real setup step exists.
+   *
+   * Idempotent by `(clientId, requestId)`: a retried create carrying the
+   * same two ids returns the existing attempt rather than creating a
+   * duplicate.
+   */
+  async createAttempt(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    request: {
+      clientId: string;
+      requestId: string;
+      calibrationKind: string;
+      method: string;
+      specification?: Record<string, number>;
+    },
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationAttemptRecord> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    const body = JSON.stringify({
+      clientId: request.clientId,
+      requestId: request.requestId,
+      parentAttemptId: null,
+      calibrationKind: request.calibrationKind,
+      method: request.method,
+      definitionVersion: '1',
+      input: {},
+      specification: request.specification ?? {},
+      profileSnapshotIds: {},
+      actualSpoolSnapshot: null,
+      printerConfigurationRevision: 1,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.attempts(projectId),
+      { method: 'POST', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      return await this.parse(pending, AttemptRecordSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `POST /api/calibration-attempts/{attemptId}/observations` — appends an
+   * idempotent `selection` observation, merging `measurements` into the
+   * project's accumulating draft profile server-side (#795). Verified
+   * against `CalibrationAttemptsController.AppendObservationAsync` /
+   * `CalibrationProjectService.AppendObservationAsync` at the commit cited
+   * on {@link createAttempt}. Auth: `Calibration.Update`.
+   *
+   * `measurements` must carry the method's semantic measurement key (e.g.
+   * `temperature_c`, `flow_ratio`, `pressure_advance`,
+   * `retraction_length_mm`, `max_volumetric_speed_mm3_s` —
+   * `CalibrationMeasurementRanges.ForKind`) for the server to both range-
+   * check the value and merge it into the draft profile under the
+   * attempt's method key.
+   */
+  async appendObservation(
+    profileId: string,
+    baseUrl: string,
+    attemptId: string,
+    request: {
+      clientId: string;
+      operationId: string;
+      measurements: Record<string, number>;
+    },
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationObservationRecord> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    const body = JSON.stringify({
+      clientId: request.clientId,
+      operationId: request.operationId,
+      observationType: 'selection',
+      measurements: request.measurements,
+      result: {},
+      units: {},
+      confidence: null,
+      retestRecommended: false,
+      notes: null,
+      selectionParentObservationId: null,
+      selectionReason: null,
+      observedAtUtc: null,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.observations(attemptId),
+      { method: 'POST', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      return await this.parse(pending, ObservationRecordSchema);
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * `GET /api/calibration-projects/{projectId}/draft-profile` — reads the
+   * project-owned, server-accumulated draft filament profile (#795).
+   * Verified against `CalibrationProjectsController.GetDraftProfileAsync`
+   * at the commit cited on {@link createAttempt}. Auth: `Calibration.Read`.
+   * Returns `null` when no `selection` observation has been accepted yet
+   * (the server 404s until the first draft profile row is created).
+   */
+  async getDraftProfile(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationDraftProfileRecord | null> {
+    return this.getOptional(
+      profileId,
+      baseUrl,
+      ROUTES.draftProfile(projectId),
+      DraftProfileRecordSchema,
+      signal,
+    );
+  }
+
+  /**
+   * `PATCH /api/calibration-projects/{projectId}` — transitions the
+   * project's lifecycle. Sending `lifecycleStatus: "Completed"` from
+   * `Active` triggers server-side promotion of the accumulated draft
+   * profile into a brand-new real custom filament profile
+   * (`CalibrationProjectService.UpdateProjectInternalAsync` →
+   * `IFilamentProfilePromotionGateway.PromoteAsync`); the desktop never
+   * calls the slicer's `promote-from-calibration` route directly (#795).
+   * Verified against `CalibrationProjectsController.UpdateProjectAsync` at
+   * the commit cited on {@link createAttempt}. Auth: `Calibration.Update`.
+   *
+   * `baseRevision` is required (the server 428s `precondition_required`
+   * without it or a matching `If-Match`); callers should read a fresh
+   * revision via {@link getProjectRecord} immediately beforehand rather than
+   * relying on a value cached from project creation, since attempt/
+   * observation submissions do not advance the project's own `revision` but
+   * an earlier, unrelated project-level PATCH would.
+   *
+   * Completing an already-`Completed` project (e.g. a retried completion)
+   * is a benign no-op server-side, not an error — this is what makes the
+   * "no orphan on abandon, completed one does appear" control safe to
+   * re-invoke.
+   */
+  async completeProject(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    baseRevision: number,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationProjectRecord> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    const body = JSON.stringify({
+      baseRevision,
+      name: null,
+      lifecycleStatus: 'Completed',
+      currentStep: null,
+      orderedSteps: null,
+      currentSelections: null,
+      completedAtUtc: null,
+    });
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.project(projectId),
+      { method: 'PATCH', headers, body },
+      signal,
+      true,
+    );
+    try {
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
+      return await this.parse(pending, ProjectRecordSchema);
+    } finally {
+      pending.dispose();
+    }
   }
 
   async getPhoto(

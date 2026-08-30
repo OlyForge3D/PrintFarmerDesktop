@@ -206,6 +206,12 @@ function apiWithPrinters(
     listCalibrationConflicts: vi
       .fn()
       .mockResolvedValue(notImplemented('listCalibrationConflicts')),
+    submitCalibrationObservation: vi
+      .fn()
+      .mockResolvedValue(notImplemented('submitCalibrationObservation')),
+    completeCalibrationProject: vi
+      .fn()
+      .mockResolvedValue(notImplemented('completeCalibrationProject')),
   } satisfies CalibrationApi;
 }
 

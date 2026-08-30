@@ -305,6 +305,16 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
         isSystem: false as const,
       },
     }),
+    submitCalibrationObservation: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      attemptId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      observationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    }),
+    completeCalibrationProject: vi.fn().mockResolvedValue({
+      status: 'ok' as const,
+      lifecycleStatus: 'Completed',
+      promotedProfileId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    }),
     getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(null),
     saveFilamentCalibrationWizardState: vi
       .fn()
@@ -526,6 +536,373 @@ describe('FilamentCalibrationWizard step sequencing', () => {
   });
 });
 
+describe('FilamentCalibrationWizard draft-profile write-back and completion (issue #795)', () => {
+  it('dual-writes each measurement to submitCalibrationObservation using the projectId captured from project creation, alongside the existing clone write-back', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // The clone write-back (kept for slicing continuity) still happened...
+    expect(
+      (
+        api.updateCalibrationFilamentProfileMeasurement as ReturnType<
+          typeof vi.fn
+        >
+      ).mock.calls,
+    ).toHaveLength(1);
+    // ...and the new draft-profile submission ALSO happened, addressed at
+    // the project created for this wizard run.
+    await waitFor(() => {
+      expect(
+        (api.submitCalibrationObservation as ReturnType<typeof vi.fn>).mock
+          .calls,
+      ).toHaveLength(1);
+    });
+    const [observationRequest] = (
+      api.submitCalibrationObservation as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as [
+      {
+        profileId: string;
+        projectId: string;
+        measurement: { method: string };
+      },
+    ];
+    expect(observationRequest.profileId).toBe(profileId);
+    expect(observationRequest.projectId).toBe(projectGuid);
+    expect(observationRequest.measurement.method).toBe('flow_rate_pass_1');
+  });
+
+  it('a failed draft-profile submission does not interrupt the wizard — the clone write-back already landed', async () => {
+    const api = wizardApi({
+      submitCalibrationObservation: vi
+        .fn()
+        .mockRejectedValue(new Error('network blip')),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // The method still completed — back at the method picker with the
+    // method marked done — even though the background submission rejected.
+    await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1 \(completed once\)/i,
+    });
+  });
+
+  it('the "Finish calibration" action is disabled until at least one method has been completed', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const finishButton = await screen.findByRole('button', {
+      name: /Finish calibration/i,
+    });
+    expect(finishButton).toBeDisabled();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).not.toBeDisabled();
+    });
+  });
+
+  it('control: finishing calibration calls completeCalibrationProject with the project id and reports the promoted profile', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Finish calibration/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        (api.completeCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(1);
+    });
+    const [completeRequest] = (
+      api.completeCalibrationProject as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as [{ profileId: string; projectId: string }];
+    expect(completeRequest.profileId).toBe(profileId);
+    expect(completeRequest.projectId).toBe(projectGuid);
+    // The wizard resets to a fresh run once the project is complete — back
+    // at step 1, ready to calibrate another spool.
+    await screen.findByText(/1\. Pick the printer, machine profile/i);
+  });
+
+  it('abandon: leaving the wizard without finishing never calls completeCalibrationProject, so no SECOND (promoted) profile is created — the clone from step 1 remains a separate, disclosed limitation', async () => {
+    const api = wizardApi();
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // Operator walks away — no explicit "Finish calibration" click.
+    expect(
+      (api.completeCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+    // The clone created at step 1 IS a real custom filament profile, and it
+    // is NOT removed by abandoning — this test proves only that abandoning
+    // does not ALSO trigger promotion of a second profile from the draft.
+    // Eliminating the clone itself is out of scope for this issue until
+    // OlyForge3D/PrintFarmer#2203 (non-admin clone cleanup) lands; see the
+    // doc comment on `CalibrationCompleteCalibrationProjectResponse`.
+    expect(
+      (api.cloneCalibrationFilamentProfile as ReturnType<typeof vi.fn>).mock
+        .calls,
+    ).toHaveLength(1);
+  });
+
+  it('a method whose draft-profile submission failed blocks "Finish calibration" until it is redone', async () => {
+    const api = wizardApi({
+      submitCalibrationObservation: vi.fn().mockResolvedValue({
+        status: 'error' as const,
+        error: {
+          code: 'serverError' as const,
+          message: 'draft profile temporarily unavailable',
+          retryable: true,
+          retryAfterSeconds: null,
+          reference: null,
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // The clone write-back succeeded, but the draft-profile submission
+    // reported an error — Finish must stay disabled rather than silently
+    // presenting an incomplete promoted profile as a success.
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).toBeDisabled();
+    });
+    await screen.findByText(/failed to sync to the draft profile/i);
+
+    // Redoing the same method with a working API call clears the failure
+    // and re-enables Finish.
+    (
+      api.submitCalibrationObservation as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      status: 'ok' as const,
+      attemptId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      observationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    });
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).not.toBeDisabled();
+    });
+  });
+
+  it('keeps the project id and lets the operator retry when completion reports an unconfirmed (null) promotion', async () => {
+    const api = wizardApi({
+      completeCalibrationProject: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        lifecycleStatus: 'Completed',
+        promotedProfileId: null,
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Finish calibration/i }),
+    );
+
+    await screen.findByText(/promotion could not be confirmed yet/i);
+    // The wizard did NOT reset — the operator is still on the method
+    // picker and can click "Finish calibration" again (idempotent retry),
+    // rather than being stranded with a discarded project id.
+    const finishButton = await screen.findByRole('button', {
+      name: /Finish calibration/i,
+    });
+    expect(finishButton).not.toBeDisabled();
+    fireEvent.click(finishButton);
+    await waitFor(() => {
+      expect(
+        (api.completeCalibrationProject as ReturnType<typeof vi.fn>).mock.calls,
+      ).toHaveLength(2);
+    });
+  });
+
+  it('blocks "Finish calibration" while a draft-profile observation is still in flight, then re-enables it once the response arrives', async () => {
+    // A deliberately unresolved promise: `completedMethods` flips to
+    // include this method synchronously (from the clone write-back
+    // resolving), but the observation dual-write is still pending. Finish
+    // must stay disabled for the whole window the observation is
+    // unsettled — not just after it eventually fails or succeeds.
+    let resolveObservation!: (value: {
+      status: 'ok';
+      attemptId: string;
+      observationId: string;
+    }) => void;
+    const pendingObservation = new Promise<{
+      status: 'ok';
+      attemptId: string;
+      observationId: string;
+    }>((resolve) => {
+      resolveObservation = resolve;
+    });
+    const api = wizardApi({
+      submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // The clone write-back landed and the method shows as completed, but
+    // the draft-profile observation for it has not settled yet — Finish
+    // must not be clickable in this window.
+    await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1 \(completed once\)/i,
+    });
+    expect(
+      screen.getByRole('button', { name: /Finish calibration/i }),
+    ).toBeDisabled();
+    await screen.findByText(/Still syncing/i);
+
+    resolveObservation({
+      status: 'ok',
+      attemptId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      observationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).not.toBeDisabled();
+    });
+  });
+
+  it('blocks redoing a method while its previous draft-profile observation is still syncing, then allows the redo once it settles', async () => {
+    // Regression test for a reviewer-found server-ordering hazard: allowing
+    // a SECOND, concurrent submitCalibrationObservation request for the
+    // SAME method (by permitting a redo while the first request is still
+    // in flight) means the server could receive them out of order — a
+    // network re-order, not just a client one — and nothing on the client
+    // can guarantee which one lands last in the draft profile. Rather than
+    // reconciling that after the fact, the redo entry point itself must
+    // refuse to start a second request until the first has settled. This
+    // makes the earlier "two in-flight requests for one method" scenario
+    // unreachable through the UI by construction, which is why the
+    // generation-token bookkeeping this test used to exercise no longer has
+    // a live path to it — this test instead proves the button that would
+    // have created that scenario is disabled.
+    let resolveObservation!: (value: {
+      status: 'ok';
+      attemptId: string;
+      observationId: string;
+    }) => void;
+    const pendingObservation = new Promise<{
+      status: 'ok';
+      attemptId: string;
+      observationId: string;
+    }>((resolve) => {
+      resolveObservation = resolve;
+    });
+    const api = wizardApi({
+      submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+    await screen.findByText(/Still syncing/i);
+
+    // The redo button for this method exists (it shows "completed once")
+    // but must be disabled while the draft-profile observation from the
+    // first run is still unsettled.
+    const redoButton = await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1 \(completed once\)/i,
+    });
+    expect(redoButton).toBeDisabled();
+    fireEvent.click(redoButton);
+    // A click on a disabled button must not start a second slice/upload
+    // flow — the method-picker step, not a slice progress bar, stays shown.
+    expect(
+      screen.queryByRole('progressbar', { name: /Slice progress/i }),
+    ).not.toBeInTheDocument();
+
+    resolveObservation({
+      status: 'ok',
+      attemptId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      observationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    });
+
+    // Once the first observation settles, the redo button re-enables and a
+    // second run can actually be started.
+    await waitFor(() => {
+      expect(redoButton).not.toBeDisabled();
+    });
+  });
+});
+
 describe('FilamentCalibrationWizard method-picker capability boundary', () => {
   // Step 3 renders a `<p className="cal-notice">` stating the scope boundary
   // and pointing operators at OrcaSlicer for what falls outside it. Without an
@@ -678,6 +1055,72 @@ describe('FilamentCalibrationWizard restart resilience', () => {
     expect(savedStates.map((state) => state.phase)).not.toContain(
       'submittingSlice',
     );
+  });
+
+  it('persists a still-unresolved draft-profile observation as a FAILURE, so a restart can never silently forget it', async () => {
+    // If the app exits while `submitCalibrationObservation` is still in
+    // flight, `draftObservationPending` (in-memory only, by design — an
+    // unsettled promise cannot itself survive a restart) is lost. If the
+    // persisted snapshot only ever reflected `draftObservationFailures`,
+    // that loss would be silent: on restore, the method would show neither
+    // pending nor failed, and "Finish calibration" would wrongly re-enable
+    // over an unconfirmed draft. The persistence layer must fold any
+    // still-pending method into `draftObservationFailures` at save time.
+    let resolveObservation!: (value: {
+      status: 'ok';
+      attemptId: string;
+      observationId: string;
+    }) => void;
+    const pendingObservation = new Promise<{
+      status: 'ok';
+      attemptId: string;
+      observationId: string;
+    }>((resolve) => {
+      resolveObservation = resolve;
+    });
+    const api = wizardApi({
+      submitCalibrationObservation: vi.fn().mockReturnValue(pendingObservation),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+    await screen.findByText(/Still syncing/i);
+
+    await waitFor(() => {
+      const calls = (
+        api.saveFilamentCalibrationWizardState as ReturnType<typeof vi.fn>
+      ).mock.calls;
+      const sawPendingPersistedAsFailure = calls.some((call) => {
+        const state = (
+          call[0] as {
+            state: { draftObservationFailures: readonly string[] };
+          }
+        ).state;
+        return state.draftObservationFailures.includes('flow_rate_pass_1');
+      });
+      if (!sawPendingPersistedAsFailure) {
+        throw new Error(
+          'expected a save call with the still-pending method folded into draftObservationFailures',
+        );
+      }
+    });
+
+    // Avoid an unhandled-rejection/leftover-timer warning from the still-open
+    // promise once the test's assertions are done with it.
+    resolveObservation({
+      status: 'ok',
+      attemptId: '99999999-9999-4999-8999-999999999999',
+      observationId: '88888888-8888-4888-8888-888888888888',
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(/Still syncing/i)).not.toBeInTheDocument();
+    });
   });
 
   it('resumes an in-progress calibration on mount from a persisted record, and lets the operator continue with the next method', async () => {

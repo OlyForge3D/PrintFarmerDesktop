@@ -52,6 +52,13 @@ export type CalibrationApi = Pick<
   | 'getCalibrationSliceJobStatus'
   | 'sendCalibrationSliceToPrinter'
   | 'updateCalibrationFilamentProfileMeasurement'
+  // --- Draft-profile write-back / completion promotion (issue #795) -------
+  //
+  // Consumed by `FilamentCalibrationWizard`'s `writeMeasurement` (dual-write
+  // alongside `updateCalibrationFilamentProfileMeasurement` above) and by a
+  // new "finish calibration" action that triggers server-side promotion.
+  | 'submitCalibrationObservation'
+  | 'completeCalibrationProject'
   // --- Filament calibration wizard restart resilience (issue #754) --------
   //
   // Persists which method/step/in-flight slice job the wizard is on so a

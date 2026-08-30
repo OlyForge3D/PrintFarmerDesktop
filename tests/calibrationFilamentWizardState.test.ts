@@ -38,6 +38,7 @@ function sampleRecord(): FilamentWizardStateRecord {
     baseFilamentGuid: '22222222-2222-4222-8222-222222222222',
     cloneId: '33333333-3333-4333-8333-333333333333',
     cloneName: 'PolyLite PLA Blue (calibration)',
+    projectId: '44444444-4444-4444-8444-444444444444',
     completedMethods: ['flow_rate_pass_1'],
     currentMethod: 'temperature_tower',
     inFlightJob: {
@@ -47,6 +48,7 @@ function sampleRecord(): FilamentWizardStateRecord {
       pollAttempt: 3,
       lastStatus: 'Processing',
     },
+    draftObservationFailures: [],
     phase: 'pollingSlice',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
