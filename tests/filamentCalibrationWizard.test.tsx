@@ -722,6 +722,110 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     });
   });
 
+  it('surfaces the diagnosed rejection (catalogued message + #177 reference) when submitCalibrationObservation reports invalidData, without blocking or interrupting the wizard (issue #796)', async () => {
+    // Per issue #177, `CalibrationApiError.message` is a client-authored
+    // literal keyed by `code` — never the backend's own validation prose
+    // (see `calibrationHttp.ts`'s 422 handling: it always mints "Calibration
+    // data is invalid or unsafe.", regardless of what the server's
+    // ProblemDetails `detail` said). This test uses that real catalogued
+    // literal, not a fabricated range-specific message the product could
+    // never actually produce.
+    // `CalibrationApiError.reference` is `z.string().uuid().nullable()`
+    // (ipc.ts) — use a contract-valid UUID rather than an arbitrary string,
+    // since a shape the boundary forbids could never occur in production.
+    const validationReference = '9c1e2f7a-1234-4abc-8def-000000000422';
+    const api = wizardApiFlowRatePass1Unlocked({
+      submitCalibrationObservation: vi.fn().mockResolvedValue({
+        status: 'error' as const,
+        error: {
+          code: 'invalidData' as const,
+          message: 'Calibration data is invalid or unsafe.',
+          retryable: false,
+          retryAfterSeconds: null,
+          reference: validationReference,
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    // The operator sees the invalidData-specific title/recovery copy (not
+    // the shared clone/slice/project "restart the wizard" advice, which
+    // would be wrong for a rejected measurement), the diagnosed message,
+    // and the reference to quote for support — not just the generic
+    // "failed to sync" hint `draftObservationFailures` renders.
+    await screen.findByText(/Flow rate — pass 1.*rejected by the server/i);
+    await screen.findByText('Calibration data is invalid or unsafe.');
+    await screen.findByText(`Reference: ${validationReference}`);
+
+    // This is additive to — not a replacement of — #795's non-blocking
+    // dual-write design: the clone write-back still landed and the wizard
+    // still did not block or interrupt (method still shows completed).
+    expect(
+      (
+        api.updateCalibrationFilamentProfileMeasurement as ReturnType<
+          typeof vi.fn
+        >
+      ).mock.calls,
+    ).toHaveLength(1);
+    await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1 \(completed once\)/i,
+    });
+
+    // "Finish calibration" stays gated by the existing
+    // `draftObservationFailures` mechanism — unchanged by this issue.
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Finish calibration/i }),
+      ).toBeDisabled();
+    });
+    await screen.findByText(/failed to sync to the draft profile/i);
+  });
+
+  it('control: a non-invalidData submitCalibrationObservation error falls through to the shared banner copy, not the measurement-rejection copy (issue #796)', async () => {
+    // Negative control for the `bannerFromObservationApiError` branch: only
+    // `invalidData` gets the measurement-specific "rejected by the server"
+    // framing. Every other code must still show the shared
+    // `bannerFromApiError` copy — this pins that the special case doesn't
+    // leak onto codes it wasn't written for.
+    const api = wizardApiFlowRatePass1Unlocked({
+      submitCalibrationObservation: vi.fn().mockResolvedValue({
+        status: 'error' as const,
+        error: {
+          code: 'serverError' as const,
+          message: 'Calibration service is temporarily unavailable.',
+          retryable: true,
+          retryAfterSeconds: 30,
+          reference: '5e3b1a70-9988-4c11-a001-000000000503',
+        },
+      }),
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await runOneMethodEndToEnd(
+      /Start Flow rate — pass 1/i,
+      /Flow ratio/i,
+      '1.02',
+    );
+
+    await screen.findByText('PrintFarmer returned an error.');
+    await screen.findByText('Calibration service is temporarily unavailable.');
+    expect(
+      screen.queryByText(/rejected by the server/i),
+    ).not.toBeInTheDocument();
+  });
+
   it('the "Finish calibration" action is disabled until at least one method has been completed', async () => {
     const api = wizardApiFlowRatePass1Unlocked();
     mount(api);
