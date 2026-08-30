@@ -28,6 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationListPrintersResponse,
   type CalibrationCustomProfileRef,
+  type CalibrationGetInFlightStateResponse,
   type CalibrationMethodProgressRecord,
   type CalibrationPrinterCandidate,
   type CalibrationSliceJobSnapshot,
@@ -4048,5 +4049,64 @@ describe('FilamentCalibrationWizard cross-device calibration hand-off alert (iss
         }),
       );
     });
+  });
+
+  it("refuses to submit a slice while the in-flight check is still outstanding, even on a session restored straight into the inputs step past the method picker (reviewer finding: beginMethod is reachable without the picker's Start button ever rendering)", async () => {
+    // A restored session resumes `phase` verbatim (see `restoredWorkingState`)
+    // and can land in `methodInputs`/`sliceReady` without the method picker —
+    // and therefore without `handoffCheckPending` — ever rendering, so the
+    // picker's Start-button disable does not protect this path at all. The
+    // load-bearing gate is `beginMethod`'s own check, which must refuse to
+    // submit while the read for THIS project is still outstanding rather
+    // than treating "no evidence yet" as "no print running".
+    const persisted = {
+      schemaVersion: 1 as const,
+      printerId: printerIdA,
+      printerModelId: null,
+      machineName: SAMPLE_MACHINE_NAME,
+      processName: SAMPLE_PROCESS_NAME,
+      baseFilamentName: SAMPLE_FILAMENT_NAME,
+      baseFilamentGuid: filamentGuid,
+      cloneId: cloneGuid,
+      cloneName: 'PLA — Prusament Galaxy Black',
+      calibrationProjectId: projectGuid,
+      completedMethods: [],
+      currentMethod: 'flow_rate_pass_1' as const,
+      inFlightJob: null,
+      phase: 'methodInputs' as const,
+      updatedAt: now,
+    };
+    let resolveInFlightCheck!: (
+      value: CalibrationGetInFlightStateResponse,
+    ) => void;
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(persisted),
+      // Deliberately unresolved for the body of this test — simulates the
+      // check for this project still being outstanding, so `inFlightStatus`
+      // stays 'loading' throughout.
+      getCalibrationInFlightState: vi.fn().mockImplementation(
+        () =>
+          new Promise<CalibrationGetInFlightStateResponse>((resolve) => {
+            resolveInFlightCheck = resolve;
+          }),
+      ),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Start slicing' }),
+    );
+
+    expect(
+      await screen.findByText(/still checking for calibration work/i),
+    ).toBeInTheDocument();
+    expect(api.submitCalibrationSlice).not.toHaveBeenCalled();
+
+    // Avoid an unhandled-rejection/leftover-timer warning from the still-open
+    // promise once the test's assertions are done with it.
+    resolveInFlightCheck(inFlightOk());
   });
 });

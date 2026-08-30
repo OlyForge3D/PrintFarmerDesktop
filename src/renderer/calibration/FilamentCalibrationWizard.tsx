@@ -1479,6 +1479,27 @@ function FilamentCalibrationWizardInner(
       // straight into `methodInputs`/`sliceReady` and reach
       // `submitInputsAndSlice` → `beginMethod` without the picker — and
       // therefore without `runningPrintNotice` — ever rendering.
+      //
+      // A restored session can also reach here while the in-flight check for
+      // THIS project is still outstanding (`inFlightStatus === 'loading'`) —
+      // the picker's `handoffCheckPending` disable only covers the picker's
+      // own Start button, not this direct-submit path, and `inFlightState`
+      // read below would otherwise be `null`/stale for the duration of that
+      // request. Refuse to submit until a completed read establishes whether
+      // a print is running, rather than silently proceeding on "no evidence
+      // yet" — the operator can retry once the check resolves.
+      if (inFlightStatus === 'loading') {
+        setBanner({
+          kind: 'error',
+          title:
+            'Still checking for calibration work in progress on this project.',
+          detail:
+            'Another device may have a calibration print running for this project. Wait a moment for that check to finish, then try again.',
+          recovery: 'Retry once the check completes.',
+          reference: null,
+        });
+        return;
+      }
       const orchestration = inFlightState?.orchestration ?? null;
       if (
         orchestration !== null &&
@@ -1554,7 +1575,7 @@ function FilamentCalibrationWizardInner(
         if (!unmountedRef.current) setBusy(false);
       }
     },
-    [profileId, working, inFlightState],
+    [profileId, working, inFlightState, inFlightStatus],
   );
 
   const submitInputsAndSlice = useCallback(
