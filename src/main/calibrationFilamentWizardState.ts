@@ -28,6 +28,37 @@
  * (start the wizard fresh), which is the same "fails safe, just
  * inconveniently" characterization the issue gives restart loss in general.
  * The corrupt file is removed so the failure does not repeat on every read.
+ *
+ * ## Single authority (issue #793)
+ *
+ * This store is a pure OFFLINE CACHE, never a second authority. It knows
+ * nothing about calibration domain state itself — it blindly persists
+ * whatever renderer-shaped bookmark it is handed and returns it unmodified
+ * on read, with no server calls, no reconciliation logic, and no opinion
+ * about whether a given method is actually done. All of that enforcement
+ * lives on the renderer side, in `FilamentCalibrationWizard.tsx`:
+ *
+ *   - Per-method disposition (done/skipped/pending) has been
+ *     server-authoritative since #797: `deriveGuidedMethodStates`
+ *     (`filamentWizardState.ts`) only ever falls back to this store's
+ *     legacy `completedMethods` field when the server has recorded NO
+ *     disposition at all for a method — never when the two actively
+ *     disagree.
+ *   - Which *screen* a resumed session lands on is server-reconciled by the
+ *     effect documented at its declaration in `FilamentCalibrationWizard.tsx`
+ *     (search `ACTIVE_STEP_PHASES`): a resumed active step for a method the
+ *     server now reports `Completed`/`Skipped` is corrected back to the
+ *     method picker rather than left showing a step the server has already
+ *     resolved. The corrected phase is then re-saved here, so the cached
+ *     bookmark heals itself instead of staying stale.
+ *
+ * Retiring this store outright was considered and rejected for this issue:
+ * pre-project phases (`select`, `cloneName`) and pure session bookkeeping
+ * (`inFlightJob`, `cloneId`/`cloneName`) have no server-side equivalent to
+ * resume from, so there is nothing to delete without losing restart
+ * resilience (#754) for those steps. What must never happen — and does not,
+ * per the above — is this file's cached data outliving or overriding a
+ * fresher, contradicting server truth.
  */
 
 import { randomUUID } from 'node:crypto';

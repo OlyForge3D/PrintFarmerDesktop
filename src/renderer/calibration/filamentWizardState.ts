@@ -60,6 +60,26 @@
  * "did the in-flight request land before the crash" is never a question
  * a restored record has to answer — the operator just retries the
  * interrupted step.
+ *
+ * ## Single authority (issue #793)
+ *
+ * `calibrationFilamentWizardState.ts` is a pure offline cache, not a second
+ * authority: it never gets to keep asserting something the server
+ * contradicts. `deriveGuidedMethodStates` below already enforces this for
+ * per-method disposition (server `Completed`/`Skipped`/`Pending` always wins
+ * over the legacy `completedMethods` field this store persists — the local
+ * value is only consulted when the server has recorded no disposition at
+ * all for a method). `FilamentCalibrationWizard.tsx` enforces the rest: the
+ * active-step *screen* a resumed session lands on, with the reconciliation
+ * effect declared next to `ACTIVE_STEP_PHASES` there; and the two remaining
+ * `working.completedMethods` consumers in `MethodStep` (`canFinish`'s "at
+ * least one method done" gate, and the `done` flag behind the picker's
+ * completed styling) — both now follow the exact same precedence as
+ * `deriveGuidedMethodStates`: an explicit server progress row always wins
+ * over the local field once one exists, and the local field is consulted
+ * only for a method with no row at all yet. Issue #799 is unrelated to this
+ * gap (it covers the four-phase step UI, not authority reconciliation) and
+ * is not cited here.
  */
 
 import { PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C } from '@shared/ipc';
