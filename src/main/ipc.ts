@@ -5370,6 +5370,15 @@ export function registerIpcHandlers(
   // Local-only: these three channels never touch `calibrationHttp` or the
   // sidecar. They read and write `filamentWizardStateStore`, the on-disk JSON
   // bookmark described in `calibrationFilamentWizardState.ts`.
+  //
+  // Issue #793: this remains a pure offline cache, not a second authority —
+  // these handlers pass the record through unmodified, with no server calls
+  // and no per-method-disposition logic of their own. That enforcement (both
+  // per-method disposition and, as of this issue, the active-step screen a
+  // resumed session lands on) lives entirely in the renderer, against
+  // server-authoritative `method-progress` — see `calibrationFilamentWizardState.ts`
+  // and the `ACTIVE_STEP_PHASES` reconciliation effect in
+  // `FilamentCalibrationWizard.tsx`.
 
   registerCalibrationHandler(
     IpcChannel.CalibrationGetFilamentWizardState,
