@@ -1018,7 +1018,6 @@ function FilamentCalibrationWizardInner(
           : (spoolList.spools.find(
               (spool) => spool.spoolmanSpoolId === selectedSpoolmanSpoolId,
             ) ?? null);
-      //
       // `requestId` is memoized in a ref across retries of this same
       // attempt (reset only in `proceedToCloneName`) so a retry after a
       // transient failure hits the server's idempotency key instead of
@@ -1823,7 +1822,7 @@ function CloneStep(props: CloneStepProps): React.JSX.Element {
         <button
           type="button"
           className="cal-button cal-button--primary"
-          disabled={!nameValid || busy}
+          disabled={!nameValid || busy || spoolList.loading}
           onClick={onConfirmClone}
         >
           {busy ? 'Cloning…' : 'Clone this filament profile'}
