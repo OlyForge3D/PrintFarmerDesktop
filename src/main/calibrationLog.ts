@@ -348,6 +348,8 @@ const EVENT_MESSAGES: Record<string, string> = {
   'sync.completed': 'Calibration synchronization completed.',
   'sync.failed': 'Calibration synchronization failed.',
   'capabilities.negotiated': 'Server calibration capabilities were negotiated.',
+  'profiles.custom.deleteAlreadySatisfied':
+    'Working clone profile deletion was already satisfied (idempotent no-op).',
 };
 
 /**

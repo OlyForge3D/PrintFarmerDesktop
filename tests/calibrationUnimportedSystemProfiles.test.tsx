@@ -308,6 +308,15 @@ function apiFor(options: {
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    submitCalibrationObservation: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
+    completeCalibrationProject: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
+    deleteWorkingCloneProfile: vi
+      .fn()
+      .mockRejectedValue(new Error('notImplemented')),
     listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
       status: 'ok',
       spools: [],

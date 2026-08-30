@@ -131,6 +131,12 @@ import {
   type CalibrationSendSliceToPrinterResponse,
   type CalibrationUpdateFilamentProfileMeasurementRequest,
   type CalibrationUpdateFilamentProfileMeasurementResponse,
+  type CalibrationSubmitCalibrationObservationRequest,
+  type CalibrationSubmitCalibrationObservationResponse,
+  type CalibrationCompleteCalibrationProjectRequest,
+  type CalibrationCompleteCalibrationProjectResponse,
+  type CalibrationDeleteWorkingCloneProfileRequest,
+  type CalibrationDeleteWorkingCloneProfileResponse,
   type CalibrationSaveFilamentWizardStateRequest,
   type CalibrationSaveFilamentWizardStateResponse,
   type CalibrationGetFilamentWizardStateRequest,
@@ -610,6 +616,35 @@ const api: PrintFarmerApi = {
     ].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationUpdateFilamentProfileMeasurement,
+        request,
+      ),
+    ),
+  submitCalibrationObservation: async (
+    request: CalibrationSubmitCalibrationObservationRequest,
+  ): Promise<CalibrationSubmitCalibrationObservationResponse> =>
+    ipcSchemas[
+      IpcChannel.CalibrationSubmitCalibrationObservation
+    ].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationSubmitCalibrationObservation,
+        request,
+      ),
+    ),
+  completeCalibrationProject: async (
+    request: CalibrationCompleteCalibrationProjectRequest,
+  ): Promise<CalibrationCompleteCalibrationProjectResponse> =>
+    ipcSchemas[IpcChannel.CalibrationCompleteCalibrationProject].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationCompleteCalibrationProject,
+        request,
+      ),
+    ),
+  deleteWorkingCloneProfile: async (
+    request: CalibrationDeleteWorkingCloneProfileRequest,
+  ): Promise<CalibrationDeleteWorkingCloneProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationDeleteWorkingCloneProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationDeleteWorkingCloneProfile,
         request,
       ),
     ),

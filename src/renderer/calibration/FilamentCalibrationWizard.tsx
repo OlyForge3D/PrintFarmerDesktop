@@ -415,9 +415,11 @@ interface WizardWorkingState {
   readonly cloneId: string | null;
   readonly cloneName: string;
   /**
-   * The server `CalibrationProject` created at wizard start (issue #798),
-   * used to scope the server-authoritative method-guidance/method-progress
-   * calls added by issue #797. `null` before the clone step runs.
+   * The server `CalibrationProject` created at wizard start (issue #798).
+   * Used to scope the server-authoritative method-guidance/method-progress
+   * calls added by issue #797, AND (issue #795) from `writeMeasurement`
+   * onward to submit draft-profile write-back and, on completion, to
+   * trigger server-side promotion. `null` before the clone step runs.
    */
   readonly calibrationProjectId: string | null;
   /**
@@ -433,6 +435,31 @@ interface WizardWorkingState {
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
+  /**
+   * Methods whose `submitCalibrationObservation` dual-write (issue #795) has
+   * failed and not yet been retried. The clone write-back that matters for
+   * the *next* slice already succeeded when a method lands here, so the
+   * wizard does not block on this at write time — but a non-empty list means
+   * the draft profile is missing that method's contribution, so "Finish
+   * calibration" is gated on this being empty rather than silently
+   * presenting an incomplete promoted profile as a success.
+   */
+  readonly draftObservationFailures: readonly CalibrationSliceMethod[];
+  /**
+   * Methods whose `submitCalibrationObservation` dual-write (issue #795) has
+   * been fired but has not yet settled. Tracked separately from — and
+   * synchronously with, before the async call is even issued — from
+   * `draftObservationFailures` so there is no window between "the write was
+   * launched" and "the write result was recorded" in which `completedMethods`
+   * already lists the method but neither the pending nor the failure set
+   * does. Without this, "Finish calibration" could be clicked while an
+   * observation for the just-completed method is still in flight, silently
+   * promoting a draft profile before its own last write landed. Never
+   * persisted: an in-flight promise cannot survive a process restart, so
+   * there is nothing meaningful to resume it into (see `filamentWizardState.ts`,
+   * `FilamentWizardWorkingSnapshot` — deliberately excludes this field).
+   */
+  readonly draftObservationPending: readonly CalibrationSliceMethod[];
 }
 
 const initialWorking: WizardWorkingState = {
@@ -447,6 +474,8 @@ const initialWorking: WizardWorkingState = {
   completedMethods: [],
   currentMethod: null,
   inFlightJob: null,
+  draftObservationFailures: [],
+  draftObservationPending: [],
 };
 
 function FilamentCalibrationWizardInner(
@@ -467,6 +496,18 @@ function FilamentCalibrationWizardInner(
   const [spoolList, setSpoolList] = useState<SpoolListState>(emptySpoolList);
   const spoolListEpochRef = useRef(0);
   const unmountedRef = useRef(false);
+  // Issue #795: tracks the most-recently-issued `submitCalibrationObservation`
+  // request for each method. A settling request only updates
+  // `draftObservationFailures` when it is STILL the latest request recorded
+  // here for its method — an out-of-order settlement (an older, superseded
+  // request resolving AFTER a newer redo for the same method) must not be
+  // allowed to overwrite the newer request's outcome. Every request still
+  // removes its own `draftObservationPending` marker on settle regardless of
+  // whether it is latest, so pending accurately reflects "any request still
+  // outstanding" while the failure flag reflects only the newest one.
+  const latestObservationRequestRef = useRef<
+    Partial<Record<CalibrationSliceMethod, symbol>>
+  >({});
   // Guards `beginMethod` against a synchronous double-submit — see the
   // comment at its call site. Mirrors `sendToPrinterInFlightRef` below.
   const beginMethodInFlightRef = useRef(false);
@@ -550,6 +591,21 @@ function FilamentCalibrationWizardInner(
         completedMethods: working.completedMethods,
         currentMethod: working.currentMethod,
         inFlightJob: working.inFlightJob,
+        // Persist any method still `draftObservationPending` as a FAILURE,
+        // not merely dropping it. `draftObservationPending` is intentionally
+        // never itself persisted (an in-flight promise can't survive a
+        // restart) — but if the app exits while a request is unresolved, we
+        // cannot confirm it landed, so treat it the same as a known failure
+        // on restore. Otherwise a restart mid-write would silently forget
+        // both that the method was unconfirmed AND that it failed, letting
+        // "Finish calibration" re-enable over a draft profile that was
+        // never actually confirmed complete.
+        draftObservationFailures: Array.from(
+          new Set([
+            ...working.draftObservationFailures,
+            ...working.draftObservationPending,
+          ]),
+        ),
       },
       environment.now(),
     );
@@ -571,6 +627,8 @@ function FilamentCalibrationWizardInner(
     working.cloneName,
     working.completedMethods,
     working.currentMethod,
+    working.draftObservationFailures,
+    working.draftObservationPending,
     working.inFlightJob,
     working.phase,
     working.picks,
@@ -614,11 +672,15 @@ function FilamentCalibrationWizardInner(
     Readonly<Record<string, CalibrationMethodGuidanceRecord>>
   >({});
   // Fetch-only generation counter, bumped once per `fetchMethodProgress`
-  // call. A successful read is always safe to apply regardless of this
+  // call. This DATA's merge is always safe to apply regardless of this
   // counter (it merges per-method by revision — see `fetchMethodProgress`),
-  // so this guard exists solely to let a *newer fetch* suppress an *older
-  // fetch's* error/loading state without a genuine read failure ever being
-  // silently swallowed by an unrelated write. Deliberately NOT bumped by
+  // but the *status indicator* (`'ready'`/`'error'`) is gated by it either
+  // way: only the fetch that is still the LATEST by this counter may move
+  // the status, in either direction. Without that symmetry a stale, slow
+  // response could clobber a newer fetch's genuine outcome — a late
+  // success masking a newer failure (leaving no "Retry sync" offered for a
+  // read that actually never completed), or, before this counter existed,
+  // a late failure masking a newer success. Deliberately NOT bumped by
   // skip/un-skip writes (`toggleMethodDisposition`): an earlier version did
   // that to invalidate in-flight reads, but that meant an unrelated write
   // landing between a rejected write's conflict-refetch and that refetch's
@@ -694,12 +756,21 @@ function FilamentCalibrationWizardInner(
           }
           return merged;
         });
-        // Applying this response's data is always safe (see above), so the
-        // sync indicator can always advance to `'ready'` here regardless of
-        // whether a newer fetch has since been kicked off — that newer
-        // fetch will simply merge its own (at-least-as-fresh) data on top
-        // when it resolves.
-        setMethodProgressStatus('ready');
+        // Merging this response's data is always safe (see above) even if a
+        // newer fetch has since been kicked off, so it happens
+        // unconditionally. Advancing the *status indicator* to `'ready'` is
+        // a different claim — "the CURRENT read attempt is known-good" — and
+        // must NOT be made by a stale response once a newer fetch is
+        // already in flight or has already resolved: if fetch B (started
+        // after this one) already landed an `'error'`, this older fetch's
+        // late `'ok'` must not clobber that genuine failure back to
+        // `'ready'` — the operator would see no failure and no "Retry sync"
+        // affordance for a sync that never actually completed for the
+        // newest read. Only the fetch that is STILL the latest by sequence
+        // number may move the status.
+        if (methodProgressSeqRef.current === seq) {
+          setMethodProgressStatus('ready');
+        }
       } else if (methodProgressSeqRef.current === seq) {
         // A row-shaped error response — treat the same as a thrown error
         // below: we do NOT know the real disposition, so it must not be
@@ -1083,6 +1154,9 @@ function FilamentCalibrationWizardInner(
         // Issue #797: capture the `CalibrationProject` id created above so
         // it can scope `method-guidance`/`method-progress` calls. Previously
         // dropped entirely — `projectResponse.project.id` was read nowhere.
+        // Issue #795 additionally threads this same id into
+        // `submitCalibrationObservation`/`completeCalibrationProject` calls
+        // from `writeMeasurement`/`finishCalibration` onward.
         calibrationProjectId: projectResponse.project.id,
         phase: 'methodPicker',
       }));
@@ -1458,7 +1532,7 @@ function FilamentCalibrationWizardInner(
 
   const writeMeasurement = useCallback(
     async (measurement: CalibrationFilamentMeasurement): Promise<void> => {
-      const { cloneId, currentMethod } = working;
+      const { cloneId, currentMethod, calibrationProjectId } = working;
       if (cloneId === null || currentMethod === null) return;
       setBusy(true);
       setBanner(null);
@@ -1478,6 +1552,125 @@ function FilamentCalibrationWizardInner(
             phase: 'awaitingMeasurement',
           }));
           return;
+        }
+        // Issue #795 dual-write: alongside the clone PUT above (kept for
+        // slicing continuity — slicing resolves profiles by name, not by
+        // project/draft reference), also submit the measurement as a
+        // calibration-project observation so the server accumulates it into
+        // the project's draft profile. This does not block or interrupt the
+        // wizard — the write-back that matters for the NEXT slice (the clone
+        // PUT) already landed — but a failure IS tracked in
+        // `draftObservationFailures` rather than silently swallowed: an
+        // untracked failure here would let "Finish calibration" present a
+        // promoted profile as complete when it is silently missing this
+        // method's contribution. See `canFinish` and the method-picker hint.
+        if (calibrationProjectId !== null) {
+          const observedMethod = currentMethod;
+          // Mark the observation pending BEFORE the async call is issued
+          // (synchronously, in the same tick that flips `completedMethods`
+          // below) so there is no window in which `completedMethods`
+          // includes this method but neither `draftObservationPending` nor
+          // `draftObservationFailures` reflects that its write-back is still
+          // unresolved. `canFinish` gates on both sets being empty.
+          //
+          // Deliberately allows DUPLICATE entries for the same method: if
+          // the operator redoes a method while its prior submission is
+          // still in flight, each in-flight request gets its own pending
+          // marker, and each removes exactly its own marker on settle (see
+          // `latestObservationRequestRef` above for how the FAILURE flag,
+          // as opposed to the pending count, stays correct across
+          // out-of-order settlement).
+          const requestToken = Symbol(observedMethod);
+          latestObservationRequestRef.current[observedMethod] = requestToken;
+          setWorking((current) => ({
+            ...current,
+            draftObservationPending: [
+              ...current.draftObservationPending,
+              observedMethod,
+            ],
+          }));
+          const markObservation = (failed: boolean): void => {
+            if (unmountedRef.current) return;
+            setWorking((current) => {
+              const pendingIndex =
+                current.draftObservationPending.indexOf(observedMethod);
+              const nextPending =
+                pendingIndex === -1
+                  ? current.draftObservationPending
+                  : [
+                      ...current.draftObservationPending.slice(0, pendingIndex),
+                      ...current.draftObservationPending.slice(
+                        pendingIndex + 1,
+                      ),
+                    ];
+              // Only the MOST RECENTLY ISSUED request for this method may
+              // set/clear the failure flag. A stale (superseded) request
+              // settling after a newer redo was already issued carries no
+              // information about the method's CURRENT state — accepting
+              // its outcome could let an older failure clear a newer one's
+              // failure, or (worse) let an older success clear a newer
+              // request's still-pending or already-failed status.
+              const isLatestRequest =
+                latestObservationRequestRef.current[observedMethod] ===
+                requestToken;
+              if (!isLatestRequest) {
+                return pendingIndex === -1
+                  ? current
+                  : { ...current, draftObservationPending: nextPending };
+              }
+              const alreadyFlagged =
+                current.draftObservationFailures.includes(observedMethod);
+              if (pendingIndex === -1 && failed === alreadyFlagged) {
+                return current;
+              }
+              return {
+                ...current,
+                draftObservationPending: nextPending,
+                draftObservationFailures: failed
+                  ? alreadyFlagged
+                    ? current.draftObservationFailures
+                    : [...current.draftObservationFailures, observedMethod]
+                  : current.draftObservationFailures.filter(
+                      (method) => method !== observedMethod,
+                    ),
+              };
+            });
+          };
+          void calibrationApi()
+            .submitCalibrationObservation({
+              profileId,
+              projectId: calibrationProjectId,
+              requestId: environment.createId(),
+              operationId: environment.createId(),
+              measurement,
+            })
+            .then((observationResponse) => {
+              markObservation(observationResponse.status === 'error');
+              // Issue #797's server-authoritative method disposition can
+              // transition this method's row to `Completed` as a side
+              // effect of the observation the server just accepted. The
+              // locally-cached `methodProgress` map has no way to know
+              // that happened until the next read — without this refetch,
+              // the Skip button would keep showing (and accepting clicks
+              // for) a now-stale `Pending`/`Skipped` disposition for a
+              // method that was just measured, which could overwrite the
+              // server's fresher `Completed` row with a stale-baseRevision
+              // Skip request. Fired on FAILURE too, not only success:
+              // `submitCalibrationObservation` is two server calls under
+              // the hood (create attempt, then append observation) — if
+              // only the second fails, the first may already have mutated
+              // this method's progress row server-side, so a failure here
+              // does not guarantee the disposition is unchanged.
+              // `fetchMethodProgress`'s own revision-keyed merge (see its
+              // doc comment) makes this safe and idempotent to fire
+              // unconditionally, even if a different fetch is concurrently
+              // in flight.
+              void fetchMethodProgress();
+            })
+            .catch(() => {
+              markObservation(true);
+              void fetchMethodProgress();
+            });
         }
         setBanner({
           kind: 'info',
@@ -1519,10 +1712,108 @@ function FilamentCalibrationWizardInner(
         if (!unmountedRef.current) setBusy(false);
       }
     },
-    [profileId, working],
+    [environment, fetchMethodProgress, profileId, working],
   );
 
+  const finishCalibration = useCallback(async (): Promise<void> => {
+    const { calibrationProjectId } = working;
+    if (calibrationProjectId === null) return;
+    setBusy(true);
+    setBanner(null);
+    try {
+      const response = await calibrationApi().completeCalibrationProject({
+        profileId,
+        projectId: calibrationProjectId,
+      });
+      if (unmountedRef.current) return;
+      if (response.status === 'error') {
+        setBanner(bannerFromApiError(response.error));
+        return;
+      }
+      setBanner({
+        kind: 'info',
+        title: 'Calibration completed.',
+        detail:
+          response.promotedProfileId !== null
+            ? 'The accumulated draft profile was promoted to a new custom filament profile.'
+            : 'The project was marked complete, but promotion could not be confirmed yet. Click "Finish calibration" again to retry — completion is idempotent — or check the custom filament profile list directly.',
+        recovery:
+          response.promotedProfileId !== null
+            ? 'Start a new calibration for another spool, or go back to the dashboard.'
+            : 'Retry, or start a new calibration once you have confirmed the promotion.',
+        reference: null,
+      });
+      if (response.promotedProfileId === null) {
+        // Ambiguous outcome: the project transitioned server-side, but the
+        // follow-up promoted-profile read failed or hadn't caught up yet.
+        // Keep `calibrationProjectId` (and the rest of the wizard state)
+        // alive so the operator can retry this same idempotent call — resetting here
+        // would strand them with no way to confirm or re-request promotion.
+        return;
+      }
+      setWorking(initialWorking);
+      setSliceJobUi(emptySliceJobUi);
+      setConfirmStart('');
+      lastPersistedJsonRef.current = null;
+      // Issue #795 / PrintFarmer#2203: the working clone's only remaining
+      // purpose — slicing continuity during calibration — ends the moment a
+      // durable promoted profile exists. Best-effort overall: neither step
+      // blocks or re-surfaces an error for the completion the operator
+      // already saw confirmed above. But the two steps are CHAINED, not
+      // independent: the bookmark is cleared first, and the clone is only
+      // deleted once that clear is confirmed to have succeeded. If clearing
+      // the bookmark fails, the clone is deliberately left alone — a restart
+      // would otherwise resume a persisted bookmark that still names a clone
+      // that no longer exists, breaking resume outright instead of just
+      // leaving a harmless duplicate.
+      const cloneIdToDelete = working.cloneId;
+      void calibrationApi()
+        .clearFilamentCalibrationWizardState({ profileId })
+        .then(() => {
+          if (cloneIdToDelete === null) return;
+          return calibrationApi()
+            .deleteWorkingCloneProfile({
+              profileId,
+              customProfileId: cloneIdToDelete,
+            })
+            .then(() => undefined);
+        })
+        .catch(() => {
+          // Best-effort: if clearing failed, the clone is intentionally
+          // preserved (see comment above). If clearing succeeded but
+          // deletion failed, the stale clone is a harmless orphan.
+        });
+    } catch (cause) {
+      if (unmountedRef.current) return;
+      setBanner({
+        kind: 'error',
+        title: 'The calibration could not be marked complete.',
+        detail:
+          cause instanceof Error
+            ? cause.message
+            : 'The desktop lost contact with the main process.',
+        recovery: 'Retry.',
+        reference: null,
+      });
+    } finally {
+      if (!unmountedRef.current) setBusy(false);
+    }
+  }, [profileId, working]);
+
   const restartWizard = useCallback(() => {
+    // Issue #795 / PrintFarmer#2203: "Start over" is the operator's explicit
+    // abandon action — the only reliable client-side abandon signal that
+    // exists (there is no way to distinguish a mere navigate-away from a
+    // genuine give-up; see the doc comment on
+    // `CalibrationCompleteCalibrationProjectResponse` in `shared/ipc.ts`).
+    // Best-effort overall: a failure here must not block restarting. But
+    // the bookmark clear and the clone delete are CHAINED, not independent:
+    // the bookmark is cleared first, and the clone is only deleted once
+    // that clear is confirmed to have succeeded. If clearing fails, the
+    // clone is deliberately left alone — otherwise a future restart could
+    // resume a stale bookmark that names a clone that no longer exists,
+    // breaking resume outright instead of just leaving a harmless orphan.
+    const cloneIdToDelete = working.cloneId;
     setWorking(initialWorking);
     setBanner(null);
     setSliceJobUi(emptySliceJobUi);
@@ -1530,12 +1821,22 @@ function FilamentCalibrationWizardInner(
     lastPersistedJsonRef.current = null;
     void calibrationApi()
       .clearFilamentCalibrationWizardState({ profileId })
+      .then(() => {
+        if (cloneIdToDelete === null) return;
+        return calibrationApi()
+          .deleteWorkingCloneProfile({
+            profileId,
+            customProfileId: cloneIdToDelete,
+          })
+          .then(() => undefined);
+      })
       .catch(() => {
-        // Best-effort: if this fails, the stale bookmark only affects a
-        // future restart. The live wizard has already returned to a clean
-        // in-memory state.
+        // Best-effort: if clearing failed, the clone is intentionally
+        // preserved (see comment above). If clearing succeeded but deletion
+        // failed, the stale clone is a harmless orphan; the live wizard has
+        // already returned to a clean in-memory state either way.
       });
-  }, [profileId]);
+  }, [profileId, working]);
 
   // ---------------------------------------------------------------- render
 
@@ -1623,6 +1924,7 @@ function FilamentCalibrationWizardInner(
           working={working}
           busy={busy}
           onPickMethod={selectMethod}
+          onFinish={() => void finishCalibration()}
           methodProgress={methodProgress}
           methodProgressStatus={methodProgressStatus}
           methodProgressBusyMethods={methodProgressBusyMethods}
@@ -1925,6 +2227,7 @@ interface MethodStepProps {
   readonly working: WizardWorkingState;
   readonly busy: boolean;
   readonly onPickMethod: (method: CalibrationSliceMethod) => void;
+  readonly onFinish: () => void;
   /**
    * Server-authoritative per-method disposition (issue #797), keyed by
    * method. A method absent here has no progress row yet and is treated as
@@ -1968,6 +2271,7 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
     working,
     busy,
     onPickMethod,
+    onFinish,
     methodProgress,
     methodProgressStatus,
     methodProgressBusyMethods,
@@ -1976,6 +2280,13 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
     methodGuidance,
   } = props;
   const isActive = working.phase === 'methodPicker';
+  const hasSyncFailures = working.draftObservationFailures.length > 0;
+  const hasSyncPending = working.draftObservationPending.length > 0;
+  const canFinish =
+    working.calibrationProjectId !== null &&
+    working.completedMethods.length > 0 &&
+    !hasSyncFailures &&
+    !hasSyncPending;
 
   // Guided order (issue #794): drives which step is disabled/"locked" and
   // which one is the recommended "Next" step, from server-authoritative
@@ -2042,6 +2353,28 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           // `measurementSchema` regardless, which is out of this issue's scope.
           const title = guidance?.title ?? meta.title;
           const purpose = guidance?.purpose ?? meta.summary;
+          // Issue #795: block redoing a method while ITS draft-profile
+          // observation is still in flight. This isn't only a client-side
+          // bookkeeping concern — allowing two concurrent
+          // submitCalibrationObservation requests for the SAME method means
+          // the server could receive them out of order (a network re-order,
+          // not just a client re-order), and nothing on the client can
+          // guarantee which one lands last in the draft profile. Refusing to
+          // start a second request until the first has settled removes the
+          // race at its source instead of only reconciling client-side
+          // display state after the fact.
+          //
+          // Also gates Skip/Un-skip (`canToggleSkip` below): a successful
+          // observation can transition this method's server-side disposition
+          // to `Completed` (issue #797), but `methodProgress` only learns
+          // that from the refetch `writeMeasurement` kicks off once the
+          // observation settles — until that refetch lands, `disposition`
+          // here is stale. Blocking Skip while `syncingThisMethod` closes
+          // that window instead of letting an operator skip against a
+          // known-stale disposition that the server may already disagree
+          // with.
+          const syncingThisMethod =
+            working.draftObservationPending.includes(method);
           const progress = methodProgress[method] ?? null;
           const disposition = progress?.disposition ?? 'Pending';
           const skipped = disposition === 'Skipped';
@@ -2059,6 +2392,7 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
             methodProgressStatus === 'ready' &&
             !busy &&
             !skipToggleBusy &&
+            !syncingThisMethod &&
             disposition !== 'Completed';
           const dispositionLabel =
             methodProgressStatus === 'error'
@@ -2091,12 +2425,20 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
                 type="button"
                 className="cal-button"
                 onClick={() => onPickMethod(method)}
-                disabled={!isActive || busy || locked}
+                disabled={!isActive || busy || syncingThisMethod || locked}
                 aria-label={`Start ${title}${done ? ' (completed once)' : ''}${skipped ? ' (skipped)' : ''}${isNext ? ' (recommended next step)' : ''}${locked ? ' (locked — finish the earlier guided steps first)' : ''}`}
               >
                 {title}
                 {done ? ' — completed' : ''}
               </button>
+              <p className="cal-hint">{purpose}</p>
+              {syncingThisMethod ? (
+                <p className="cal-hint">
+                  Waiting for the previous run of this step to finish syncing to
+                  the draft profile before it can be redone or its Skip status
+                  changed.
+                </p>
+              ) : null}
               {/*
                 Server-authoritative Skip/Un-skip (issue #797): distinct from
                 the "— completed" suffix above, which is local-JSON-only and
@@ -2142,7 +2484,6 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
               >
                 {skipToggleBusy ? 'Saving…' : skipped ? 'Un-skip' : 'Skip'}
               </button>
-              <p className="cal-hint">{purpose}</p>
               {guidance?.wikiUrl ? (
                 <p className="cal-hint">
                   <a href={guidance.wikiUrl} target="_blank" rel="noreferrer">
@@ -2154,6 +2495,33 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
           );
         })}
       </ul>
+      <p className="cal-actions">
+        <button
+          type="button"
+          className="cal-button cal-button--primary"
+          onClick={onFinish}
+          disabled={!isActive || busy || !canFinish}
+        >
+          Finish calibration
+        </button>
+      </p>
+      {!canFinish ? (
+        <p className="cal-hint">
+          {hasSyncFailures
+            ? `${working.draftObservationFailures.length} step(s) failed to sync to the draft profile (${working.draftObservationFailures
+                .map((method) => FILAMENT_METHOD_META[method].title)
+                .join(
+                  ', ',
+                )}). Redo them before finishing, or the promoted profile will be missing those measurements.`
+            : hasSyncPending
+              ? `Still syncing ${working.draftObservationPending.length} step(s) to the draft profile (${working.draftObservationPending
+                  .map((method) => FILAMENT_METHOD_META[method].title)
+                  .join(
+                    ', ',
+                  )}). Wait for the sync to finish before finishing calibration.`
+              : 'Complete at least one calibration step before finishing — the server promotes the accumulated draft profile into a new custom filament profile only when the project is marked complete.'}
+        </p>
+      ) : null}
     </fieldset>
   );
 }

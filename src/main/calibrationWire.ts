@@ -2592,6 +2592,123 @@ export const RemoteCalibrationAttempt = z
   .passthrough();
 export type RemoteCalibrationAttempt = z.infer<typeof RemoteCalibrationAttempt>;
 
+/**
+ * `CalibrationAttemptDto` — the real response body of
+ * `POST /api/calibration-projects/{projectId}/attempts` and
+ * `GET /api/calibration-attempts/{attemptId}`
+ * (`CalibrationProjectsController.CreateAttemptAsync`,
+ * `CalibrationAttemptsController.GetAttemptAsync`). Verified against
+ * PrintFarmer's `Farm.Modules.Calibration/Contracts/CalibrationProjectContracts.cs`
+ * and `Services/Calibration/CalibrationProjectService.cs` at commit
+ * `20630b47d593f90c6bc0c9ade4a1525a74d2b283`.
+ *
+ * Deliberately NOT {@link RemoteCalibrationAttempt} above: that schema's
+ * fields (`stepId`/`measuredValue`/`measuredUnit`/`isSelected`) do not exist
+ * anywhere on the real DTO — the same pre-#798 drift documented on
+ * {@link RemoteCalibrationProjectRecord}. This schema instead mirrors the
+ * verified issue #2180 shape field-for-field (#795).
+ */
+export const RemoteCalibrationAttemptRecord = z
+  .object({
+    id: ServerGuid,
+    projectId: ServerGuid,
+    sequence: z.number().int().nonnegative(),
+    parentAttemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    calibrationKind: z.string().min(1).max(128),
+    method: z.string().min(1).max(128),
+    definitionVersion: z.string().min(1).max(64),
+    input: z.unknown(),
+    specification: z.unknown(),
+    specificationSha256: z.string().min(1).max(64),
+    profileSnapshotIds: z.unknown(),
+    actualSpoolSnapshot: z
+      .unknown()
+      .nullish()
+      .transform((v) => v ?? null),
+    disposition: z.string().min(1).max(32),
+    createdAtUtc: z.string().datetime(),
+  })
+  .passthrough();
+export type RemoteCalibrationAttemptRecord = z.infer<
+  typeof RemoteCalibrationAttemptRecord
+>;
+
+/**
+ * `CalibrationObservationDto` — the real response body of
+ * `POST /api/calibration-attempts/{attemptId}/observations`
+ * (`CalibrationAttemptsController.AppendObservationAsync`). Verified at the
+ * same commit cited on {@link RemoteCalibrationAttemptRecord}.
+ *
+ * Deliberately NOT {@link RemoteCalibrationObservation} above: that schema's
+ * fields (`parameterKey`/`numericValue`/`unit`/`note`) do not exist anywhere
+ * on the real DTO — the same pre-#798 drift documented on
+ * {@link RemoteCalibrationProjectRecord} (#795).
+ */
+export const RemoteCalibrationObservationRecord = z
+  .object({
+    id: ServerGuid,
+    attemptId: ServerGuid,
+    sequence: z.number().int().nonnegative(),
+    observationType: z.string().min(1).max(64),
+    measurements: z.unknown(),
+    result: z.unknown(),
+    units: z.unknown(),
+    confidence: z
+      .number()
+      .min(0)
+      .max(1)
+      .nullish()
+      .transform((v) => v ?? null),
+    retestRecommended: z.boolean().optional().default(false),
+    notes: z
+      .string()
+      .max(4096)
+      .nullish()
+      .transform((v) => v ?? null),
+    selectionParentObservationId: ServerGuid.nullish().transform(
+      (v) => v ?? null,
+    ),
+    selectionReason: z
+      .string()
+      .max(1024)
+      .nullish()
+      .transform((v) => v ?? null),
+    observedAtUtc: z.string().datetime(),
+  })
+  .passthrough();
+export type RemoteCalibrationObservationRecord = z.infer<
+  typeof RemoteCalibrationObservationRecord
+>;
+
+/**
+ * `CalibrationDraftProfileDto` — the real response body of
+ * `GET /api/calibration-projects/{projectId}/draft-profile`
+ * (`CalibrationProjectsController.GetDraftProfileAsync`). Verified at the
+ * same commit cited on {@link RemoteCalibrationAttemptRecord}. This is the
+ * project-owned, server-accumulated draft that is promoted into a real
+ * custom filament profile only once the project reaches `Completed` (#795);
+ * it is never written to directly by the desktop.
+ */
+export const RemoteCalibrationDraftProfileRecord = z
+  .object({
+    id: ServerGuid,
+    projectId: ServerGuid,
+    values: z.unknown(),
+    revision: z.number().int().nonnegative(),
+    promotedProfileId: ServerGuid.nullish().transform((v) => v ?? null),
+    promotedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+  })
+  .passthrough();
+export type RemoteCalibrationDraftProfileRecord = z.infer<
+  typeof RemoteCalibrationDraftProfileRecord
+>;
+
 /** Remote calibration event from `GET /api/calibration-events/{id}`. */
 export const RemoteCalibrationEvent = z
   .object({

@@ -24,6 +24,8 @@ import {
   resolveOrcaBaseProfileLookupName,
   CalibrationPrinterCandidate,
   type OrcaProfileOperationError,
+  type CalibrationFilamentMeasurement,
+  PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
 } from '@shared/ipc';
 import {
   SidecarClient,
@@ -114,6 +116,100 @@ import {
 } from './calibrationSlicePoll.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
+
+/**
+ * Translates a renderer-supplied {@link CalibrationFilamentMeasurement} into
+ * the `calibrationKind`/`method`/`specification`/`measurements` shape the
+ * server's attempt-create and observation-append routes expect (#795).
+ *
+ * `method` is passed straight through unchanged: the desktop's
+ * `CalibrationFilamentMeasurement.method` literals
+ * (`flow_rate_pass_1`/`flow_rate_pass_2`/`flow_rate_yolo_recommended`/
+ * `flow_rate_yolo_perfectionist`/`temperature_tower`/`max_volumetric_speed`/
+ * `pressure_advance_tower`/`retraction`) already match PrintFarmer's
+ * `CalibrationMethods.ToWireName(...)` output verbatim — verified via
+ * `CalibrationMethodClassification.cs` at PrintFarmer commit
+ * `20630b47d593f90c6bc0c9ade4a1525a74d2b283`. `calibrationKind` is the
+ * server's coarser grouping (`CalibrationMethodKinds.ToKind(method)`), which
+ * has no desktop-side equivalent and must be derived here.
+ *
+ * `specification` is populated only for the two methods whose
+ * `CalibrationMethodGuidanceCatalog.ForMethod(...).SetupInputs` declares
+ * required setup fields (`temperature_tower`, `max_volumetric_speed`). The
+ * desktop's wizard has no setup step that collects a real operator-chosen
+ * sweep for either yet, so the full server-declared legal range is sent as a
+ * documented approximation — see the doc comment on
+ * `CalibrationHttpClient.createAttempt`.
+ *
+ * `measurements` carries exactly the one semantic key
+ * `CalibrationMeasurementRanges.ForKind` validates/merges for that kind.
+ * `temperature_tower` measures two values
+ * (`nozzleTemperature`/`nozzleTemperatureInitialLayer`) but the server's
+ * `temperature` kind has only one measurement key; the steady-state
+ * `nozzleTemperature` is submitted and `nozzleTemperatureInitialLayer` is
+ * not (it has no server-side calibration-kind equivalent — it still feeds
+ * the parallel live-clone write-back in `filamentMeasurementWriteBack.ts`,
+ * which continues for slicing continuity).
+ *
+ * Exported for direct testing; the IPC handler delegates to this function.
+ */
+export function mapFilamentMeasurementToObservation(
+  measurement: CalibrationFilamentMeasurement,
+): {
+  calibrationKind: string;
+  method: string;
+  specification: Record<string, number>;
+  measurements: Record<string, number>;
+} {
+  switch (measurement.method) {
+    case 'flow_rate_pass_1':
+    case 'flow_rate_pass_2':
+    case 'flow_rate_yolo_recommended':
+    case 'flow_rate_yolo_perfectionist':
+      return {
+        calibrationKind: 'flow',
+        method: measurement.method,
+        specification: {},
+        measurements: { flow_ratio: measurement.filamentFlowRatio },
+      };
+    case 'temperature_tower':
+      return {
+        calibrationKind: 'temperature',
+        method: measurement.method,
+        specification: {
+          start_temperature_c: 150,
+          end_temperature_c: PRINTFARMER_NOZZLE_TEMPERATURE_MAX_C,
+        },
+        measurements: { temperature_c: measurement.nozzleTemperature },
+      };
+    case 'max_volumetric_speed':
+      return {
+        calibrationKind: 'max_volumetric_speed',
+        method: measurement.method,
+        specification: {
+          sweep_start_mm3_s: 1,
+          sweep_end_mm3_s: 60,
+        },
+        measurements: {
+          max_volumetric_speed_mm3_s: measurement.maxVolumetricSpeed,
+        },
+      };
+    case 'pressure_advance_tower':
+      return {
+        calibrationKind: 'pressure_advance',
+        method: measurement.method,
+        specification: {},
+        measurements: { pressure_advance: measurement.pressureAdvance },
+      };
+    case 'retraction':
+      return {
+        calibrationKind: 'retraction',
+        method: measurement.method,
+        specification: {},
+        measurements: { retraction_length_mm: measurement.retractionLength },
+      };
+  }
+}
 
 /**
  * Detects sequence gaps in a queue-change-feed event page.
@@ -4941,6 +5037,329 @@ export function registerIpcHandlers(
               };
         return ipcSchemas[
           IpcChannel.CalibrationUpdateFilamentProfileMeasurement
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationSubmitCalibrationObservation,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationSubmitCalibrationObservation
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const { calibrationKind, method, specification, measurements } =
+          mapFilamentMeasurementToObservation(request.measurement);
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const attempt = await calibrationHttp.createAttempt(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          {
+            clientId: 'desktop',
+            // Renderer-supplied idempotency key — kept stable by the caller
+            // across a retry of the same submission, mirroring
+            // `CalibrationCreateProject`'s handling of `requestId`.
+            requestId: request.requestId,
+            calibrationKind,
+            method,
+            specification,
+          },
+          signal,
+        );
+        const observation = await calibrationHttp.appendObservation(
+          selectedId,
+          ctx.profile.baseUrl,
+          attempt.id,
+          {
+            clientId: 'desktop',
+            operationId: request.operationId,
+            measurements,
+          },
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'calibration.observationSubmitted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationSubmitCalibrationObservation
+        ].response.parse({
+          status: 'ok',
+          attemptId: attempt.id,
+          observationId: observation.id,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'calibration.observationSubmitted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration observation submission failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationSubmitCalibrationObservation
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationCompleteCalibrationProject,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationCompleteCalibrationProject
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const readSignal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const project = await calibrationHttp.getProjectRecord(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          readSignal,
+        );
+        if (project === null) {
+          emitCalibrationLog({
+            level: 'warn',
+            component: 'calibration.http',
+            event: 'calibration.projectCompleted',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'failed',
+            durationMs: Date.now() - startedAt,
+            errorCode: 'notFound',
+          });
+          return ipcSchemas[
+            IpcChannel.CalibrationCompleteCalibrationProject
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'serverError' as const,
+              message: 'Calibration project is no longer present.',
+              retryable: false,
+              retryAfterSeconds: null,
+              reference: correlationId,
+            },
+          });
+        }
+        const writeSignal = AbortSignal.timeout(15_000);
+        const completed = await calibrationHttp.completeProject(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          project.revision,
+          writeSignal,
+        );
+        // Best-effort read-back so the renderer can confirm promotion
+        // happened (the "control: completed one appears" acceptance
+        // criterion). A failure here does not undo the completion above —
+        // the project has already transitioned — so it is swallowed and
+        // reported as `promotedProfileId: null` rather than surfaced as an
+        // error for the whole channel.
+        let promotedProfileId: string | null = null;
+        try {
+          const draftSignal = AbortSignal.timeout(15_000);
+          const draft = await calibrationHttp.getDraftProfile(
+            selectedId,
+            ctx.profile.baseUrl,
+            request.projectId,
+            draftSignal,
+          );
+          promotedProfileId = draft?.promotedProfileId ?? null;
+        } catch (draftError) {
+          emitCalibrationLog({
+            level: 'warn',
+            component: 'calibration.http',
+            event: 'calibration.draftProfileReadAfterCompletion',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'failed',
+            durationMs: Date.now() - startedAt,
+            ...describeCalibrationFailure(draftError),
+          });
+        }
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'calibration.projectCompleted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationCompleteCalibrationProject
+        ].response.parse({
+          status: 'ok',
+          lifecycleStatus: completed.lifecycleStatus,
+          promotedProfileId,
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'calibration.projectCompleted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration project completion failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationCompleteCalibrationProject
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationDeleteWorkingCloneProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationDeleteWorkingCloneProfile
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        await calibrationHttp.deleteCustomProfile(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.customProfileId,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'profiles.custom.deleted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationDeleteWorkingCloneProfile
+        ].response.parse({ status: 'ok', alreadyDeleted: false });
+      } catch (error) {
+        // A 404 means the goal ("this clone should not exist") is already
+        // satisfied — e.g. a retried best-effort call, or a clone the
+        // operator already removed by hand. Report success rather than an
+        // error the caller has no useful way to act on.
+        if (
+          error instanceof CalibrationHttpError &&
+          error.code === 'notFound'
+        ) {
+          emitCalibrationLog({
+            level: 'info',
+            component: 'calibration.http',
+            // Issue #795 round-10 review (Bishop): a distinct event name,
+            // not `errorCode: 'notFound'`, carries the "already deleted"
+            // fact. `calibrationLogMessage` resolves `errorCode` before
+            // `event`, so attaching `errorCode: 'notFound'` to an
+            // `outcome: 'ok'` record rendered the 404 failure message
+            // ("The requested resource does not exist on the server.") on a
+            // line that is not a failure — misleading at a glance.
+            event: 'profiles.custom.deleteAlreadySatisfied',
+            correlationId,
+            correlationOrigin,
+            profileId: selectedId,
+            outcome: 'ok',
+            durationMs: Date.now() - startedAt,
+          });
+          return ipcSchemas[
+            IpcChannel.CalibrationDeleteWorkingCloneProfile
+          ].response.parse({ status: 'ok', alreadyDeleted: true });
+        }
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'profiles.custom.deleted',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Working clone profile deletion failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationDeleteWorkingCloneProfile
         ].response.parse({ status: 'error', error: apiError });
       }
     },

@@ -109,6 +109,9 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
       .mockRejectedValue(notImplemented()),
     resolveCalibrationConflict: vi.fn().mockRejectedValue(notImplemented()),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
+    submitCalibrationObservation: vi.fn().mockRejectedValue(notImplemented()),
+    completeCalibrationProject: vi.fn().mockRejectedValue(notImplemented()),
+    deleteWorkingCloneProfile: vi.fn().mockRejectedValue(notImplemented()),
     listCalibrationSpoolmanSpools: vi.fn().mockResolvedValue({
       status: 'ok',
       spools: [],

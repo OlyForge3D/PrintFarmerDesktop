@@ -643,6 +643,21 @@ function makeApi(savedRecord = record()) {
     listCalibrationConflicts: vi
       .fn<CalibrationApi['listCalibrationConflicts']>()
       .mockResolvedValue({ conflicts: [] }),
+    submitCalibrationObservation: vi
+      .fn<CalibrationApi['submitCalibrationObservation']>()
+      .mockRejectedValue(
+        new Error('submitCalibrationObservation not stubbed in this test'),
+      ),
+    completeCalibrationProject: vi
+      .fn<CalibrationApi['completeCalibrationProject']>()
+      .mockRejectedValue(
+        new Error('completeCalibrationProject not stubbed in this test'),
+      ),
+    deleteWorkingCloneProfile: vi
+      .fn<CalibrationApi['deleteWorkingCloneProfile']>()
+      .mockRejectedValue(
+        new Error('deleteWorkingCloneProfile not stubbed in this test'),
+      ),
     listCalibrationSpoolmanSpools: vi
       .fn<CalibrationApi['listCalibrationSpoolmanSpools']>()
       .mockResolvedValue({

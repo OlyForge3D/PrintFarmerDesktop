@@ -358,6 +358,30 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationSubmitCalibrationObservation,
+    request: (profileId) => ({
+      profileId,
+      projectId: uuid(5),
+      requestId: uuid(7),
+      operationId: uuid(8),
+      measurement: { method: 'flow_rate_pass_1', filamentFlowRatio: 0.98 },
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationCompleteCalibrationProject,
+    request: (profileId) => ({
+      profileId,
+      projectId: uuid(5),
+    }),
+  },
+  {
+    channel: IpcChannel.CalibrationDeleteWorkingCloneProfile,
+    request: (profileId) => ({
+      profileId,
+      customProfileId: uuid(9),
+    }),
+  },
+  {
     channel: IpcChannel.CalibrationResolveSystemProfile,
     request: (profileId) => ({
       profileId,
