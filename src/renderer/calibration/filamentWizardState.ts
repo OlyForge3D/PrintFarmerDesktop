@@ -406,10 +406,21 @@ export function deriveGuidedMethodStates(
   let nextAssigned = false;
   return methods.map((method) => {
     const disposition = options.dispositionFor(method);
-    const done = disposition === 'Completed' || completedLocally.has(method);
-    if (done) return { method, status: 'done', locked: false };
-    const skipped = disposition === 'Skipped';
-    if (skipped) return { method, status: 'skipped', locked: false };
+    // Server disposition is authoritative and must win over the legacy
+    // local `completedMethods` set when the two disagree — e.g. a method
+    // completed locally before this project existed, then explicitly
+    // skipped server-side afterwards (from this device or another one).
+    // The local set is only consulted as a fallback when the server has no
+    // disposition recorded for this method at all.
+    if (disposition === 'Completed') {
+      return { method, status: 'done', locked: false };
+    }
+    if (disposition === 'Skipped') {
+      return { method, status: 'skipped', locked: false };
+    }
+    if (completedLocally.has(method)) {
+      return { method, status: 'done', locked: false };
+    }
     if (!nextAssigned) {
       nextAssigned = true;
       return { method, status: 'next', locked: false };

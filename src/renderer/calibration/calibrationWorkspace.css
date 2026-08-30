@@ -852,6 +852,14 @@
   border-radius: 4px;
   padding: 1px 6px;
   width: fit-content;
+  /*
+   * Take a full grid row of its own. The 2-column layout below places
+   * children by implicit auto-placement (button, disposition, Skip, hint),
+   * so an unspanned badge inserted between the disposition span and the
+   * Skip button would push Skip/hint into the wrong column on `next`/
+   * `pending` rows only, misaligning them against every other row.
+   */
+  grid-column: 1 / -1;
 }
 
 .cal-method-guided-badge--next {

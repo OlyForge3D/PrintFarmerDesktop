@@ -2283,6 +2283,13 @@ describe('FilamentCalibrationWizard guided order enforcement (issue #794)', () =
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
 
+    // Pin this to the failed (`'error'`) state specifically, not merely
+    // `'loading'` — the assertions below would otherwise pass just as well
+    // before the read has settled at all, which is a different code path.
+    await waitFor(() =>
+      expect(screen.getAllByText('Sync failed').length).toBeGreaterThan(0),
+    );
+
     const laterMethodButton = await screen.findByRole('button', {
       name: /Start Max volumetric speed/i,
     });

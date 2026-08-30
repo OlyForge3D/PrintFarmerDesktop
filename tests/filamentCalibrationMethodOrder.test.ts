@@ -350,10 +350,13 @@ describe('FilamentWizardStateRecord.completedMethods ceiling', () => {
 });
 
 describe('deriveGuidedMethodStates (issue #794)', () => {
-  // All tests below use a two-method slice of the real order —
-  // temperature_tower (first) and flow_rate_pass_1 (second) — so "jump
-  // ahead" has a single, unambiguous meaning: starting flow_rate_pass_1
-  // before temperature_tower resolves.
+  // A synthetic two-method list — temperature_tower then flow_rate_pass_1,
+  // in that relative order, though flow_rate_pass_1 sits much later (index
+  // 5) in the real `FILAMENT_WIZARD_METHODS` — so "jump ahead" has a single,
+  // unambiguous meaning for these tests: starting flow_rate_pass_1 before
+  // temperature_tower resolves. `deriveGuidedMethodStates` only cares about
+  // the order of whatever `methods` array it is given, not the full guided
+  // catalogue, so this slice is sufficient to exercise its locking logic.
   const methods: readonly (typeof FILAMENT_WIZARD_METHODS)[number][] = [
     'temperature_tower',
     'flow_rate_pass_1',
@@ -445,6 +448,25 @@ describe('deriveGuidedMethodStates (issue #794)', () => {
     // Skipping the first step still promotes the second to `next`.
     expect(flow?.status).toBe('next');
     expect(flow?.locked).toBe(false);
+  });
+
+  it('prefers a server-authoritative Skipped disposition over a stale local completedMethods entry', () => {
+    // Regression: server disposition must win when it disagrees with the
+    // legacy local set — e.g. the method was marked done locally before
+    // this project existed, then explicitly skipped server-side afterwards
+    // (from this device or another one). Reporting it as `done` here would
+    // silently discard that skip and mismatch the disposition label the
+    // picker renders alongside it ("Skipped").
+    const result = deriveGuidedMethodStates([...methods], {
+      completedMethods: ['temperature_tower'],
+      dispositionFor: (method) =>
+        method === 'temperature_tower' ? 'Skipped' : null,
+      gatingAvailable: true,
+    });
+    const states = result ?? [];
+    const temperature = states.find((s) => s.method === 'temperature_tower');
+    expect(temperature?.status).toBe('skipped');
+    expect(temperature?.locked).toBe(false);
   });
 
   it('assigns `next` to exactly one method across the full guided order', () => {

@@ -1857,10 +1857,7 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
                 </span>
               ) : null}
               {guided?.status === 'pending' ? (
-                <span
-                  className="cal-method-guided-badge cal-method-guided-badge--locked"
-                  aria-label={`${title} is locked until the earlier guided steps are done or skipped`}
-                >
+                <span className="cal-method-guided-badge cal-method-guided-badge--locked">
                   Locked
                 </span>
               ) : null}
