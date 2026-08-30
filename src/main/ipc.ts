@@ -3972,6 +3972,274 @@ export function registerIpcHandlers(
     },
   );
 
+  // --- Server-authoritative method guidance/disposition (issue #797) --------
+  //
+  // Three handlers: a project-independent guidance-catalog read (server
+  // metadata replacing `FILAMENT_METHOD_META`), a project-scoped
+  // method-progress read, and a project-scoped disposition write (the
+  // server-persisted Skip/un-skip action). Same correlation-logging +
+  // error-remapping shape as `CalibrationCreateProject` above.
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetMethodGuidanceCatalog,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationGetMethodGuidanceCatalog
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const catalog = await calibrationHttp.getMethodGuidanceCatalog(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'methodGuidance.fetched',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationGetMethodGuidanceCatalog
+        ].response.parse({
+          status: 'ok',
+          catalog: catalog.map((entry) => ({
+            method: entry.method,
+            title: entry.title,
+            purpose: entry.purpose,
+            wikiUrl: entry.wikiUrl,
+            setupInputs: entry.setupInputs.map((input) => ({
+              key: input.key,
+              label: input.label,
+              unit: input.unit,
+              minimum: input.minimum,
+              maximum: input.maximum,
+            })),
+            measureQuantity:
+              entry.measureQuantity === null
+                ? null
+                : {
+                    key: entry.measureQuantity.key,
+                    minimum: entry.measureQuantity.minimum,
+                    maximum: entry.measureQuantity.maximum,
+                  },
+            steps: [...entry.steps],
+          })),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'methodGuidance.fetched',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration method guidance could not be loaded.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetMethodGuidanceCatalog
+        ].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetMethodProgress,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetMethodProgress].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const progress = await calibrationHttp.getMethodProgress(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'methodProgress.fetched',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationGetMethodProgress
+        ].response.parse({
+          status: 'ok',
+          progress: progress.map((entry) => ({
+            id: entry.id,
+            projectId: entry.projectId,
+            method: entry.method,
+            disposition: entry.disposition,
+            currentStepId: entry.currentStepId,
+            revision: entry.revision,
+            createdAtUtc: entry.createdAtUtc,
+            updatedAtUtc: entry.updatedAtUtc,
+          })),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'methodProgress.fetched',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration method progress could not be loaded.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetMethodProgress
+        ].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationSetMethodDisposition,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSetMethodDisposition].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const progress = await calibrationHttp.setMethodDisposition(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          request.method,
+          request.disposition,
+          request.baseRevision,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'methodDisposition.set',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationSetMethodDisposition
+        ].response.parse({
+          status: 'ok',
+          progress: {
+            id: progress.id,
+            projectId: progress.projectId,
+            method: progress.method,
+            disposition: progress.disposition,
+            currentStepId: progress.currentStepId,
+            revision: progress.revision,
+            createdAtUtc: progress.createdAtUtc,
+            updatedAtUtc: progress.updatedAtUtc,
+          },
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'methodDisposition.set',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration method disposition could not be saved.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationSetMethodDisposition
+        ].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
+    },
+  );
+
   // --- Filament calibration slice pipeline (PR #1952) -----------------------
   //
   // Five handlers, one per stage of the OrcaSlicer-wiki workflow the owner

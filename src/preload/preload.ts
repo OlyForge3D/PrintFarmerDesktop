@@ -113,6 +113,12 @@ import {
   type CalibrationResolveSystemProfileResponse,
   type CalibrationCreateProjectRequest,
   type CalibrationCreateProjectResponse,
+  type CalibrationGetMethodGuidanceCatalogRequest,
+  type CalibrationGetMethodGuidanceCatalogResponse,
+  type CalibrationGetMethodProgressRequest,
+  type CalibrationGetMethodProgressResponse,
+  type CalibrationSetMethodDispositionRequest,
+  type CalibrationSetMethodDispositionResponse,
   type CalibrationCloneFilamentProfileRequest,
   type CalibrationCloneFilamentProfileResponse,
   type CalibrationSubmitCalibrationSliceRequest,
@@ -521,6 +527,33 @@ const api: PrintFarmerApi = {
   ): Promise<CalibrationCreateProjectResponse> =>
     ipcSchemas[IpcChannel.CalibrationCreateProject].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationCreateProject, request),
+    ),
+  getCalibrationMethodGuidanceCatalog: async (
+    request: CalibrationGetMethodGuidanceCatalogRequest,
+  ): Promise<CalibrationGetMethodGuidanceCatalogResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetMethodGuidanceCatalog].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetMethodGuidanceCatalog,
+        request,
+      ),
+    ),
+  getCalibrationMethodProgress: async (
+    request: CalibrationGetMethodProgressRequest,
+  ): Promise<CalibrationGetMethodProgressResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetMethodProgress].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetMethodProgress,
+        request,
+      ),
+    ),
+  setCalibrationMethodDisposition: async (
+    request: CalibrationSetMethodDispositionRequest,
+  ): Promise<CalibrationSetMethodDispositionResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSetMethodDisposition].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationSetMethodDisposition,
+        request,
+      ),
     ),
   cloneCalibrationFilamentProfile: async (
     request: CalibrationCloneFilamentProfileRequest,

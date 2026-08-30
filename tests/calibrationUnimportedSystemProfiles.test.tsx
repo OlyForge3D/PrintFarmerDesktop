@@ -261,6 +261,19 @@ function apiFor(options: {
         revision: 1,
       },
     }),
+    getCalibrationMethodGuidanceCatalog: vi
+      .fn()
+      .mockResolvedValue({ status: 'ok' as const, catalog: [] }),
+    getCalibrationMethodProgress: vi
+      .fn()
+      .mockResolvedValue({ status: 'ok' as const, progress: [] }),
+    setCalibrationMethodDisposition: vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'setCalibrationMethodDisposition must not be called in this test.',
+        ),
+      ),
     cloneCalibrationFilamentProfile: vi.fn().mockResolvedValue({
       status: 'ok',
       clone: {

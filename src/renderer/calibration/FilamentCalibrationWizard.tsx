@@ -59,6 +59,8 @@ import {
 } from 'react';
 import type {
   CalibrationApiError,
+  CalibrationMethodGuidanceRecord,
+  CalibrationMethodProgressRecord,
   CalibrationPrinterCandidate,
   CalibrationSliceJobSnapshot,
   CalibrationSliceMethod,
@@ -389,6 +391,12 @@ interface WizardWorkingState {
   readonly printerModelId: string | null;
   readonly cloneId: string | null;
   readonly cloneName: string;
+  /**
+   * The server `CalibrationProject` created at wizard start (issue #798),
+   * used to scope the server-authoritative method-guidance/method-progress
+   * calls added by issue #797. `null` before the clone step runs.
+   */
+  readonly calibrationProjectId: string | null;
   readonly completedMethods: readonly CalibrationSliceMethod[];
   readonly currentMethod: CalibrationSliceMethod | null;
   readonly inFlightJob: FilamentWizardInFlightJob | null;
@@ -401,6 +409,7 @@ const initialWorking: WizardWorkingState = {
   printerModelId: null,
   cloneId: null,
   cloneName: '',
+  calibrationProjectId: null,
   completedMethods: [],
   currentMethod: null,
   inFlightJob: null,
@@ -497,6 +506,7 @@ function FilamentCalibrationWizardInner(
         baseFilamentGuid: working.picks?.filamentGuid ?? null,
         cloneId: working.cloneId,
         cloneName: working.cloneName,
+        calibrationProjectId: working.calibrationProjectId,
         completedMethods: working.completedMethods,
         currentMethod: working.currentMethod,
         inFlightJob: working.inFlightJob,
@@ -516,6 +526,7 @@ function FilamentCalibrationWizardInner(
   }, [
     environment,
     profileId,
+    working.calibrationProjectId,
     working.cloneId,
     working.cloneName,
     working.completedMethods,
@@ -526,6 +537,226 @@ function FilamentCalibrationWizardInner(
     working.printerId,
     working.printerModelId,
   ]);
+
+  // ------------------ server-authoritative method disposition (issue #797) --
+  //
+  // `method-progress` is project-owned, not device-scoped, so this reads the
+  // same Skipped/Pending/Completed state a second device would see for the
+  // same project — never from `working.completedMethods` (local-JSON-only,
+  // legacy from before this issue, left in place for #799 to reconcile).
+  const [methodProgress, setMethodProgress] = useState<
+    Readonly<Record<string, CalibrationMethodProgressRecord>>
+  >({});
+  // Distinguishes "no row yet, defaults to Pending" from "we don't actually
+  // know, the read failed" — a read failure must never render a step that
+  // was skipped on another device as Pending (see `MethodStep` below).
+  const [methodProgressStatus, setMethodProgressStatus] = useState<
+    'loading' | 'ready' | 'error'
+  >('loading');
+  // A `Set`, not a single method: two skip/un-skip clicks on different
+  // methods fired in quick succession must each independently gate their own
+  // button until their own round trip settles, rather than one request's
+  // completion re-enabling every other in-flight request's button.
+  const [methodProgressBusyMethods, setMethodProgressBusyMethods] = useState<
+    ReadonlySet<string>
+  >(new Set());
+
+  // ------------------ server-authoritative method guidance (issue #797) -----
+  //
+  // `method-guidance` is a global catalogue (not project-scoped), so it is
+  // fetched once per profile session rather than re-fetched per project. It
+  // replaces the client-hardcoded `FILAMENT_METHOD_META` title/summary text
+  // (the interim stand-in #794/#799 shipped against) wherever the server
+  // supplies a value; a fetch failure degrades gracefully to
+  // `FILAMENT_METHOD_META` alone (a banner would be noise for a background
+  // enrichment call the wizard can fully operate without).
+  const [methodGuidance, setMethodGuidance] = useState<
+    Readonly<Record<string, CalibrationMethodGuidanceRecord>>
+  >({});
+  // Fetch-only generation counter, bumped once per `fetchMethodProgress`
+  // call. A successful read is always safe to apply regardless of this
+  // counter (it merges per-method by revision — see `fetchMethodProgress`),
+  // so this guard exists solely to let a *newer fetch* suppress an *older
+  // fetch's* error/loading state without a genuine read failure ever being
+  // silently swallowed by an unrelated write. Deliberately NOT bumped by
+  // skip/un-skip writes (`toggleMethodDisposition`): an earlier version did
+  // that to invalidate in-flight reads, but that meant an unrelated write
+  // landing between a rejected write's conflict-refetch and that refetch's
+  // *failure* would make the mismatch swallow the error, leaving the sync
+  // status stuck at `'loading'` forever with no "Retry sync" ever offered.
+  const methodProgressSeqRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response =
+          await calibrationApi().getCalibrationMethodGuidanceCatalog({
+            profileId,
+          });
+        if (cancelled || unmountedRef.current) return;
+        if (response.status === 'ok') {
+          const byMethod: Record<string, CalibrationMethodGuidanceRecord> = {};
+          for (const entry of response.catalog) {
+            byMethod[entry.method] = entry;
+          }
+          setMethodGuidance(byMethod);
+        }
+      } catch {
+        // Best-effort — see comment above; the wizard falls back to
+        // FILAMENT_METHOD_META for any method the catalog didn't supply.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
+
+  const fetchMethodProgress = useCallback(async (): Promise<void> => {
+    const projectId = working.calibrationProjectId;
+    const seq = ++methodProgressSeqRef.current;
+    if (projectId === null) {
+      setMethodProgress({});
+      setMethodProgressStatus('ready');
+      return;
+    }
+    setMethodProgressStatus('loading');
+    try {
+      const response = await calibrationApi().getCalibrationMethodProgress({
+        profileId,
+        projectId,
+      });
+      if (unmountedRef.current) return;
+      if (response.status === 'ok') {
+        // Merge per-method by revision rather than replacing the whole map
+        // wholesale. This is what makes it safe to apply this response even
+        // if a *newer fetch* has since been kicked off (see
+        // `methodProgressSeqRef`) — it may be exactly the reconciliation a
+        // different method's rejected write is waiting on (e.g. a
+        // stale-revision conflict refetch for method A must still land A's
+        // fresher row even if an unrelated write to method B resolved in
+        // between; discarding the whole response would leave A's retry
+        // stuck resubmitting the same stale revision forever). The
+        // per-entry revision comparison is what keeps this safe: it never
+        // *downgrades* a method whose locally-known revision is already at
+        // least as new — that only happens when a write for that exact
+        // method resolved after this read was issued, in which case the
+        // write's row is already the freshest available truth for it.
+        setMethodProgress((current) => {
+          const merged: Record<string, CalibrationMethodProgressRecord> = {
+            ...current,
+          };
+          for (const entry of response.progress) {
+            const existing = merged[entry.method];
+            if (existing === undefined || entry.revision >= existing.revision) {
+              merged[entry.method] = entry;
+            }
+          }
+          return merged;
+        });
+        // Applying this response's data is always safe (see above), so the
+        // sync indicator can always advance to `'ready'` here regardless of
+        // whether a newer fetch has since been kicked off — that newer
+        // fetch will simply merge its own (at-least-as-fresh) data on top
+        // when it resolves.
+        setMethodProgressStatus('ready');
+      } else if (methodProgressSeqRef.current === seq) {
+        // A row-shaped error response — treat the same as a thrown error
+        // below: we do NOT know the real disposition, so it must not be
+        // presented as Pending. Unlike the ok-path above, an error carries
+        // no data to merge, so it is only surfaced when nothing fresher is
+        // already in flight or already landed (a newer fetch already
+        // holds — or will hold — the current truth).
+        setMethodProgressStatus('error');
+      }
+    } catch {
+      if (unmountedRef.current) return;
+      if (methodProgressSeqRef.current !== seq) return;
+      // Unlike the guidance catalog, a progress-read failure is NOT
+      // presented as "every step defaults to Pending" — that would make a
+      // step skipped from another device silently look Pending here, which
+      // is exactly the failure mode issue #797 exists to prevent. `Skip`
+      // stays disabled (see `canToggleSkip` in `MethodStep`) until a
+      // successful read establishes real state — either the next automatic
+      // fetch, or the operator's explicit "Retry sync" action.
+      setMethodProgressStatus('error');
+    }
+  }, [profileId, working.calibrationProjectId]);
+
+  useEffect(() => {
+    void fetchMethodProgress();
+  }, [fetchMethodProgress]);
+
+  const toggleMethodDisposition = useCallback(
+    async (method: CalibrationSliceMethod): Promise<void> => {
+      const projectId = working.calibrationProjectId;
+      if (projectId === null) return;
+      const existing = methodProgress[method] ?? null;
+      const nextDisposition =
+        existing?.disposition === 'Skipped' ? 'Pending' : 'Skipped';
+      setMethodProgressBusyMethods((current) => new Set(current).add(method));
+      try {
+        const response = await calibrationApi().setCalibrationMethodDisposition(
+          {
+            profileId,
+            projectId,
+            method,
+            disposition: nextDisposition,
+            baseRevision: existing?.revision ?? null,
+          },
+        );
+        if (unmountedRef.current) return;
+        if (response.status === 'ok') {
+          // No need to invalidate an in-flight progress GET here: the
+          // per-method, revision-keyed merge in `fetchMethodProgress` already
+          // guarantees a slower read can never clobber this write's fresher
+          // row (its revision is definitionally the highest known for this
+          // method at the moment it lands). `methodProgressSeqRef` is a
+          // fetch-only generation counter — see its declaration — precisely
+          // so that a write settling here never suppresses a *different*
+          // in-flight fetch's error handling.
+          setMethodProgress((current) => ({
+            ...current,
+            [method]: response.progress,
+          }));
+        } else {
+          setBanner(bannerFromApiError(response.error));
+          // A rejection is very often a stale `baseRevision` (someone else
+          // skipped/un-skipped this method since our last read) — refetch so
+          // the next click retries against the current revision instead of
+          // repeating the same conflict forever.
+          void fetchMethodProgress();
+        }
+      } catch (cause) {
+        if (unmountedRef.current) return;
+        setBanner({
+          kind: 'error',
+          title: 'The skip status could not be saved.',
+          detail:
+            cause instanceof Error
+              ? cause.message
+              : 'The desktop lost contact with the main process.',
+          recovery: 'Retry.',
+          reference: null,
+        });
+      } finally {
+        if (!unmountedRef.current) {
+          setMethodProgressBusyMethods((current) => {
+            if (!current.has(method)) return current;
+            const next = new Set(current);
+            next.delete(method);
+            return next;
+          });
+        }
+      }
+    },
+    [
+      profileId,
+      working.calibrationProjectId,
+      methodProgress,
+      fetchMethodProgress,
+    ],
+  );
 
   const loadPrinters = useCallback(async (): Promise<void> => {
     const epoch = ++printerListEpochRef.current;
@@ -707,6 +938,10 @@ function FilamentCalibrationWizardInner(
             : { ...current.picks, filamentGuid: sourceProfileId },
         cloneId: response.clone.id,
         cloneName: response.clone.name,
+        // Issue #797: capture the `CalibrationProject` id created above so
+        // it can scope `method-guidance`/`method-progress` calls. Previously
+        // dropped entirely — `projectResponse.project.id` was read nowhere.
+        calibrationProjectId: projectResponse.project.id,
         phase: 'methodPicker',
       }));
     } catch (cause) {
@@ -1181,6 +1416,12 @@ function FilamentCalibrationWizardInner(
           working={working}
           busy={busy}
           onPickMethod={(method) => void beginMethod(method)}
+          methodProgress={methodProgress}
+          methodProgressStatus={methodProgressStatus}
+          methodProgressBusyMethods={methodProgressBusyMethods}
+          onToggleSkip={(method) => void toggleMethodDisposition(method)}
+          onRetrySync={() => void fetchMethodProgress()}
+          methodGuidance={methodGuidance}
         />
       ) : null}
 
@@ -1410,10 +1651,56 @@ interface MethodStepProps {
   readonly working: WizardWorkingState;
   readonly busy: boolean;
   readonly onPickMethod: (method: CalibrationSliceMethod) => void;
+  /**
+   * Server-authoritative per-method disposition (issue #797), keyed by
+   * method. A method absent here has no progress row yet and is treated as
+   * `Pending` — the server only creates a row on the first explicit
+   * skip/un-skip.
+   */
+  readonly methodProgress: Readonly<
+    Record<string, CalibrationMethodProgressRecord>
+  >;
+  /**
+   * Whether the last `getMethodProgress` read for the current project
+   * succeeded. `'error'` must NOT be presented as "every step is Pending" —
+   * that would make a step skipped on another device look Pending here,
+   * exactly the failure #797 exists to prevent — so `MethodStep` renders a
+   * distinct "Sync failed" state and disables Skip/Un-skip until a
+   * subsequent read succeeds.
+   */
+  readonly methodProgressStatus: 'loading' | 'ready' | 'error';
+  /** Methods currently awaiting their own `setMethodDisposition` round trip. */
+  readonly methodProgressBusyMethods: ReadonlySet<string>;
+  readonly onToggleSkip: (method: CalibrationSliceMethod) => void;
+  /**
+   * Re-runs `getMethodProgress` on demand. Surfaced as an explicit "Retry
+   * sync" action when `methodProgressStatus === 'error'` — reopening the
+   * wizard would otherwise be the only way to recover from a failed read.
+   */
+  readonly onRetrySync: () => void;
+  /**
+   * Server-sourced method metadata (issue #797), keyed by method. Replaces
+   * the client-hardcoded `FILAMENT_METHOD_META` title/purpose text wherever
+   * present; a method absent here (catalog fetch still in flight, or the
+   * fetch failed) falls back to `FILAMENT_METHOD_META` alone.
+   */
+  readonly methodGuidance: Readonly<
+    Record<string, CalibrationMethodGuidanceRecord>
+  >;
 }
 
 function MethodStep(props: MethodStepProps): React.JSX.Element {
-  const { working, busy, onPickMethod } = props;
+  const {
+    working,
+    busy,
+    onPickMethod,
+    methodProgress,
+    methodProgressStatus,
+    methodProgressBusyMethods,
+    onToggleSkip,
+    onRetrySync,
+    methodGuidance,
+  } = props;
   const isActive = working.phase === 'methodPicker';
 
   return (
@@ -1435,23 +1722,101 @@ function MethodStep(props: MethodStepProps): React.JSX.Element {
         behaviour, so there is nothing for them to write back to a filament
         profile. Run those in OrcaSlicer directly.
       </p>
+      {methodProgressStatus === 'error' ? (
+        <div className="cal-alert cal-alert--warning" role="status">
+          <p>
+            Couldn&apos;t read step status from the server. Skip and Un-skip are
+            disabled here until this succeeds — the last-known skipped/pending
+            state may be stale or unavailable.
+          </p>
+          <button
+            type="button"
+            className="cal-button cal-button--secondary"
+            onClick={onRetrySync}
+            disabled={!isActive || busy}
+          >
+            Retry sync
+          </button>
+        </div>
+      ) : null}
       <ul className="cal-method-list">
         {FILAMENT_WIZARD_METHODS.map((method) => {
           const meta = FILAMENT_METHOD_META[method];
+          const guidance = methodGuidance[method] ?? null;
+          // Server guidance (issue #797) replaces the client-hardcoded title
+          // and purpose text wherever the catalog supplied a value for this
+          // method; FILAMENT_METHOD_META remains the fallback (catalog still
+          // loading, or the fetch failed) and stays the source of
+          // `measurementSchema` regardless, which is out of this issue's scope.
+          const title = guidance?.title ?? meta.title;
+          const purpose = guidance?.purpose ?? meta.summary;
           const done = working.completedMethods.includes(method);
+          const progress = methodProgress[method] ?? null;
+          const disposition = progress?.disposition ?? 'Pending';
+          const skipped = disposition === 'Skipped';
+          const skipToggleBusy = methodProgressBusyMethods.has(method);
+          const canToggleSkip =
+            working.calibrationProjectId !== null &&
+            methodProgressStatus === 'ready' &&
+            !busy &&
+            !skipToggleBusy &&
+            disposition !== 'Completed';
+          const dispositionLabel =
+            methodProgressStatus === 'error'
+              ? 'Sync failed'
+              : disposition === 'Completed'
+                ? 'Completed'
+                : disposition === 'Skipped'
+                  ? 'Skipped'
+                  : 'Pending';
           return (
-            <li key={method}>
+            <li key={method} className={skipped ? 'cal-method--skipped' : ''}>
               <button
                 type="button"
                 className="cal-button"
                 onClick={() => onPickMethod(method)}
                 disabled={!isActive || busy}
-                aria-label={`Start ${meta.title}${done ? ' (completed once)' : ''}`}
+                aria-label={`Start ${title}${done ? ' (completed once)' : ''}${skipped ? ' (skipped)' : ''}`}
               >
-                {meta.title}
+                {title}
                 {done ? ' — completed' : ''}
               </button>
-              <p className="cal-hint">{meta.summary}</p>
+              {/*
+                Server-authoritative Skip/Un-skip (issue #797): distinct from
+                the "— completed" suffix above, which is local-JSON-only and
+                legacy. `Skipped` never blocks completion — the button stays
+                enabled on a skipped step so the operator can still run it.
+                `methodProgressStatus === 'error'` overrides `disposition`
+                entirely here — an unreadable server state must never be
+                presented as the default `Pending`.
+              */}
+              <span
+                className="cal-method-disposition"
+                aria-label={
+                  methodProgressStatus === 'error'
+                    ? `${title} disposition could not be read from the server`
+                    : `${title} is ${dispositionLabel.toLowerCase()}`
+                }
+              >
+                {dispositionLabel}
+              </span>
+              <button
+                type="button"
+                className="cal-button cal-button--secondary"
+                onClick={() => onToggleSkip(method)}
+                disabled={!canToggleSkip}
+                aria-label={`${skipped ? 'Un-skip' : 'Skip'} ${title}`}
+              >
+                {skipToggleBusy ? 'Saving…' : skipped ? 'Un-skip' : 'Skip'}
+              </button>
+              <p className="cal-hint">{purpose}</p>
+              {guidance?.wikiUrl ? (
+                <p className="cal-hint">
+                  <a href={guidance.wikiUrl} target="_blank" rel="noreferrer">
+                    OrcaSlicer wiki reference
+                  </a>
+                </p>
+              ) : null}
             </li>
           );
         })}
