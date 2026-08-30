@@ -73,6 +73,8 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
     saveFilamentCalibrationWizardState: vi.fn(),
     getFilamentCalibrationWizardState: vi.fn(),
     clearFilamentCalibrationWizardState: vi.fn(),
+    getCalibrationInFlightState: vi.fn(),
+    discardCalibrationDeviceDraft: vi.fn(),
     resolveCalibrationConflict: vi
       .fn()
       .mockRejectedValue(new Error('unexpected call in this test')),

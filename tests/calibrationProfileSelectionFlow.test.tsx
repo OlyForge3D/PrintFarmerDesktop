@@ -459,6 +459,8 @@ function profileSelectionApi(): CalibrationApi {
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockResolvedValue({ cleared: true }),
+    getCalibrationInFlightState: vi.fn(),
+    discardCalibrationDeviceDraft: vi.fn(),
     resolveCalibrationConflict: vi
       .fn()
       .mockRejectedValue(new Error('notImplemented')),

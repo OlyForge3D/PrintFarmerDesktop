@@ -107,6 +107,8 @@ function apiWith(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockRejectedValue(notImplemented()),
+    getCalibrationInFlightState: vi.fn().mockRejectedValue(notImplemented()),
+    discardCalibrationDeviceDraft: vi.fn().mockRejectedValue(notImplemented()),
     resolveCalibrationConflict: vi.fn().mockRejectedValue(notImplemented()),
     listCalibrationConflicts: vi.fn().mockResolvedValue({ conflicts: [] }),
     submitCalibrationObservation: vi.fn().mockRejectedValue(notImplemented()),

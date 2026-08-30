@@ -28,13 +28,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CalibrationListPrintersResponse,
   type CalibrationCustomProfileRef,
+  type CalibrationGetInFlightStateResponse,
   type CalibrationMethodProgressRecord,
   type CalibrationPrinterCandidate,
   type CalibrationSliceJobSnapshot,
   type CalibrationSlicerProfileRef,
 } from '@shared/ipc';
 import { CalibrationWorkspace } from '../src/renderer/calibration';
-import { FILAMENT_WIZARD_METHODS } from '../src/renderer/calibration/filamentWizardState';
+import {
+  FILAMENT_METHOD_META,
+  FILAMENT_WIZARD_METHODS,
+} from '../src/renderer/calibration/filamentWizardState';
 import type {
   CalibrationApi,
   CalibrationEnvironment,
@@ -361,6 +365,8 @@ function wizardApi(overrides: Partial<CalibrationApi> = {}): CalibrationApi {
     clearFilamentCalibrationWizardState: vi
       .fn()
       .mockResolvedValue({ cleared: true }),
+    getCalibrationInFlightState: vi.fn(),
+    discardCalibrationDeviceDraft: vi.fn(),
     resolveCalibrationConflict: vi
       .fn()
       .mockRejectedValue(new Error('notImplemented')),
@@ -4229,5 +4235,362 @@ describe('FilamentCalibrationWizard guided order enforcement (issue #794)', () =
     if (item === null) throw new Error('expected a method <li>');
     expect(item.className).not.toContain('cal-method--locked');
     expect(item.className).not.toContain('cal-method--next');
+  });
+});
+
+describe('FilamentCalibrationWizard cross-device calibration hand-off alert (issue #792)', () => {
+  const otherDeviceLabel = 'device-lineage-other-machine-POISON-MARKER';
+
+  function inFlightOk(
+    overrides: Partial<{
+      orchestration: {
+        id: string;
+        projectId: string;
+        attemptId: string;
+        currentStep: string;
+        status: string;
+        sliceJobId: string | null;
+        gcodeFileId: string | null;
+        printJobId: string | null;
+        revision: number;
+        updatedAtUtc: string;
+      } | null;
+      drafts: {
+        stepId: string;
+        deviceLabel: string;
+        updatedAtUtc: string;
+      }[];
+    }> = {},
+  ) {
+    return {
+      status: 'ok' as const,
+      projectId: projectGuid,
+      orchestration: overrides.orchestration ?? null,
+      drafts: overrides.drafts ?? [],
+    };
+  }
+
+  it('control: with no in-flight work, no hand-off or blocking notice is shown', async () => {
+    const api = wizardApi({
+      getCalibrationInFlightState: vi.fn().mockResolvedValue(inFlightOk()),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
+    });
+    mount(api);
+
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    await waitFor(() => {
+      expect(api.getCalibrationInFlightState).toHaveBeenCalled();
+    });
+
+    expect(screen.queryByText(/already running/i)).toBeNull();
+    expect(screen.queryByText(/unfinished draft/i)).toBeNull();
+    // Control for the blocking condition too: every step's Start button
+    // must still be enabled — a notice must never render unconditionally,
+    // and blocking must never trigger without a genuine running print.
+    const startButton = await screen.findByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+    expect(startButton).not.toBeDisabled();
+  });
+
+  it('surfaces a hand-off notice naming the step, device, and age when another device has an unfinished draft — without blocking or populating any form field', async () => {
+    const draftUpdatedAt = new Date(Date.now() - 12 * 60 * 1000).toISOString();
+    const api = wizardApi({
+      getCalibrationInFlightState: vi.fn().mockResolvedValue(
+        inFlightOk({
+          drafts: [
+            {
+              stepId: 'flow_rate_pass_1',
+              deviceLabel: otherDeviceLabel,
+              updatedAtUtc: draftUpdatedAt,
+            },
+          ],
+        }),
+      ),
+      discardCalibrationDeviceDraft: vi
+        .fn()
+        .mockResolvedValue({ status: 'ok' as const, discarded: true as const }),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
+    });
+    mount(api);
+
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const notice = await screen.findByText(/unfinished draft/i);
+    const noticeContainer = notice.closest('[role="status"]');
+    if (noticeContainer === null) {
+      throw new Error('expected the hand-off notice to have role="status"');
+    }
+    // Names the step.
+    expect(
+      within(noticeContainer as HTMLElement).getByText(/Flow rate — pass 1/),
+    ).toBeTruthy();
+    // Names the originating device (server's device label).
+    expect(
+      within(noticeContainer as HTMLElement).getByText(
+        new RegExp(otherDeviceLabel),
+      ),
+    ).toBeTruthy();
+    // Names how long ago, in a human-relative form (not a raw ISO timestamp).
+    expect(
+      within(noticeContainer as HTMLElement).getByText(/minutes? ago/i),
+    ).toBeTruthy();
+
+    // Offers explicit choices — never auto-resumes.
+    const continueButton = within(noticeContainer as HTMLElement).getByRole(
+      'button',
+      { name: 'Continue here' },
+    );
+    const discardButton = within(noticeContainer as HTMLElement).getByRole(
+      'button',
+      { name: /Discard their draft/i },
+    );
+    const waitButton = within(noticeContainer as HTMLElement).getByRole(
+      'button',
+      { name: 'Wait' },
+    );
+    expect(continueButton).toBeTruthy();
+    expect(discardButton).toBeTruthy();
+    expect(waitButton).toBeTruthy();
+
+    // A draft-only hand-off is NOT a running print: starting the step here
+    // must remain possible (non-blocking).
+    const startButton = screen.getByRole('button', {
+      name: /Start Flow rate — pass 1/i,
+    });
+    expect(startButton).not.toBeDisabled();
+
+    // Draft content never populates a form field — assert this directly.
+    // The other device's label is deliberately a recognizable marker; the
+    // ONLY place it may legitimately appear is inside the notice text
+    // itself, never as the value of any input/textarea/select on the page.
+    //
+    // A per-control `.value` scan alone can pass vacuously if this phase
+    // happens to render zero input/textarea/select elements (reviewer
+    // finding). Guard against that first by counting how many times the
+    // marker appears anywhere in the rendered document versus inside the
+    // notice alone: it must appear (the notice really did render it) and
+    // it must appear ONLY inside the notice, not leaked into some other
+    // rendered node's text.
+    const countOccurrences = (haystack: string | null): number =>
+      haystack === null ? 0 : haystack.split(otherDeviceLabel).length - 1;
+    const totalOccurrences = countOccurrences(document.body.textContent);
+    const noticeOccurrences = countOccurrences(
+      (noticeContainer as HTMLElement).textContent,
+    );
+    expect(totalOccurrences).toBeGreaterThan(0);
+    expect(totalOccurrences).toBe(noticeOccurrences);
+
+    const controls = document.querySelectorAll('input, textarea, select');
+    for (const control of Array.from(controls)) {
+      const value = (control as HTMLInputElement).value ?? '';
+      expect(value).not.toContain(otherDeviceLabel);
+    }
+
+    // "Discard their draft" calls the discard channel with the device
+    // label as the (today-equivalent) deviceLineageId, then dismisses.
+    fireEvent.click(discardButton);
+    await waitFor(() => {
+      expect(api.discardCalibrationDeviceDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stepId: 'flow_rate_pass_1',
+          deviceLineageId: otherDeviceLabel,
+        }),
+      );
+    });
+  });
+
+  it('blocks starting every step while a calibration print is running, naming the step and how long it has been running — resumption is never automatic', async () => {
+    const runningSince = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const api = wizardApi({
+      getCalibrationInFlightState: vi.fn().mockResolvedValue(
+        inFlightOk({
+          orchestration: {
+            id: 'aaaaaaaa-1111-4111-8111-111111111111',
+            projectId: projectGuid,
+            attemptId: 'bbbbbbbb-2222-4222-8222-222222222222',
+            currentStep: 'awaiting-print',
+            status: 'Running',
+            sliceJobId: null,
+            gcodeFileId: null,
+            printJobId: null,
+            revision: 9,
+            updatedAtUtc: runningSince,
+          },
+          drafts: [],
+        }),
+      ),
+    });
+    mount(api);
+
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const blockingNotice = await screen.findByRole('alert');
+    expect(
+      within(blockingNotice).getByText(/already running elsewhere/i),
+    ).toBeTruthy();
+    expect(within(blockingNotice).getByText(/minutes? ago/i)).toBeTruthy();
+
+    // Every Start button is disabled — the DTO carries no `Method` field to
+    // attribute the running orchestration to one specific step, so this is
+    // the conservative superset reading of "blocks re-running that step".
+    for (const method of FILAMENT_WIZARD_METHODS) {
+      const meta = FILAMENT_METHOD_META[method];
+      const button = screen.getByRole('button', {
+        name: new RegExp(
+          `^Start ${meta.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+        ),
+      });
+      expect(button).toBeDisabled();
+    }
+
+    // Resumption still requires an explicit operator choice: there is no
+    // automatic navigation away from the method picker and no slice
+    // submission call fired on mount.
+    expect(api.submitCalibrationSlice).not.toHaveBeenCalled();
+  });
+
+  it("discarding a draft never sends the project orchestration's revision as the draft's baseRevision, even when both are in-flight simultaneously", async () => {
+    // Regression test (reviewer finding, all three parallel reviewers):
+    // an orchestration and a draft are different server entities with
+    // independent revision counters. An earlier version of this feature
+    // forwarded `inFlightState.orchestration.revision` as the discard
+    // call's `baseRevision`, which is meaningless at best and a spurious
+    // 409 at worst. `CalibrationDraftExistenceDto` exposes no revision of
+    // its own, so the only correct value to send is `null` — this test
+    // pins that even when a running orchestration IS present (revision 42
+    // here), the discard call for an unrelated draft must not borrow it.
+    const draftUpdatedAt = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const runningSince = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const api = wizardApi({
+      getCalibrationInFlightState: vi.fn().mockResolvedValue(
+        inFlightOk({
+          orchestration: {
+            id: 'aaaaaaaa-1111-4111-8111-111111111111',
+            projectId: projectGuid,
+            attemptId: 'bbbbbbbb-2222-4222-8222-222222222222',
+            currentStep: 'submitting-slice-job',
+            status: 'Running',
+            sliceJobId: null,
+            gcodeFileId: null,
+            printJobId: null,
+            revision: 42,
+            updatedAtUtc: runningSince,
+          },
+          drafts: [
+            {
+              stepId: 'flow_rate_pass_1',
+              deviceLabel: otherDeviceLabel,
+              updatedAtUtc: draftUpdatedAt,
+            },
+          ],
+        }),
+      ),
+      discardCalibrationDeviceDraft: vi
+        .fn()
+        .mockResolvedValue({ status: 'ok' as const, discarded: true as const }),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
+    });
+    mount(api);
+
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    const notice = await screen.findByText(/unfinished draft/i);
+    const noticeContainer = notice.closest('[role="status"]');
+    if (noticeContainer === null) {
+      throw new Error('expected the hand-off notice to have role="status"');
+    }
+    const discardButton = within(noticeContainer as HTMLElement).getByRole(
+      'button',
+      { name: /Discard their draft/i },
+    );
+    fireEvent.click(discardButton);
+
+    await waitFor(() => {
+      expect(api.discardCalibrationDeviceDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stepId: 'flow_rate_pass_1',
+          deviceLineageId: otherDeviceLabel,
+          baseRevision: null,
+        }),
+      );
+    });
+  });
+
+  it("refuses to submit a slice while the in-flight check is still outstanding, even on a session restored straight into the inputs step past the method picker (reviewer finding: beginMethod is reachable without the picker's Start button ever rendering)", async () => {
+    // A restored session resumes `phase` verbatim (see `restoredWorkingState`)
+    // and can land in `methodInputs`/`sliceReady` without the method picker —
+    // and therefore without `handoffCheckPending` — ever rendering, so the
+    // picker's Start-button disable does not protect this path at all. The
+    // load-bearing gate is `beginMethod`'s own check, which must refuse to
+    // submit while the read for THIS project is still outstanding rather
+    // than treating "no evidence yet" as "no print running".
+    const persisted = {
+      schemaVersion: 1 as const,
+      printerId: printerIdA,
+      printerModelId: null,
+      machineName: SAMPLE_MACHINE_NAME,
+      processName: SAMPLE_PROCESS_NAME,
+      baseFilamentName: SAMPLE_FILAMENT_NAME,
+      baseFilamentGuid: filamentGuid,
+      cloneId: cloneGuid,
+      cloneName: 'PLA — Prusament Galaxy Black',
+      calibrationProjectId: projectGuid,
+      completedMethods: [],
+      currentMethod: 'flow_rate_pass_1' as const,
+      inFlightJob: null,
+      phase: 'methodInputs' as const,
+      updatedAt: now,
+    };
+    let resolveInFlightCheck!: (
+      value: CalibrationGetInFlightStateResponse,
+    ) => void;
+    const api = wizardApi({
+      getFilamentCalibrationWizardState: vi.fn().mockResolvedValue(persisted),
+      // Deliberately unresolved for the body of this test — simulates the
+      // check for this project still being outstanding, so `inFlightStatus`
+      // stays 'loading' throughout.
+      getCalibrationInFlightState: vi.fn().mockImplementation(
+        () =>
+          new Promise<CalibrationGetInFlightStateResponse>((resolve) => {
+            resolveInFlightCheck = resolve;
+          }),
+      ),
+    });
+    mount(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Calibrate a filament spool' }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Start slicing' }),
+    );
+
+    expect(
+      await screen.findByText(/still checking for calibration work/i),
+    ).toBeInTheDocument();
+    expect(api.submitCalibrationSlice).not.toHaveBeenCalled();
+
+    // Avoid an unhandled-rejection/leftover-timer warning from the still-open
+    // promise once the test's assertions are done with it.
+    resolveInFlightCheck(inFlightOk());
   });
 });

@@ -459,6 +459,20 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     channel: IpcChannel.CalibrationClearFilamentWizardState,
     request: (profileId) => ({ profileId }),
   },
+  {
+    channel: IpcChannel.CalibrationGetInFlightState,
+    request: (profileId) => ({ profileId, projectId: uuid(7) }),
+  },
+  {
+    channel: IpcChannel.CalibrationDiscardDeviceDraft,
+    request: (profileId) => ({
+      profileId,
+      projectId: uuid(8),
+      stepId: 'flow_rate_pass_1',
+      deviceLineageId: 'other-device-lineage-id',
+      baseRevision: 3,
+    }),
+  },
 ];
 
 /** Reads the `code` a handler refused with, without assuming it threw an Error. */

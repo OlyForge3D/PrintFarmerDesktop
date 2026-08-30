@@ -98,6 +98,15 @@ export type CalibrationApi = Pick<
   // dashboard's equivalent channels.
   | 'resolveCalibrationConflict'
   | 'listCalibrationConflicts'
+  // --- Cross-device calibration hand-off (issue #792 / PrintFarmer#2181) ---
+  //
+  // Reads project-scoped in-flight state (an active orchestration and/or
+  // draft existence per step) so a second machine can surface a hand-off
+  // notice instead of silently resuming or clobbering another device's
+  // work. `discardCalibrationDeviceDraft` lets the operator explicitly clear
+  // another device's draft; it never reads or returns draft content.
+  | 'getCalibrationInFlightState'
+  | 'discardCalibrationDeviceDraft'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

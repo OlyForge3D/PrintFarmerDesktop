@@ -5425,6 +5425,167 @@ export function registerIpcHandlers(
     },
   );
 
+  // --- Cross-device calibration hand-off (issue #792 / PrintFarmer#2181) ---
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationGetInFlightState,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetInFlightState].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const inFlight = await calibrationHttp.getInFlightState(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'inFlightState.fetched',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationGetInFlightState
+        ].response.parse({
+          status: 'ok',
+          projectId: inFlight.projectId,
+          orchestration: inFlight.orchestration
+            ? {
+                id: inFlight.orchestration.id,
+                projectId: inFlight.orchestration.projectId,
+                attemptId: inFlight.orchestration.attemptId,
+                currentStep: inFlight.orchestration.currentStep,
+                status: inFlight.orchestration.status,
+                sliceJobId: inFlight.orchestration.sliceJobId,
+                gcodeFileId: inFlight.orchestration.gcodeFileId,
+                printJobId: inFlight.orchestration.printJobId,
+                revision: inFlight.orchestration.revision,
+                updatedAtUtc: inFlight.orchestration.updatedAtUtc,
+              }
+            : null,
+          drafts: inFlight.drafts.map((draft) => ({
+            stepId: draft.stepId,
+            deviceLabel: draft.deviceLabel,
+            updatedAtUtc: draft.updatedAtUtc,
+          })),
+        });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'inFlightState.fetched',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Calibration in-flight state could not be loaded.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetInFlightState
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  registerCalibrationHandler(
+    IpcChannel.CalibrationDiscardDeviceDraft,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationDiscardDeviceDraft].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const correlationId = calibrationCorrelation.beginFlow();
+      const correlationOrigin: CalibrationCorrelationOrigin = 'flowStart';
+      const startedAt = Date.now();
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        await calibrationHttp.discardDraftForDevice(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          request.stepId,
+          request.deviceLineageId,
+          request.baseRevision,
+          signal,
+        );
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'deviceDraft.discarded',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return ipcSchemas[
+          IpcChannel.CalibrationDiscardDeviceDraft
+        ].response.parse({ status: 'ok', discarded: true });
+      } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'deviceDraft.discarded',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError(correlationId)
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'The other device\u2019s draft could not be discarded.',
+                retryable: false,
+                retryAfterSeconds: null,
+                reference: correlationId,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationDiscardDeviceDraft
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
   // --- End Printer Calibration transport handlers --------------------------
 
   return async () => {

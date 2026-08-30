@@ -637,6 +637,12 @@ function makeApi(savedRecord = record()) {
     clearFilamentCalibrationWizardState: vi
       .fn<CalibrationApi['clearFilamentCalibrationWizardState']>()
       .mockResolvedValue({ cleared: true }),
+    getCalibrationInFlightState: vi
+      .fn<CalibrationApi['getCalibrationInFlightState']>()
+      .mockRejectedValue(new Error('not implemented in test mock')),
+    discardCalibrationDeviceDraft: vi
+      .fn<CalibrationApi['discardCalibrationDeviceDraft']>()
+      .mockRejectedValue(new Error('not implemented in test mock')),
     resolveCalibrationConflict: vi
       .fn<CalibrationApi['resolveCalibrationConflict']>()
       .mockRejectedValue(new Error('not implemented in test mock')),

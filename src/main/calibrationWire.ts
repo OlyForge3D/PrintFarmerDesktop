@@ -2943,6 +2943,17 @@ export type RemoteCalibrationApplyResult =
  *
  * All fields are parsed additively (passthrough) so the server can add fields
  * without breaking the desktop.
+ *
+ * IMPORTANT (issue #792): this is the **generation/slice-job** orchestration
+ * shape (`operationId`, `workerId`, `sourceArtifactId`, `specificationSha256`,
+ * `slicerContainerDigest`, ...) from issue #899/#54. It does NOT match the
+ * calibration-attempt `CalibrationOrchestrationDto` used by the project-scoped
+ * in-flight query (`GET /api/calibration-projects/{projectId}/in-flight`,
+ * PrintFarmer#2181/PR#2187) — that shape is `RemoteCalibrationOrchestrationDto`
+ * below. Do not reuse `getOrchestrationStatus()`/this schema for cross-device
+ * hand-off detection; verified by reading both server DTOs directly (see #784
+ * for why that verification step matters — this file has more than one
+ * orchestration-shaped schema and they are not interchangeable).
  */
 export const RemoteCalibrationOrchestrationStatus = z
   .object({
@@ -3040,6 +3051,111 @@ export const RemoteCalibrationOrchestrationStatus = z
   .passthrough();
 export type RemoteCalibrationOrchestrationStatus = z.infer<
   typeof RemoteCalibrationOrchestrationStatus
+>;
+
+// ─── Cross-device calibration hand-off (issue #792 / PrintFarmer#2181) ─────
+
+/**
+ * The calibration-attempt saga checkpoint, from `CalibrationOrchestrationDto`
+ * server-side — distinct from `RemoteCalibrationOrchestrationStatus` above
+ * (see the warning on that schema). Embedded in the project-scoped in-flight
+ * response; never fetched standalone by this feature.
+ *
+ * `currentStep` and `status` are free-form strings, not enums — the desktop
+ * must not switch exhaustively on them. The one exception the server
+ * guarantees today: a physical print is underway when
+ * `status === 'Running' && currentStep === 'awaiting-print'`. `printJobId` is
+ * checked as a forward-compatible alternate signal but is not populated by
+ * any production code path today, so it must not be relied on alone.
+ */
+export const RemoteCalibrationOrchestrationDto = z
+  .object({
+    id: ServerGuid,
+    projectId: ServerGuid,
+    attemptId: ServerGuid,
+    currentStep: z.string(),
+    status: z.string(),
+    retryCount: z.number().int(),
+    // ServerInstant (not z.string().datetime()): this DTO carries the
+    // `status === 'Running' && currentStep === 'awaiting-print'` signal that
+    // the running-print block depends on. A single offset-less .NET
+    // timestamp rejected by the stricter `.datetime()` schema would fail the
+    // whole in-flight parse, which fails the print-block open (see the
+    // doc comment on `ServerInstant` above) — the exact defect this feature
+    // must not reintroduce.
+    nextRetryAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+    lastErrorCode: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    sliceJobId: ServerGuid.nullish().transform((v) => v ?? null),
+    gcodeFileId: ServerGuid.nullish().transform((v) => v ?? null),
+    printJobId: ServerGuid.nullish().transform((v) => v ?? null),
+    revision: z.number().int(),
+    createdAtUtc: ServerInstant,
+    updatedAtUtc: ServerInstant,
+    completedAtUtc: ServerInstant.nullish().transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationOrchestrationDto = z.infer<
+  typeof RemoteCalibrationOrchestrationDto
+>;
+
+/**
+ * Existence-only signal that some device has an uncommitted draft for a step.
+ * Mirrors server `CalibrationDraftExistenceDto`. Deliberately has NO field
+ * capable of carrying draft values (no `valuesJson`/`prerequisitesJson`/etc.)
+ * — draft content must never cross devices (issue #792's "do not"). Only
+ * existence, step, device label, and last-touched timestamp are exposed.
+ *
+ * `deviceLabel` is the raw device-lineage id string TODAY, not a friendly
+ * name — there is no separate device-registry entity server-side yet. This
+ * is the exact opposite of the shared IPC contract's public documentation on
+ * `deviceLabel` (`shared/ipc.ts`), which describes it as a human-presentable
+ * label the renderer never decodes; that doc describes the intended shape,
+ * this comment describes the current server reality. The discard call site
+ * in `FilamentCalibrationWizard.tsx` relies on this current-reality
+ * equivalence to recover a `deviceLineageId` for the delete-draft endpoint —
+ * a fragile coupling, not a structural guarantee, and it will silently break
+ * discard if the server ever starts sending a real friendly name here
+ * without a dedicated id field alongside it.
+ */
+export const RemoteCalibrationDraftExistence = z
+  .object({
+    stepId: z.string(),
+    deviceLabel: z.string(),
+    updatedAtUtc: ServerInstant,
+  })
+  .passthrough();
+export type RemoteCalibrationDraftExistence = z.infer<
+  typeof RemoteCalibrationDraftExistence
+>;
+
+/**
+ * The single project-scoped answer to "is anything already underway here, and
+ * where was it started?" — from `GET
+ * /api/calibration-projects/{projectId}/in-flight` (PrintFarmer#2181 /
+ * PR#2187). `orchestration` is the highest-priority non-terminal saga
+ * checkpoint for the project, if any; `drafts` lists every device with an
+ * uncommitted step draft, by existence only.
+ */
+export const RemoteCalibrationInFlightState = z
+  .object({
+    projectId: ServerGuid,
+    orchestration: RemoteCalibrationOrchestrationDto.nullish().transform(
+      (v) => v ?? null,
+    ),
+    // filteredWireList (not `.array(...).max(200)`): a single malformed
+    // draft row must not fail the whole parse and take `orchestration` down
+    // with it — `orchestration` is what the running-print block reads. A bad
+    // draft row degrading alone (dropped from the hand-off list) is the
+    // correct failure mode; a bad draft row disabling the print-block safety
+    // gate is not.
+    drafts: filteredWireList(RemoteCalibrationDraftExistence),
+  })
+  .passthrough();
+export type RemoteCalibrationInFlightState = z.infer<
+  typeof RemoteCalibrationInFlightState
 >;
 
 // ─── Primary job-queue REST DTOs (issue #900 / #54) ─────────────────────────
