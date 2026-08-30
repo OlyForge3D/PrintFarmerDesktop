@@ -336,6 +336,10 @@ const MATRIX: { channel: string; request: (profileId: string) => unknown }[] = [
     }),
   },
   {
+    channel: IpcChannel.CalibrationListSpoolmanSpools,
+    request: (profileId) => ({ profileId, printerId: uuid(3) }),
+  },
+  {
     channel: IpcChannel.CalibrationGetMethodGuidanceCatalog,
     request: (profileId) => ({ profileId }),
   },
