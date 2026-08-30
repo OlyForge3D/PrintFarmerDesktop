@@ -725,7 +725,10 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
     // ProblemDetails `detail` said). This test uses that real catalogued
     // literal, not a fabricated range-specific message the product could
     // never actually produce.
-    const validationReference = 'req-9c1e2f7a-observation-422';
+    // `CalibrationApiError.reference` is `z.string().uuid().nullable()`
+    // (ipc.ts) — use a contract-valid UUID rather than an arbitrary string,
+    // since a shape the boundary forbids could never occur in production.
+    const validationReference = '9c1e2f7a-1234-4abc-8def-000000000422';
     const api = wizardApiFlowRatePass1Unlocked({
       submitCalibrationObservation: vi.fn().mockResolvedValue({
         status: 'error' as const,
@@ -796,7 +799,7 @@ describe('FilamentCalibrationWizard draft-profile write-back and completion (iss
           message: 'Calibration service is temporarily unavailable.',
           retryable: true,
           retryAfterSeconds: 30,
-          reference: 'req-service-503',
+          reference: '5e3b1a70-9988-4c11-a001-000000000503',
         },
       }),
     });
