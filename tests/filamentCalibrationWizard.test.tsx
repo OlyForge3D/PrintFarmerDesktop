@@ -3786,6 +3786,23 @@ describe('FilamentCalibrationWizard cross-device calibration hand-off alert (iss
     // The other device's label is deliberately a recognizable marker; the
     // ONLY place it may legitimately appear is inside the notice text
     // itself, never as the value of any input/textarea/select on the page.
+    //
+    // A per-control `.value` scan alone can pass vacuously if this phase
+    // happens to render zero input/textarea/select elements (reviewer
+    // finding). Guard against that first by counting how many times the
+    // marker appears anywhere in the rendered document versus inside the
+    // notice alone: it must appear (the notice really did render it) and
+    // it must appear ONLY inside the notice, not leaked into some other
+    // rendered node's text.
+    const countOccurrences = (haystack: string | null): number =>
+      haystack === null ? 0 : haystack.split(otherDeviceLabel).length - 1;
+    const totalOccurrences = countOccurrences(document.body.textContent);
+    const noticeOccurrences = countOccurrences(
+      (noticeContainer as HTMLElement).textContent,
+    );
+    expect(totalOccurrences).toBeGreaterThan(0);
+    expect(totalOccurrences).toBe(noticeOccurrences);
+
     const controls = document.querySelectorAll('input, textarea, select');
     for (const control of Array.from(controls)) {
       const value = (control as HTMLInputElement).value ?? '';
@@ -3857,7 +3874,18 @@ describe('FilamentCalibrationWizard cross-device calibration hand-off alert (iss
     expect(api.submitCalibrationSlice).not.toHaveBeenCalled();
   });
 
-  it('two machines racing to adopt the same orchestration are distinguishable via the server Revision field', async () => {
+  it("discarding a draft never sends the project orchestration's revision as the draft's baseRevision, even when both are in-flight simultaneously", async () => {
+    // Regression test (reviewer finding, all three parallel reviewers):
+    // an orchestration and a draft are different server entities with
+    // independent revision counters. An earlier version of this feature
+    // forwarded `inFlightState.orchestration.revision` as the discard
+    // call's `baseRevision`, which is meaningless at best and a spurious
+    // 409 at worst. `CalibrationDraftExistenceDto` exposes no revision of
+    // its own, so the only correct value to send is `null` — this test
+    // pins that even when a running orchestration IS present (revision 42
+    // here), the discard call for an unrelated draft must not borrow it.
+    const draftUpdatedAt = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const runningSince = new Date(Date.now() - 20 * 60 * 1000).toISOString();
     const api = wizardApi({
       getCalibrationInFlightState: vi.fn().mockResolvedValue(
         inFlightOk({
@@ -3865,17 +3893,30 @@ describe('FilamentCalibrationWizard cross-device calibration hand-off alert (iss
             id: 'aaaaaaaa-1111-4111-8111-111111111111',
             projectId: projectGuid,
             attemptId: 'bbbbbbbb-2222-4222-8222-222222222222',
-            currentStep: 'awaiting-print',
+            currentStep: 'submitting-slice-job',
             status: 'Running',
             sliceJobId: null,
             gcodeFileId: null,
             printJobId: null,
             revision: 42,
-            updatedAtUtc: new Date().toISOString(),
+            updatedAtUtc: runningSince,
           },
-          drafts: [],
+          drafts: [
+            {
+              stepId: 'flow_rate_pass_1',
+              deviceLabel: otherDeviceLabel,
+              updatedAtUtc: draftUpdatedAt,
+            },
+          ],
         }),
       ),
+      discardCalibrationDeviceDraft: vi
+        .fn()
+        .mockResolvedValue({ status: 'ok' as const, discarded: true as const }),
+      getCalibrationMethodProgress: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        progress: progressCompletedBefore('flow_rate_pass_1'),
+      }),
     });
     mount(api);
 
@@ -3883,25 +3924,25 @@ describe('FilamentCalibrationWizard cross-device calibration hand-off alert (iss
     await pickAllProfilesAndProceedToClone();
     await performCloneStep();
 
-    await waitFor(() => {
-      expect(api.getCalibrationInFlightState).toHaveBeenCalled();
-    });
-    const response = await api.getCalibrationInFlightState({
-      profileId,
-      projectId: projectGuid,
-    });
-    // The revision the client observed is exactly the value a "continue
-    // here" adopt call would need to send as ExpectedRevision so a losing
-    // racer gets a 409 conflict instead of silently clobbering — this test
-    // pins that the client actually reads and retains it (via
-    // `inFlightState.orchestration.revision`, exercised by the discard call
-    // in the draft-only test above, which forwards
-    // `inFlightState?.orchestration?.revision` as `baseRevision`).
-    if (response.status !== 'ok' || response.orchestration === null) {
-      throw new Error(
-        'expected an ok in-flight response with an orchestration',
-      );
+    const notice = await screen.findByText(/unfinished draft/i);
+    const noticeContainer = notice.closest('[role="status"]');
+    if (noticeContainer === null) {
+      throw new Error('expected the hand-off notice to have role="status"');
     }
-    expect(response.orchestration.revision).toBe(42);
+    const discardButton = within(noticeContainer as HTMLElement).getByRole(
+      'button',
+      { name: /Discard their draft/i },
+    );
+    fireEvent.click(discardButton);
+
+    await waitFor(() => {
+      expect(api.discardCalibrationDeviceDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stepId: 'flow_rate_pass_1',
+          deviceLineageId: otherDeviceLabel,
+          baseRevision: null,
+        }),
+      );
+    });
   });
 });

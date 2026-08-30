@@ -6445,10 +6445,21 @@ export type CalibrationOrchestrationRecord = z.infer<
 
 /**
  * Existence-only signal that some device has an uncommitted draft for a
- * step. `deviceLabel` is a human-presentable label the operator sees in the
- * hand-off notice — never a raw value the renderer must decode. No field
- * here can carry draft content (values/prerequisites/etc.); that is the
- * structural guarantee behind issue #792's "do not fetch draft content".
+ * step. `deviceLabel` is presented to the operator in the hand-off notice as
+ * a device label; the renderer must not attempt to decode or parse it as a
+ * structured identifier. No field here can carry draft content
+ * (values/prerequisites/etc.); that is the structural guarantee behind issue
+ * #792's "do not fetch draft content".
+ *
+ * CAUTION: server-side, `deviceLabel` is *today* populated with the raw
+ * `DeviceLineageId` string (there is no separate device-registry entity
+ * yet) — see the doc comment on `RemoteCalibrationDraftExistence` in
+ * `calibrationWire.ts`. The renderer's discard action currently relies on
+ * that coincidence to recover a `deviceLineageId` to send back to the
+ * discard endpoint, which is a fragile equivalence, not a contract this
+ * schema guarantees. If the server ever starts sending a real friendly
+ * name here, discard will silently break unless a dedicated id field is
+ * added alongside it.
  */
 export const CalibrationDraftExistenceRecord = z
   .object({
