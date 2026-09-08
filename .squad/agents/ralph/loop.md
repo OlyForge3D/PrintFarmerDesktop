@@ -18,18 +18,19 @@ to isolated `development`-based worktrees.
    priority transitively, and order unblocked work by inherited priority, age,
    then number. A malformed/truncated response is not clean.
 3. Before each claim, dispatch, or merge, re-fetch its live state. Honor holds,
-   leases, scope decisions, the strict `development`/BEHIND sync procedure, and
-   a shared cap of **five** active implementation-or-analysis sessions. Cache
-   changes whenever dependency/blocker, issue/session/claim/linked PR, base,
-   verdict-only comment, checks-only, policy, or hold data changes.
+   leases, scope decisions, the strict `development`/BEHIND sync procedure in
+   `references/pr-gates.md`, and a shared cap of **five** active
+   implementation-or-analysis sessions. Cache changes whenever
+   dependency/blocker, issue/session/claim/linked PR, base, verdict-only
+   comment, checks-only, policy, or hold data changes.
 4. Dispatch only a precise acceptance-criteria brief. Authors load
    `.squad/skills/ralph-implementation/SKILL.md`; it accepts changed paths and
    acceptance criteria, not this full policy. Analysis is non-code work.
 5. Immediately before merge, use the current head and exact command:
    `npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr N --json`.
    Exit 0 requires the current three-way unanimous approved content; change
-   requests, missing/invalid/superseded evidence block; `NOT_APPLICABLE` is
-   never unattended merge. Authentication, SHA, carry-forward, required checks,
+   requests, missing/invalid/superseded evidence block; `NOT_APPLICABLE` is never
+   unattended merge. Authentication, SHA, carry-forward, required checks,
    and existing hold gates remain unchanged. No CodeQL action exists unless one
    is detected first.
 6. Run only the conditional cleanup-candidate assessment in

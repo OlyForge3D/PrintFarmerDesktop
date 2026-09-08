@@ -16,7 +16,7 @@ describe('Ralph bounded-round policy', () => {
       'npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr N --json',
     );
     expect(loop).toMatch(/three-way unanimous approved content/);
-    expect(loop).toMatch(/NOT_APPLICABLE.*never unattended merge/);
+    expect(loop).toMatch(/NOT_APPLICABLE[\s\S]*never\s+unattended merge/);
     expect(
       read('.squad', 'agents', 'ralph', 'references', 'pr-gates.md'),
     ).toMatch(/combined-diff hunks/);
@@ -63,5 +63,20 @@ describe('Ralph bounded-round policy', () => {
     ]) {
       expect(loop).toContain(reference);
     }
+  });
+
+  it('makes global BEHIND sync ordering a Ralph-side pre-dispatch gate', () => {
+    const gates = read(
+      '.squad',
+      'agents',
+      'ralph',
+      'references',
+      'pr-gates.md',
+    );
+    expect(loop).toContain('references/pr-gates.md');
+    expect(gates).toContain('npm run plan:behind-sync-order');
+    expect(gates).toMatch(/one global .*oldest-first sync order/i);
+    expect(gates).toMatch(/active sync lease, stand down/i);
+    expect(gates).toMatch(/never authorization/i);
   });
 });

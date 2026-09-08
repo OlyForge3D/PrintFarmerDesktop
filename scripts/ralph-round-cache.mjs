@@ -20,6 +20,8 @@ export const INVALIDATING_FIELDS = [
   'blockers',
   'state',
   'updatedAt',
+  'headRefOid',
+  'isDraft',
   'session',
   'claim',
   'linkedPr',
@@ -137,7 +139,62 @@ export function fingerprint(item) {
     item.policy,
     item.holds,
   ];
-  return JSON.stringify(fields);
+  return JSON.stringify(canonicalValue(fields));
+}
+
+/**
+ * Produces the JSON value's canonical form. Snapshot files cross a JSON
+ * boundary, so object identity cannot be used to decide that an observation
+ * changed. Array order remains meaningful; object-key order does not.
+ *
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+export function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .flatMap((key) =>
+          value[key] === undefined ? [] : [[key, canonicalValue(value[key])]],
+        ),
+    );
+  }
+  return value;
+}
+
+function valuesEqual(left, right) {
+  return (
+    JSON.stringify(canonicalValue(left)) ===
+    JSON.stringify(canonicalValue(right))
+  );
+}
+
+function itemKey(item) {
+  return `${item.kind}:${item.number}`;
+}
+
+function blockerReferences(value) {
+  if (Array.isArray(value)) return value.flatMap(blockerReferences);
+  if (typeof value === 'number') return [`*:${value}`];
+  if (typeof value === 'string') {
+    const match = value.match(/^(?:(.+):)?#?(\d+)$/);
+    return match ? [`${match[1] ?? '*'}:${match[2]}`] : [];
+  }
+  if (value && typeof value === 'object' && Number.isInteger(value.number)) {
+    return [
+      `${typeof value.kind === 'string' ? value.kind : '*'}:${value.number}`,
+    ];
+  }
+  return [];
+}
+
+function referencesChangedBlocker(item, changedBlockers) {
+  return blockerReferences(item.blockers).some((reference) => {
+    const [, number] = reference.split(':');
+    return changedBlockers.has(reference) || changedBlockers.has(`*:${number}`);
+  });
 }
 
 export function snapshot(items, observedAt = new Date().toISOString()) {
@@ -152,15 +209,25 @@ export function snapshot(items, observedAt = new Date().toISOString()) {
 
 export function diffSnapshots(previous, current) {
   const prior = new Map(
-    (previous?.items || []).map((item) => [
-      `${item.kind}:${item.number}`,
-      item,
-    ]),
+    (previous?.items || []).map((item) => [itemKey(item), item]),
   );
+  const present = new Map(current.items.map((item) => [itemKey(item), item]));
+  const changedBlockers = new Set();
+  for (const old of prior.values()) {
+    const item = present.get(itemKey(old));
+    if (!item || !valuesEqual(old.state, item.state)) {
+      changedBlockers.add(itemKey(old));
+      changedBlockers.add(`*:${old.number}`);
+    }
+  }
   return current.items.map((item) => {
-    const old = prior.get(`${item.kind}:${item.number}`);
+    const old = prior.get(itemKey(item));
     const invalidated =
-      !old || INVALIDATING_FIELDS.some((field) => old[field] !== item[field]);
+      !old ||
+      INVALIDATING_FIELDS.some(
+        (field) => !valuesEqual(old[field], item[field]),
+      ) ||
+      referencesChangedBlocker(item, changedBlockers);
     return {
       kind: item.kind,
       number: item.number,

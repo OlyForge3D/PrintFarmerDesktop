@@ -32,6 +32,7 @@ export declare function atomicWriteSnapshot(
 ): void;
 export declare function acquireLock(file: string): () => void;
 export declare function fingerprint(item: RalphItem): string;
+export declare function canonicalValue(value: unknown): unknown;
 export declare function snapshot(
   items: RalphItem[],
   observedAt?: string,
