@@ -135,9 +135,64 @@ describe('splitting the policy did not drop a safety invariant', () => {
   it('names no CodeQL requirement the repository has not actually configured', () => {
     const gate = read(`${REFERENCE_DIR}/pr-gate-merge.md`);
     expect(gate).toMatch(/CodeQL/);
+    expect(gate).toMatch(/configures no CodeQL workflow/i);
     expect(gate).toMatch(
-      /if (it is |the repository )?(actually |genuinely )?config|actual/i,
+      /Handle CodeQL\s+only if a configuration is actually\s+present/i,
     );
+  });
+
+  it('states all three carry-forward conditions, not just the ancestor check', () => {
+    const gate = read(`${REFERENCE_DIR}/pr-gate-merge.md`);
+    expect(gate).toMatch(/strict\*{0,2}\s*ancestor/i);
+    expect(gate).toMatch(/byte-for-byte identical/i);
+    expect(gate).toMatch(/clean merge-parent/i);
+  });
+
+  it('separates mechanical refusals from advisory ones', () => {
+    const gate = read(`${REFERENCE_DIR}/pr-gate-merge.md`);
+    expect(gate).toMatch(/advisory/i);
+    expect(gate).toMatch(/hold:\*/);
+  });
+
+  it('keeps the base-sync lease as the serialiser', () => {
+    const gate = read(`${REFERENCE_DIR}/pr-gate-merge.md`);
+    expect(gate).toMatch(/lease/i);
+    expect(gate).toMatch(/plan:behind-sync-order/);
+  });
+
+  it('forbids editing the automation that runs Ralph', () => {
+    expect(core).toMatch(/disabled\/manual|Never edit the automation/i);
+    expect(core).toMatch(/branch protection/i);
+  });
+});
+
+describe('the vendored Squad templates no longer contradict the charter', () => {
+  const instructions = read('.squad/ralph-instructions.md');
+  const reference = read('.squad/templates/ralph-reference.md');
+
+  it('drops "maximize parallelism" for the five-slot cap', () => {
+    expect(instructions).not.toMatch(/MAXIMIZE PARALLELISM/);
+    expect(instructions).toMatch(/5 active/);
+  });
+
+  it('states one round then exit rather than "do not halt the loop"', () => {
+    expect(instructions).toMatch(/one round, then exit/i);
+    expect(instructions).not.toMatch(/Do not halt the loop\./);
+  });
+
+  it('uses this repository\u2019s real hold labels, and says the placeholders are not', () => {
+    expect(instructions).toMatch(/hold:\*/);
+    expect(instructions).toMatch(/template placeholders and are not in use/i);
+  });
+
+  it('treats a closed named blocker as a stale, non-blocking marker', () => {
+    expect(instructions).toMatch(/stale and the issue READY/i);
+  });
+
+  it('marks the continuous-loop reference as non-governing, with loop.md winning', () => {
+    expect(reference).toMatch(/\.squad\/agents\/ralph\/loop\.md/);
+    expect(reference).toMatch(/`loop\.md` wins/);
+    expect(reference).toMatch(/do not treat it as governance/i);
   });
 });
 

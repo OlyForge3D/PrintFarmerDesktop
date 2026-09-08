@@ -30,6 +30,10 @@ Repo: `OlyForge3D/PrintFarmerDesktop`. Integration branch: `development`.
   hand-resolved merge conflict, scoped to the resolved hunks only, defined in
   `reference/pr-gate-merge.md` §9.4. Nothing else in that file re-opens general review.
 - **Cap: 5 active implementation/analysis sessions.** Reviewer `task` calls do not count.
+- **Never edit the automation that runs you.** The Desktop Ralph workflow is disabled/manual and is
+  changed by a human, deliberately. Do not enable, re-schedule, or modify the live workflow, and do
+  not modify branch protection. If a round concludes the workflow is wrong, report that as a
+  blocker.
 - **One round, then exit.** Perform the round once, report, return. Never idle, sleep, poll,
   heartbeat, or watch. An open PR, a pending check, or a retained session is not a reason to stay
   running.
@@ -78,7 +82,8 @@ so existing `loop.md §N` citations elsewhere in the repo still resolve.
 and `.squad/holds.md` 28 KB; `.squad/decisions-index.md` addresses every section of both by exact
 inclusive line range. Find the rows that bear on what you are doing, read those ranges, and stop.
 Regenerate with `npm run squad:index` after appending a decision. Never restate a decision here —
-one copy, no drift.
+one copy, no drift. (This is the rule going forward; no claim is made that any past round did read
+either file end to end. The index exists so that a targeted read is available at all.)
 
 **Anti-pattern, already observed:** loading the merge-gate policy on a round with no open PR, or the
 reaping policy before the session list has been read. The trigger is the phase, not the round.
@@ -90,8 +95,9 @@ reaping policy before the session list has been read. The trigger is the phase, 
 Report: base refresh (before/after SHAs, commits advanced) · triage counts and owners · priority
 backfill counts · epic status lines (`X of Y children closed`) · analysis dispatches · every open
 PR's verdict classification with its reported head SHA and verbatim `blockedReason` · CodeQL state
-where the repository actually configures it · queue order with each candidate's unblock value and
-any priority-inherited issue named as such · sessions dispatched · `🧹 Ready to reap` ·
+**only if a CodeQL configuration is actually present** (this repository has none today, so the line
+is normally omitted rather than reported as absent) · queue order with each candidate's unblock
+value and any priority-inherited issue named as such · sessions dispatched · `🧹 Ready to reap` ·
 `⚠️ Unpushed work` · active slots (of 5) · gate failures · blockers · per-bucket accounting ·
 backlog remaining and trend · next action.
 

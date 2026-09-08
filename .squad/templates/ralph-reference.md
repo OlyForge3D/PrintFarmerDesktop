@@ -1,5 +1,21 @@
 # Ralph Reference
 
+> **⚠️ Scope note for PrintFarmerDesktop — read this before anything below.** This is the generic
+> `squad init` template describing the **interactive, coordinator-driven** Ralph: a continuous loop
+> that keeps cycling until a user says "idle". **That is not how Ralph runs in this repository.**
+> Here Ralph is the scheduled **Triage and Backlog Driver**, governed by
+> `.squad/agents/ralph/loop.md` and the reference files it routes to, and it is bound by three rules
+> this template contradicts:
+>
+> - **One round, then exit.** No looping, idling, sleeping, polling, heartbeating, or watching. The
+>   "DO NOT stop, immediately scan again" instruction below does not apply.
+> - **A hard cap of 5 active implementation/analysis sessions.** Not "spawn agents for everything in
+>   parallel". Reviewer `task` calls do not count against the cap.
+> - **The main checkout is read-only**, and Ralph never edits the workflow that runs it.
+>
+> Where this file and `.squad/agents/ralph/loop.md` disagree, **`loop.md` wins**. This file is kept
+> for the interactive mode and for `squad upgrade` compatibility; do not treat it as governance.
+
 ## Ralph — Work Monitor
 
 Ralph is a built-in squad member whose job is keeping tabs on work. **Ralph tracks and drives the work queue.** Always on the roster, one job: make sure the team never sits idle.

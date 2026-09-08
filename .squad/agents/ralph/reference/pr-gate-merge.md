@@ -59,9 +59,12 @@ approved it. What the gate genuinely buys is SHA binding, presence, and an audit
 `REVIEWED` result as independent review, and never describe it as four-eyes.
 
 **The gate already does carry-forward — do not re-derive it by hand.** It decides whether a record
-reviewed at an older SHA still covers the current head (strict-ancestor and byte-for-byte diff
-checks). Trust its classification. Do NOT commission a fresh review merely because the head SHA
-moved, and never commission a full review over an entire feature diff for a base sync — that
+reviewed at an older SHA still covers the current head, and it carries a verdict forward only when
+**all three** hold: the reviewed SHA is a **strict ancestor** of the current head; the **diff against
+the base is byte-for-byte identical** between the two; and the intervening merge commits fingerprint
+as **clean merge-parents** (no hand-resolved content — §9.4). Any one of the three failing drops the
+carry-forward. Trust its classification. Do NOT commission a fresh review merely because the head
+SHA moved, and never commission a full review over an entire feature diff for a base sync — that
 re-litigates approved code and burns three dispatches. Quote `reviewedHeadSha` when explaining a
 carry-forward.
 
@@ -239,5 +242,12 @@ merging and re-run the check if it moved.
 - **CONFLICTING or dirty PRs are not mergeable** and no amount of review changes that. Delegate a
   fresh fix session from `development`; never mutate the branch from the main checkout. Re-run the
   gate afterwards.
-- **CodeQL:** report the state where the repository actually configures it. Do not assert a CodeQL
-  requirement this repository does not configure, and do not infer one from an alert list.
+- **Know which refusals are mechanical and which are advisory.** A `hold:*` label and draft state
+  are enforced by the platform — they refuse the merge whatever else is green. A blocking review
+  COMMENT is advisory: nothing stops the merge mechanically, so honouring it is Ralph's obligation,
+  not the platform's. Never report an advisory refusal as though the platform had enforced it, and
+  never merge past one because the API said `MERGEABLE`.
+- **CodeQL:** **this repository configures no CodeQL workflow and no CodeQL setup today**, so there
+  is nothing to require and nothing to wait for. Handle CodeQL only if a configuration is actually
+  present when you look. Do not assert a CodeQL requirement, do not add one, and do not infer one
+  from an alert list or from another repository's setup.

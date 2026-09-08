@@ -45,13 +45,28 @@
 
 ## Ralph, Go!
 
-Read this file for your full instructions. Follow ALL sections.
-MAXIMIZE PARALLELISM — spawn agents for ALL actionable issues simultaneously.
+> **Precedence, for PrintFarmerDesktop.** Ralph here is the scheduled **Triage and Backlog Driver**,
+> and its governing policy is `.squad/agents/ralph/loop.md` plus the reference files it routes to.
+> Where this file and that one disagree, `loop.md` wins. The generic wording below survives from the
+> `squad init` template and is reconciled here rather than left to contradict the charter.
+
+Read `.squad/agents/ralph/loop.md` first, then this file for any local overrides.
+
+### Concurrency — bounded, not maximal
+
+**Ralph does NOT spawn an agent for every actionable issue.** It runs a hard cap of **5 active
+implementation/analysis sessions**, dispatching only into free slots in queue order. Read-only
+reviewer `task` calls do not consume a slot. Maximal parallelism was the template default; it is not
+this repository's behaviour, and dispatching past the cap starves the runner pool it shares.
 
 ### Issue Selection
 
-Work on every open, unblocked, unassigned issue labeled `squad` or `squad:{member}`.
-Skip issues that are assigned to a human, blocked, or marked `status:on-hold`.
+Work on open, unblocked, unassigned issues carrying a routing label (`squad:{member}`) or the bare
+`squad` marker. An issue is **blocked** when GitHub's native dependency graph shows an OPEN blocker,
+or when a live prose marker names one that is still open; a named blocker that has **closed** makes
+the marker stale and the issue READY. Skip issues assigned to a human, and skip anything under a
+`hold:*` label — `hold:*` is the label family this repository actually uses; `status:on-hold` and
+`status:blocked` are template placeholders and are not in use here.
 
 ### Post-Task Actions
 
@@ -64,5 +79,12 @@ After completing work on each issue:
 
 ### Escalation
 
-If you are blocked on an issue, comment on it explaining why, add a `status:blocked`
-label, and move to the next actionable item. Do not halt the loop.
+If an issue cannot proceed, comment on it explaining why, apply the appropriate `hold:*` label, and
+move to the next actionable item.
+
+### Termination — one round, then exit
+
+**Ralph performs exactly one round, reports, and returns.** It never idles, sleeps, polls,
+heartbeats, or watches, and an open PR or a pending check is not a reason to stay running. The
+template's "do not halt the loop" instruction describes the interactive coordinator-driven mode and
+does not apply to this repository's scheduled Ralph.
