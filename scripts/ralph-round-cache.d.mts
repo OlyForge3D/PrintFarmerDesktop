@@ -1,4 +1,5 @@
 export declare const CACHE_SCHEMA: 1;
+export declare const LOCK_STALE_MS: number;
 export declare const INVALIDATING_FIELDS: string[];
 export interface RalphItem {
   kind: string;
@@ -30,7 +31,16 @@ export declare function atomicWriteSnapshot(
   file: string,
   snapshot: RalphSnapshot,
 ): void;
-export declare function acquireLock(file: string): () => void;
+export declare function acquireLock(
+  file: string,
+  options?: {
+    now?: number;
+    pid?: number;
+    host?: string;
+    staleMs?: number;
+    isAlive?: (pid: number) => boolean | null;
+  },
+): () => void;
 export declare function fingerprint(item: RalphItem): string;
 export declare function canonicalValue(value: unknown): unknown;
 export declare function snapshot(
@@ -61,6 +71,5 @@ export declare function compactPlan(
 export declare function parseArgs(argv: string[]): {
   repo: string;
   input: string;
-  json: boolean;
 };
 export declare function main(argv?: string[], env?: NodeJS.ProcessEnv): void;

@@ -2,19 +2,18 @@
 // It deliberately caches observations only; callers must re-read an item
 // immediately before claiming, dispatching, or merging it.
 import {
-  closeSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir, hostname, platform } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const CACHE_SCHEMA = 1;
+export const LOCK_STALE_MS = 30 * 60 * 1000;
 export const INVALIDATING_FIELDS = [
   'dependencies',
   'blockers',
@@ -102,22 +101,90 @@ export function atomicWriteSnapshot(file, snapshot) {
   }
 }
 
-export function acquireLock(file) {
+function lockPayload(pid, host, now) {
+  return `${JSON.stringify({
+    pid,
+    host,
+    acquiredAt: new Date(now).toISOString(),
+  })}\n`;
+}
+
+function readLock(lock) {
+  let holder;
+  try {
+    holder = JSON.parse(readFileSync(lock, 'utf8'));
+  } catch {
+    throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
+  }
+  const acquiredAt = new Date(holder?.acquiredAt).getTime();
+  if (
+    !holder ||
+    !Number.isInteger(holder.pid) ||
+    holder.pid <= 0 ||
+    typeof holder.host !== 'string' ||
+    !Number.isFinite(acquiredAt)
+  ) {
+    throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
+  }
+  return { ...holder, acquiredAt };
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM'
+      ? true
+      : error?.code === 'ESRCH'
+        ? false
+        : null;
+  }
+}
+
+export function acquireLock(
+  file,
+  {
+    now = Date.now(),
+    pid = process.pid,
+    host = hostname(),
+    staleMs = LOCK_STALE_MS,
+    isAlive = processIsAlive,
+  } = {},
+) {
   const lock = `${file}.lock`;
   mkdirSync(path.dirname(lock), { recursive: true });
   try {
-    const descriptor = openSync(lock, 'wx');
-    return () => {
-      closeSync(descriptor);
-      rmSync(lock);
-    };
+    writeFileSync(lock, lockPayload(pid, host, now), {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
   } catch (error) {
-    if (error && error.code === 'EEXIST')
+    if (!error || error.code !== 'EEXIST') throw error;
+    const holder = readLock(lock);
+    const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
+    const stale = now - holder.acquiredAt >= staleMs;
+    if (ownerAlive === true || (ownerAlive === null && !stale)) {
       throw new Error(
-        'Ralph cache lock is already held; refusing overlapping round',
+        `Ralph cache lock is already held by PID ${holder.pid} on ${holder.host}; refusing overlapping round`,
       );
-    throw error;
+    }
+    rmSync(lock);
+    try {
+      writeFileSync(lock, lockPayload(pid, host, now), {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+    } catch (recoveryError) {
+      if (recoveryError && recoveryError.code === 'EEXIST') {
+        throw new Error(
+          'Ralph cache lock changed during stale recovery; refusing overlapping round',
+        );
+      }
+      throw recoveryError;
+    }
   }
+  return () => rmSync(lock, { force: true });
 }
 
 export function fingerprint(item) {
@@ -273,7 +340,7 @@ export function compactPlan(items, previous) {
 }
 
 export function parseArgs(argv) {
-  const options = { json: false };
+  const options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--repo' || argument === '--input') {
@@ -281,15 +348,13 @@ export function parseArgs(argv) {
       if (!value) throw new Error(`${argument} requires a value`);
       options[argument.slice(2)] = value;
       index += 1;
-    } else if (argument === '--json') {
-      options.json = true;
     } else {
       throw new Error(`unknown argument: ${argument}`);
     }
   }
   if (!options.repo || !options.input) {
     throw new Error(
-      'usage: ralph-round-cache --repo owner/name --input listing.json [--json]',
+      'usage: ralph-round-cache --repo owner/name --input listing.json',
     );
   }
   return options;

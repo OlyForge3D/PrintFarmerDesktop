@@ -11,6 +11,7 @@ import {
   compactPlan,
   main,
   paginate,
+  parseArgs,
   readSnapshot,
   snapshot,
   validateSnapshot,
@@ -109,14 +110,62 @@ describe('Ralph round cache', () => {
     };
     expect(compactPlan([reordered], before).plan[0]?.action).toBe('reuse');
   });
-  it('fails closed for corrupt state, overlapping locks, and malformed or truncated pages', async () => {
+  it('recovers bounded stale or dead-owner locks while rejecting live and malformed holders', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
     const file = path.join(directory, 'cache.json');
     writeFileSync(file, '{"schema":999}');
     expect(() => readSnapshot(file)).toThrow(/unusable/);
-    const release = acquireLock(file);
-    expect(() => acquireLock(file)).toThrow(/already held/);
+    const release = acquireLock(file, { now: 2_000, pid: 20, host: 'local' });
+    expect(() =>
+      acquireLock(file, {
+        now: 2_001,
+        pid: 21,
+        host: 'local',
+        isAlive: () => true,
+      }),
+    ).toThrow(/already held by PID 20/);
+    expect(() =>
+      acquireLock(file, {
+        now: 2_000 + 30 * 60 * 1000,
+        pid: 21,
+        host: 'local',
+        isAlive: () => true,
+      }),
+    ).toThrow(/already held by PID 20/);
     release();
+    writeFileSync(
+      `${file}.lock`,
+      JSON.stringify({
+        pid: 20,
+        host: 'local',
+        acquiredAt: new Date(2_000).toISOString(),
+      }),
+    );
+    const deadOwner = acquireLock(file, {
+      now: 2_001,
+      pid: 21,
+      host: 'local',
+      isAlive: () => false,
+    });
+    deadOwner();
+    writeFileSync(
+      `${file}.lock`,
+      JSON.stringify({
+        pid: 20,
+        host: 'other-host',
+        acquiredAt: new Date(2_000).toISOString(),
+      }),
+    );
+    const staleOwner = acquireLock(file, {
+      now: 2_000 + 30 * 60 * 1000,
+      pid: 21,
+      host: 'local',
+    });
+    staleOwner();
+    writeFileSync(`${file}.lock`, 'not JSON');
+    expect(() => acquireLock(file)).toThrow(/malformed.*unsafe recovery/);
+  });
+  it('fails closed for malformed or truncated pages', async () => {
     await expect(
       paginate(() =>
         Promise.resolve({
@@ -148,12 +197,9 @@ describe('Ralph round cache', () => {
       return true;
     };
     try {
-      main(
-        ['--repo', 'OlyForge3D/PrintFarmerDesktop', '--input', input, '--json'],
-        {
-          RALPH_CACHE_DIR: directory,
-        },
-      );
+      main(['--repo', 'OlyForge3D/PrintFarmerDesktop', '--input', input], {
+        RALPH_CACHE_DIR: directory,
+      });
     } finally {
       stdout.write = write;
     }
@@ -161,5 +207,14 @@ describe('Ralph round cache', () => {
     expect(parsed).toMatchObject({
       plan: [{ action: 'inspect', number: 1 }],
     });
+    expect(() =>
+      parseArgs([
+        '--repo',
+        'OlyForge3D/PrintFarmerDesktop',
+        '--input',
+        input,
+        '--json',
+      ]),
+    ).toThrow(/unknown argument/);
   });
 });
