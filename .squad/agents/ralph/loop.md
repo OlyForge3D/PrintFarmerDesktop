@@ -35,7 +35,8 @@ to isolated `development`-based worktrees.
 6. Run only the conditional cleanup-candidate assessment in
    `references/reaping.md`; reuse scan inventory/results. It reports candidates
    only—never archives or deletes a session. End with issue buckets, slot count,
-   gate failures, and `🧹 Ready to reap` (including `none`).
+   gate failures, and `🧹 Cleanup candidates` (including `none`). Any later
+   session action requires explicit user confirmation naming the exact session.
 
 For conditional procedures, read only the relevant reference:
 `references/triage-dispatch.md`, `references/pr-gates.md`, or

@@ -33,9 +33,18 @@ describe('Ralph bounded-round policy', () => {
       'references',
       'reaping.md',
     );
-    expect(reaping).toMatch(/never archives or deletes a session/);
-    expect(reaping).toMatch(/clean with no untracked data/);
+    expect(reaping).toMatch(/never call archive or delete/);
+    expect(reaping).toMatch(
+      /no dirty or untracked data and no\s+unpushed work/,
+    );
     expect(reaping).toMatch(/settling period/);
+    expect(reaping).toMatch(
+      /explicit confirmation that names each specific session/,
+    );
+    expect(reaping).toMatch(
+      /not session management or a handoff to\s+a reaper/,
+    );
+    expect(loop).toContain('🧹 Cleanup candidates');
   });
 
   it('keeps author handoffs narrow and links all conditional procedures', () => {
