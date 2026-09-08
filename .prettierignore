@@ -12,3 +12,8 @@ resources/target-profiles/**/profiles
 # keys, non-finite numbers, wrong magic bytes, G-code in a .json. Formatting
 # them would repair the very defect each one exists to carry.
 tests/fixtures/malicious-input
+
+# Generated line index (scripts/squad-decisions-index.mjs). Prettier realigns
+# its table columns, which makes the generator's own --check report the file
+# stale on every run; the generator is the formatter of record here.
+.squad/decisions-index.md

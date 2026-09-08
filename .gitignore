@@ -93,3 +93,8 @@ Thumbs.db
 .squad/sessions/
 .squad/.cache/
 .squad-workstream
+
+# Scratch roots created by tests/squadCache.test.ts. The durable squad cache
+# must live outside any worktree, so its tests build throwaway roots that are
+# siblings of the repository content rather than reusing a shared temp dir.
+.pf-cache-test-*/
