@@ -111,18 +111,22 @@ function lockPayload(pid, host, now) {
   })}\n`;
 }
 
-function readLock(lock) {
+function readLock(lock, description = 'lock') {
   let contents;
   try {
     contents = readFileSync(lock, 'utf8');
   } catch {
-    throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
+    throw new Error(
+      `Ralph cache ${description} is malformed; refusing unsafe recovery`,
+    );
   }
   let holder;
   try {
     holder = JSON.parse(contents);
   } catch {
-    throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
+    throw new Error(
+      `Ralph cache ${description} is malformed; refusing unsafe recovery`,
+    );
   }
   const acquiredAt = new Date(holder?.acquiredAt).getTime();
   if (
@@ -130,31 +134,68 @@ function readLock(lock) {
     !Number.isInteger(holder.pid) ||
     holder.pid <= 0 ||
     typeof holder.host !== 'string' ||
-    !Number.isFinite(acquiredAt)
+    !Number.isFinite(acquiredAt) ||
+    typeof holder.token !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      holder.token,
+    )
   ) {
-    throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
+    throw new Error(
+      `Ralph cache ${description} is malformed; refusing unsafe recovery`,
+    );
   }
   return { holder: { ...holder, acquiredAt }, contents };
 }
 
-function acquireTransition(lock, pid, host, now) {
-  const transition = `${lock}.transition`;
+function releaseOwnedMarker(marker, payload) {
   try {
-    writeFileSync(transition, lockPayload(pid, host, now), {
+    if (readFileSync(marker, 'utf8') === payload) rmSync(marker);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
+function acquireTransition(lock, pid, host, now, staleMs, isAlive) {
+  const transition = `${lock}.transition`;
+  const payload = lockPayload(pid, host, now);
+  try {
+    writeFileSync(transition, payload, {
       encoding: 'utf8',
       flag: 'wx',
     });
   } catch (error) {
-    if (error?.code === 'EEXIST') {
+    if (!error || error.code !== 'EEXIST') throw error;
+    const { holder, contents } = readLock(transition, 'lock transition');
+    const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
+    const stale = now - holder.acquiredAt >= staleMs;
+    if (ownerAlive === true || (ownerAlive === null && !stale)) {
       throw new Error(
         'Ralph cache lock transition is already in progress; refusing overlapping round',
       );
     }
-    throw error;
+    try {
+      if (readLock(transition, 'lock transition').contents !== contents) {
+        throw new Error(
+          'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
+        );
+      }
+      rmSync(transition);
+      writeFileSync(transition, payload, {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+    } catch (recoveryError) {
+      if (recoveryError && recoveryError.code === 'EEXIST') {
+        throw new Error(
+          'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
+        );
+      }
+      throw recoveryError;
+    }
   }
   // Every mutation first owns this exclusive transition marker, so only its
   // holder can remove and replace an assessed stale lock.
-  return () => rmSync(transition, { force: true });
+  return () => releaseOwnedMarker(transition, payload);
 }
 
 function processIsAlive(pid) {
@@ -183,7 +224,14 @@ export function acquireLock(
   const lock = `${file}.lock`;
   mkdirSync(path.dirname(lock), { recursive: true });
   const payload = lockPayload(pid, host, now);
-  const releaseTransition = acquireTransition(lock, pid, host, now);
+  const releaseTransition = acquireTransition(
+    lock,
+    pid,
+    host,
+    now,
+    staleMs,
+    isAlive,
+  );
   try {
     try {
       writeFileSync(lock, payload, {
@@ -222,13 +270,16 @@ export function acquireLock(
     }
 
     return () => {
-      const releaseTransition = acquireTransition(lock, pid, host, now);
+      const releaseTransition = acquireTransition(
+        lock,
+        pid,
+        host,
+        now,
+        staleMs,
+        isAlive,
+      );
       try {
-        try {
-          if (readFileSync(lock, 'utf8') === payload) rmSync(lock);
-        } catch (error) {
-          if (error?.code !== 'ENOENT') throw error;
-        }
+        releaseOwnedMarker(lock, payload);
       } finally {
         releaseTransition();
       }

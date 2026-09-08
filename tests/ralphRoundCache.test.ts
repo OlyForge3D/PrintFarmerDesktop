@@ -25,6 +25,20 @@ const item = {
   updatedAt: '2026-09-08T00:00:00Z',
 };
 
+function lockHolder(
+  pid: number,
+  host: string,
+  acquiredAt: number,
+  token = '11111111-1111-4111-8111-111111111111',
+) {
+  return JSON.stringify({
+    pid,
+    host,
+    acquiredAt: new Date(acquiredAt).toISOString(),
+    token,
+  });
+}
+
 describe('Ralph round cache', () => {
   it('persists across worktrees when configured outside them', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
@@ -158,14 +172,7 @@ describe('Ralph round cache', () => {
       }),
     ).toThrow(/already held by PID 20/);
     release();
-    writeFileSync(
-      `${file}.lock`,
-      JSON.stringify({
-        pid: 20,
-        host: 'local',
-        acquiredAt: new Date(2_000).toISOString(),
-      }),
-    );
+    writeFileSync(`${file}.lock`, lockHolder(20, 'local', 2_000));
     const deadOwner = acquireLock(file, {
       now: 2_001,
       pid: 21,
@@ -173,14 +180,7 @@ describe('Ralph round cache', () => {
       isAlive: () => false,
     });
     deadOwner();
-    writeFileSync(
-      `${file}.lock`,
-      JSON.stringify({
-        pid: 20,
-        host: 'other-host',
-        acquiredAt: new Date(2_000).toISOString(),
-      }),
-    );
+    writeFileSync(`${file}.lock`, lockHolder(20, 'other-host', 2_000));
     const staleOwner = acquireLock(file, {
       now: 2_000 + 30 * 60 * 1000,
       pid: 21,
@@ -193,14 +193,7 @@ describe('Ralph round cache', () => {
   it('prevents interleaved stale recoveries from deleting a newly acquired lock', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
     const file = path.join(directory, 'cache.json');
-    writeFileSync(
-      `${file}.lock`,
-      JSON.stringify({
-        pid: 20,
-        host: 'local',
-        acquiredAt: new Date(2_000).toISOString(),
-      }),
-    );
+    writeFileSync(`${file}.lock`, lockHolder(20, 'local', 2_000));
 
     let secondRecoveryAttempted = false;
     const release = acquireLock(file, {
@@ -214,7 +207,7 @@ describe('Ralph round cache', () => {
             now: 2_001,
             pid: 22,
             host: 'local',
-            isAlive: () => false,
+            isAlive: (pid) => pid === 21,
           }),
         ).toThrow(/transition is already in progress/);
         return false;
@@ -231,6 +224,75 @@ describe('Ralph round cache', () => {
       }),
     ).toThrow(/already held by PID 21/);
     release();
+  });
+  it('recovers bounded orphaned transition markers while rejecting unsafe holders', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const transition = `${file}.lock.transition`;
+
+    writeFileSync(transition, lockHolder(20, 'local', 2_000));
+    const deadOwner = acquireLock(file, {
+      now: 2_001,
+      pid: 21,
+      host: 'local',
+      isAlive: () => false,
+    });
+    deadOwner();
+
+    writeFileSync(transition, lockHolder(20, 'other-host', 2_000));
+    const staleUnknownOwner = acquireLock(file, {
+      now: 2_000 + 30 * 60 * 1000,
+      pid: 21,
+      host: 'local',
+    });
+    staleUnknownOwner();
+
+    writeFileSync(transition, lockHolder(20, 'local', 2_000));
+    expect(() =>
+      acquireLock(file, {
+        now: 2_001,
+        pid: 21,
+        host: 'local',
+        isAlive: () => true,
+      }),
+    ).toThrow(/transition is already in progress/);
+    writeFileSync(transition, lockHolder(20, 'other-host', 2_000));
+    expect(() =>
+      acquireLock(file, {
+        now: 2_001,
+        pid: 21,
+        host: 'local',
+      }),
+    ).toThrow(/transition is already in progress/);
+    writeFileSync(transition, '{"pid":20}');
+    expect(() => acquireLock(file)).toThrow(
+      /transition is malformed; refusing unsafe recovery/,
+    );
+  });
+  it('does not remove a transition successor during orphan recovery', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const transition = `${file}.lock.transition`;
+    const successor = lockHolder(
+      22,
+      'local',
+      2_001,
+      '22222222-2222-4222-8222-222222222222',
+    );
+    writeFileSync(transition, lockHolder(20, 'local', 2_000));
+
+    expect(() =>
+      acquireLock(file, {
+        now: 2_001,
+        pid: 21,
+        host: 'local',
+        isAlive: () => {
+          writeFileSync(transition, successor);
+          return false;
+        },
+      }),
+    ).toThrow(/transition changed during stale recovery/);
+    expect(readFileSync(transition, 'utf8')).toBe(successor);
   });
   it('does not let a stale release remove a recovered successor lock', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
