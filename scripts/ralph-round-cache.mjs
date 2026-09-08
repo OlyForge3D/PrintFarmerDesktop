@@ -258,7 +258,11 @@ function blockerReferences(value) {
 }
 
 function referencesChangedBlocker(item, changedBlockers) {
-  return blockerReferences(item.blockers).some((reference) => {
+  const references = new Set([
+    ...blockerReferences(item.dependencies),
+    ...blockerReferences(item.blockers),
+  ]);
+  return [...references].some((reference) => {
     const [, number] = reference.split(':');
     return changedBlockers.has(reference) || changedBlockers.has(`*:${number}`);
   });

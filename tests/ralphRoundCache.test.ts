@@ -78,23 +78,48 @@ describe('Ralph round cache', () => {
       ).plan[0]?.action,
     ).toBe('inspect');
   });
-  it('invalidates an unchanged dependent when its persisted blocker closes', () => {
-    const blocker = { ...item, number: 1 };
-    const dependent = {
-      ...item,
-      number: 2,
-      blockers: [{ kind: 'issue', number: 1 }],
-    };
-    const before = snapshot([blocker, dependent]);
-    const plan = compactPlan(
-      [{ ...blocker, state: 'CLOSED' }, dependent],
-      before,
-    );
-    expect(plan.plan).toEqual([
-      expect.objectContaining({ number: 1, action: 'inspect' }),
-      expect.objectContaining({ number: 2, action: 'inspect' }),
-    ]);
-  });
+  it.each([
+    ['native dependencies', 'dependencies', [{ kind: 'issue', number: 1 }]],
+    ['legacy blockers', 'blockers', ['issue:#1']],
+  ])(
+    'invalidates an unchanged dependent with %s when its persisted blocker closes',
+    (_representation, field, references) => {
+      const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+      const file = path.join(directory, 'cache.json');
+      const blocker = { ...item, number: 1 };
+      const dependent = { ...item, number: 2, [field]: references };
+      atomicWriteSnapshot(file, snapshot([blocker, dependent]));
+
+      const plan = compactPlan(
+        [{ ...blocker, state: 'CLOSED' }, dependent],
+        readSnapshot(file),
+      );
+
+      expect(plan.plan).toEqual([
+        expect.objectContaining({ number: 1, action: 'inspect' }),
+        expect.objectContaining({ number: 2, action: 'inspect' }),
+      ]);
+    },
+  );
+  it.each([
+    ['native dependencies', 'dependencies', [{ kind: 'issue', number: 1 }]],
+    ['legacy blockers', 'blockers', ['issue:#1']],
+  ])(
+    'invalidates an unchanged dependent with %s when its blocker is absent from the current listing',
+    (_representation, field, references) => {
+      const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+      const file = path.join(directory, 'cache.json');
+      const blocker = { ...item, number: 1 };
+      const dependent = { ...item, number: 2, [field]: references };
+      atomicWriteSnapshot(file, snapshot([blocker, dependent]));
+
+      const plan = compactPlan([dependent], readSnapshot(file));
+
+      expect(plan.plan).toEqual([
+        expect.objectContaining({ number: 2, action: 'inspect' }),
+      ]);
+    },
+  );
   it('reuses equal structured fields after a JSON round trip', () => {
     const observed = {
       ...item,
