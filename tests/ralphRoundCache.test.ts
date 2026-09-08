@@ -256,6 +256,15 @@ describe('Ralph round cache', () => {
         isAlive: () => true,
       }),
     ).toThrow(/transition is already in progress/);
+    writeFileSync(transition, lockHolder(20, 'local', 2_000));
+    expect(() =>
+      acquireLock(file, {
+        now: 2_001,
+        pid: 21,
+        host: 'local',
+        isAlive: () => null,
+      }),
+    ).toThrow(/transition is already in progress/);
     writeFileSync(transition, lockHolder(20, 'other-host', 2_000));
     expect(() =>
       acquireLock(file, {
