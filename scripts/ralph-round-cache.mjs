@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir, hostname, platform } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,13 +107,20 @@ function lockPayload(pid, host, now) {
     pid,
     host,
     acquiredAt: new Date(now).toISOString(),
+    token: randomUUID(),
   })}\n`;
 }
 
 function readLock(lock) {
+  let contents;
+  try {
+    contents = readFileSync(lock, 'utf8');
+  } catch {
+    throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
+  }
   let holder;
   try {
-    holder = JSON.parse(readFileSync(lock, 'utf8'));
+    holder = JSON.parse(contents);
   } catch {
     throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
   }
@@ -126,7 +134,27 @@ function readLock(lock) {
   ) {
     throw new Error('Ralph cache lock is malformed; refusing unsafe recovery');
   }
-  return { ...holder, acquiredAt };
+  return { holder: { ...holder, acquiredAt }, contents };
+}
+
+function acquireTransition(lock, pid, host, now) {
+  const transition = `${lock}.transition`;
+  try {
+    writeFileSync(transition, lockPayload(pid, host, now), {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error(
+        'Ralph cache lock transition is already in progress; refusing overlapping round',
+      );
+    }
+    throw error;
+  }
+  // Every mutation first owns this exclusive transition marker, so only its
+  // holder can remove and replace an assessed stale lock.
+  return () => rmSync(transition, { force: true });
 }
 
 function processIsAlive(pid) {
@@ -154,37 +182,60 @@ export function acquireLock(
 ) {
   const lock = `${file}.lock`;
   mkdirSync(path.dirname(lock), { recursive: true });
+  const payload = lockPayload(pid, host, now);
+  const releaseTransition = acquireTransition(lock, pid, host, now);
   try {
-    writeFileSync(lock, lockPayload(pid, host, now), {
-      encoding: 'utf8',
-      flag: 'wx',
-    });
-  } catch (error) {
-    if (!error || error.code !== 'EEXIST') throw error;
-    const holder = readLock(lock);
-    const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
-    const stale = now - holder.acquiredAt >= staleMs;
-    if (ownerAlive === true || (ownerAlive === null && !stale)) {
-      throw new Error(
-        `Ralph cache lock is already held by PID ${holder.pid} on ${holder.host}; refusing overlapping round`,
-      );
-    }
-    rmSync(lock);
     try {
-      writeFileSync(lock, lockPayload(pid, host, now), {
+      writeFileSync(lock, payload, {
         encoding: 'utf8',
         flag: 'wx',
       });
-    } catch (recoveryError) {
-      if (recoveryError && recoveryError.code === 'EEXIST') {
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+      const { holder, contents } = readLock(lock);
+      const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
+      const stale = now - holder.acquiredAt >= staleMs;
+      if (ownerAlive === true || (ownerAlive === null && !stale)) {
         throw new Error(
-          'Ralph cache lock changed during stale recovery; refusing overlapping round',
+          `Ralph cache lock is already held by PID ${holder.pid} on ${holder.host}; refusing overlapping round`,
         );
       }
-      throw recoveryError;
+      try {
+        if (readLock(lock).contents !== contents) {
+          throw new Error(
+            'Ralph cache lock changed during stale recovery; refusing overlapping round',
+          );
+        }
+        rmSync(lock);
+        writeFileSync(lock, payload, {
+          encoding: 'utf8',
+          flag: 'wx',
+        });
+      } catch (recoveryError) {
+        if (recoveryError && recoveryError.code === 'EEXIST') {
+          throw new Error(
+            'Ralph cache lock changed during stale recovery; refusing overlapping round',
+          );
+        }
+        throw recoveryError;
+      }
     }
+
+    return () => {
+      const releaseTransition = acquireTransition(lock, pid, host, now);
+      try {
+        try {
+          if (readFileSync(lock, 'utf8') === payload) rmSync(lock);
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+      } finally {
+        releaseTransition();
+      }
+    };
+  } finally {
+    releaseTransition();
   }
-  return () => rmSync(lock, { force: true });
 }
 
 export function fingerprint(item) {

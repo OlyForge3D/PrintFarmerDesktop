@@ -190,6 +190,75 @@ describe('Ralph round cache', () => {
     writeFileSync(`${file}.lock`, 'not JSON');
     expect(() => acquireLock(file)).toThrow(/malformed.*unsafe recovery/);
   });
+  it('prevents interleaved stale recoveries from deleting a newly acquired lock', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    writeFileSync(
+      `${file}.lock`,
+      JSON.stringify({
+        pid: 20,
+        host: 'local',
+        acquiredAt: new Date(2_000).toISOString(),
+      }),
+    );
+
+    let secondRecoveryAttempted = false;
+    const release = acquireLock(file, {
+      now: 2_001,
+      pid: 21,
+      host: 'local',
+      isAlive: () => {
+        secondRecoveryAttempted = true;
+        expect(() =>
+          acquireLock(file, {
+            now: 2_001,
+            pid: 22,
+            host: 'local',
+            isAlive: () => false,
+          }),
+        ).toThrow(/transition is already in progress/);
+        return false;
+      },
+    });
+
+    expect(secondRecoveryAttempted).toBe(true);
+    expect(() =>
+      acquireLock(file, {
+        now: 2_002,
+        pid: 22,
+        host: 'local',
+        isAlive: () => true,
+      }),
+    ).toThrow(/already held by PID 21/);
+    release();
+  });
+  it('does not let a stale release remove a recovered successor lock', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const staleRelease = acquireLock(file, {
+      now: 2_000,
+      pid: 20,
+      host: 'local',
+    });
+    const successorRelease = acquireLock(file, {
+      now: 2_001,
+      pid: 21,
+      host: 'local',
+      isAlive: () => false,
+    });
+
+    staleRelease();
+
+    expect(() =>
+      acquireLock(file, {
+        now: 2_002,
+        pid: 22,
+        host: 'local',
+        isAlive: () => true,
+      }),
+    ).toThrow(/already held by PID 21/);
+    successorRelease();
+  });
   it('fails closed for malformed or truncated pages', async () => {
     await expect(
       paginate(() =>
