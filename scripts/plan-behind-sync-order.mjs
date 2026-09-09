@@ -114,10 +114,10 @@ import { runGh, resolveRepositorySlug } from './check-required-contexts.mjs';
  * older PR has had more time to accumulate risk of being starved again by the
  * feedback loop the issue names, and finishing it first shrinks the BEHIND set
  * for everyone still waiting rather than picking arbitrarily. PR number is the
- * tie-breaker, for the same reason `.squad/agents/ralph/loop.md`'s queue order
- * (§4.3) uses it: deterministic across identical timestamps, particularly
- * relevant here since `createdAt` truncates to the second and a burst of PRs
- * opened by automation can collide on it.
+ * tie-breaker, consistent with `.squad/agents/ralph/loop.md` step 2 and
+ * `.squad/agents/ralph/references/triage-dispatch.md`: deterministic across
+ * identical timestamps, particularly relevant here since `createdAt` truncates
+ * to the second and a burst of PRs opened by automation can collide on it.
  *
  * Only ONE entry is returned as "sync now" -- the rest are explicitly `queued`,
  * not "sync all of these". A caller that syncs the whole returned list at once

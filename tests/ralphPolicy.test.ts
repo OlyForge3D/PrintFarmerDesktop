@@ -187,19 +187,24 @@ describe('Ralph bounded-round policy', () => {
   });
 
   it('contains no obsolete numbered citations to the compact Ralph core', () => {
+    const behindSyncOrder = read('scripts', 'plan-behind-sync-order.mjs');
     const citationSources = [
       read('.squad', 'skills', 'agent-collaboration', 'SKILL.md'),
       read('.squad', 'skills', 'git-workflow', 'SKILL.md'),
       read('.squad', 'routing.md'),
       read('.github', 'workflows', 'squad-review-verdict.yml'),
       read('scripts', 'check-script-reachability.mjs'),
+      behindSyncOrder,
       read('scripts', 'squad-verdict-gate.mjs'),
     ];
     for (const source of citationSources) {
       expect(source).not.toMatch(/ralph\/loop\.md`? §(?:8|9(?:\.\d+)?)/);
       expect(source).not.toMatch(/loop\.md` §4, which counts analysis/);
+      expect(source).not.toMatch(/loop\.md[^\n]*§4\.3/);
       expect(source).not.toMatch(/ralph\/loop\.md`? §1\b/);
     }
+    expect(behindSyncOrder).toMatch(/ralph\/loop\.md` step 2/);
+    expect(behindSyncOrder).toMatch(/ralph\/references\/triage-dispatch\.md/);
   });
 
   it('points the merge-gate-premises reachability citation at the live reference document', () => {
