@@ -192,10 +192,35 @@ describe('Ralph bounded-round policy', () => {
       read('.squad', 'skills', 'git-workflow', 'SKILL.md'),
       read('.squad', 'routing.md'),
       read('.github', 'workflows', 'squad-review-verdict.yml'),
+      read('scripts', 'check-script-reachability.mjs'),
+      read('scripts', 'squad-verdict-gate.mjs'),
     ];
     for (const source of citationSources) {
       expect(source).not.toMatch(/ralph\/loop\.md`? §(?:8|9(?:\.\d+)?)/);
       expect(source).not.toMatch(/loop\.md` §4, which counts analysis/);
+      expect(source).not.toMatch(/ralph\/loop\.md`? §1\b/);
     }
+  });
+
+  it('points the merge-gate-premises reachability citation at the live reference document', () => {
+    const reachability = read('scripts', 'check-script-reachability.mjs');
+    const gates = read(
+      '.squad',
+      'agents',
+      'ralph',
+      'references',
+      'pr-gates.md',
+    );
+    expect(gates).toMatch(/## Re-deriving merge-gate premises/);
+    expect(gates).toContain('npm run check:gate-premises');
+    expect(reachability).toMatch(/ralph\/references\/pr-gates\.md/);
+    expect(reachability).toMatch(/Re-deriving merge-gate premises/);
+  });
+
+  it('points the squad verdict gate citations at live loop.md content', () => {
+    const gate = read('scripts', 'squad-verdict-gate.mjs');
+    expect(gate).toMatch(/loop\.md`\s+step 5/);
+    expect(loop).toMatch(/^5\. Immediately before merge/m);
+    expect(loop).toMatch(/`NOT_APPLICABLE` is never unattended merge/);
   });
 });

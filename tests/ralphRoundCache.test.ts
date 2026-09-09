@@ -1,5 +1,11 @@
 // @vitest-environment node
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -279,6 +285,12 @@ describe('Ralph round cache', () => {
     const transition = `${file}.lock.transition`;
     const winnerLock = `${file}.lock`;
     writeFileSync(handoff, lockHolder(20, 'local', 2_000));
+    const successorHandoffPayload = lockHolder(
+      21,
+      'local',
+      2_000 + 30 * 60 * 1000,
+      '22222222-2222-4222-8222-222222222222',
+    );
 
     expect(() =>
       acquireLock(file, {
@@ -287,37 +299,25 @@ describe('Ralph round cache', () => {
         host: 'local',
         isAlive: () => false,
         onStaleHandoffRecoveryValidated: () => {
-          writeFileSync(
-            handoff,
-            lockHolder(
-              21,
-              'local',
-              2_000 + 30 * 60 * 1000,
-              '22222222-2222-4222-8222-222222222222',
-            ),
-          );
-          writeFileSync(
-            transition,
-            lockHolder(
-              21,
-              'local',
-              2_000 + 30 * 60 * 1000,
-              '22222222-2222-4222-8222-222222222222',
-            ),
-          );
-          writeFileSync(
-            winnerLock,
-            lockHolder(
-              21,
-              'local',
-              2_000 + 30 * 60 * 1000,
-              '22222222-2222-4222-8222-222222222222',
-            ),
-          );
+          // Simulate a successor that observed the same stale handoff, won
+          // the race, and has already replaced it with its own fresh claim
+          // -- plus the transition and lock it is entitled to hold as a
+          // result -- before this claimant's own rename-and-verify runs.
+          writeFileSync(handoff, successorHandoffPayload);
+          writeFileSync(transition, successorHandoffPayload);
+          writeFileSync(winnerLock, successorHandoffPayload);
         },
       }),
     ).toThrow(/changed during stale recovery/);
 
+    // The successor's handoff marker is the terminal ownership record for
+    // the recovery gate itself. It must survive this failed claimant's
+    // rename-to-displaced-and-verify byte-for-byte, not merely have "some"
+    // content restored -- an unconditional cleanup that deleted it would
+    // reopen the gate to a third claimant even though the successor is
+    // still active.
+    expect(existsSync(handoff)).toBe(true);
+    expect(readFileSync(handoff, 'utf8')).toBe(successorHandoffPayload);
     const winner = JSON.parse(readFileSync(winnerLock, 'utf8')) as {
       pid: number;
     };
@@ -326,6 +326,26 @@ describe('Ralph round cache', () => {
     };
     expect(winner.pid).toBe(21);
     expect(activeTransition.pid).toBe(21);
+
+    // The failed claimant must not leave its displaced working copy behind
+    // either; a restored-and-cleaned-up recovery leaves no stray artifacts.
+    const leftoverArtifacts = readdirSync(directory).filter((name) =>
+      name.endsWith('.stale'),
+    );
+    expect(leftoverArtifacts).toEqual([]);
+
+    // The gate must not have been reopened: a third claimant racing in right
+    // after the failed stale-recovery attempt is still correctly blocked by
+    // the surviving successor ownership, not free to claim it as if the
+    // handoff had never existed.
+    expect(() =>
+      acquireLock(file, {
+        now: 2_000 + 30 * 60 * 1000,
+        pid: 23,
+        host: 'local',
+        isAlive: (pid) => pid === 21,
+      }),
+    ).toThrow(/transition recovery is already in progress/);
   });
   it('fails closed for fresh, live, or malformed interrupted handoffs', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));

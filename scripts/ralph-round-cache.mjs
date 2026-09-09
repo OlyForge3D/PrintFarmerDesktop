@@ -168,6 +168,28 @@ function releaseOwnedMarker(marker, payload) {
   }
 }
 
+// Puts a displaced object's exact bytes back at its canonical path using an
+// exclusive create, never a replace. This is invoked only when a moved-away
+// object turned out not to be the stale marker we validated -- i.e. some
+// other claimant wrote a fresh, live marker into the race window between our
+// validation read and our rename. That marker's ownership record must
+// survive, so it is restored rather than left to a caller's cleanup step. If
+// the canonical path has since been reclaimed by yet another legitimate
+// writer, the exclusive create fails closed with EEXIST and this displaced
+// copy is superseded, not orphaned, and safe to drop -- it is never both
+// clobbered onto a newer claim and never silently deleted while it was the
+// only surviving copy of someone else's claim.
+function restoreDisplacedMarker(canonicalPath, contents) {
+  try {
+    writeFileSync(canonicalPath, contents, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+}
+
 function acquireTransition(
   lock,
   pid,
@@ -222,12 +244,20 @@ function acquireTransition(
     // Atomically move the marker out of the claim path, then verify the moved
     // object. A claimant that observed the old marker but races after a
     // successor created a fresh one will move that fresh marker, detect the
-    // different payload here, and fail closed instead of deleting it and
-    // continuing as an owner.
+    // different payload here, and restore it verbatim (see
+    // restoreDisplacedMarker) before failing closed, instead of letting an
+    // unconditional cleanup destroy the successor's only ownership record and
+    // reopen the gate to a third claimant. The displaced path itself is
+    // always just a temporary working copy -- by the time it is removed
+    // below, its content is either genuinely consumed stale residue or has
+    // already been written back to (or superseded at) the canonical path, so
+    // removing the temporary copy is always safe.
     const displaced = `${recoveryGate}.${pid}.${randomUUID()}.stale`;
     try {
       renameSync(recoveryGate, displaced);
-      if (readFileSync(displaced, 'utf8') !== contents) {
+      const displacedContents = readFileSync(displaced, 'utf8');
+      if (displacedContents !== contents) {
+        restoreDisplacedMarker(recoveryGate, displacedContents);
         throw new Error(
           'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
         );
