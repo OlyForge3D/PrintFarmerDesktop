@@ -6,6 +6,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -155,47 +156,79 @@ function releaseOwnedMarker(marker, payload) {
   }
 }
 
-function acquireTransition(lock, pid, host, now, staleMs, isAlive) {
+function acquireTransition(
+  lock,
+  pid,
+  host,
+  now,
+  staleMs,
+  isAlive,
+  onStaleRecoveryValidated,
+) {
   const transition = `${lock}.transition`;
+  const recoveryGate = `${transition}.recovery`;
   const payload = lockPayload(pid, host, now);
+
   try {
-    writeFileSync(transition, payload, {
-      encoding: 'utf8',
-      flag: 'wx',
-    });
+    mkdirSync(recoveryGate);
   } catch (error) {
     if (!error || error.code !== 'EEXIST') throw error;
-    const { holder, contents } = readLock(transition, 'lock transition');
-    const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
-    const stale = now - holder.acquiredAt >= staleMs;
-    if (ownerAlive === true || (ownerAlive === null && !stale)) {
-      throw new Error(
-        'Ralph cache lock transition is already in progress; refusing overlapping round',
-      );
-    }
+    throw new Error(
+      'Ralph cache lock transition recovery is already in progress; refusing overlapping round',
+    );
+  }
+
+  try {
     try {
-      if (readLock(transition, 'lock transition').contents !== contents) {
-        throw new Error(
-          'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
-        );
-      }
-      rmSync(transition);
       writeFileSync(transition, payload, {
         encoding: 'utf8',
         flag: 'wx',
       });
-    } catch (recoveryError) {
-      if (recoveryError && recoveryError.code === 'EEXIST') {
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+      const { holder, contents } = readLock(transition, 'lock transition');
+      const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
+      const stale = now - holder.acquiredAt >= staleMs;
+      if (ownerAlive === true || (ownerAlive === null && !stale)) {
         throw new Error(
-          'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
+          'Ralph cache lock transition is already in progress; refusing overlapping round',
         );
       }
-      throw recoveryError;
+      try {
+        if (readLock(transition, 'lock transition').contents !== contents) {
+          throw new Error(
+            'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
+          );
+        }
+        onStaleRecoveryValidated?.();
+        rmSync(transition);
+        writeFileSync(transition, payload, {
+          encoding: 'utf8',
+          flag: 'wx',
+        });
+      } catch (recoveryError) {
+        if (recoveryError && recoveryError.code === 'EEXIST') {
+          throw new Error(
+            'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
+          );
+        }
+        throw recoveryError;
+      }
     }
+    // Keep the recovery gate until the transition owner removes its marker.
+    // All transition creation and stale recovery goes through this gate, so a
+    // recoverer cannot delete a successor between validation and replacement.
+    return () => {
+      try {
+        releaseOwnedMarker(transition, payload);
+      } finally {
+        rmdirSync(recoveryGate);
+      }
+    };
+  } catch (error) {
+    rmdirSync(recoveryGate);
+    throw error;
   }
-  // Every mutation first owns this exclusive transition marker, so only its
-  // holder can remove and replace an assessed stale lock.
-  return () => releaseOwnedMarker(transition, payload);
 }
 
 function processIsAlive(pid) {
@@ -220,6 +253,7 @@ export function acquireLock(
     host = hostname(),
     staleMs = LOCK_STALE_MS,
     isAlive = processIsAlive,
+    onStaleTransitionRecoveryValidated,
   } = {},
 ) {
   const lock = `${file}.lock`;
@@ -232,6 +266,7 @@ export function acquireLock(
     now,
     staleMs,
     isAlive,
+    onStaleTransitionRecoveryValidated,
   );
   try {
     try {
@@ -278,6 +313,7 @@ export function acquireLock(
         releaseNow(),
         staleMs,
         isAlive,
+        onStaleTransitionRecoveryValidated,
       );
       try {
         releaseOwnedMarker(lock, payload);
@@ -392,6 +428,13 @@ export function diffSnapshots(previous, current) {
     if (!item || !valuesEqual(old.state, item.state)) {
       changedBlockers.add(itemKey(old));
       changedBlockers.add(`*:${old.number}`);
+    }
+  }
+  for (const item of present.values()) {
+    const old = prior.get(itemKey(item));
+    if (!old || !valuesEqual(old.state, item.state)) {
+      changedBlockers.add(itemKey(item));
+      changedBlockers.add(`*:${item.number}`);
     }
   }
   return current.items.map((item) => {

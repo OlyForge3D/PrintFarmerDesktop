@@ -108,11 +108,38 @@ describe('Ralph round cache', () => {
         [{ ...blocker, state: 'CLOSED' }, dependent],
         readSnapshot(file),
       );
-
       expect(plan.plan).toEqual([
         expect.objectContaining({ number: 1, action: 'inspect' }),
         expect.objectContaining({ number: 2, action: 'inspect' }),
       ]);
+    },
+  );
+  it.each([
+    ['newly appears', 'dependencies', [{ kind: 'issue', number: 1 }]],
+    ['reopens', 'blockers', ['issue:#1']],
+  ])(
+    'invalidates an unchanged dependent when its blocker %s',
+    (change, field, references) => {
+      const blocker = {
+        ...item,
+        number: 1,
+        ...(change === 'reopens' ? { state: 'CLOSED' } : {}),
+      };
+      const dependent = { ...item, number: 2, [field]: references };
+      const before =
+        change === 'newly appears'
+          ? snapshot([dependent])
+          : snapshot([blocker, dependent]);
+      const current =
+        change === 'newly appears'
+          ? [blocker, dependent]
+          : [{ ...blocker, state: 'OPEN' }, dependent];
+
+      expect(compactPlan(current, before).plan).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ number: 2, action: 'inspect' }),
+        ]),
+      );
     },
   );
   it.each([
@@ -209,7 +236,7 @@ describe('Ralph round cache', () => {
             host: 'local',
             isAlive: (pid) => pid === 21,
           }),
-        ).toThrow(/transition is already in progress/);
+        ).toThrow(/transition recovery is already in progress/);
         return false;
       },
     });
@@ -278,30 +305,38 @@ describe('Ralph round cache', () => {
       /transition is malformed; refusing unsafe recovery/,
     );
   });
-  it('does not remove a transition successor during orphan recovery', () => {
+  it('serializes recovery after transition validation before stale deletion', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
     const file = path.join(directory, 'cache.json');
     const transition = `${file}.lock.transition`;
-    const successor = lockHolder(
-      22,
-      'local',
-      2_001,
-      '22222222-2222-4222-8222-222222222222',
-    );
     writeFileSync(transition, lockHolder(20, 'local', 2_000));
+
+    const release = acquireLock(file, {
+      now: 2_001,
+      pid: 21,
+      host: 'local',
+      isAlive: () => false,
+      onStaleTransitionRecoveryValidated: () => {
+        expect(() =>
+          acquireLock(file, {
+            now: 2_001,
+            pid: 22,
+            host: 'local',
+            isAlive: () => false,
+          }),
+        ).toThrow(/transition recovery is already in progress/);
+      },
+    });
 
     expect(() =>
       acquireLock(file, {
-        now: 2_001,
-        pid: 21,
+        now: 2_002,
+        pid: 22,
         host: 'local',
-        isAlive: () => {
-          writeFileSync(transition, successor);
-          return false;
-        },
+        isAlive: () => true,
       }),
-    ).toThrow(/transition changed during stale recovery/);
-    expect(readFileSync(transition, 'utf8')).toBe(successor);
+    ).toThrow(/already held by PID 21/);
+    release();
   });
   it('recovers an expired cross-host transition created after acquiring its lock', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));

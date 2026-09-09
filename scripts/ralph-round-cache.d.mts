@@ -40,6 +40,7 @@ export declare function acquireLock(
     host?: string;
     staleMs?: number;
     isAlive?: (pid: number) => boolean | null;
+    onStaleTransitionRecoveryValidated?: () => void;
   },
 ): () => void;
 export declare function fingerprint(item: RalphItem): string;
