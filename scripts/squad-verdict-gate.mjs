@@ -731,13 +731,29 @@ export function resolveAuthorMembers({
   if (rosterDeclarations.length === 1) {
     const [, kind, value] = rosterDeclarations[0];
     const isSingular = kind.toLowerCase() === 'author';
-    const rawMembers = isSingular ? [value] : value.split(',');
     // Singular `Squad-Author` predates the strict comma-separated lexical
     // prevalidation and historically accepted decorated roster forms such as
     // `squad:🔍 Bishop`, deferring validation to `normalizeMember` + roster
     // membership. Preserve that backward compatibility for the singular form
     // only; plural `Squad-Authors` stays strict so a decorated token cannot
     // hide a comma-splitting or duplication bug.
+    //
+    // But a comma inside a singular value is unambiguously a malformed
+    // multi-author declaration (`Squad-Author: Bishop, Dallas`), and legacy
+    // `normalizeMember` silently normalised such input to its FINAL identity
+    // only — leaving the first author eligible as a reviewer. Fail closed on
+    // that shape while still admitting comma-free decorated singular values.
+    if (isSingular && value.includes(',')) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+          'for multiple roster authors',
+      };
+    }
+    const rawMembers = isSingular ? [value] : value.split(',');
     if (
       value.trim() === '' ||
       (!isSingular &&
@@ -848,28 +864,20 @@ export function evaluateGate({
     };
   }
 
-  if (
-    typeof authorDeclarationError === 'string' &&
-    authorDeclarationError !== ''
-  ) {
-    return {
-      state: 'failure',
-      passed: false,
-      description: truncate(
-        `BLOCKED @ ${shortSha(head)}: invalid Squad author declaration`,
-      ),
-      reason: authorDeclarationError,
-      notes: [`Rejected author declaration: ${authorDeclarationError}.`],
-      requiredMembers: [],
-      approvals: [],
-      stale: [],
-    };
-  }
-
   // 0. Scope. The gate covers squad-authored PRs, identified by the `squad`
-  //    label. Everything else — dependency bumps, ad-hoc human PRs — is out of
-  //    scope and reports NOT_APPLICABLE rather than a red BLOCKED that no one
-  //    can clear without staging a fake agent review.
+  //    label. Everything else — dependency bumps, ad-hoc human PRs, fork
+  //    contributions whose body text happens to contain author-looking prose
+  //    — is out of scope and reports NOT_APPLICABLE rather than a red BLOCKED
+  //    that no one can clear without staging a fake agent review.
+  //
+  //    Scope is decided BEFORE any policy check that could otherwise force an
+  //    out-of-scope PR into a blocking status. In particular,
+  //    `authorDeclarationError` is evaluated only for a PR that is already in
+  //    scope: a malformed `Squad-Author:` string sitting in a non-squad PR's
+  //    body must remain NOT_APPLICABLE, since the gate does not gate that PR
+  //    at all. This ordering is load-bearing — reversing it would let any
+  //    fork / human / dependency PR be pushed into a red gate by body text
+  //    the outsider fully controls.
   //
   //    This is safe as opt-in scoping ONLY because Ralph refuses to auto-merge
   //    an unlabelled PR (see squadScopeLabel). Out of scope means "a human
@@ -892,6 +900,32 @@ export function evaluateGate({
           'are merged by a human rather than by the unattended merger, so no ' +
           'agent review record is required or accepted here.',
       ],
+      requiredMembers: [],
+      approvals: [],
+      stale: [],
+    };
+  }
+
+  // 0a. In-scope malformed author declaration. `resolveAuthorMembers` already
+  //     refuses to fall back to branch / issue-label inference when the
+  //     declaration is invalid (its `members` set is empty and `source` names
+  //     the error), so an in-scope PR with a malformed declaration must not
+  //     silently proceed to the reviewer-count evaluation with an unresolved
+  //     author — that would let the malformed shape pass by leaving the
+  //     reviewer-is-not-the-author heuristic with nothing to compare against.
+  //     Fail closed on it explicitly, but only after the scope check above.
+  if (
+    typeof authorDeclarationError === 'string' &&
+    authorDeclarationError !== ''
+  ) {
+    return {
+      state: 'failure',
+      passed: false,
+      description: truncate(
+        `BLOCKED @ ${shortSha(head)}: invalid Squad author declaration`,
+      ),
+      reason: authorDeclarationError,
+      notes: [`Rejected author declaration: ${authorDeclarationError}.`],
       requiredMembers: [],
       approvals: [],
       stale: [],

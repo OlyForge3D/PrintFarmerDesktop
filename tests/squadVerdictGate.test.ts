@@ -1243,6 +1243,106 @@ describe('resolving the authoring squad member', () => {
     }
   });
 
+  // Regression: at final SHA 86cb9c88, `Squad-Author: Bishop, Dallas` silently
+  // normalised to only the FINAL identity (`dallas`) via `normalizeMember`,
+  // leaving Bishop — the actual first co-author of the PR — eligible to
+  // record their own review under the reviewer-is-not-the-author heuristic.
+  // A comma inside the singular declaration is unambiguously a malformed
+  // multi-author declaration and must fail closed. Meanwhile the legacy
+  // decorated singular shape (`squad:🔍 Bishop`, no comma) must still
+  // resolve, so the backward-compat surface the previous revision preserved
+  // is not weakened.
+  it('rejects a comma-separated malformed singular Squad-Author (regression)', () => {
+    for (const prBody of [
+      'Squad-Author: Bishop, Dallas',
+      'Squad-Author: bishop, dallas',
+      'Squad-Author: Bishop, Dallas, Ripley',
+      'Squad-Author: Bishop,',
+      'Squad-Author: , Dallas',
+      // Even a decorated first author followed by a real second identity must
+      // fail — this is the exact shape at final SHA 86cb9c88 that normalised
+      // to only `dallas` because `normalizeMember` returned the last token.
+      'Squad-Author: squad:🔍 Bishop, Dallas',
+    ]) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+      // The in-scope BLOCKED path still fires when scope is confirmed.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+    }
+  });
+
+  it('still accepts every backward-compatible decorated singular Squad-Author', () => {
+    // A comma is the ONLY disqualifying shape added to singular parsing; the
+    // legacy `normalizeMember` surface (emoji, `squad:` prefix, mixed case,
+    // internal whitespace / underscores / dots) still resolves so PRs opened
+    // against the pre-strict-plural gate keep passing.
+    const acceptable: Array<[string, string]> = [
+      ['Squad-Author: Bishop', 'bishop'],
+      ['Squad-Author: bishop', 'bishop'],
+      ['Squad-Author: squad:🔍 Bishop', 'bishop'],
+      ['Squad-Author: squad:Bishop', 'bishop'],
+      ['Squad-Author: BISHOP', 'bishop'],
+      ['Squad-Author: 🔍Bishop', 'bishop'],
+      ['Squad-Author:   Bishop  ', 'bishop'],
+      // Roster identities with an internal hyphen are single tokens and pass
+      // through `normalizeMember` unchanged — no comma is present, so the
+      // singular path admits them.
+      ['Squad-Author: fact-checker', 'fact-checker'],
+    ];
+    for (const [prBody, expected] of acceptable) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.declarationError, prBody).toBeUndefined();
+      expect([...resolved.members], prBody).toEqual([expected]);
+      expect(resolved.source, prBody).toBe('PR body Squad-Author');
+    }
+  });
+
+  // Regression: at final SHA 86cb9c88 the workflow short-circuited on any
+  // authorDeclarationError BEFORE it determined `squadLabeled`, so a fork /
+  // human / dependency PR whose body happened to contain author-looking
+  // prose (or a legitimately malformed `Squad-Author:` line) was forced into
+  // a red BLOCKED status the outsider fully controlled. The gate itself must
+  // now enforce scope-first ordering: out-of-scope PRs stay NOT_APPLICABLE
+  // regardless of declaration errors, and the in-scope BLOCKED status is
+  // reachable only for a labelled squad PR.
+  it('keeps out-of-scope PRs NOT_APPLICABLE even when a declaration error is present', () => {
+    const outOfScopeWithError = gate({
+      squadLabeled: false,
+      authorDeclarationError:
+        'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+        'for multiple roster authors',
+    });
+    expect(outOfScopeWithError.state).toBe('success');
+    expect(outOfScopeWithError.scope).toBe('out-of-scope');
+    expect(outOfScopeWithError.description).toMatch(
+      /^NOT_APPLICABLE @ [0-9a-f]{12}: not a squad PR/,
+    );
+    // Malformed author-looking body text on an out-of-scope PR must never
+    // surface as BLOCKED — that direction would let an outsider drive a
+    // fork / dependency PR into a red gate they cannot clear.
+    expect(outOfScopeWithError.description).not.toMatch(/BLOCKED/);
+    expect(outOfScopeWithError.description).not.toMatch(/invalid Squad author/);
+
+    // The in-scope BLOCKED path still fires when scope is confirmed.
+    const inScopeWithError = gate({
+      squadLabeled: true,
+      authorDeclarationError:
+        'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+        'for multiple roster authors',
+    });
+    expect(inScopeWithError.state).toBe('failure');
+    expect(inScopeWithError.description).toMatch(
+      /^BLOCKED @ [0-9a-f]{12}: invalid Squad author declaration$/,
+    );
+  });
+
   it('falls back to the linked issue label, then the branch name', () => {
     const fromIssue = resolveAuthorMembers({
       linkedIssueLabels: ['squad:ripley', 'priority:p1'],
@@ -1523,6 +1623,50 @@ describe('the workflow wiring the gate depends on', () => {
     expect(workflow).toMatch(/issues\.addLabels/);
     expect(workflow).toMatch(/pull-requests: write/);
     expect(workflow).toMatch(/isFork/);
+  });
+
+  // Regression: at final SHA 86cb9c88 the workflow's own ordering short-
+  // circuited on any `author.declarationError` BEFORE it determined
+  // `squadLabeled`, so an out-of-scope PR (fork / human / dependency) whose
+  // body happened to contain author-looking prose was forced into a red
+  // BLOCKED status the outsider fully controlled. The refactor must place
+  // scope determination (including the auto-scope attempt, whose
+  // `canAutoScope` guard already refuses forks and malformed declarations)
+  // BEFORE any handling of `author.declarationError`, and the in-scope
+  // BLOCKED path must pass `squadLabeled: true` explicitly rather than
+  // relying on the gate module's default.
+  it('resolves scope before short-circuiting on declaration errors', () => {
+    const workflow = readWorkflow();
+    // The three ordering-sensitive anchors, in the order they must appear:
+    //   1. auto-scope attempt (canAutoScope + issues.addLabels)
+    //   2. out-of-scope short-circuit (posts NOT_APPLICABLE and returns)
+    //   3. in-scope declarationError short-circuit (posts BLOCKED, passes
+    //      squadLabeled: true so the pure gate cannot silently downgrade the
+    //      call to NOT_APPLICABLE)
+    const canAutoScopeAt = workflow.indexOf('gate.canAutoScope(');
+    const outOfScopeAt = workflow.indexOf(
+      'squad/pre-pr-verdict NOT_APPLICABLE',
+    );
+    const declarationErrorAt = workflow.indexOf('if (author.declarationError)');
+    expect(canAutoScopeAt).toBeGreaterThan(0);
+    expect(outOfScopeAt).toBeGreaterThan(0);
+    expect(declarationErrorAt).toBeGreaterThan(0);
+    expect(canAutoScopeAt).toBeLessThan(outOfScopeAt);
+    expect(outOfScopeAt).toBeLessThan(declarationErrorAt);
+
+    // The in-scope BLOCKED call must pass squadLabeled: true so the pure
+    // gate's scope-first ordering cannot silently downgrade an in-scope
+    // malformed declaration to NOT_APPLICABLE.
+    expect(workflow).toMatch(
+      /authorDeclarationError:\s*author\.declarationError,\s*\n\s*squadLabeled:\s*true/,
+    );
+
+    // And the workflow's own comments must state the scope-first policy so
+    // a future refactor cannot silently reintroduce the pre-fix ordering.
+    expect(workflow).toMatch(/BEFORE the fork branch/);
+    expect(workflow).toMatch(
+      /BEFORE the\s*\n\s*\/\/\s*author\.declarationError check/,
+    );
   });
 });
 

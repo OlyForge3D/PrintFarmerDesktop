@@ -310,17 +310,14 @@ jobs:
               roster,
             });
 
-            if (author.declarationError) {
-              const invalidAuthor = gate.evaluateGate({
-                headSha, authorDeclarationError: author.declarationError,
-              });
-              await postStatus(invalidAuthor.state, invalidAuthor.description);
-              core.warning(
-                `squad/pre-pr-verdict BLOCKED: ${invalidAuthor.reason}.`,
-              );
-              return;
-            }
-
+            // Auto-scope attempt. `canAutoScope` refuses forks and requires
+            // every resolved member to be a real roster member, so a malformed
+            // declaration (which leaves `author.members` empty) can never
+            // auto-scope a PR into the gate. Scope must be settled BEFORE any
+            // declaration-error decision so that an out-of-scope PR whose body
+            // happens to contain author-looking prose remains NOT_APPLICABLE
+            // rather than being forced into a red BLOCKED status — the
+            // scope-first policy enforced by evaluateGate itself.
             if (!squadLabeled &&
                 gate.canAutoScope({ authorMembers: author.members, roster, isFork })) {
               try {
@@ -342,11 +339,37 @@ jobs:
             }
 
             if (!squadLabeled) {
+              // Out-of-scope short-circuit. Deliberately runs BEFORE the
+              // author.declarationError check below: a malformed
+              // `Squad-Author:` string in a fork / human / dependency PR body
+              // cannot be allowed to force a blocking status on a PR the gate
+              // doesn't cover at all. The gate module enforces the same
+              // ordering internally; both call sites pass squadLabeled
+              // explicitly rather than trusting the default.
               const outOfScope = gate.evaluateGate({ headSha, squadLabeled: false });
               await postStatus(outOfScope.state, outOfScope.description);
               core.notice(
                 `squad/pre-pr-verdict NOT_APPLICABLE: ${outOfScope.reason}. ` +
                 `Add the '${gate.squadScopeLabel}' label if this is squad-authored work.`,
+              );
+              return;
+            }
+
+            // In-scope malformed author declaration blocks. Runs AFTER the
+            // scope short-circuit above and BEFORE the fork branch: a
+            // labelled squad PR whose declaration is malformed must fail
+            // closed here rather than fall through to fork handling or the
+            // final evaluation (where `resolveAuthorMembers` has already
+            // refused to infer authors from branch / issue-label fallbacks).
+            if (author.declarationError) {
+              const invalidAuthor = gate.evaluateGate({
+                headSha,
+                authorDeclarationError: author.declarationError,
+                squadLabeled: true,
+              });
+              await postStatus(invalidAuthor.state, invalidAuthor.description);
+              core.warning(
+                `squad/pre-pr-verdict BLOCKED: ${invalidAuthor.reason}.`,
               );
               return;
             }
