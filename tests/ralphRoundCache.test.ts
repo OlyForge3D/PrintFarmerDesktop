@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -302,6 +302,30 @@ describe('Ralph round cache', () => {
       }),
     ).toThrow(/transition changed during stale recovery/);
     expect(readFileSync(transition, 'utf8')).toBe(successor);
+  });
+  it('recovers an expired cross-host transition created after acquiring its lock', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const transition = `${file}.lock.transition`;
+    let releaseTime = 2_000;
+    const release = acquireLock(file, {
+      now: 2_000,
+      releaseNow: () => releaseTime,
+      pid: 20,
+      host: 'local',
+    });
+
+    writeFileSync(transition, lockHolder(21, 'other-host', 2_001));
+    releaseTime = 2_001 + 30 * 60 * 1000;
+    release();
+
+    expect(existsSync(`${file}.lock`)).toBe(false);
+    expect(existsSync(transition)).toBe(false);
+    acquireLock(file, {
+      now: releaseTime + 1,
+      pid: 22,
+      host: 'local',
+    })();
   });
   it('does not let a stale release remove a recovered successor lock', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));

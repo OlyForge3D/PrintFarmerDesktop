@@ -35,6 +35,7 @@ export declare function acquireLock(
   file: string,
   options?: {
     now?: number;
+    releaseNow?: () => number;
     pid?: number;
     host?: string;
     staleMs?: number;

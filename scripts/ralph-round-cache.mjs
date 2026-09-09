@@ -215,6 +215,7 @@ export function acquireLock(
   file,
   {
     now = Date.now(),
+    releaseNow = () => Date.now(),
     pid = process.pid,
     host = hostname(),
     staleMs = LOCK_STALE_MS,
@@ -274,7 +275,7 @@ export function acquireLock(
         lock,
         pid,
         host,
-        now,
+        releaseNow(),
         staleMs,
         isAlive,
       );
