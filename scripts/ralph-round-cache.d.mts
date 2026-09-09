@@ -1,4 +1,4 @@
-export declare const CACHE_SCHEMA: 1;
+export declare const CACHE_SCHEMA: 2;
 export declare const LOCK_STALE_MS: number;
 export declare const INVALIDATING_FIELDS: string[];
 export interface RalphItem {
@@ -10,8 +10,10 @@ export interface RalphItem {
   [field: string]: unknown;
 }
 export interface RalphSnapshot {
-  schema: 1;
+  schema: 2;
   observedAt: string;
+  completion: 'complete' | 'pending';
+  roundId?: string;
   items: RalphItem[];
 }
 export declare function defaultCacheDirectory(
@@ -41,6 +43,7 @@ export declare function acquireLock(
     staleMs?: number;
     isAlive?: (pid: number) => boolean | null;
     onStaleTransitionRecoveryValidated?: () => void;
+    onStaleHandoffRecoveryValidated?: () => void;
   },
 ): () => void;
 export declare function fingerprint(item: RalphItem): string;
@@ -65,13 +68,14 @@ export declare function compactPlan(
   items: RalphItem[],
   previous?: RalphSnapshot,
 ): {
-  schema: 1;
+  schema: 2;
   observedAt: string;
   plan: ReturnType<typeof diffSnapshots>;
   snapshot: RalphSnapshot;
 };
 export declare function parseArgs(argv: string[]): {
   repo: string;
-  input: string;
+  input?: string;
+  commit?: string;
 };
 export declare function main(argv?: string[], env?: NodeJS.ProcessEnv): void;

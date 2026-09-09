@@ -104,6 +104,25 @@ describe('Ralph bounded-round policy', () => {
       /not session management or a handoff to\s+a reaper/,
     );
     expect(loop).toContain('🧹 Cleanup candidates');
+    expect(loop).toMatch(
+      /must never call `archive_session` or\s+`delete_item`/,
+    );
+  });
+
+  it('keeps merge and review safety bans in the always-loaded core', () => {
+    expect(loop).toMatch(/Never merge a draft/);
+    expect(loop).toMatch(
+      /Serialize merges: verify one merge landed and its linked\s+issue closed before starting another/,
+    );
+    expect(loop).toMatch(/never reviews PRs or spawns review sessions/);
+  });
+
+  it('requires completed inspections before cache reuse', () => {
+    expect(loop).toMatch(
+      /cannot be reused until every planned inspection finishes/,
+    );
+    expect(loop).toContain('--commit ROUND_ID');
+    expect(loop).toMatch(/interruption leaves every\s+item inspect-only/);
   });
 
   it('keeps author handoffs narrow and links all conditional procedures', () => {
@@ -165,5 +184,18 @@ describe('Ralph bounded-round policy', () => {
       '.squad/agents/ralph/references/pr-gates.md',
     );
     expect(collaboration).not.toMatch(/loop\.md` §9\.[12]/);
+  });
+
+  it('contains no obsolete numbered citations to the compact Ralph core', () => {
+    const citationSources = [
+      read('.squad', 'skills', 'agent-collaboration', 'SKILL.md'),
+      read('.squad', 'skills', 'git-workflow', 'SKILL.md'),
+      read('.squad', 'routing.md'),
+      read('.github', 'workflows', 'squad-review-verdict.yml'),
+    ];
+    for (const source of citationSources) {
+      expect(source).not.toMatch(/ralph\/loop\.md`? §(?:8|9(?:\.\d+)?)/);
+      expect(source).not.toMatch(/loop\.md` §4, which counts analysis/);
+    }
   });
 });

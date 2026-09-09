@@ -41,7 +41,7 @@ name: Record squad review (self-attested)
 # `.squad/decisions/inbox/copilot-740-squad-verdict-semantics.md` for how this
 # design answers #206's specific technical objections while leaving its
 # conclusion intact. Enforcement lives in Ralph's merge logic
-# (`.squad/agents/ralph/loop.md` §9), not in branch protection.
+# (`.squad/agents/ralph/loop.md` §5), not in branch protection.
 #
 # WHAT THIS RECORD GENUINELY GIVES YOU, even though review is self-attested:
 #   * SHA BINDING — a record is valid only for the exact head SHA it names. Push
@@ -296,7 +296,7 @@ jobs:
             //
             // Safe as opt-in ONLY because Ralph will not auto-merge a PR whose
             // status reports NOT_APPLICABLE; see gate.squadScopeLabel and
-            // .squad/agents/ralph/loop.md §9.
+            // .squad/agents/ralph/loop.md §5.
             const roster = gate.rosterFromLabels(
               (await github.paginate(github.rest.issues.listLabelsForRepo,
                 { owner, repo, per_page: 100 })).map((label) => label.name),

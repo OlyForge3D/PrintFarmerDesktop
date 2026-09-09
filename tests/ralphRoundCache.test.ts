@@ -272,6 +272,61 @@ describe('Ralph round cache', () => {
     expect(existsSync(legacyRecovery)).toBe(false);
     expect(existsSync(handoff)).toBe(false);
   });
+  it('does not let a stale handoff claimant remove a fresh claimant and proceed', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const handoff = `${file}.lock.transition.handoff`;
+    const transition = `${file}.lock.transition`;
+    const winnerLock = `${file}.lock`;
+    writeFileSync(handoff, lockHolder(20, 'local', 2_000));
+
+    expect(() =>
+      acquireLock(file, {
+        now: 2_000 + 30 * 60 * 1000,
+        pid: 22,
+        host: 'local',
+        isAlive: () => false,
+        onStaleHandoffRecoveryValidated: () => {
+          writeFileSync(
+            handoff,
+            lockHolder(
+              21,
+              'local',
+              2_000 + 30 * 60 * 1000,
+              '22222222-2222-4222-8222-222222222222',
+            ),
+          );
+          writeFileSync(
+            transition,
+            lockHolder(
+              21,
+              'local',
+              2_000 + 30 * 60 * 1000,
+              '22222222-2222-4222-8222-222222222222',
+            ),
+          );
+          writeFileSync(
+            winnerLock,
+            lockHolder(
+              21,
+              'local',
+              2_000 + 30 * 60 * 1000,
+              '22222222-2222-4222-8222-222222222222',
+            ),
+          );
+        },
+      }),
+    ).toThrow(/changed during stale recovery/);
+
+    const winner = JSON.parse(readFileSync(winnerLock, 'utf8')) as {
+      pid: number;
+    };
+    const activeTransition = JSON.parse(readFileSync(transition, 'utf8')) as {
+      pid: number;
+    };
+    expect(winner.pid).toBe(21);
+    expect(activeTransition.pid).toBe(21);
+  });
   it('fails closed for fresh, live, or malformed interrupted handoffs', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
     const file = path.join(directory, 'cache.json');
@@ -488,5 +543,64 @@ describe('Ralph round cache', () => {
         '--json',
       ]),
     ).toThrow(/unknown argument/);
+  });
+  it('requires an exact commit before an emitted snapshot can be reused', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const input = path.join(directory, 'listing.json');
+    writeFileSync(input, JSON.stringify([item]));
+    const outputs: unknown[] = [];
+    const stdout = process.stdout;
+    const write = stdout.write.bind(stdout);
+    stdout.write = (chunk: string) => {
+      outputs.push(JSON.parse(chunk));
+      return true;
+    };
+    try {
+      main(['--repo', 'OlyForge3D/PrintFarmerDesktop', '--input', input], {
+        RALPH_CACHE_DIR: directory,
+      });
+      main(['--repo', 'OlyForge3D/PrintFarmerDesktop', '--input', input], {
+        RALPH_CACHE_DIR: directory,
+      });
+      const interruptedRetry = outputs[1] as {
+        roundId: string;
+        plan: Array<{ action: string; reason: string }>;
+      };
+      expect(interruptedRetry.plan).toEqual([
+        expect.objectContaining({
+          action: 'inspect',
+          reason: 'previous round incomplete',
+        }),
+      ]);
+
+      expect(() =>
+        main(
+          [
+            '--repo',
+            'OlyForge3D/PrintFarmerDesktop',
+            '--commit',
+            '11111111-1111-4111-8111-111111111111',
+          ],
+          { RALPH_CACHE_DIR: directory },
+        ),
+      ).toThrow(/does not match/);
+      main(
+        [
+          '--repo',
+          'OlyForge3D/PrintFarmerDesktop',
+          '--commit',
+          interruptedRetry.roundId,
+        ],
+        { RALPH_CACHE_DIR: directory },
+      );
+      main(['--repo', 'OlyForge3D/PrintFarmerDesktop', '--input', input], {
+        RALPH_CACHE_DIR: directory,
+      });
+    } finally {
+      stdout.write = write;
+    }
+    expect(outputs[3]).toMatchObject({
+      plan: [{ action: 'reuse', number: 1 }],
+    });
   });
 });

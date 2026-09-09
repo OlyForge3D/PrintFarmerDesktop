@@ -14,7 +14,10 @@ to isolated `development`-based worktrees.
    paginated listing and fail closed on a malformed or truncated response, then
    provide that listing to `ralph:round-cache`. It only snapshots, diffs, and emits
    compact JSON; its cache is durable outside ephemeral worktrees, fail-closed on
-   schema/corruption/overlap, and is never authority.
+   schema/corruption/overlap, and is never authority. A saved plan remains pending
+   and cannot be reused until every planned inspection finishes and the caller
+   commits its exact emitted round ID with the same CLI's `--commit ROUND_ID`
+   mode; interruption leaves every item inspect-only.
 2. Freshly list all open issues/PRs, account for every issue, resolve native
    dependencies (including closed blockers), de-duplicate claims/cycles, inherit
    priority transitively, and order unblocked work by inherited priority, age,
@@ -27,7 +30,8 @@ to isolated `development`-based worktrees.
    comment, checks-only, policy, or hold data changes.
 4. Dispatch only a precise acceptance-criteria brief. Authors load
    `.squad/skills/ralph-implementation/SKILL.md`; it accepts changed paths and
-   acceptance criteria, not this full policy. Analysis is non-code work.
+   acceptance criteria, not this full policy. Analysis is non-code work. Ralph
+   never reviews PRs or spawns review sessions.
 5. Immediately before merge, use the current head and exact command:
    `npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr N --json`.
    Exit 0 reports current-head `REVIEWED` or `APPROVED` usable evidence.
@@ -36,12 +40,15 @@ to isolated `development`-based worktrees.
    approval. Change requests and missing/invalid/superseded evidence block.
    `NOT_APPLICABLE` is never unattended merge. Authentication, SHA,
    carry-forward, required checks, and existing hold gates remain unchanged.
-   No CodeQL action exists unless one is detected first.
+   Never merge a draft. Serialize merges: verify one merge landed and its linked
+   issue closed before starting another. No CodeQL action exists unless one is
+   detected first.
 6. Run only the conditional cleanup-candidate assessment in
    `references/reaping.md`; reuse scan inventory/results. It reports candidates
-   only—never archives or deletes a session. End with issue buckets, slot count,
-   gate failures, and `🧹 Cleanup candidates` (including `none`). Any later
-   session action requires explicit user confirmation naming the exact session.
+   only. Ralph and its automation must never call `archive_session` or
+   `delete_item`. End with `🧹 Cleanup candidates` (including `none`), issue
+   buckets, slot count, and gate failures. Any later session action requires
+   explicit user confirmation naming the exact session.
 
 For conditional procedures, read only the relevant reference:
 `references/triage-dispatch.md`, `references/pr-gates.md`, or

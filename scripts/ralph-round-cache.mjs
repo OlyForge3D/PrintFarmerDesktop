@@ -13,7 +13,7 @@ import { homedir, hostname, platform } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const CACHE_SCHEMA = 1;
+export const CACHE_SCHEMA = 2;
 export const LOCK_STALE_MS = 30 * 60 * 1000;
 export const INVALIDATING_FIELDS = [
   'dependencies',
@@ -60,8 +60,21 @@ export function cachePath(repo, env = process.env, os = platform()) {
 export function validateSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot))
     throw new Error('cache is not an object');
-  if (snapshot.schema !== CACHE_SCHEMA || !Array.isArray(snapshot.items))
+  if (
+    snapshot.schema !== CACHE_SCHEMA ||
+    !Array.isArray(snapshot.items) ||
+    !['complete', 'pending'].includes(snapshot.completion)
+  )
     throw new Error('unsupported or malformed cache schema');
+  if (
+    snapshot.completion === 'pending' &&
+    (typeof snapshot.roundId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        snapshot.roundId,
+      ))
+  ) {
+    throw new Error('pending cache snapshot has no valid round ID');
+  }
   for (const item of snapshot.items) {
     if (
       !item ||
@@ -163,6 +176,7 @@ function acquireTransition(
   staleMs,
   isAlive,
   onStaleRecoveryValidated,
+  onStaleHandoffRecoveryValidated,
 ) {
   const transition = `${lock}.transition`;
   // This is a claimable handoff record, not the legacy mkdir recovery gate.
@@ -203,19 +217,37 @@ function acquireTransition(
         'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
       );
     }
-    rmSync(recoveryGate);
+    onStaleHandoffRecoveryValidated?.();
+
+    // Atomically move the marker out of the claim path, then verify the moved
+    // object. A claimant that observed the old marker but races after a
+    // successor created a fresh one will move that fresh marker, detect the
+    // different payload here, and fail closed instead of deleting it and
+    // continuing as an owner.
+    const displaced = `${recoveryGate}.${pid}.${randomUUID()}.stale`;
     try {
+      renameSync(recoveryGate, displaced);
+      if (readFileSync(displaced, 'utf8') !== contents) {
+        throw new Error(
+          'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
+        );
+      }
       writeFileSync(recoveryGate, payload, {
         encoding: 'utf8',
         flag: 'wx',
       });
     } catch (recoveryError) {
-      if (recoveryError?.code === 'EEXIST') {
+      if (
+        recoveryError?.code === 'EEXIST' ||
+        recoveryError?.code === 'ENOENT'
+      ) {
         throw new Error(
           'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
         );
       }
       throw recoveryError;
+    } finally {
+      rmSync(displaced, { force: true });
     }
   }
 
@@ -289,6 +321,7 @@ export function acquireLock(
     staleMs = LOCK_STALE_MS,
     isAlive = processIsAlive,
     onStaleTransitionRecoveryValidated,
+    onStaleHandoffRecoveryValidated,
   } = {},
 ) {
   const lock = `${file}.lock`;
@@ -302,6 +335,7 @@ export function acquireLock(
     staleMs,
     isAlive,
     onStaleTransitionRecoveryValidated,
+    onStaleHandoffRecoveryValidated,
   );
   try {
     try {
@@ -349,6 +383,7 @@ export function acquireLock(
         staleMs,
         isAlive,
         onStaleTransitionRecoveryValidated,
+        onStaleHandoffRecoveryValidated,
       );
       try {
         releaseOwnedMarker(lock, payload);
@@ -448,13 +483,27 @@ export function snapshot(items, observedAt = new Date().toISOString()) {
     ...item,
     fingerprint: fingerprint(item),
   }));
-  validateSnapshot({ schema: CACHE_SCHEMA, observedAt, items: normalized });
-  return { schema: CACHE_SCHEMA, observedAt, items: normalized };
+  validateSnapshot({
+    schema: CACHE_SCHEMA,
+    observedAt,
+    completion: 'complete',
+    items: normalized,
+  });
+  return {
+    schema: CACHE_SCHEMA,
+    observedAt,
+    completion: 'complete',
+    items: normalized,
+  };
 }
 
 export function diffSnapshots(previous, current) {
+  const previousCompleted = previous?.completion === 'complete';
   const prior = new Map(
-    (previous?.items || []).map((item) => [itemKey(item), item]),
+    (previousCompleted ? previous.items : []).map((item) => [
+      itemKey(item),
+      item,
+    ]),
   );
   const present = new Map(current.items.map((item) => [itemKey(item), item]));
   const changedBlockers = new Set();
@@ -488,7 +537,9 @@ export function diffSnapshots(previous, current) {
         ? invalidated
           ? 'comparison changed'
           : 'unchanged'
-        : 'new item',
+        : previous?.completion === 'pending'
+          ? 'previous round incomplete'
+          : 'new item',
     };
   });
 }
@@ -528,7 +579,11 @@ export function parseArgs(argv) {
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === '--repo' || argument === '--input') {
+    if (
+      argument === '--repo' ||
+      argument === '--input' ||
+      argument === '--commit'
+    ) {
       const value = argv[index + 1];
       if (!value) throw new Error(`${argument} requires a value`);
       options[argument.slice(2)] = value;
@@ -537,9 +592,13 @@ export function parseArgs(argv) {
       throw new Error(`unknown argument: ${argument}`);
     }
   }
-  if (!options.repo || !options.input) {
+  if (
+    !options.repo ||
+    (!options.input && !options.commit) ||
+    (options.input && options.commit)
+  ) {
     throw new Error(
-      'usage: ralph-round-cache --repo owner/name --input listing.json',
+      'usage: ralph-round-cache --repo owner/name (--input listing.json | --commit round-id)',
     );
   }
   return options;
@@ -547,17 +606,40 @@ export function parseArgs(argv) {
 
 export function main(argv = process.argv.slice(2), env = process.env) {
   const options = parseArgs(argv);
-  const rawItems = JSON.parse(readFileSync(options.input, 'utf8'));
-  if (!Array.isArray(rawItems))
-    throw new Error('input listing must be a complete JSON array');
   const file = cachePath(options.repo, env);
   const release = acquireLock(file);
   try {
+    if (options.commit) {
+      const pending = readSnapshot(file);
+      if (
+        !pending ||
+        pending.completion !== 'pending' ||
+        pending.roundId !== options.commit
+      ) {
+        throw new Error(
+          'round commit does not match the current pending snapshot',
+        );
+      }
+      atomicWriteSnapshot(file, { ...pending, completion: 'complete' });
+      process.stdout.write(
+        `${JSON.stringify({ schema: CACHE_SCHEMA, roundId: options.commit, committed: true })}\n`,
+      );
+      return;
+    }
+
+    const rawItems = JSON.parse(readFileSync(options.input, 'utf8'));
+    if (!Array.isArray(rawItems))
+      throw new Error('input listing must be a complete JSON array');
     const previous = readSnapshot(file);
     const plan = compactPlan(rawItems, previous);
-    atomicWriteSnapshot(file, plan.snapshot);
+    const roundId = randomUUID();
+    atomicWriteSnapshot(file, {
+      ...plan.snapshot,
+      completion: 'pending',
+      roundId,
+    });
     process.stdout.write(
-      `${JSON.stringify({ schema: plan.schema, observedAt: plan.observedAt, plan: plan.plan })}\n`,
+      `${JSON.stringify({ schema: plan.schema, observedAt: plan.observedAt, roundId, plan: plan.plan })}\n`,
     );
   } finally {
     release();
