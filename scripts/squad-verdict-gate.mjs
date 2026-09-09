@@ -730,13 +730,20 @@ export function resolveAuthorMembers({
 
   if (rosterDeclarations.length === 1) {
     const [, kind, value] = rosterDeclarations[0];
-    const rawMembers =
-      kind.toLowerCase() === 'author' ? [value] : value.split(',');
+    const isSingular = kind.toLowerCase() === 'author';
+    const rawMembers = isSingular ? [value] : value.split(',');
+    // Singular `Squad-Author` predates the strict comma-separated lexical
+    // prevalidation and historically accepted decorated roster forms such as
+    // `squad:🔍 Bishop`, deferring validation to `normalizeMember` + roster
+    // membership. Preserve that backward compatibility for the singular form
+    // only; plural `Squad-Authors` stays strict so a decorated token cannot
+    // hide a comma-splitting or duplication bug.
     if (
       value.trim() === '' ||
-      rawMembers.some(
-        (member) => !/^[A-Za-z][A-Za-z0-9-]{1,31}$/.test(member.trim()),
-      )
+      (!isSingular &&
+        rawMembers.some(
+          (member) => !/^[A-Za-z][A-Za-z0-9-]{1,31}$/.test(member.trim()),
+        ))
     ) {
       return {
         members: new Set(),

@@ -1158,6 +1158,16 @@ describe('resolving the authoring squad member', () => {
     expect(resolved.source).toMatch(/Squad-Author/);
   });
 
+  it('accepts a decorated singular Squad-Author value for backward compatibility', () => {
+    const resolved = resolveAuthorMembers({
+      prBody: 'Squad-Author: squad:🔍 Bishop\n\nCloses #1',
+      roster,
+    });
+    expect([...resolved.members]).toEqual(['bishop']);
+    expect(resolved.declarationError).toBeUndefined();
+    expect(resolved.source).toBe('PR body Squad-Author');
+  });
+
   it('accepts roster and external author declarations while excluding every roster author', () => {
     const resolved = resolveAuthorMembers({
       prBody: [
