@@ -1086,32 +1086,6 @@ export function evaluateGate({
     };
   }
 
-  // 0a. In-scope malformed author declaration. `resolveAuthorMembers` already
-  //     refuses to fall back to branch / issue-label inference when the
-  //     declaration is invalid (its `members` set is empty and `source` names
-  //     the error), so an in-scope PR with a malformed declaration must not
-  //     silently proceed to the reviewer-count evaluation with an unresolved
-  //     author — that would let the malformed shape pass by leaving the
-  //     reviewer-is-not-the-author heuristic with nothing to compare against.
-  //     Fail closed on it explicitly, but only after the scope check above.
-  if (
-    typeof authorDeclarationError === 'string' &&
-    authorDeclarationError !== ''
-  ) {
-    return {
-      state: 'failure',
-      passed: false,
-      description: truncate(
-        `BLOCKED @ ${shortSha(head)}: invalid Squad author declaration`,
-      ),
-      reason: authorDeclarationError,
-      notes: [`Rejected author declaration: ${authorDeclarationError}.`],
-      requiredMembers: [],
-      approvals: [],
-      stale: [],
-    };
-  }
-
   // 1. Owner override through GitHub's native review UI at the exact current
   //    head. Only each administrator's MOST RECENT decisive review at that head
   //    counts: taking any matching approval would let an earlier APPROVED
@@ -1221,6 +1195,37 @@ export function evaluateGate({
         stale,
       };
     }
+  }
+
+  // 3. In-scope malformed author declaration. Runs AFTER both owner-override
+  //    paths above so a trusted current-head administrator approval (via the
+  //    GitHub review UI or an owner-comment record) can still clear the gate
+  //    on an in-scope PR whose declaration failed to parse — the owner is the
+  //    principal ultimately accountable for the merge, and a declaration
+  //    typo cannot lock them out of a repository they administer. Absent any
+  //    such override, `resolveAuthorMembers` has already refused to fall back
+  //    to branch / issue-label inference when the declaration is invalid (its
+  //    `members` set is empty and `source` names the error), so the gate must
+  //    not silently proceed to the reviewer-count evaluation with an
+  //    unresolved author — that would let the malformed shape pass by leaving
+  //    the reviewer-is-not-the-author heuristic with nothing to compare
+  //    against. Fail closed here instead.
+  if (
+    typeof authorDeclarationError === 'string' &&
+    authorDeclarationError !== ''
+  ) {
+    return {
+      state: 'failure',
+      passed: false,
+      description: truncate(
+        `BLOCKED @ ${shortSha(head)}: invalid Squad author declaration`,
+      ),
+      reason: authorDeclarationError,
+      notes: [`Rejected author declaration: ${authorDeclarationError}.`],
+      requiredMembers: [],
+      approvals: [],
+      stale: [],
+    };
   }
 
   const scope = classifyChangeScope(changedPaths);

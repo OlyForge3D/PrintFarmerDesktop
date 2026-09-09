@@ -355,24 +355,15 @@ jobs:
               return;
             }
 
-            // In-scope malformed author declaration blocks. Runs AFTER the
-            // scope short-circuit above and BEFORE the fork branch: a
-            // labelled squad PR whose declaration is malformed must fail
-            // closed here rather than fall through to fork handling or the
-            // final evaluation (where `resolveAuthorMembers` has already
-            // refused to infer authors from branch / issue-label fallbacks).
-            if (author.declarationError) {
-              const invalidAuthor = gate.evaluateGate({
-                headSha,
-                authorDeclarationError: author.declarationError,
-                squadLabeled: true,
-              });
-              await postStatus(invalidAuthor.state, invalidAuthor.description);
-              core.warning(
-                `squad/pre-pr-verdict BLOCKED: ${invalidAuthor.reason}.`,
-              );
-              return;
-            }
+            // In-scope malformed author declaration handling has moved
+            // downstream of the reviews and comment authentication loading
+            // below, so a trusted current-head administrator approval (via
+            // the GitHub review UI or an owner-comment record) can still
+            // clear the gate even when the declaration itself failed to
+            // parse. See the block right after `const reviews = await
+            // loadReviews();`. The gate module enforces the same ordering
+            // internally: scope short-circuits first, then owner overrides,
+            // then the malformed declaration BLOCKED path.
 
             // Author authentication. This repository is PUBLIC, so any GitHub
             // user can comment on a PR with no permission at all. Ralph merges
@@ -490,6 +481,43 @@ jobs:
             }
 
             const reviews = await loadReviews();
+
+            // In-scope malformed author declaration handling. Runs AFTER the
+            // reviews and authenticated comments have been loaded, and
+            // BEFORE the expensive sync-carry-forward compares below, so
+            // that a trusted current-head administrator approval — either
+            // through GitHub's native review UI OR through an owner-comment
+            // record — is still able to clear the gate on a labelled squad
+            // PR whose Squad-Author declaration failed to parse. Absent any
+            // such override, this is the BLOCKED path: the gate module
+            // returns `invalid Squad author declaration` because
+            // `resolveAuthorMembers` refused to fall back to branch /
+            // issue-label inference and the reviewer-is-not-the-author
+            // heuristic has nothing to compare against. Both call sites
+            // pass `squadLabeled: true` explicitly rather than trusting the
+            // gate module's default so the pure gate cannot silently
+            // downgrade this in-scope call to NOT_APPLICABLE.
+            if (author.declarationError) {
+              const invalidAuthor = gate.evaluateGate({
+                headSha,
+                comments,
+                reviews,
+                authorDeclarationError: author.declarationError,
+                squadLabeled: true,
+              });
+              await postStatus(invalidAuthor.state, invalidAuthor.description);
+              if (invalidAuthor.passed) {
+                core.notice(
+                  `squad/pre-pr-verdict ${invalidAuthor.description}: ` +
+                  `${invalidAuthor.reason} (declaration error overridden).`,
+                );
+              } else {
+                core.warning(
+                  `squad/pre-pr-verdict BLOCKED: ${invalidAuthor.reason}.`,
+                );
+              }
+              return;
+            }
 
             // Sync-carry-forward exemption. A record pinned to an old head SHA
             // stays valid at the current head when (1) the old SHA is a strict

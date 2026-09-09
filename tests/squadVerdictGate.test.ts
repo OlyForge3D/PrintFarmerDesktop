@@ -1674,6 +1674,151 @@ describe('resolving the authoring squad member', () => {
     );
   });
 
+  // Regression: at SHA 8ea92011 the malformed-declaration BLOCKED path in
+  // evaluateGate preceded the owner-override paths (GitHub review approval
+  // at head, and owner-comment record), so any trusted current-head
+  // administrator approval was unable to clear the gate on a squad PR whose
+  // `Squad-Author:` line failed to parse. That direction locks an
+  // administrator out of a repository they administer over a declaration
+  // typo — the exact scenario a manual owner override exists to handle. The
+  // gate must restore the scope → owner-override → malformed ordering: an
+  // administrator approval or owner-comment override at the current head
+  // clears the gate first; the malformed BLOCKED path fires only when no
+  // such override is present. Scope-first NOT_APPLICABLE stays ahead of
+  // both, so outsider-controlled body text on an unlabelled PR still cannot
+  // reach either path.
+  it('an administrator override clears a malformed declaration on an in-scope PR', () => {
+    const malformed =
+      'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+      'for multiple roster authors';
+
+    // Path 1: administrator APPROVAL through GitHub's native review UI at
+    // the exact current head clears the malformed-declaration BLOCKED.
+    const cleared = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: headSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(cleared.state).toBe('success');
+    expect(cleared.passed).toBe(true);
+    expect(cleared.override).toBe('github-review');
+    expect(cleared.description).toMatch(/^APPROVE \(owner\) @ /);
+    expect(cleared.description).not.toMatch(/invalid Squad author/);
+
+    // Path 2: administrator CHANGES_REQUESTED through the native review UI
+    // also outranks the malformed declaration — the administrator's
+    // decisive review is the current signal, not the parse failure. This
+    // matters so a REQUEST_CHANGES cannot be silently upgraded to a
+    // malformed-declaration BLOCKED that hides who blocked and why.
+    const requestedChanges = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'CHANGES_REQUESTED',
+          commitId: headSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(requestedChanges.state).toBe('failure');
+    expect(requestedChanges.override).toBe('github-review');
+    expect(requestedChanges.description).toMatch(
+      /^REQUEST_CHANGES @ [0-9a-f]{12} by jpapiez$/,
+    );
+    expect(requestedChanges.description).not.toMatch(/invalid Squad author/);
+
+    // Path 3: administrator owner-comment record naming their own login
+    // as the reviewer likewise clears the malformed-declaration BLOCKED.
+    const clearedByComment = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      comments: [
+        comment('jpapiez', 'APPROVE', headSha, {
+          user: { login: 'jpapiez' },
+          author_association: 'OWNER',
+          squadWriteAccess: true,
+          squadAdminOverride: true,
+        }),
+      ],
+    });
+    expect(clearedByComment.state).toBe('success');
+    expect(clearedByComment.passed).toBe(true);
+    expect(clearedByComment.override).toBe('owner-comment');
+    expect(clearedByComment.description).toMatch(/^APPROVE \(owner\) @ /);
+    expect(clearedByComment.description).not.toMatch(/invalid Squad author/);
+
+    // Control: a NON-admin approval at the same head does NOT clear the
+    // malformed declaration — only a current-head administrator override
+    // can, so an outsider cannot self-approve past a parse failure just by
+    // being a repo collaborator or a fork author.
+    const outsiderReview = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: headSha,
+          login: 'stranger',
+          isAdmin: false,
+        },
+      ],
+    });
+    expect(outsiderReview.state).toBe('failure');
+    expect(outsiderReview.override).not.toBe('github-review');
+    expect(outsiderReview.description).toMatch(
+      /^BLOCKED @ [0-9a-f]{12}: invalid Squad author declaration$/,
+    );
+
+    // Control: an administrator approval at a STALE head does NOT clear
+    // the malformed declaration — the override must be pinned to the exact
+    // current head, so an earlier approval cannot ride forward past a
+    // resynced malformed body.
+    const staleAdmin = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: staleSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(staleAdmin.state).toBe('failure');
+    expect(staleAdmin.description).toMatch(
+      /^BLOCKED @ [0-9a-f]{12}: invalid Squad author declaration$/,
+    );
+
+    // Control: scope-first NOT_APPLICABLE still wins over BOTH the
+    // malformed check AND the override paths — an outsider-controlled body
+    // on an unlabelled PR must never reach either.
+    const outOfScopeAdminApproval = gate({
+      squadLabeled: false,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: headSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(outOfScopeAdminApproval.state).toBe('success');
+    expect(outOfScopeAdminApproval.scope).toBe('out-of-scope');
+    expect(outOfScopeAdminApproval.description).toMatch(/^NOT_APPLICABLE @ /);
+  });
+
   it('falls back to the linked issue label, then the branch name', () => {
     const fromIssue = resolveAuthorMembers({
       linkedIssueLabels: ['squad:ripley', 'priority:p1'],
@@ -1966,24 +2111,42 @@ describe('the workflow wiring the gate depends on', () => {
   // BEFORE any handling of `author.declarationError`, and the in-scope
   // BLOCKED path must pass `squadLabeled: true` explicitly rather than
   // relying on the gate module's default.
+  //
+  // At SHA 8ea92011 the malformed-declaration BLOCKED path preceded the
+  // unconditional owner-override paths in evaluateGate itself, and the
+  // workflow short-circuited on it without loading reviews or comments at
+  // all — so a trusted current-head administrator approval could not clear
+  // the gate on a squad PR with a malformed `Squad-Author:` line, even
+  // though the owner is the principal ultimately accountable for the merge.
+  // The workflow's malformed short-circuit must therefore run AFTER reviews
+  // and authenticated comments are loaded, and must pass them into
+  // `evaluateGate` so its scope → owner-override → malformed ordering can
+  // still clear the gate when an administrator has approved the head.
   it('resolves scope before short-circuiting on declaration errors', () => {
     const workflow = readWorkflow();
-    // The three ordering-sensitive anchors, in the order they must appear:
+    // The four ordering-sensitive anchors, in the order they must appear:
     //   1. auto-scope attempt (canAutoScope + issues.addLabels)
     //   2. out-of-scope short-circuit (posts NOT_APPLICABLE and returns)
-    //   3. in-scope declarationError short-circuit (posts BLOCKED, passes
+    //   3. reviews loaded via loadReviews so the malformed short-circuit can
+    //      hand them to evaluateGate for the owner-override paths
+    //   4. in-scope declarationError short-circuit (posts BLOCKED, passes
     //      squadLabeled: true so the pure gate cannot silently downgrade the
     //      call to NOT_APPLICABLE)
     const canAutoScopeAt = workflow.indexOf('gate.canAutoScope(');
     const outOfScopeAt = workflow.indexOf(
       'squad/pre-pr-verdict NOT_APPLICABLE',
     );
+    const reviewsLoadedAt = workflow.indexOf(
+      'const reviews = await loadReviews();',
+    );
     const declarationErrorAt = workflow.indexOf('if (author.declarationError)');
     expect(canAutoScopeAt).toBeGreaterThan(0);
     expect(outOfScopeAt).toBeGreaterThan(0);
+    expect(reviewsLoadedAt).toBeGreaterThan(0);
     expect(declarationErrorAt).toBeGreaterThan(0);
     expect(canAutoScopeAt).toBeLessThan(outOfScopeAt);
-    expect(outOfScopeAt).toBeLessThan(declarationErrorAt);
+    expect(outOfScopeAt).toBeLessThan(reviewsLoadedAt);
+    expect(reviewsLoadedAt).toBeLessThan(declarationErrorAt);
 
     // The in-scope BLOCKED call must pass squadLabeled: true so the pure
     // gate's scope-first ordering cannot silently downgrade an in-scope
@@ -1992,11 +2155,25 @@ describe('the workflow wiring the gate depends on', () => {
       /authorDeclarationError:\s*author\.declarationError,\s*\n\s*squadLabeled:\s*true/,
     );
 
+    // And it must hand `reviews` and `comments` to that same call so the
+    // gate module's owner-override paths — GitHub review approval at head
+    // and owner-comment record — can still clear a malformed-declaration
+    // BLOCKED. Without both, an administrator would be locked out of a
+    // repository they administer by a `Squad-Author:` typo.
+    expect(workflow).toMatch(
+      /if \(author\.declarationError\)[\s\S]{0,400}?comments,\s*\n\s*reviews,\s*\n\s*authorDeclarationError:\s*author\.declarationError,/,
+    );
+
     // And the workflow's own comments must state the scope-first policy so
     // a future refactor cannot silently reintroduce the pre-fix ordering.
-    expect(workflow).toMatch(/BEFORE the fork branch/);
     expect(workflow).toMatch(
       /BEFORE the\s*\n\s*\/\/\s*author\.declarationError check/,
+    );
+    // The malformed short-circuit's own comment must state that owner
+    // overrides can still clear it, so a future refactor cannot silently
+    // re-establish the SHA 8ea92011 lockout.
+    expect(workflow).toMatch(
+      /administrator approval[\s\S]{0,200}?clear the gate/i,
     );
   });
 });
