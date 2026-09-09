@@ -1279,10 +1279,12 @@ describe('resolving the authoring squad member', () => {
   });
 
   it('still accepts every backward-compatible decorated singular Squad-Author', () => {
-    // A comma is the ONLY disqualifying shape added to singular parsing; the
-    // legacy `normalizeMember` surface (emoji, `squad:` prefix, mixed case,
-    // internal whitespace / underscores / dots) still resolves so PRs opened
-    // against the pre-strict-plural gate keep passing.
+    // The disqualifying shapes added to singular parsing are (a) a literal
+    // comma and (b) any value whose tokens contain two or more distinct
+    // roster identities. The legacy `normalizeMember` surface (emoji,
+    // `squad:` prefix, mixed case, internal whitespace / underscores / dots)
+    // still resolves so PRs opened against the pre-strict-plural gate keep
+    // passing.
     const acceptable: Array<[string, string]> = [
       ['Squad-Author: Bishop', 'bishop'],
       ['Squad-Author: bishop', 'bishop'],
@@ -1301,6 +1303,98 @@ describe('resolving the authoring squad member', () => {
       expect(resolved.declarationError, prBody).toBeUndefined();
       expect([...resolved.members], prBody).toEqual([expected]);
       expect(resolved.source, prBody).toBe('PR body Squad-Author');
+    }
+  });
+
+  // Regression: the singular repair at final SHA 2fa2a314 only rejected a
+  // literal comma. That is one of several shapes GitHub renders as a
+  // multi-author declaration — but the others (`Bishop and Dallas`,
+  // `Bishop/Dallas`, `Bishop & Dallas`, `Bishop&#44; Dallas`) all reach
+  // `normalizeMember`, which silently returns the LAST token and drops the
+  // first co-author. That leaves the first author eligible to record their
+  // own review under the reviewer-is-not-the-author heuristic, defeating the
+  // very quality control the singular repair was meant to restore. Every
+  // shape that visibly identifies two or more roster members must now fail
+  // closed, regardless of the separator encoding, and the fail-closed path
+  // must not fall back to the branch-name or linked-issue inference.
+  it('rejects singular Squad-Author values encoding multiple roster identities without a literal comma', () => {
+    const attempts = [
+      // Prose joiner. `Bishop and Dallas` tokenises to
+      // ["bishop", "and", "dallas"] — `normalizeMember` pops "dallas" and
+      // silently drops Bishop, so pre-fix Bishop could review their own PR.
+      'Squad-Author: Bishop and Dallas',
+      'Squad-Author: bishop AND dallas',
+      'Squad-Author: Bishop or Dallas',
+      // Symbolic separators the sanitiser reduces to whitespace but
+      // `normalizeMember` still collapses to a single trailing token.
+      'Squad-Author: Bishop/Dallas',
+      'Squad-Author: Bishop / Dallas',
+      'Squad-Author: Bishop & Dallas',
+      'Squad-Author: Bishop&Dallas',
+      'Squad-Author: Bishop + Dallas',
+      'Squad-Author: Bishop; Dallas',
+      // GitHub renders the numeric-decimal HTML entity `&#44;` as a literal
+      // comma in a rendered PR body, but the API returns the raw text — so
+      // the literal-comma check alone cannot see it. The tokeniser must:
+      // the `&`, `#` and `;` all reduce to whitespace, leaving "bishop"
+      // and "dallas" as separate roster identities.
+      'Squad-Author: Bishop&#44; Dallas',
+      'Squad-Author: Bishop&#44;Dallas',
+      // Named / hex entity spellings render the same way; regenerating a
+      // singular value with either form must not slip past.
+      'Squad-Author: Bishop&comma; Dallas',
+      'Squad-Author: Bishop&#x2c; Dallas',
+      // Decorated first author, real second author — the exact shape
+      // reviewers flagged as most alarming: the pre-fix parser resolved
+      // this to `dallas` only, leaving the decorated Bishop mention as
+      // apparently-absent from the declaration while the human PR body
+      // clearly credited both.
+      'Squad-Author: squad:🔍 Bishop / Dallas',
+      'Squad-Author: squad:🔍 Bishop & Dallas',
+      'Squad-Author: squad:🔍 Bishop and Dallas',
+    ];
+    for (const prBody of attempts) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // Guard the exact defect: no partial resolution to the LAST token
+      // (`dallas`) that would have left Bishop eligible to self-review.
+      expect([...resolved.members], prBody).toEqual([]);
+
+      // A malformed declaration must NOT fall back to branch-name or
+      // linked-issue inference — the presence of a Squad-Author line still
+      // owns the outcome, and the outcome is a hard error.
+      const withInference = resolveAuthorMembers({
+        prBody,
+        branchName: 'squad/1-ripley-issue',
+        linkedIssueLabels: ['squad:ripley'],
+        roster,
+      });
+      expect(withInference.members.size, prBody).toBe(0);
+      expect(withInference.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // In-scope BLOCKED path still fires when scope is confirmed.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+
+      // Scope-first ordering must still hold: an unlabelled PR carrying one
+      // of these attacker-controllable body strings stays NOT_APPLICABLE,
+      // never surfacing as BLOCKED — the property that keeps opt-in
+      // scoping safe.
+      const outOfScope = gate({
+        squadLabeled: false,
+        authorDeclarationError: resolved.declarationError,
+      });
+      expect(outOfScope.state, prBody).toBe('success');
+      expect(outOfScope.scope, prBody).toBe('out-of-scope');
     }
   });
 

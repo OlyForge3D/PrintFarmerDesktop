@@ -753,6 +753,42 @@ export function resolveAuthorMembers({
           'for multiple roster authors',
       };
     }
+    // Belt-and-suspenders: a literal comma is not the only way to smuggle a
+    // second author into a singular value. GitHub renders `&#44;` as `,`, and
+    // prose or symbolic joiners (`Bishop and Dallas`, `Bishop/Dallas`,
+    // `Bishop & Dallas`) all reach `normalizeMember` — which silently returns
+    // the LAST token — as apparently-single strings that would leave the
+    // first author eligible to review under the reviewer-is-not-the-author
+    // heuristic. Reject any singular value whose visible tokens include two
+    // or more distinct roster identities, regardless of the separator
+    // encoding, without disturbing the shared body-sanitisation semantics or
+    // the strict plural `Squad-Authors` path. Applying `normalizeMember`'s
+    // own token extraction here means a legitimate decorated singular form
+    // (`squad:🔍 Bishop`, `BISHOP`, `fact-checker`) still tokenises to a
+    // single roster identity and is admitted unchanged.
+    if (isSingular) {
+      const rosterTokensFound = new Set();
+      const tokens = value
+        .replace(/[^A-Za-z0-9 _.-]+/gu, ' ')
+        .toLowerCase()
+        .split(/[\s_.]+/)
+        .filter(Boolean);
+      for (const token of tokens) {
+        if (roster.has(token)) {
+          rosterTokensFound.add(token);
+          if (rosterTokensFound.size > 1) {
+            return {
+              members: new Set(),
+              externalAuthors: new Set(),
+              source: 'invalid PR body author declaration',
+              declarationError:
+                'singular Squad-Author identifies multiple roster members; ' +
+                'use Squad-Authors for multiple roster authors',
+            };
+          }
+        }
+      }
+    }
     const rawMembers = isSingular ? [value] : value.split(',');
     if (
       value.trim() === '' ||
