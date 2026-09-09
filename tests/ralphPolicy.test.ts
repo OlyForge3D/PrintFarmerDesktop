@@ -10,6 +10,40 @@ const read = (...parts: string[]) =>
 
 describe('Ralph bounded-round policy', () => {
   const loop = read('.squad', 'agents', 'ralph', 'loop.md');
+  const coordinatorPolicies = [
+    read('.github', 'agents', 'squad.agent.md'),
+    read('.squad', 'templates', 'squad.agent.md.template'),
+  ];
+
+  it('keeps every coordinator-facing Ralph policy one-shot', () => {
+    for (const policy of coordinatorPolicies) {
+      const ralphSection = policy
+        .split('## Ralph — Work Monitor')[1]
+        ?.split('### Connecting to a Repo')[0];
+      expect(ralphSection).toBeDefined();
+      expect(ralphSection).toMatch(
+        /Each activation completes one bounded round and exits/i,
+      );
+      expect(ralphSection).toMatch(
+        /later round requires a new explicit activation/i,
+      );
+      expect(ralphSection).toContain('.squad/agents/ralph/loop.md');
+      expect(ralphSection).not.toContain('always-on work monitor');
+      expect(ralphSection).not.toMatch(/continuous scan.*rescan loop/i);
+      expect(ralphSection).not.toContain('idle-watch');
+      expect(ralphSection).not.toContain('ralph-reference.md');
+    }
+  });
+
+  it('requires callers to paginate before using the cache CLI', () => {
+    expect(loop).toMatch(
+      /caller must first obtain a complete\s+paginated listing.*fail closed on a malformed or truncated response.*provide that listing to `ralph:round-cache`/is,
+    );
+    expect(loop).toMatch(
+      /It only snapshots, diffs, and emits\s+compact JSON/is,
+    );
+    expect(loop).not.toMatch(/ralph-round-cache\.mjs` to paginate/i);
+  });
 
   it('keeps the exact verdict gate and current-head refusal semantics', () => {
     expect(loop).toContain(

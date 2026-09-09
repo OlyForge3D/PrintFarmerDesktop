@@ -10,9 +10,11 @@ to isolated `development`-based worktrees.
 
 1. Read the compact routing/index and only the active linked decision or hold:
    `index.md`, `.squad/routing.md`, `.squad/holds.md`, then the cited decision.
-   Do not read all of `decisions.md`. Use `scripts/ralph-round-cache.mjs` to paginate,
-   snapshot, diff, and emit compact JSON. Its cache is durable outside ephemeral
-   worktrees, fail-closed on schema/corruption/overlap, and is never authority.
+   Do not read all of `decisions.md`. The caller must first obtain a complete
+   paginated listing and fail closed on a malformed or truncated response, then
+   provide that listing to `ralph:round-cache`. It only snapshots, diffs, and emits
+   compact JSON; its cache is durable outside ephemeral worktrees, fail-closed on
+   schema/corruption/overlap, and is never authority.
 2. Freshly list all open issues/PRs, account for every issue, resolve native
    dependencies (including closed blockers), de-duplicate claims/cycles, inherit
    priority transitively, and order unblocked work by inherited priority, age,
