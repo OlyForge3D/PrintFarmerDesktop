@@ -215,7 +215,8 @@ against it, which is why nothing in any one of those sessions caught it.
 
 ### The `--is-ancestor` inversion on a squash-merge repo
 
-**This repo squash-merges** (§9.1 of `.squad/agents/ralph/loop.md`). A squash merge
+**This repo squash-merges** (the "Verifying a merge landed" procedure in
+`.squad/agents/ralph/references/pr-gates.md`). A squash merge
 replays the branch's diff as a **new** commit on the target with no parent link back to
 the branch's own commits. So:
 
@@ -236,7 +237,8 @@ branch's moving tip:**
   pre-merge tip — genuinely is an ancestor of the target once merged, because it _is_ the
   commit that landed on it, and stays one permanently (barring a revert).
   `git merge-base --is-ancestor <mergeCommit.oid> origin/development` is honest; the same
-  command given the branch's own last head is not. See §9.1 for this distinction in full.
+  command given the branch's own last head is not. See the named procedure in
+  `.squad/agents/ralph/references/pr-gates.md` for this distinction in full.
 - **Content diff against the merge commit** (use to confirm exactly what landed, e.g. that
   a squash reproduced your held content byte-for-byte):
   `git diff <held-sha> <mergeCommit.oid> -- <paths>`, scoped to the paths you actually
@@ -410,8 +412,9 @@ queue, CI dashboard, epic tracker, backlog snapshot — live here.
    carefully or how recently the sender measured. Before acting on any board
    row, re-query the live source (`gh`, `git ls-remote`, the workflow run) —
    do not act on the row as displayed. Ralph's merge-gate instance of this is
-   codified in `.squad/agents/ralph/loop.md` §9.2 and enforced by
-   `scripts/check-gate-premises.mjs`; that section is the merge-gate-specific
+   codified in the "Re-deriving merge-gate premises" procedure in
+   `.squad/agents/ralph/references/pr-gates.md` and enforced by
+   `scripts/check-gate-premises.mjs`; that reference is the merge-gate-specific
    procedure, and this section generalizes it to board reporting broadly.
 4. **Distinguish `RED` from `PENDING` explicitly.** A status control that
    collapses "checked and failing" and "not checked yet" into one boolean

@@ -79,4 +79,32 @@ describe('Ralph bounded-round policy', () => {
     expect(gates).toMatch(/active sync lease, stand down/i);
     expect(gates).toMatch(/never authorization/i);
   });
+
+  it('keeps landed and premise re-derivation procedures in the lazy PR-gate reference', () => {
+    const gates = read(
+      '.squad',
+      'agents',
+      'ralph',
+      'references',
+      'pr-gates.md',
+    );
+    const collaboration = read(
+      '.squad',
+      'skills',
+      'agent-collaboration',
+      'SKILL.md',
+    );
+
+    expect(gates).toMatch(/Immediately before reporting a PR as merged/i);
+    expect(gates).toContain('npm run check:merge-landed');
+    expect(gates).toMatch(/merge commit.*origin\/development/is);
+    expect(gates).toContain('npm run check:gate-premises -- --pr <n>');
+    expect(gates).toMatch(/reads terminal state first/i);
+    expect(gates).toMatch(/Exit 2 is unverifiable.*never.*proceed/is);
+    expect(loop).toContain('references/pr-gates.md');
+    expect(collaboration).toContain(
+      '.squad/agents/ralph/references/pr-gates.md',
+    );
+    expect(collaboration).not.toMatch(/loop\.md` §9\.[12]/);
+  });
 });
