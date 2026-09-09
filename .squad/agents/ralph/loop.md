@@ -28,11 +28,13 @@ to isolated `development`-based worktrees.
    acceptance criteria, not this full policy. Analysis is non-code work.
 5. Immediately before merge, use the current head and exact command:
    `npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr N --json`.
-   Exit 0 requires the current three-way unanimous approved content; change
-   requests, missing/invalid/superseded evidence block; `NOT_APPLICABLE` is never
-   unattended merge. Authentication, SHA, carry-forward, required checks,
-   and existing hold gates remain unchanged. No CodeQL action exists unless one
-   is detected first.
+   Exit 0 reports current-head `REVIEWED` or `APPROVED` usable evidence.
+   `REVIEWED` preserves the applicable reviewer path (including the existing
+   one-reviewer documentation-only rule); `APPROVED` preserves direct owner
+   approval. Change requests and missing/invalid/superseded evidence block.
+   `NOT_APPLICABLE` is never unattended merge. Authentication, SHA,
+   carry-forward, required checks, and existing hold gates remain unchanged.
+   No CodeQL action exists unless one is detected first.
 6. Run only the conditional cleanup-candidate assessment in
    `references/reaping.md`; reuse scan inventory/results. It reports candidates
    only—never archives or deletes a session. End with issue buckets, slot count,

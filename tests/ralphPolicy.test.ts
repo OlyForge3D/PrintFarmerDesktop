@@ -15,11 +15,36 @@ describe('Ralph bounded-round policy', () => {
     expect(loop).toContain(
       'npm run check:squad-verdict -- --repo OlyForge3D/PrintFarmerDesktop --pr N --json',
     );
-    expect(loop).toMatch(/three-way unanimous approved content/);
+    expect(loop).toMatch(
+      /current-head `REVIEWED` or `APPROVED` usable evidence/,
+    );
+    expect(loop).toMatch(/one-reviewer documentation-only rule/);
+    expect(loop).toMatch(/`APPROVED` preserves direct owner\s+approval/);
     expect(loop).toMatch(/NOT_APPLICABLE[\s\S]*never\s+unattended merge/);
-    expect(
-      read('.squad', 'agents', 'ralph', 'references', 'pr-gates.md'),
-    ).toMatch(/combined-diff hunks/);
+    const gates = read(
+      '.squad',
+      'agents',
+      'ralph',
+      'references',
+      'pr-gates.md',
+    );
+    expect(gates).toMatch(/current-head\s+`REVIEWED` or `APPROVED`/);
+    expect(gates).toMatch(/documentation-only rule/);
+    expect(gates).toMatch(/direct owner approval/);
+    expect(gates).toMatch(/not-applicable.*refuse\s+unattended merge/is);
+    expect(gates).toMatch(/combined-diff hunks/);
+  });
+
+  it('keeps Ralph unambiguously one-shot in its charter', () => {
+    const charter = read('.squad', 'agents', 'ralph', 'charter.md');
+
+    expect(charter).toMatch(/one bounded pass per activation/i);
+    expect(charter).toMatch(/Reports once, then exits/);
+    expect(charter).toMatch(/There is no\s+interactive-loop exception/i);
+    expect(charter).not.toMatch(/keeps going while there is work/i);
+    expect(charter).not.toMatch(
+      /Interactive looping while work exists is fine/i,
+    );
   });
 
   it('loads compact policy first and keeps cleanup report-only', () => {

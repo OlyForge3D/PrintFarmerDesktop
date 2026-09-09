@@ -11,12 +11,14 @@ dispatch only its single next PR; the owning author claims the lease with
 procedure is advisory for scheduling only, never authorization: re-fetch the
 selected PR's live state immediately before every action.
 
-Run the exact JSON verdict command in the core. Exit 0 is only current,
-three-way unanimous approved content; exit 2 change request and exits 3/4
-missing, invalid, superseded, or not-applicable are merge refusals. Preserve
-the existing authentication, current-SHA, carry-forward, required-check, and
-hold controls. Conflict review is exceptional and limited to resolved
-combined-diff hunks—never a broad re-review.
+Run the exact JSON verdict command in the core. Exit 0 reports current-head
+`REVIEWED` or `APPROVED` usable evidence: `REVIEWED` preserves the applicable
+reviewer path, including the existing one-reviewer documentation-only rule,
+and `APPROVED` preserves direct owner approval. Exit 2 is a change request;
+exits 3/4 are missing, invalid, superseded, or not-applicable and refuse
+unattended merge. Preserve the existing authentication, current-SHA,
+carry-forward, required-check, and hold controls. Conflict review is
+exceptional and limited to resolved combined-diff hunks—never a broad re-review.
 
 ## Verifying a merge landed
 
