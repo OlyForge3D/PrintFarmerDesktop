@@ -121,7 +121,12 @@ export function resolveAuthorMembers(input?: {
   branchName?: string;
   linkedIssueLabels?: string[];
   roster?: Set<string>;
-}): { members: Set<string>; source: string };
+}): {
+  members: Set<string>;
+  externalAuthors: Set<string>;
+  source: string;
+  declarationError?: string;
+};
 
 export function evaluateGate(input?: {
   headSha?: string;
@@ -130,7 +135,9 @@ export function evaluateGate(input?: {
   reviews?: ReviewLike[];
   roster?: Set<string>;
   authorMembers?: Set<string>;
+  externalAuthors?: Set<string>;
   authorSource?: string;
+  authorDeclarationError?: string;
   squadLabeled?: boolean;
   carriedShas?: Iterable<string>;
 }): GateResult;

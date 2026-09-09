@@ -1158,6 +1158,81 @@ describe('resolving the authoring squad member', () => {
     expect(resolved.source).toMatch(/Squad-Author/);
   });
 
+  it('accepts roster and external author declarations while excluding every roster author', () => {
+    const resolved = resolveAuthorMembers({
+      prBody: [
+        'Squad-Authors: Bishop, Ripley, Dallas, Vasquez',
+        'Squad-External-Authors: release-time-repair, external-gate-author',
+      ].join('\n'),
+      roster,
+    });
+    expect([...resolved.members]).toEqual([
+      'bishop',
+      'ripley',
+      'dallas',
+      'vasquez',
+    ]);
+    expect([...resolved.externalAuthors]).toEqual([
+      'release-time-repair',
+      'external-gate-author',
+    ]);
+    expect(resolved.declarationError).toBeUndefined();
+
+    const result = gate({
+      comments: [
+        comment('bishop', 'APPROVE'),
+        comment('hicks', 'APPROVE'),
+        comment('vasquez', 'APPROVE'),
+        comment('dallas', 'APPROVE'),
+        comment('ripley', 'APPROVE'),
+      ],
+      authorMembers: resolved.members,
+      externalAuthors: resolved.externalAuthors,
+      authorSource: resolved.source,
+    });
+    expect(result.state).toBe('failure');
+    expect(result.description).toMatch(/reviewer bishop is the PR author/);
+  });
+
+  it('uses exactly three distinct eligible roster reviewers for multiple panel authors', () => {
+    const result = gate({
+      comments: [
+        comment('hicks', 'APPROVE'),
+        comment('rai', 'APPROVE'),
+        comment('fact-checker', 'APPROVE'),
+        comment('rai', 'APPROVE', headSha, {
+          id: 1000001,
+          created_at: '2026-08-08T02:00:00Z',
+        }),
+      ],
+      authorMembers: new Set(['bishop', 'ripley', 'dallas', 'vasquez']),
+      externalAuthors: new Set(['release-time-repair', 'external-gate-author']),
+      authorSource: 'PR body Squad-Authors',
+    });
+    expect(result.passed).toBe(true);
+    expect(result.approvals).toEqual(['fact-checker', 'hicks', 'rai']);
+  });
+
+  it('rejects malformed, unknown, duplicated, and conflicting declarations', () => {
+    for (const prBody of [
+      'Squad-Authors: bishop; vasquez',
+      'Squad-Authors: bishop, bishop',
+      'Squad-Authors: bishop, sulaco',
+      'Squad-Authors: ',
+      'Squad-Author: bishop\nSquad-Authors: vasquez, hicks',
+      'Squad-External-Authors: bishop',
+      'Squad-External-Authors: release-time-repair, release-time-repair',
+      'Squad-External-Authors: release-time-repair; external-gate-author',
+    ]) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size).toBe(0);
+      expect(resolved.declarationError).toBeTruthy();
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+      ).toBe('failure');
+    }
+  });
+
   it('falls back to the linked issue label, then the branch name', () => {
     const fromIssue = resolveAuthorMembers({
       linkedIssueLabels: ['squad:ripley', 'priority:p1'],
@@ -1182,7 +1257,7 @@ describe('resolving the authoring squad member', () => {
 });
 
 describe('scoping the gate to squad pull requests', () => {
-  it('auto-scoping refuses forks and unrostered self-declared authors', () => {
+  it('auto-scoping refuses forks and rejects unrostered self-declared authors', () => {
     const inRoster = {
       authorMembers: new Set(['bishop']),
       roster,
@@ -1195,14 +1270,15 @@ describe('scoping the gate to squad pull requests', () => {
     // outsider could place their own PR into the gate's scope.
     expect(canAutoScope({ ...inRoster, isFork: true })).toBe(false);
 
-    // resolveAuthorMembers does NOT validate a declared Squad-Author against
-    // the roster, so canAutoScope must, or one line of PR body text self-scopes.
+    // Explicit declarations are validated before auto-scoping, so an unknown
+    // identity cannot fall through to branch or issue-label inference.
     const declared = resolveAuthorMembers({
       prBody: 'Squad-Author: attacker',
       branchName: 'feature/x',
       roster,
     });
-    expect([...declared.members]).toEqual(['attacker']);
+    expect(declared.members.size).toBe(0);
+    expect(declared.declarationError).toBeTruthy();
     expect(
       canAutoScope({ authorMembers: declared.members, roster, isFork: false }),
     ).toBe(false);

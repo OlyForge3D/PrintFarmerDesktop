@@ -340,10 +340,6 @@ function countMatches(pattern, body) {
   return values.length === 1 ? values[0] : undefined;
 }
 
-function singleMatch(pattern, body) {
-  return countMatches(pattern, sanitizeBody(body));
-}
-
 /**
  * Parse one PR comment into a review record, or undefined when the comment is
  * not a well-formed record from a trusted account.
@@ -673,7 +669,9 @@ export function classifyChangeScope(paths) {
  *
  * GitHub-account authorship is useless here because every agent acts through
  * the same owner token, so authorship is resolved at the squad-identity level:
- *   1. an explicit `Squad-Author: <member>` line in the PR body,
+ *   1. explicit `Squad-Author: <member>` or
+ *      `Squad-Authors: <member>, <member>` roster-author declaration(s), plus
+ *      an optional `Squad-External-Authors: <identity>, <identity>` declaration,
  *   2. otherwise the `squad:{member}` labels on the issues the PR closes,
  *   3. otherwise a known member token in the head branch name.
  */
@@ -683,21 +681,100 @@ export function resolveAuthorMembers({
   linkedIssueLabels = [],
   roster = new Set(),
 } = {}) {
-  const declared = singleMatch(
-    /^[ \t>]*Squad-Author:[ \t]*(.+?)[ \t]*$/gim,
-    prBody,
+  const declarations = [
+    ...sanitizeBody(prBody).matchAll(
+      /^[ \t]*Squad-(Author|Authors|External-Authors):[ \t]*(.*?)[ \t]*$/gim,
+    ),
+  ];
+  const rosterDeclarations = declarations.filter(
+    ([, kind]) => kind.toLowerCase() !== 'external-authors',
   );
-  const declaredMember = normalizeMember(declared);
-  if (declaredMember) {
+  const externalDeclarations = declarations.filter(
+    ([, kind]) => kind.toLowerCase() === 'external-authors',
+  );
+  if (rosterDeclarations.length > 1 || externalDeclarations.length > 1) {
     return {
-      members: new Set([declaredMember]),
-      source: 'PR body Squad-Author',
+      members: new Set(),
+      externalAuthors: new Set(),
+      source: 'invalid PR body author declaration',
+      declarationError:
+        'multiple or conflicting Squad author declarations are ambiguous',
+    };
+  }
+
+  const externalAuthors = new Set();
+  if (externalDeclarations.length === 1) {
+    const [, , value] = externalDeclarations[0];
+    const rawExternalAuthors = value.split(',');
+    if (
+      value.trim() === '' ||
+      rawExternalAuthors.some(
+        (author) => !/^[a-z][a-z0-9-]{1,31}$/.test(author.trim()),
+      ) ||
+      new Set(rawExternalAuthors.map((author) => author.trim())).size !==
+        rawExternalAuthors.length ||
+      rawExternalAuthors.some((author) => roster.has(author.trim()))
+    ) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'external authors must be distinct lowercase non-roster identities separated only by commas',
+      };
+    }
+    for (const author of rawExternalAuthors) {
+      externalAuthors.add(author.trim());
+    }
+  }
+
+  if (rosterDeclarations.length === 1) {
+    const [, kind, value] = rosterDeclarations[0];
+    const rawMembers =
+      kind.toLowerCase() === 'author' ? [value] : value.split(',');
+    if (
+      value.trim() === '' ||
+      rawMembers.some(
+        (member) => !/^[A-Za-z][A-Za-z0-9-]{1,31}$/.test(member.trim()),
+      )
+    ) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'author declarations require roster identities separated only by commas',
+      };
+    }
+
+    const members = rawMembers.map((member) => normalizeMember(member.trim()));
+    if (
+      members.some((member) => !member || !roster.has(member)) ||
+      new Set(members).size !== members.length
+    ) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'author declarations must name distinct known squad roster identities',
+      };
+    }
+
+    return {
+      members: new Set(members),
+      externalAuthors,
+      source: `PR body Squad-${kind}`,
     };
   }
 
   const fromIssues = rosterFromLabels(linkedIssueLabels);
   if (fromIssues.size > 0) {
-    return { members: fromIssues, source: 'squad: label on linked issue' };
+    return {
+      members: fromIssues,
+      externalAuthors,
+      source: 'squad: label on linked issue',
+    };
   }
 
   const branchTokens = branchName
@@ -706,10 +783,10 @@ export function resolveAuthorMembers({
     .filter(Boolean);
   const fromBranch = new Set(branchTokens.filter((token) => roster.has(token)));
   if (fromBranch.size > 0) {
-    return { members: fromBranch, source: 'head branch name' };
+    return { members: fromBranch, externalAuthors, source: 'head branch name' };
   }
 
-  return { members: new Set(), source: 'unresolved' };
+  return { members: new Set(), externalAuthors, source: 'unresolved' };
 }
 
 function shortSha(sha) {
@@ -739,7 +816,9 @@ export function evaluateGate({
   reviews = [],
   roster = new Set(),
   authorMembers = new Set(),
+  externalAuthors = new Set(),
   authorSource = 'unresolved',
+  authorDeclarationError,
   squadLabeled = false,
   // Old head SHAs (see `isCarriedAcrossSync`) the caller has already proven
   // introduce nothing but base-branch commits since they were reviewed. A
@@ -756,6 +835,24 @@ export function evaluateGate({
       description: 'Cannot evaluate: PR head SHA is unavailable.',
       reason: 'missing head sha',
       notes,
+      requiredMembers: [],
+      approvals: [],
+      stale: [],
+    };
+  }
+
+  if (
+    typeof authorDeclarationError === 'string' &&
+    authorDeclarationError !== ''
+  ) {
+    return {
+      state: 'failure',
+      passed: false,
+      description: truncate(
+        `BLOCKED @ ${shortSha(head)}: invalid Squad author declaration`,
+      ),
+      reason: authorDeclarationError,
+      notes: [`Rejected author declaration: ${authorDeclarationError}.`],
       requiredMembers: [],
       approvals: [],
       stale: [],
@@ -919,6 +1016,12 @@ export function evaluateGate({
     notes.push(
       'PR author squad identity could not be resolved; the reviewer-is-not-the-' +
         'author quality heuristic is applied only against the roster.',
+    );
+  }
+  if (externalAuthors.size > 0) {
+    notes.push(
+      `PR also declares external content author identities: ${[...externalAuthors].join(', ')}. ` +
+        'They are audit-only and cannot be reviewer identities.',
     );
   }
   notes.push(
