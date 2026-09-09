@@ -262,6 +262,35 @@ describe('Ralph bounded-round policy', () => {
     expect(lifecycle).not.toMatch(/auto-merges/i);
   });
 
+  it('keeps the user-owned Ralph instructions and their template in sync and bounded', () => {
+    const liveInstructions = read('.squad', 'ralph-instructions.md');
+    const templateInstructions = read(
+      '.squad',
+      'templates',
+      'ralph-instructions.md',
+    );
+
+    // The template seeds `.squad/ralph-instructions.md` on `squad init`, so a
+    // fresh install must not resurrect retired unbounded/continuous wording
+    // that the live, already-remediated file no longer carries.
+    for (const instructions of [liveInstructions, templateInstructions]) {
+      expect(instructions).not.toMatch(
+        /spawns? agents for all actionable issues simultaneously/i,
+      );
+      expect(instructions).not.toMatch(/MAXIMIZE PARALLELISM/i);
+      expect(instructions).not.toMatch(/do not halt the loop/i);
+      expect(instructions).toMatch(
+        /\.squad\/agents\/ralph\/loop\.md.*authoritative, one-shot entry policy/is,
+      );
+      expect(instructions).toMatch(/Do one round and exit/);
+      expect(instructions).toMatch(
+        /five-slot active-session\s+cap defined in `\.squad\/agents\/ralph\/loop\.md`/,
+      );
+    }
+
+    expect(templateInstructions).toEqual(liveInstructions);
+  });
+
   it('lets no directive reintroduce the retired continuous Ralph cycle', () => {
     // The one-shot rule is only real if it holds everywhere at once. A single
     // stray template that still describes a looping monitor, or still points a

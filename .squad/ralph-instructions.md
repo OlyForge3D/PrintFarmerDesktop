@@ -19,7 +19,9 @@
     • Agent persona, tone, or verbosity for session output
 
   YOU CANNOT override via this file:
-    • Parallelism — Ralph always spawns agents for all actionable issues simultaneously
+    • Parallelism — Ralph dispatches only up to the shared five-slot active-session
+      cap defined in `.squad/agents/ralph/loop.md`; it never spawns agents for all
+      actionable issues simultaneously
     • Core eligibility filter (squad/squad:* label required, not blocked, not assigned)
     • The underlying `gh` / Copilot CLI command used to spawn each session
 
