@@ -1398,6 +1398,158 @@ describe('resolving the authoring squad member', () => {
     }
   });
 
+  // Regression: at final SHA 7b0f60bf the singular multi-roster tokenizer ran
+  // against the RAW body value, so a numeric HTML character reference inside
+  // a roster name — GitHub renders `Bish&#111;p and Dallas` as the two
+  // visible authors "Bishop" and "Dallas", because `&#111;` decodes to `o` —
+  // was reduced by the sanitiser to `Bish 111 p and Dallas`. Only "dallas"
+  // matched the roster, so the multi-identity guard fell through, the value
+  // silently normalised to `dallas`, and Bishop remained eligible to review
+  // the PR they had visibly co-authored. The tokeniser must now decode
+  // decimal (`&#NNN;`) and hex (`&#xHH;` / `&#XHH;`, case-insensitive
+  // marker and digits) numeric character references before splitting, so
+  // every visible roster name is seen — and the guard fails closed on the
+  // second identity regardless of how it was encoded.
+  it('rejects singular Squad-Author values hiding roster names behind numeric character references', () => {
+    const attempts = [
+      // Decimal reference inside the first author — the exact shape Hicks
+      // flagged. `&#111;` renders as `o`, so a human PR body reader sees
+      // "Bishop and Dallas".
+      'Squad-Author: Bish&#111;p and Dallas',
+      // Same interior letter, hex form with a lowercase marker.
+      'Squad-Author: Bish&#x6f;p and Dallas',
+      // Uppercase hex marker.
+      'Squad-Author: Bish&#X6F;p and Dallas',
+      // Mixed-case hex digits.
+      'Squad-Author: Bish&#x6F;p and Dallas',
+      // Both authors obfuscated: `&#68;` = "D", `&#97;` = "a", etc. —
+      // reaches the tokeniser as "111 " with only "p and 68 allas"
+      // pre-fix, so neither roster name was recognised at all and the
+      // whole line silently resolved to no author.
+      'Squad-Author: Bish&#111;p and &#68;allas',
+      // Interior letter of Dallas obfuscated by hex.
+      'Squad-Author: Bishop and Da&#x6c;&#x6c;as',
+      // Numeric-reference-encoded separator (`&#32;` is space) plus a
+      // decimal-encoded interior letter: pre-fix the sanitiser stripped
+      // both `&#;` sequences and yielded `Bish 111 p 32 and 32 Dallas`,
+      // still matching only "dallas". Post-fix both decode to their
+      // characters and the tokeniser sees "bishop and dallas".
+      'Squad-Author: Bish&#111;p&#32;and&#32;Dallas',
+      // Leading-zero-padded and long-form hex digits: parseInt handles
+      // both, so a padded encoding must not slip past.
+      'Squad-Author: Bish&#x00006F;p and Dallas',
+      'Squad-Author: Bish&#0000111;p and Dallas',
+      // Decorated first author with an obfuscated second author — the
+      // shape reviewers flagged as most alarming, extended to the
+      // entity-encoded case: the pre-fix parser normalised to the last
+      // token only.
+      'Squad-Author: squad:🔍 Bishop and &#68;allas',
+    ];
+    for (const prBody of attempts) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // Guard the specific defect: no partial resolution to the LAST
+      // token that would leave the first co-author eligible to
+      // self-review, and no fall-through to branch or issue-label
+      // inference because a Squad-Author line is present.
+      expect([...resolved.members], prBody).toEqual([]);
+      const withInference = resolveAuthorMembers({
+        prBody,
+        branchName: 'squad/1-ripley-issue',
+        linkedIssueLabels: ['squad:ripley'],
+        roster,
+      });
+      expect(withInference.members.size, prBody).toBe(0);
+      expect(withInference.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // In-scope BLOCKED path fires; scope-first ordering keeps
+      // unlabelled PRs NOT_APPLICABLE even with this declaration error.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+      const outOfScope = gate({
+        squadLabeled: false,
+        authorDeclarationError: resolved.declarationError,
+      });
+      expect(outOfScope.state, prBody).toBe('success');
+      expect(outOfScope.scope, prBody).toBe('out-of-scope');
+    }
+  });
+
+  // Malformed or out-of-range numeric character references must not crash
+  // the decoder and must not accidentally restore a hidden roster token
+  // through the substitution: an unterminated reference, non-digit body,
+  // surrogate code point, or code point past U+10FFFF is replaced with a
+  // single space so the surrounding characters cannot re-form a roster
+  // name from what was decoded. These strings are not multi-identity
+  // shapes — they resolve normally or produce no roster identity at all —
+  // and the decoder must handle them without throwing.
+  it('handles malformed and out-of-range numeric character references without opening a bypass', () => {
+    // Unterminated reference (no closing `;`): not decoded at all, sanitiser
+    // strips `&#` to whitespace, and only Dallas survives as a roster
+    // token — so this remains a legitimate single-author declaration for
+    // dallas, exactly as a raw `Bish&#111p and Dallas` would render (the
+    // browser does not decode a reference without a terminating semicolon
+    // either).
+    const unterminated = resolveAuthorMembers({
+      prBody: 'Squad-Author: Bish&#111p and Dallas',
+      roster,
+    });
+    // The tokeniser sees only "dallas" here, so the singular value
+    // normalises to a single roster identity. The point of this case is
+    // that the decoder does not throw and does not smuggle a bishop
+    // token in from the malformed reference.
+    expect(
+      unterminated.members.size === 0 || unterminated.members.has('dallas'),
+      'Squad-Author: Bish&#111p and Dallas',
+    ).toBe(true);
+    expect(unterminated.members.has('bishop')).toBe(false);
+
+    // Non-digit hex body: regex simply does not match, so no decoding
+    // happens. Same reasoning as above — dallas remains the only visible
+    // roster token.
+    const nonDigits = resolveAuthorMembers({
+      prBody: 'Squad-Author: Bish&#xZZZ;p and Dallas',
+      roster,
+    });
+    expect(nonDigits.members.has('bishop')).toBe(false);
+
+    // Surrogate code point (U+D800): replaced with a space by the
+    // decoder, so it cannot re-form Bishop. Dallas is still detected
+    // through the raw tokeniser path — the assertion here is only that
+    // the surrogate did not silently restore Bishop.
+    const surrogate = resolveAuthorMembers({
+      prBody: 'Squad-Author: Bish&#xD800;p and Dallas',
+      roster,
+    });
+    expect(surrogate.members.has('bishop')).toBe(false);
+
+    // Above U+10FFFF: replaced with a space; must not throw.
+    const outOfRange = resolveAuthorMembers({
+      prBody: 'Squad-Author: Bish&#x110000;p and Dallas',
+      roster,
+    });
+    expect(outOfRange.members.has('bishop')).toBe(false);
+
+    // Legitimate decorated singular values are entirely free of numeric
+    // references, so the decoder must be a no-op for them.
+    const decorated = resolveAuthorMembers({
+      prBody: 'Squad-Author: squad:🔍 Bishop',
+      roster,
+    });
+    expect(decorated.declarationError).toBeUndefined();
+    expect([...decorated.members]).toEqual(['bishop']);
+    expect(decorated.source).toBe('PR body Squad-Author');
+  });
+
   // Regression: at final SHA 86cb9c88 the workflow short-circuited on any
   // authorDeclarationError BEFORE it determined `squadLabeled`, so a fork /
   // human / dependency PR whose body happened to contain author-looking

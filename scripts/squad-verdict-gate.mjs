@@ -274,6 +274,49 @@ const sensitiveProse =
   /(^|\/)(security|threat[-_ ]?model|licen[cs]e|notice|copying|code[-_ ]?of[-_ ]?conduct|api[-_ ]?contract)(\.[a-z0-9]+)?$/i;
 
 /**
+ * Decode HTML numeric character references (decimal `&#NNN;` and hex
+ * `&#xHH;` / `&#XHH;`, case-insensitive marker and digits) to their code
+ * points. Applied to a singular `Squad-Author:` value before the multi-
+ * roster tokenization so entity-obfuscated roster names — e.g. GitHub
+ * rendering `Bish&#111;p and Dallas` as the two visible authors "Bishop"
+ * and "Dallas" — cannot hide the second roster identity from the fail-
+ * closed multi-identity check. The raw sanitiser used elsewhere strips
+ * `&`, `#` and `;` to whitespace, which without this decoding leaves
+ * `Bish 111 p and Dallas` and matches only Dallas as a roster token,
+ * allowing Bishop to review the PR they co-authored.
+ *
+ * Malformed and out-of-range references fail closed: an invalid code
+ * point (NaN, below U+0020, above U+10FFFF, or in the surrogate range
+ * U+D800–U+DFFF) is replaced with a single space so the surrounding
+ * characters cannot accidentally re-form a roster token from the
+ * substitution. `String.fromCodePoint` is additionally guarded to fall
+ * back to a space if it throws for any reason.
+ */
+function decodeHtmlNumericCharacterReferences(value) {
+  return value.replace(
+    /&#(?:([xX])([0-9a-fA-F]+)|([0-9]+));/g,
+    (_match, hexMarker, hexDigits, decDigits) => {
+      const codePoint = hexMarker
+        ? Number.parseInt(hexDigits, 16)
+        : Number.parseInt(decDigits, 10);
+      if (
+        !Number.isFinite(codePoint) ||
+        codePoint < 0x20 ||
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        return ' ';
+      }
+      try {
+        return String.fromCodePoint(codePoint);
+      } catch {
+        return ' ';
+      }
+    },
+  );
+}
+
+/**
  * Reduce a squad identity to its canonical lowercase token.
  * "squad:🔍 Bishop" and "Bishop" both normalize to "bishop".
  */
@@ -766,9 +809,22 @@ export function resolveAuthorMembers({
     // own token extraction here means a legitimate decorated singular form
     // (`squad:🔍 Bishop`, `BISHOP`, `fact-checker`) still tokenises to a
     // single roster identity and is admitted unchanged.
+    //
+    // Numeric character references are decoded first. Without this, an
+    // entity-obfuscated interior letter (`Bish&#111;p and Dallas`, which
+    // GitHub renders as the two visible authors "Bishop" and "Dallas")
+    // reaches the tokeniser as `Bish 111 p and Dallas` — only "dallas"
+    // matches the roster and the multi-identity guard falls through,
+    // silently normalising to `dallas` and leaving Bishop eligible to
+    // review their own PR. Decoding is scoped to this tokeniser so it
+    // cannot broaden any other path: the strict plural `Squad-Authors`
+    // regex still rejects entity syntax outright, and `normalizeMember`
+    // is only ever reached in the singular branch after this check has
+    // already failed closed on any hidden second identity.
     if (isSingular) {
       const rosterTokensFound = new Set();
-      const tokens = value
+      const decoded = decodeHtmlNumericCharacterReferences(value);
+      const tokens = decoded
         .replace(/[^A-Za-z0-9 _.-]+/gu, ' ')
         .toLowerCase()
         .split(/[\s_.]+/)
