@@ -274,6 +274,105 @@ const sensitiveProse =
   /(^|\/)(security|threat[-_ ]?model|licen[cs]e|notice|copying|code[-_ ]?of[-_ ]?conduct|api[-_ ]?contract)(\.[a-z0-9]+)?$/i;
 
 /**
+ * Decode HTML numeric character references (decimal `&#NNN;` and hex
+ * `&#xHH;` / `&#XHH;`, case-insensitive marker and digits) to their code
+ * points. Applied to a singular `Squad-Author:` value before the multi-
+ * roster tokenization so entity-obfuscated roster names — e.g. GitHub
+ * rendering `Bish&#111;p and Dallas` as the two visible authors "Bishop"
+ * and "Dallas" — cannot hide the second roster identity from the fail-
+ * closed multi-identity check. The raw sanitiser used elsewhere strips
+ * `&`, `#` and `;` to whitespace, which without this decoding leaves
+ * `Bish 111 p and Dallas` and matches only Dallas as a roster token,
+ * allowing Bishop to review the PR they co-authored.
+ *
+ * This decoder assumes its input has already been screened by
+ * `hasMalformedNumericCharacterReference`, which fails the whole
+ * singular declaration closed with a `declarationError` on any `&#`
+ * occurrence that is not a syntactically complete, code-point-safe
+ * reference. That upstream check exists because a silent substitution
+ * here — the previous behaviour, which replaced malformed or unsafe
+ * references with a single space — still left a hidden bypass: after
+ * substitution, `Bish&#xD800;p and Dallas` reached the tokeniser as
+ * `Bish p and Dallas`, matched only "dallas", and silently normalised
+ * to Dallas while leaving Bishop, the obfuscated first co-author,
+ * eligible to review their own PR. Belt-and-suspenders substitution is
+ * retained here as defence in depth: any residual unsafe code point
+ * that ever reaches this function is replaced with a single space and
+ * `String.fromCodePoint` is guarded to fall back to a space if it
+ * throws, so an unexpected caller cannot re-open the bypass.
+ */
+function decodeHtmlNumericCharacterReferences(value) {
+  return value.replace(
+    /&#(?:([xX])([0-9a-fA-F]+)|([0-9]+));/g,
+    (_match, hexMarker, hexDigits, decDigits) => {
+      const codePoint = hexMarker
+        ? Number.parseInt(hexDigits, 16)
+        : Number.parseInt(decDigits, 10);
+      if (
+        !Number.isFinite(codePoint) ||
+        codePoint < 0x20 ||
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        return ' ';
+      }
+      try {
+        return String.fromCodePoint(codePoint);
+      } catch {
+        return ' ';
+      }
+    },
+  );
+}
+
+/**
+ * Detect malformed or unsafe HTML numeric character-reference attempts in a
+ * singular `Squad-Author:` value. Every `&#` occurrence must be followed by a
+ * syntactically complete decimal (`&#[0-9]+;`) or hex (`&#[xX][0-9a-fA-F]+;`)
+ * reference whose code point is inside the safe range accepted by
+ * `decodeHtmlNumericCharacterReferences`. Anything else — an unterminated
+ * reference (`Bish&#111p and Dallas`), a non-digit body (`Bish&#xZZZ;p and
+ * Dallas`), a surrogate code point (`Bish&#xD800;p and Dallas`), a code
+ * point below U+0020, or one above U+10FFFF — is treated as malformed so
+ * the singular declaration can fail closed rather than let the decoder's
+ * silent substitution reduce the value to a single visible roster token.
+ *
+ * Scope is deliberately narrow: this is only invoked on the raw value of a
+ * singular `Squad-Author:` line. The strict plural `Squad-Authors` regex
+ * already rejects any `&#` shape outright by lexical validation, and no
+ * other code path decodes numeric references, so no other surface is
+ * disturbed.
+ */
+function hasMalformedNumericCharacterReference(value) {
+  let index = value.indexOf('&#');
+  while (index !== -1) {
+    const terminator = value.indexOf(';', index + 2);
+    if (terminator === -1) {
+      return true;
+    }
+    const body = value.slice(index + 2, terminator);
+    let codePoint;
+    if (/^[xX][0-9a-fA-F]+$/.test(body)) {
+      codePoint = Number.parseInt(body.slice(1), 16);
+    } else if (/^[0-9]+$/.test(body)) {
+      codePoint = Number.parseInt(body, 10);
+    } else {
+      return true;
+    }
+    if (
+      !Number.isFinite(codePoint) ||
+      codePoint < 0x20 ||
+      codePoint > 0x10ffff ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff)
+    ) {
+      return true;
+    }
+    index = value.indexOf('&#', terminator + 1);
+  }
+  return false;
+}
+
+/**
  * Reduce a squad identity to its canonical lowercase token.
  * "squad:🔍 Bishop" and "Bishop" both normalize to "bishop".
  */
@@ -338,10 +437,6 @@ function countMatches(pattern, body) {
   // More than one occurrence of a field is ambiguous regardless of whether the
   // values agree, so it is not evidence.
   return values.length === 1 ? values[0] : undefined;
-}
-
-function singleMatch(pattern, body) {
-  return countMatches(pattern, sanitizeBody(body));
 }
 
 /**
@@ -673,7 +768,9 @@ export function classifyChangeScope(paths) {
  *
  * GitHub-account authorship is useless here because every agent acts through
  * the same owner token, so authorship is resolved at the squad-identity level:
- *   1. an explicit `Squad-Author: <member>` line in the PR body,
+ *   1. explicit `Squad-Author: <member>` or
+ *      `Squad-Authors: <member>, <member>` roster-author declaration(s), plus
+ *      an optional `Squad-External-Authors: <identity>, <identity>` declaration,
  *   2. otherwise the `squad:{member}` labels on the issues the PR closes,
  *   3. otherwise a known member token in the head branch name.
  */
@@ -683,21 +780,204 @@ export function resolveAuthorMembers({
   linkedIssueLabels = [],
   roster = new Set(),
 } = {}) {
-  const declared = singleMatch(
-    /^[ \t>]*Squad-Author:[ \t]*(.+?)[ \t]*$/gim,
-    prBody,
+  const declarations = [
+    ...sanitizeBody(prBody).matchAll(
+      /^[ \t]*Squad-(Author|Authors|External-Authors):[ \t]*(.*?)[ \t]*$/gim,
+    ),
+  ];
+  const rosterDeclarations = declarations.filter(
+    ([, kind]) => kind.toLowerCase() !== 'external-authors',
   );
-  const declaredMember = normalizeMember(declared);
-  if (declaredMember) {
+  const externalDeclarations = declarations.filter(
+    ([, kind]) => kind.toLowerCase() === 'external-authors',
+  );
+  if (rosterDeclarations.length > 1 || externalDeclarations.length > 1) {
     return {
-      members: new Set([declaredMember]),
-      source: 'PR body Squad-Author',
+      members: new Set(),
+      externalAuthors: new Set(),
+      source: 'invalid PR body author declaration',
+      declarationError:
+        'multiple or conflicting Squad author declarations are ambiguous',
+    };
+  }
+
+  const externalAuthors = new Set();
+  if (externalDeclarations.length === 1) {
+    const [, , value] = externalDeclarations[0];
+    const rawExternalAuthors = value.split(',');
+    if (
+      value.trim() === '' ||
+      rawExternalAuthors.some(
+        (author) => !/^[a-z][a-z0-9-]{1,31}$/.test(author.trim()),
+      ) ||
+      new Set(rawExternalAuthors.map((author) => author.trim())).size !==
+        rawExternalAuthors.length ||
+      rawExternalAuthors.some((author) => roster.has(author.trim()))
+    ) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'external authors must be distinct lowercase non-roster identities separated only by commas',
+      };
+    }
+    for (const author of rawExternalAuthors) {
+      externalAuthors.add(author.trim());
+    }
+  }
+
+  if (rosterDeclarations.length === 1) {
+    const [, kind, value] = rosterDeclarations[0];
+    const isSingular = kind.toLowerCase() === 'author';
+    // Singular `Squad-Author` predates the strict comma-separated lexical
+    // prevalidation and historically accepted decorated roster forms such as
+    // `squad:🔍 Bishop`, deferring validation to `normalizeMember` + roster
+    // membership. Preserve that backward compatibility for the singular form
+    // only; plural `Squad-Authors` stays strict so a decorated token cannot
+    // hide a comma-splitting or duplication bug.
+    //
+    // But a comma inside a singular value is unambiguously a malformed
+    // multi-author declaration (`Squad-Author: Bishop, Dallas`), and legacy
+    // `normalizeMember` silently normalised such input to its FINAL identity
+    // only — leaving the first author eligible as a reviewer. Fail closed on
+    // that shape while still admitting comma-free decorated singular values.
+    if (isSingular && value.includes(',')) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+          'for multiple roster authors',
+      };
+    }
+    // Belt-and-suspenders: a literal comma is not the only way to smuggle a
+    // second author into a singular value. GitHub renders `&#44;` as `,`, and
+    // prose or symbolic joiners (`Bishop and Dallas`, `Bishop/Dallas`,
+    // `Bishop & Dallas`) all reach `normalizeMember` — which silently returns
+    // the LAST token — as apparently-single strings that would leave the
+    // first author eligible to review under the reviewer-is-not-the-author
+    // heuristic. Reject any singular value whose visible tokens include two
+    // or more distinct roster identities, regardless of the separator
+    // encoding, without disturbing the shared body-sanitisation semantics or
+    // the strict plural `Squad-Authors` path. Applying `normalizeMember`'s
+    // own token extraction here means a legitimate decorated singular form
+    // (`squad:🔍 Bishop`, `BISHOP`, `fact-checker`) still tokenises to a
+    // single roster identity and is admitted unchanged.
+    //
+    // Numeric character references are decoded first. Without this, an
+    // entity-obfuscated interior letter (`Bish&#111;p and Dallas`, which
+    // GitHub renders as the two visible authors "Bishop" and "Dallas")
+    // reaches the tokeniser as `Bish 111 p and Dallas` — only "dallas"
+    // matches the roster and the multi-identity guard falls through,
+    // silently normalising to `dallas` and leaving Bishop eligible to
+    // review their own PR. Decoding is scoped to this tokeniser so it
+    // cannot broaden any other path: the strict plural `Squad-Authors`
+    // regex still rejects entity syntax outright, and `normalizeMember`
+    // is only ever reached in the singular branch after this check has
+    // already failed closed on any hidden second identity.
+    //
+    // Before decoding runs, malformed or unsafe numeric character-reference
+    // syntax fails the whole singular declaration closed. Hicks flagged
+    // three shapes that the decoder's silent substitution left as hidden
+    // bypasses in the singular branch: `Bish&#111p and Dallas` (missing
+    // terminating semicolon — regex does not match, sanitiser reduces to
+    // `Bish 111p and Dallas`, only "dallas" matches), `Bish&#xZZZ;p and
+    // Dallas` (non-hex body — regex does not match, same reduction), and
+    // `Bish&#xD800;p and Dallas` (surrogate code point — regex matches but
+    // decoder substitutes a space, reaching the tokeniser as `Bish p and
+    // Dallas`). In every case the visible-to-a-human intent was two
+    // authors, only one roster token survived, and the value silently
+    // normalised to Dallas — leaving Bishop eligible to review the PR they
+    // authored. Reject any singular value that carries a malformed or
+    // out-of-range `&#…;` attempt with `declarationError` and empty
+    // members / external authors, so the caller cannot fall through to
+    // branch-name or issue-label inference. Valid decimal (`&#111;`) and
+    // hex (`&#x6f;`) forms with a safe code point still decode below,
+    // preserving the closed multi-identity bypass for entity-obfuscated
+    // roster names.
+    if (isSingular && hasMalformedNumericCharacterReference(value)) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'singular Squad-Author contains a malformed or unsafe numeric ' +
+          'character reference; use a valid decimal (&#NNN;) or hex ' +
+          '(&#xHH;) reference to a safe code point, or Squad-Authors for ' +
+          'multiple roster authors',
+      };
+    }
+    if (isSingular) {
+      const rosterTokensFound = new Set();
+      const decoded = decodeHtmlNumericCharacterReferences(value);
+      const tokens = decoded
+        .replace(/[^A-Za-z0-9 _.-]+/gu, ' ')
+        .toLowerCase()
+        .split(/[\s_.]+/)
+        .filter(Boolean);
+      for (const token of tokens) {
+        if (roster.has(token)) {
+          rosterTokensFound.add(token);
+          if (rosterTokensFound.size > 1) {
+            return {
+              members: new Set(),
+              externalAuthors: new Set(),
+              source: 'invalid PR body author declaration',
+              declarationError:
+                'singular Squad-Author identifies multiple roster members; ' +
+                'use Squad-Authors for multiple roster authors',
+            };
+          }
+        }
+      }
+    }
+    const rawMembers = isSingular ? [value] : value.split(',');
+    if (
+      value.trim() === '' ||
+      (!isSingular &&
+        rawMembers.some(
+          (member) => !/^[A-Za-z][A-Za-z0-9-]{1,31}$/.test(member.trim()),
+        ))
+    ) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'author declarations require roster identities separated only by commas',
+      };
+    }
+
+    const members = rawMembers.map((member) => normalizeMember(member.trim()));
+    if (
+      members.some((member) => !member || !roster.has(member)) ||
+      new Set(members).size !== members.length
+    ) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'author declarations must name distinct known squad roster identities',
+      };
+    }
+
+    return {
+      members: new Set(members),
+      externalAuthors,
+      source: `PR body Squad-${kind}`,
     };
   }
 
   const fromIssues = rosterFromLabels(linkedIssueLabels);
   if (fromIssues.size > 0) {
-    return { members: fromIssues, source: 'squad: label on linked issue' };
+    return {
+      members: fromIssues,
+      externalAuthors,
+      source: 'squad: label on linked issue',
+    };
   }
 
   const branchTokens = branchName
@@ -706,10 +986,10 @@ export function resolveAuthorMembers({
     .filter(Boolean);
   const fromBranch = new Set(branchTokens.filter((token) => roster.has(token)));
   if (fromBranch.size > 0) {
-    return { members: fromBranch, source: 'head branch name' };
+    return { members: fromBranch, externalAuthors, source: 'head branch name' };
   }
 
-  return { members: new Set(), source: 'unresolved' };
+  return { members: new Set(), externalAuthors, source: 'unresolved' };
 }
 
 function shortSha(sha) {
@@ -739,7 +1019,9 @@ export function evaluateGate({
   reviews = [],
   roster = new Set(),
   authorMembers = new Set(),
+  externalAuthors = new Set(),
   authorSource = 'unresolved',
+  authorDeclarationError,
   squadLabeled = false,
   // Old head SHAs (see `isCarriedAcrossSync`) the caller has already proven
   // introduce nothing but base-branch commits since they were reviewed. A
@@ -763,9 +1045,19 @@ export function evaluateGate({
   }
 
   // 0. Scope. The gate covers squad-authored PRs, identified by the `squad`
-  //    label. Everything else — dependency bumps, ad-hoc human PRs — is out of
-  //    scope and reports NOT_APPLICABLE rather than a red BLOCKED that no one
-  //    can clear without staging a fake agent review.
+  //    label. Everything else — dependency bumps, ad-hoc human PRs, fork
+  //    contributions whose body text happens to contain author-looking prose
+  //    — is out of scope and reports NOT_APPLICABLE rather than a red BLOCKED
+  //    that no one can clear without staging a fake agent review.
+  //
+  //    Scope is decided BEFORE any policy check that could otherwise force an
+  //    out-of-scope PR into a blocking status. In particular,
+  //    `authorDeclarationError` is evaluated only for a PR that is already in
+  //    scope: a malformed `Squad-Author:` string sitting in a non-squad PR's
+  //    body must remain NOT_APPLICABLE, since the gate does not gate that PR
+  //    at all. This ordering is load-bearing — reversing it would let any
+  //    fork / human / dependency PR be pushed into a red gate by body text
+  //    the outsider fully controls.
   //
   //    This is safe as opt-in scoping ONLY because Ralph refuses to auto-merge
   //    an unlabelled PR (see squadScopeLabel). Out of scope means "a human
@@ -905,6 +1197,37 @@ export function evaluateGate({
     }
   }
 
+  // 3. In-scope malformed author declaration. Runs AFTER both owner-override
+  //    paths above so a trusted current-head administrator approval (via the
+  //    GitHub review UI or an owner-comment record) can still clear the gate
+  //    on an in-scope PR whose declaration failed to parse — the owner is the
+  //    principal ultimately accountable for the merge, and a declaration
+  //    typo cannot lock them out of a repository they administer. Absent any
+  //    such override, `resolveAuthorMembers` has already refused to fall back
+  //    to branch / issue-label inference when the declaration is invalid (its
+  //    `members` set is empty and `source` names the error), so the gate must
+  //    not silently proceed to the reviewer-count evaluation with an
+  //    unresolved author — that would let the malformed shape pass by leaving
+  //    the reviewer-is-not-the-author heuristic with nothing to compare
+  //    against. Fail closed here instead.
+  if (
+    typeof authorDeclarationError === 'string' &&
+    authorDeclarationError !== ''
+  ) {
+    return {
+      state: 'failure',
+      passed: false,
+      description: truncate(
+        `BLOCKED @ ${shortSha(head)}: invalid Squad author declaration`,
+      ),
+      reason: authorDeclarationError,
+      notes: [`Rejected author declaration: ${authorDeclarationError}.`],
+      requiredMembers: [],
+      approvals: [],
+      stale: [],
+    };
+  }
+
   const scope = classifyChangeScope(changedPaths);
   notes.push(
     scope.docsOnly
@@ -919,6 +1242,12 @@ export function evaluateGate({
     notes.push(
       'PR author squad identity could not be resolved; the reviewer-is-not-the-' +
         'author quality heuristic is applied only against the roster.',
+    );
+  }
+  if (externalAuthors.size > 0) {
+    notes.push(
+      `PR also declares external content author identities: ${[...externalAuthors].join(', ')}. ` +
+        'They are audit-only and cannot be reviewer identities.',
     );
   }
   notes.push(

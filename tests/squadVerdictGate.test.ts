@@ -1158,6 +1158,667 @@ describe('resolving the authoring squad member', () => {
     expect(resolved.source).toMatch(/Squad-Author/);
   });
 
+  it('accepts a decorated singular Squad-Author value for backward compatibility', () => {
+    const resolved = resolveAuthorMembers({
+      prBody: 'Squad-Author: squad:🔍 Bishop\n\nCloses #1',
+      roster,
+    });
+    expect([...resolved.members]).toEqual(['bishop']);
+    expect(resolved.declarationError).toBeUndefined();
+    expect(resolved.source).toBe('PR body Squad-Author');
+  });
+
+  it('accepts roster and external author declarations while excluding every roster author', () => {
+    const resolved = resolveAuthorMembers({
+      prBody: [
+        'Squad-Authors: Bishop, Ripley, Dallas, Vasquez',
+        'Squad-External-Authors: release-time-repair, external-gate-author',
+      ].join('\n'),
+      roster,
+    });
+    expect([...resolved.members]).toEqual([
+      'bishop',
+      'ripley',
+      'dallas',
+      'vasquez',
+    ]);
+    expect([...resolved.externalAuthors]).toEqual([
+      'release-time-repair',
+      'external-gate-author',
+    ]);
+    expect(resolved.declarationError).toBeUndefined();
+
+    const result = gate({
+      comments: [
+        comment('bishop', 'APPROVE'),
+        comment('hicks', 'APPROVE'),
+        comment('vasquez', 'APPROVE'),
+        comment('dallas', 'APPROVE'),
+        comment('ripley', 'APPROVE'),
+      ],
+      authorMembers: resolved.members,
+      externalAuthors: resolved.externalAuthors,
+      authorSource: resolved.source,
+    });
+    expect(result.state).toBe('failure');
+    expect(result.description).toMatch(/reviewer bishop is the PR author/);
+  });
+
+  it('uses exactly three distinct eligible roster reviewers for multiple panel authors', () => {
+    const result = gate({
+      comments: [
+        comment('hicks', 'APPROVE'),
+        comment('rai', 'APPROVE'),
+        comment('fact-checker', 'APPROVE'),
+        comment('rai', 'APPROVE', headSha, {
+          id: 1000001,
+          created_at: '2026-08-08T02:00:00Z',
+        }),
+      ],
+      authorMembers: new Set(['bishop', 'ripley', 'dallas', 'vasquez']),
+      externalAuthors: new Set(['release-time-repair', 'external-gate-author']),
+      authorSource: 'PR body Squad-Authors',
+    });
+    expect(result.passed).toBe(true);
+    expect(result.approvals).toEqual(['fact-checker', 'hicks', 'rai']);
+  });
+
+  it('rejects malformed, unknown, duplicated, and conflicting declarations', () => {
+    for (const prBody of [
+      'Squad-Authors: bishop; vasquez',
+      'Squad-Authors: bishop, bishop',
+      'Squad-Authors: bishop, sulaco',
+      'Squad-Authors: ',
+      'Squad-Author: bishop\nSquad-Authors: vasquez, hicks',
+      'Squad-External-Authors: bishop',
+      'Squad-External-Authors: release-time-repair, release-time-repair',
+      'Squad-External-Authors: release-time-repair; external-gate-author',
+    ]) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size).toBe(0);
+      expect(resolved.declarationError).toBeTruthy();
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+      ).toBe('failure');
+    }
+  });
+
+  // Regression: at final SHA 86cb9c88, `Squad-Author: Bishop, Dallas` silently
+  // normalised to only the FINAL identity (`dallas`) via `normalizeMember`,
+  // leaving Bishop — the actual first co-author of the PR — eligible to
+  // record their own review under the reviewer-is-not-the-author heuristic.
+  // A comma inside the singular declaration is unambiguously a malformed
+  // multi-author declaration and must fail closed. Meanwhile the legacy
+  // decorated singular shape (`squad:🔍 Bishop`, no comma) must still
+  // resolve, so the backward-compat surface the previous revision preserved
+  // is not weakened.
+  it('rejects a comma-separated malformed singular Squad-Author (regression)', () => {
+    for (const prBody of [
+      'Squad-Author: Bishop, Dallas',
+      'Squad-Author: bishop, dallas',
+      'Squad-Author: Bishop, Dallas, Ripley',
+      'Squad-Author: Bishop,',
+      'Squad-Author: , Dallas',
+      // Even a decorated first author followed by a real second identity must
+      // fail — this is the exact shape at final SHA 86cb9c88 that normalised
+      // to only `dallas` because `normalizeMember` returned the last token.
+      'Squad-Author: squad:🔍 Bishop, Dallas',
+    ]) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+      // The in-scope BLOCKED path still fires when scope is confirmed.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+    }
+  });
+
+  it('still accepts every backward-compatible decorated singular Squad-Author', () => {
+    // The disqualifying shapes added to singular parsing are (a) a literal
+    // comma and (b) any value whose tokens contain two or more distinct
+    // roster identities. The legacy `normalizeMember` surface (emoji,
+    // `squad:` prefix, mixed case, internal whitespace / underscores / dots)
+    // still resolves so PRs opened against the pre-strict-plural gate keep
+    // passing.
+    const acceptable: Array<[string, string]> = [
+      ['Squad-Author: Bishop', 'bishop'],
+      ['Squad-Author: bishop', 'bishop'],
+      ['Squad-Author: squad:🔍 Bishop', 'bishop'],
+      ['Squad-Author: squad:Bishop', 'bishop'],
+      ['Squad-Author: BISHOP', 'bishop'],
+      ['Squad-Author: 🔍Bishop', 'bishop'],
+      ['Squad-Author:   Bishop  ', 'bishop'],
+      // Roster identities with an internal hyphen are single tokens and pass
+      // through `normalizeMember` unchanged — no comma is present, so the
+      // singular path admits them.
+      ['Squad-Author: fact-checker', 'fact-checker'],
+    ];
+    for (const [prBody, expected] of acceptable) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.declarationError, prBody).toBeUndefined();
+      expect([...resolved.members], prBody).toEqual([expected]);
+      expect(resolved.source, prBody).toBe('PR body Squad-Author');
+    }
+  });
+
+  // Regression: the singular repair at final SHA 2fa2a314 only rejected a
+  // literal comma. That is one of several shapes GitHub renders as a
+  // multi-author declaration — but the others (`Bishop and Dallas`,
+  // `Bishop/Dallas`, `Bishop & Dallas`, `Bishop&#44; Dallas`) all reach
+  // `normalizeMember`, which silently returns the LAST token and drops the
+  // first co-author. That leaves the first author eligible to record their
+  // own review under the reviewer-is-not-the-author heuristic, defeating the
+  // very quality control the singular repair was meant to restore. Every
+  // shape that visibly identifies two or more roster members must now fail
+  // closed, regardless of the separator encoding, and the fail-closed path
+  // must not fall back to the branch-name or linked-issue inference.
+  it('rejects singular Squad-Author values encoding multiple roster identities without a literal comma', () => {
+    const attempts = [
+      // Prose joiner. `Bishop and Dallas` tokenises to
+      // ["bishop", "and", "dallas"] — `normalizeMember` pops "dallas" and
+      // silently drops Bishop, so pre-fix Bishop could review their own PR.
+      'Squad-Author: Bishop and Dallas',
+      'Squad-Author: bishop AND dallas',
+      'Squad-Author: Bishop or Dallas',
+      // Symbolic separators the sanitiser reduces to whitespace but
+      // `normalizeMember` still collapses to a single trailing token.
+      'Squad-Author: Bishop/Dallas',
+      'Squad-Author: Bishop / Dallas',
+      'Squad-Author: Bishop & Dallas',
+      'Squad-Author: Bishop&Dallas',
+      'Squad-Author: Bishop + Dallas',
+      'Squad-Author: Bishop; Dallas',
+      // GitHub renders the numeric-decimal HTML entity `&#44;` as a literal
+      // comma in a rendered PR body, but the API returns the raw text — so
+      // the literal-comma check alone cannot see it. The tokeniser must:
+      // the `&`, `#` and `;` all reduce to whitespace, leaving "bishop"
+      // and "dallas" as separate roster identities.
+      'Squad-Author: Bishop&#44; Dallas',
+      'Squad-Author: Bishop&#44;Dallas',
+      // Named / hex entity spellings render the same way; regenerating a
+      // singular value with either form must not slip past.
+      'Squad-Author: Bishop&comma; Dallas',
+      'Squad-Author: Bishop&#x2c; Dallas',
+      // Decorated first author, real second author — the exact shape
+      // reviewers flagged as most alarming: the pre-fix parser resolved
+      // this to `dallas` only, leaving the decorated Bishop mention as
+      // apparently-absent from the declaration while the human PR body
+      // clearly credited both.
+      'Squad-Author: squad:🔍 Bishop / Dallas',
+      'Squad-Author: squad:🔍 Bishop & Dallas',
+      'Squad-Author: squad:🔍 Bishop and Dallas',
+    ];
+    for (const prBody of attempts) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // Guard the exact defect: no partial resolution to the LAST token
+      // (`dallas`) that would have left Bishop eligible to self-review.
+      expect([...resolved.members], prBody).toEqual([]);
+
+      // A malformed declaration must NOT fall back to branch-name or
+      // linked-issue inference — the presence of a Squad-Author line still
+      // owns the outcome, and the outcome is a hard error.
+      const withInference = resolveAuthorMembers({
+        prBody,
+        branchName: 'squad/1-ripley-issue',
+        linkedIssueLabels: ['squad:ripley'],
+        roster,
+      });
+      expect(withInference.members.size, prBody).toBe(0);
+      expect(withInference.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // In-scope BLOCKED path still fires when scope is confirmed.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+
+      // Scope-first ordering must still hold: an unlabelled PR carrying one
+      // of these attacker-controllable body strings stays NOT_APPLICABLE,
+      // never surfacing as BLOCKED — the property that keeps opt-in
+      // scoping safe.
+      const outOfScope = gate({
+        squadLabeled: false,
+        authorDeclarationError: resolved.declarationError,
+      });
+      expect(outOfScope.state, prBody).toBe('success');
+      expect(outOfScope.scope, prBody).toBe('out-of-scope');
+    }
+  });
+
+  // Regression: at final SHA 7b0f60bf the singular multi-roster tokenizer ran
+  // against the RAW body value, so a numeric HTML character reference inside
+  // a roster name — GitHub renders `Bish&#111;p and Dallas` as the two
+  // visible authors "Bishop" and "Dallas", because `&#111;` decodes to `o` —
+  // was reduced by the sanitiser to `Bish 111 p and Dallas`. Only "dallas"
+  // matched the roster, so the multi-identity guard fell through, the value
+  // silently normalised to `dallas`, and Bishop remained eligible to review
+  // the PR they had visibly co-authored. The tokeniser must now decode
+  // decimal (`&#NNN;`) and hex (`&#xHH;` / `&#XHH;`, case-insensitive
+  // marker and digits) numeric character references before splitting, so
+  // every visible roster name is seen — and the guard fails closed on the
+  // second identity regardless of how it was encoded.
+  it('rejects singular Squad-Author values hiding roster names behind numeric character references', () => {
+    const attempts = [
+      // Decimal reference inside the first author — the exact shape Hicks
+      // flagged. `&#111;` renders as `o`, so a human PR body reader sees
+      // "Bishop and Dallas".
+      'Squad-Author: Bish&#111;p and Dallas',
+      // Same interior letter, hex form with a lowercase marker.
+      'Squad-Author: Bish&#x6f;p and Dallas',
+      // Uppercase hex marker.
+      'Squad-Author: Bish&#X6F;p and Dallas',
+      // Mixed-case hex digits.
+      'Squad-Author: Bish&#x6F;p and Dallas',
+      // Both authors obfuscated: `&#68;` = "D", `&#97;` = "a", etc. —
+      // reaches the tokeniser as "111 " with only "p and 68 allas"
+      // pre-fix, so neither roster name was recognised at all and the
+      // whole line silently resolved to no author.
+      'Squad-Author: Bish&#111;p and &#68;allas',
+      // Interior letter of Dallas obfuscated by hex.
+      'Squad-Author: Bishop and Da&#x6c;&#x6c;as',
+      // Numeric-reference-encoded separator (`&#32;` is space) plus a
+      // decimal-encoded interior letter: pre-fix the sanitiser stripped
+      // both `&#;` sequences and yielded `Bish 111 p 32 and 32 Dallas`,
+      // still matching only "dallas". Post-fix both decode to their
+      // characters and the tokeniser sees "bishop and dallas".
+      'Squad-Author: Bish&#111;p&#32;and&#32;Dallas',
+      // Leading-zero-padded and long-form hex digits: parseInt handles
+      // both, so a padded encoding must not slip past.
+      'Squad-Author: Bish&#x00006F;p and Dallas',
+      'Squad-Author: Bish&#0000111;p and Dallas',
+      // Decorated first author with an obfuscated second author — the
+      // shape reviewers flagged as most alarming, extended to the
+      // entity-encoded case: the pre-fix parser normalised to the last
+      // token only.
+      'Squad-Author: squad:🔍 Bishop and &#68;allas',
+    ];
+    for (const prBody of attempts) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // Guard the specific defect: no partial resolution to the LAST
+      // token that would leave the first co-author eligible to
+      // self-review, and no fall-through to branch or issue-label
+      // inference because a Squad-Author line is present.
+      expect([...resolved.members], prBody).toEqual([]);
+      const withInference = resolveAuthorMembers({
+        prBody,
+        branchName: 'squad/1-ripley-issue',
+        linkedIssueLabels: ['squad:ripley'],
+        roster,
+      });
+      expect(withInference.members.size, prBody).toBe(0);
+      expect(withInference.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // In-scope BLOCKED path fires; scope-first ordering keeps
+      // unlabelled PRs NOT_APPLICABLE even with this declaration error.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+      const outOfScope = gate({
+        squadLabeled: false,
+        authorDeclarationError: resolved.declarationError,
+      });
+      expect(outOfScope.state, prBody).toBe('success');
+      expect(outOfScope.scope, prBody).toBe('out-of-scope');
+    }
+  });
+
+  // Malformed or unsafe numeric character references inside a singular
+  // `Squad-Author:` declaration must fail the whole declaration closed
+  // rather than let the decoder's silent substitution reduce the value to
+  // a single visible roster token. Hicks flagged three canonical shapes:
+  // an unterminated reference (`Bish&#111p and Dallas`, no `;`), a
+  // non-digit hex body (`Bish&#xZZZ;p and Dallas`), and a surrogate code
+  // point (`Bish&#xD800;p and Dallas`). Pre-fix, the first two never
+  // matched the decoder regex — the sanitiser stripped `&#` to whitespace
+  // and only "dallas" survived as a roster token, silently normalising to
+  // Dallas — while the third matched but was replaced with a space,
+  // leaving `Bish p and Dallas` with only "dallas" again. In every case
+  // Bishop, the obfuscated first co-author, stayed eligible to review the
+  // PR they had authored. The declaration must now be rejected outright,
+  // with no fall-through to branch-name or issue-label inference, and the
+  // gate must fire BLOCKED on the resulting declarationError for a
+  // labelled PR.
+  it('rejects malformed or unsafe numeric character-reference syntax in a singular Squad-Author (Hicks regression)', () => {
+    const attempts = [
+      // Missing terminating semicolon — Hicks' first example.
+      'Squad-Author: Bish&#111p and Dallas',
+      // Non-hex body — Hicks' second example.
+      'Squad-Author: Bish&#xZZZ;p and Dallas',
+      // Surrogate code point — Hicks' third example.
+      'Squad-Author: Bish&#xD800;p and Dallas',
+      // Adjacent shapes that share the same fail-closed rationale: any
+      // `&#…;` whose code point sits outside the safe range the decoder
+      // accepts is a hidden-bypass attempt too, because the pre-fix
+      // decoder substituted a space and left only "dallas" visible.
+      // Above U+10FFFF.
+      'Squad-Author: Bish&#x110000;p and Dallas',
+      // High surrogate boundary.
+      'Squad-Author: Bish&#xDFFF;p and Dallas',
+      // Low control code point (below U+0020).
+      'Squad-Author: Bish&#0;p and Dallas',
+      'Squad-Author: Bish&#x1F;p and Dallas',
+      // Malformed syntax variants that also fell through the pre-fix
+      // decoder without matching: empty body, non-decimal-non-hex body,
+      // and a stray `&#` with no terminator at all.
+      'Squad-Author: Bish&#;p and Dallas',
+      'Squad-Author: Bish&#foo;p and Dallas',
+      'Squad-Author: Bish&#p and Dallas',
+      'Squad-Author: Bish&#x;p and Dallas',
+      // The malformed reference must also fail closed when it sits
+      // alongside a decorated first author, because the singular branch
+      // reaches `normalizeMember`'s last-token behaviour otherwise.
+      'Squad-Author: squad:🔍 Bishop and &#68p allas',
+    ];
+    for (const prBody of attempts) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.externalAuthors.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // Guard the specific defect: no silent normalisation to the last
+      // surviving roster token (Dallas) that would leave the obfuscated
+      // Bishop mention eligible to review.
+      expect(resolved.members.has('dallas'), prBody).toBe(false);
+      expect(resolved.members.has('bishop'), prBody).toBe(false);
+
+      // No fall-through to branch or issue-label inference: the presence
+      // of a Squad-Author line — even a malformed one — pins the source
+      // to the declaration error, so an outsider cannot recover
+      // authorship through the branch name they control.
+      const withInference = resolveAuthorMembers({
+        prBody,
+        branchName: 'squad/1-ripley-issue',
+        linkedIssueLabels: ['squad:ripley'],
+        roster,
+      });
+      expect(withInference.members.size, prBody).toBe(0);
+      expect(withInference.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+
+      // In-scope BLOCKED path fires; scope-first ordering keeps
+      // unlabelled PRs NOT_APPLICABLE even with this declaration error.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+      const outOfScope = gate({
+        squadLabeled: false,
+        authorDeclarationError: resolved.declarationError,
+      });
+      expect(outOfScope.state, prBody).toBe('success');
+      expect(outOfScope.scope, prBody).toBe('out-of-scope');
+    }
+  });
+
+  // The malformed-reference rejection must NOT touch the valid decimal /
+  // hex paths that close the entity-obfuscated multi-author bypass. The
+  // three canonical shapes below decode to real letters ("o" and "D") and
+  // therefore reach the multi-identity guard with two visible roster
+  // tokens, which is the pre-existing `singular Squad-Author identifies
+  // multiple roster members` rejection — not the new malformed-reference
+  // rejection. Assert both the fail-closed outcome and that the specific
+  // pre-existing error message is used, so a future revision cannot
+  // silently collapse the two paths and weaken either one.
+  it('still closes the entity-obfuscated multi-author bypass through valid decimal/hex references', () => {
+    for (const prBody of [
+      // Decimal reference — `&#111;` = "o", so this decodes to
+      // "Bishop and Dallas".
+      'Squad-Author: Bish&#111;p and Dallas',
+      // Hex reference — `&#x6f;` = "o".
+      'Squad-Author: Bish&#x6f;p and Dallas',
+      // Uppercase hex marker plus mixed-case digits.
+      'Squad-Author: Bish&#X6F;p and Dallas',
+      // Zero-padded reference — still a safe code point.
+      'Squad-Author: Bish&#x00006F;p and Dallas',
+      'Squad-Author: Bish&#0000111;p and Dallas',
+      // Both authors obfuscated with valid references (`&#68;` = "D").
+      'Squad-Author: Bish&#111;p and &#68;allas',
+    ]) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBe(
+        'singular Squad-Author identifies multiple roster members; ' +
+          'use Squad-Authors for multiple roster authors',
+      );
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+    }
+  });
+
+  // Valid, safe numeric references that do NOT hide a second roster
+  // identity must not trip the new malformed-reference gate. There is no
+  // singular value that both contains a numeric character reference and
+  // resolves to a real roster member — `normalizeMember` does not decode
+  // entities, so any reference-bearing value ultimately fails on the
+  // unknown-token path — but the malformed-reference gate itself must
+  // pass a valid reference through to the multi-identity guard rather
+  // than short-circuiting on it, and undecorated singular values must
+  // continue to pass through as they always have.
+  it('accepts singular Squad-Author values whose declaration carries no numeric character reference', () => {
+    const acceptable: Array<[string, string]> = [
+      ['Squad-Author: Bishop', 'bishop'],
+      ['Squad-Author: squad:🔍 Bishop', 'bishop'],
+      ['Squad-Author: fact-checker', 'fact-checker'],
+    ];
+    for (const [prBody, expected] of acceptable) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.declarationError, prBody).toBeUndefined();
+      expect([...resolved.members], prBody).toEqual([expected]);
+      expect(resolved.source, prBody).toBe('PR body Squad-Author');
+    }
+  });
+
+  // Regression: at final SHA 86cb9c88 the workflow short-circuited on any
+  // authorDeclarationError BEFORE it determined `squadLabeled`, so a fork /
+  // human / dependency PR whose body happened to contain author-looking
+  // prose (or a legitimately malformed `Squad-Author:` line) was forced into
+  // a red BLOCKED status the outsider fully controlled. The gate itself must
+  // now enforce scope-first ordering: out-of-scope PRs stay NOT_APPLICABLE
+  // regardless of declaration errors, and the in-scope BLOCKED status is
+  // reachable only for a labelled squad PR.
+  it('keeps out-of-scope PRs NOT_APPLICABLE even when a declaration error is present', () => {
+    const outOfScopeWithError = gate({
+      squadLabeled: false,
+      authorDeclarationError:
+        'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+        'for multiple roster authors',
+    });
+    expect(outOfScopeWithError.state).toBe('success');
+    expect(outOfScopeWithError.scope).toBe('out-of-scope');
+    expect(outOfScopeWithError.description).toMatch(
+      /^NOT_APPLICABLE @ [0-9a-f]{12}: not a squad PR/,
+    );
+    // Malformed author-looking body text on an out-of-scope PR must never
+    // surface as BLOCKED — that direction would let an outsider drive a
+    // fork / dependency PR into a red gate they cannot clear.
+    expect(outOfScopeWithError.description).not.toMatch(/BLOCKED/);
+    expect(outOfScopeWithError.description).not.toMatch(/invalid Squad author/);
+
+    // The in-scope BLOCKED path still fires when scope is confirmed.
+    const inScopeWithError = gate({
+      squadLabeled: true,
+      authorDeclarationError:
+        'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+        'for multiple roster authors',
+    });
+    expect(inScopeWithError.state).toBe('failure');
+    expect(inScopeWithError.description).toMatch(
+      /^BLOCKED @ [0-9a-f]{12}: invalid Squad author declaration$/,
+    );
+  });
+
+  // Regression: at SHA 8ea92011 the malformed-declaration BLOCKED path in
+  // evaluateGate preceded the owner-override paths (GitHub review approval
+  // at head, and owner-comment record), so any trusted current-head
+  // administrator approval was unable to clear the gate on a squad PR whose
+  // `Squad-Author:` line failed to parse. That direction locks an
+  // administrator out of a repository they administer over a declaration
+  // typo — the exact scenario a manual owner override exists to handle. The
+  // gate must restore the scope → owner-override → malformed ordering: an
+  // administrator approval or owner-comment override at the current head
+  // clears the gate first; the malformed BLOCKED path fires only when no
+  // such override is present. Scope-first NOT_APPLICABLE stays ahead of
+  // both, so outsider-controlled body text on an unlabelled PR still cannot
+  // reach either path.
+  it('an administrator override clears a malformed declaration on an in-scope PR', () => {
+    const malformed =
+      'singular Squad-Author cannot contain a comma; use Squad-Authors ' +
+      'for multiple roster authors';
+
+    // Path 1: administrator APPROVAL through GitHub's native review UI at
+    // the exact current head clears the malformed-declaration BLOCKED.
+    const cleared = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: headSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(cleared.state).toBe('success');
+    expect(cleared.passed).toBe(true);
+    expect(cleared.override).toBe('github-review');
+    expect(cleared.description).toMatch(/^APPROVE \(owner\) @ /);
+    expect(cleared.description).not.toMatch(/invalid Squad author/);
+
+    // Path 2: administrator CHANGES_REQUESTED through the native review UI
+    // also outranks the malformed declaration — the administrator's
+    // decisive review is the current signal, not the parse failure. This
+    // matters so a REQUEST_CHANGES cannot be silently upgraded to a
+    // malformed-declaration BLOCKED that hides who blocked and why.
+    const requestedChanges = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'CHANGES_REQUESTED',
+          commitId: headSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(requestedChanges.state).toBe('failure');
+    expect(requestedChanges.override).toBe('github-review');
+    expect(requestedChanges.description).toMatch(
+      /^REQUEST_CHANGES @ [0-9a-f]{12} by jpapiez$/,
+    );
+    expect(requestedChanges.description).not.toMatch(/invalid Squad author/);
+
+    // Path 3: administrator owner-comment record naming their own login
+    // as the reviewer likewise clears the malformed-declaration BLOCKED.
+    const clearedByComment = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      comments: [
+        comment('jpapiez', 'APPROVE', headSha, {
+          user: { login: 'jpapiez' },
+          author_association: 'OWNER',
+          squadWriteAccess: true,
+          squadAdminOverride: true,
+        }),
+      ],
+    });
+    expect(clearedByComment.state).toBe('success');
+    expect(clearedByComment.passed).toBe(true);
+    expect(clearedByComment.override).toBe('owner-comment');
+    expect(clearedByComment.description).toMatch(/^APPROVE \(owner\) @ /);
+    expect(clearedByComment.description).not.toMatch(/invalid Squad author/);
+
+    // Control: a NON-admin approval at the same head does NOT clear the
+    // malformed declaration — only a current-head administrator override
+    // can, so an outsider cannot self-approve past a parse failure just by
+    // being a repo collaborator or a fork author.
+    const outsiderReview = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: headSha,
+          login: 'stranger',
+          isAdmin: false,
+        },
+      ],
+    });
+    expect(outsiderReview.state).toBe('failure');
+    expect(outsiderReview.override).not.toBe('github-review');
+    expect(outsiderReview.description).toMatch(
+      /^BLOCKED @ [0-9a-f]{12}: invalid Squad author declaration$/,
+    );
+
+    // Control: an administrator approval at a STALE head does NOT clear
+    // the malformed declaration — the override must be pinned to the exact
+    // current head, so an earlier approval cannot ride forward past a
+    // resynced malformed body.
+    const staleAdmin = gate({
+      squadLabeled: true,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: staleSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(staleAdmin.state).toBe('failure');
+    expect(staleAdmin.description).toMatch(
+      /^BLOCKED @ [0-9a-f]{12}: invalid Squad author declaration$/,
+    );
+
+    // Control: scope-first NOT_APPLICABLE still wins over BOTH the
+    // malformed check AND the override paths — an outsider-controlled body
+    // on an unlabelled PR must never reach either.
+    const outOfScopeAdminApproval = gate({
+      squadLabeled: false,
+      authorDeclarationError: malformed,
+      reviews: [
+        {
+          state: 'APPROVED',
+          commitId: headSha,
+          login: 'jpapiez',
+          isAdmin: true,
+        },
+      ],
+    });
+    expect(outOfScopeAdminApproval.state).toBe('success');
+    expect(outOfScopeAdminApproval.scope).toBe('out-of-scope');
+    expect(outOfScopeAdminApproval.description).toMatch(/^NOT_APPLICABLE @ /);
+  });
+
   it('falls back to the linked issue label, then the branch name', () => {
     const fromIssue = resolveAuthorMembers({
       linkedIssueLabels: ['squad:ripley', 'priority:p1'],
@@ -1182,7 +1843,7 @@ describe('resolving the authoring squad member', () => {
 });
 
 describe('scoping the gate to squad pull requests', () => {
-  it('auto-scoping refuses forks and unrostered self-declared authors', () => {
+  it('auto-scoping refuses forks and rejects unrostered self-declared authors', () => {
     const inRoster = {
       authorMembers: new Set(['bishop']),
       roster,
@@ -1195,14 +1856,15 @@ describe('scoping the gate to squad pull requests', () => {
     // outsider could place their own PR into the gate's scope.
     expect(canAutoScope({ ...inRoster, isFork: true })).toBe(false);
 
-    // resolveAuthorMembers does NOT validate a declared Squad-Author against
-    // the roster, so canAutoScope must, or one line of PR body text self-scopes.
+    // Explicit declarations are validated before auto-scoping, so an unknown
+    // identity cannot fall through to branch or issue-label inference.
     const declared = resolveAuthorMembers({
       prBody: 'Squad-Author: attacker',
       branchName: 'feature/x',
       roster,
     });
-    expect([...declared.members]).toEqual(['attacker']);
+    expect(declared.members.size).toBe(0);
+    expect(declared.declarationError).toBeTruthy();
     expect(
       canAutoScope({ authorMembers: declared.members, roster, isFork: false }),
     ).toBe(false);
@@ -1437,6 +2099,82 @@ describe('the workflow wiring the gate depends on', () => {
     expect(workflow).toMatch(/issues\.addLabels/);
     expect(workflow).toMatch(/pull-requests: write/);
     expect(workflow).toMatch(/isFork/);
+  });
+
+  // Regression: at final SHA 86cb9c88 the workflow's own ordering short-
+  // circuited on any `author.declarationError` BEFORE it determined
+  // `squadLabeled`, so an out-of-scope PR (fork / human / dependency) whose
+  // body happened to contain author-looking prose was forced into a red
+  // BLOCKED status the outsider fully controlled. The refactor must place
+  // scope determination (including the auto-scope attempt, whose
+  // `canAutoScope` guard already refuses forks and malformed declarations)
+  // BEFORE any handling of `author.declarationError`, and the in-scope
+  // BLOCKED path must pass `squadLabeled: true` explicitly rather than
+  // relying on the gate module's default.
+  //
+  // At SHA 8ea92011 the malformed-declaration BLOCKED path preceded the
+  // unconditional owner-override paths in evaluateGate itself, and the
+  // workflow short-circuited on it without loading reviews or comments at
+  // all — so a trusted current-head administrator approval could not clear
+  // the gate on a squad PR with a malformed `Squad-Author:` line, even
+  // though the owner is the principal ultimately accountable for the merge.
+  // The workflow's malformed short-circuit must therefore run AFTER reviews
+  // and authenticated comments are loaded, and must pass them into
+  // `evaluateGate` so its scope → owner-override → malformed ordering can
+  // still clear the gate when an administrator has approved the head.
+  it('resolves scope before short-circuiting on declaration errors', () => {
+    const workflow = readWorkflow();
+    // The four ordering-sensitive anchors, in the order they must appear:
+    //   1. auto-scope attempt (canAutoScope + issues.addLabels)
+    //   2. out-of-scope short-circuit (posts NOT_APPLICABLE and returns)
+    //   3. reviews loaded via loadReviews so the malformed short-circuit can
+    //      hand them to evaluateGate for the owner-override paths
+    //   4. in-scope declarationError short-circuit (posts BLOCKED, passes
+    //      squadLabeled: true so the pure gate cannot silently downgrade the
+    //      call to NOT_APPLICABLE)
+    const canAutoScopeAt = workflow.indexOf('gate.canAutoScope(');
+    const outOfScopeAt = workflow.indexOf(
+      'squad/pre-pr-verdict NOT_APPLICABLE',
+    );
+    const reviewsLoadedAt = workflow.indexOf(
+      'const reviews = await loadReviews();',
+    );
+    const declarationErrorAt = workflow.indexOf('if (author.declarationError)');
+    expect(canAutoScopeAt).toBeGreaterThan(0);
+    expect(outOfScopeAt).toBeGreaterThan(0);
+    expect(reviewsLoadedAt).toBeGreaterThan(0);
+    expect(declarationErrorAt).toBeGreaterThan(0);
+    expect(canAutoScopeAt).toBeLessThan(outOfScopeAt);
+    expect(outOfScopeAt).toBeLessThan(reviewsLoadedAt);
+    expect(reviewsLoadedAt).toBeLessThan(declarationErrorAt);
+
+    // The in-scope BLOCKED call must pass squadLabeled: true so the pure
+    // gate's scope-first ordering cannot silently downgrade an in-scope
+    // malformed declaration to NOT_APPLICABLE.
+    expect(workflow).toMatch(
+      /authorDeclarationError:\s*author\.declarationError,\s*\n\s*squadLabeled:\s*true/,
+    );
+
+    // And it must hand `reviews` and `comments` to that same call so the
+    // gate module's owner-override paths — GitHub review approval at head
+    // and owner-comment record — can still clear a malformed-declaration
+    // BLOCKED. Without both, an administrator would be locked out of a
+    // repository they administer by a `Squad-Author:` typo.
+    expect(workflow).toMatch(
+      /if \(author\.declarationError\)[\s\S]{0,400}?comments,\s*\n\s*reviews,\s*\n\s*authorDeclarationError:\s*author\.declarationError,/,
+    );
+
+    // And the workflow's own comments must state the scope-first policy so
+    // a future refactor cannot silently reintroduce the pre-fix ordering.
+    expect(workflow).toMatch(
+      /BEFORE the\s*\n\s*\/\/\s*author\.declarationError check/,
+    );
+    // The malformed short-circuit's own comment must state that owner
+    // overrides can still clear it, so a future refactor cannot silently
+    // re-establish the SHA 8ea92011 lockout.
+    expect(workflow).toMatch(
+      /administrator approval[\s\S]{0,200}?clear the gate/i,
+    );
   });
 });
 
