@@ -124,15 +124,7 @@ function lockPayload(pid, host, now) {
   })}\n`;
 }
 
-function readLock(lock, description = 'lock') {
-  let contents;
-  try {
-    contents = readFileSync(lock, 'utf8');
-  } catch {
-    throw new Error(
-      `Ralph cache ${description} is malformed; refusing unsafe recovery`,
-    );
-  }
+function parseLock(contents, description) {
   let holder;
   try {
     holder = JSON.parse(contents);
@@ -158,6 +150,35 @@ function readLock(lock, description = 'lock') {
     );
   }
   return { holder: { ...holder, acquiredAt }, contents };
+}
+
+function readLock(lock, description = 'lock') {
+  let contents;
+  try {
+    contents = readFileSync(lock, 'utf8');
+  } catch {
+    throw new Error(
+      `Ralph cache ${description} is malformed; refusing unsafe recovery`,
+    );
+  }
+  return parseLock(contents, description);
+}
+
+// Reads a marker that is allowed to be absent. A missing marker is a normal
+// protocol state, so it must stay distinguishable from an unreadable one --
+// collapsing both into "malformed" would make an absent displaced marker look
+// like a corruption that blocks every later round.
+function readOptionalLock(lock, description) {
+  let contents;
+  try {
+    contents = readFileSync(lock, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw new Error(
+      `Ralph cache ${description} is malformed; refusing unsafe recovery`,
+    );
+  }
+  return parseLock(contents, description);
 }
 
 function releaseOwnedMarker(marker, payload) {
@@ -190,21 +211,91 @@ function restoreDisplacedMarker(canonicalPath, contents) {
   }
 }
 
-function acquireTransition(
-  lock,
-  pid,
+// The single, deterministic path a handoff marker occupies while it is being
+// claimed away from a stale owner. It is deliberately not per-claimant and not
+// randomised: a leftover must be findable by name alone, because the process
+// that created it may never run again.
+function displacedHandoffPath(recoveryGate) {
+  return `${recoveryGate}.displaced.stale`;
+}
+
+// Completes any handoff that was interrupted after its rename and before its
+// canonical restore/replace.
+//
+// `renameSync` is the only atomic way to take a marker away from a stale owner,
+// but it necessarily leaves an interval in which the canonical path holds
+// nothing and the displaced path holds the *only* surviving copy of that
+// ownership record. A process terminated inside that interval must not leave
+// the gate looking unclaimed, so the displaced marker is authoritative, not
+// scratch: every claimant resolves it before it touches the canonical path, and
+// resolution always puts the record back first. The exclusive create can never
+// clobber a newer canonical claim, so ownership stays serialized continuously
+// across the crash, and the displaced copy is dropped only once it has been
+// proven redundant or proven to be consumed residue.
+function resolveDisplacedHandoff(
+  recoveryGate,
+  displaced,
   host,
   now,
   staleMs,
   isAlive,
-  onStaleRecoveryValidated,
-  onStaleHandoffRecoveryValidated,
+) {
+  const record = readOptionalLock(displaced, 'lock transition recovery');
+  if (!record) return;
+
+  restoreDisplacedMarker(recoveryGate, record.contents);
+  const canonical = readOptionalLock(recoveryGate, 'lock transition recovery');
+  if (canonical?.contents === record.contents) {
+    // The canonical path is authoritative again and byte-identical, so this
+    // copy is redundant. Removal is content-verified, never unconditional.
+    releaseOwnedMarker(displaced, record.contents);
+    return;
+  }
+
+  const ownerAlive =
+    record.holder.host === host ? isAlive(record.holder.pid) : null;
+  if (
+    canonical &&
+    ownerAlive !== true &&
+    now - record.holder.acquiredAt >= staleMs
+  ) {
+    // A different, still-current record owns the canonical path and this copy
+    // is itself past the stale bound, so it is consumed residue rather than a
+    // claim that can still be resumed. Dropping it keeps recovery bounded
+    // instead of wedging every later round permanently.
+    releaseOwnedMarker(displaced, record.contents);
+    return;
+  }
+
+  throw new Error(
+    'Ralph cache lock transition recovery was interrupted; refusing overlapping round',
+  );
+}
+
+function acquireTransition(
+  lock,
+  {
+    pid,
+    host,
+    now,
+    staleMs,
+    isAlive,
+    onStaleTransitionRecoveryValidated,
+    onStaleHandoffRecoveryValidated,
+    onHandoffDisplaced,
+  },
 ) {
   const transition = `${lock}.transition`;
   // This is a claimable handoff record, not the legacy mkdir recovery gate.
   // Its payload makes an interrupted handoff safely recoverable.
   const recoveryGate = `${transition}.handoff`;
+  const displaced = displacedHandoffPath(recoveryGate);
   const payload = lockPayload(pid, host, now);
+
+  // Ordering is load-bearing: an interrupted predecessor is resolved before the
+  // canonical path is even probed, so a crash-emptied canonical path is never
+  // mistaken for a free gate.
+  resolveDisplacedHandoff(recoveryGate, displaced, host, now, staleMs, isAlive);
 
   try {
     writeFileSync(recoveryGate, payload, {
@@ -247,38 +338,59 @@ function acquireTransition(
     // different payload here, and restore it verbatim (see
     // restoreDisplacedMarker) before failing closed, instead of letting an
     // unconditional cleanup destroy the successor's only ownership record and
-    // reopen the gate to a third claimant. The displaced path itself is
-    // always just a temporary working copy -- by the time it is removed
-    // below, its content is either genuinely consumed stale residue or has
-    // already been written back to (or superseded at) the canonical path, so
-    // removing the temporary copy is always safe.
-    const displaced = `${recoveryGate}.${pid}.${randomUUID()}.stale`;
+    // reopen the gate to a third claimant.
+    //
+    // Everything from the rename to the canonical write is the interval that a
+    // crash can interrupt. It is survivable rather than merely narrow: the
+    // displaced path is deterministic and authoritative, so resolveDisplacedHandoff
+    // in the next claimant completes exactly this sequence. Nothing here removes
+    // the displaced copy before the canonical path has been repopulated, and
+    // every removal is content-verified, so an unexpected failure leaves the
+    // record recoverable instead of destroying it.
     try {
       renameSync(recoveryGate, displaced);
-      const displacedContents = readFileSync(displaced, 'utf8');
-      if (displacedContents !== contents) {
-        restoreDisplacedMarker(recoveryGate, displacedContents);
+    } catch (renameError) {
+      if (renameError?.code === 'ENOENT') {
         throw new Error(
           'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
         );
       }
+      throw renameError;
+    }
+    onHandoffDisplaced?.();
+
+    let displacedContents;
+    try {
+      displacedContents = readFileSync(displaced, 'utf8');
+    } catch (readError) {
+      if (readError?.code !== 'ENOENT') throw readError;
+      // A concurrent claimant already completed this handoff's recovery.
+      throw new Error(
+        'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
+      );
+    }
+
+    if (displacedContents !== contents) {
+      restoreDisplacedMarker(recoveryGate, displacedContents);
+      releaseOwnedMarker(displaced, displacedContents);
+      throw new Error(
+        'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
+      );
+    }
+
+    try {
       writeFileSync(recoveryGate, payload, {
         encoding: 'utf8',
         flag: 'wx',
       });
-    } catch (recoveryError) {
-      if (
-        recoveryError?.code === 'EEXIST' ||
-        recoveryError?.code === 'ENOENT'
-      ) {
-        throw new Error(
-          'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
-        );
-      }
-      throw recoveryError;
-    } finally {
-      rmSync(displaced, { force: true });
+    } catch (writeError) {
+      if (writeError?.code !== 'EEXIST') throw writeError;
+      releaseOwnedMarker(displaced, contents);
+      throw new Error(
+        'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
+      );
     }
+    releaseOwnedMarker(displaced, contents);
   }
 
   try {
@@ -303,7 +415,7 @@ function acquireTransition(
             'Ralph cache lock transition changed during stale recovery; refusing overlapping round',
           );
         }
-        onStaleRecoveryValidated?.();
+        onStaleTransitionRecoveryValidated?.();
         rmSync(transition);
         writeFileSync(transition, payload, {
           encoding: 'utf8',
@@ -352,13 +464,13 @@ export function acquireLock(
     isAlive = processIsAlive,
     onStaleTransitionRecoveryValidated,
     onStaleHandoffRecoveryValidated,
+    onHandoffDisplaced,
   } = {},
 ) {
   const lock = `${file}.lock`;
   mkdirSync(path.dirname(lock), { recursive: true });
   const payload = lockPayload(pid, host, now);
-  const releaseTransition = acquireTransition(
-    lock,
+  const transitionOptions = {
     pid,
     host,
     now,
@@ -366,7 +478,9 @@ export function acquireLock(
     isAlive,
     onStaleTransitionRecoveryValidated,
     onStaleHandoffRecoveryValidated,
-  );
+    onHandoffDisplaced,
+  };
+  const releaseTransition = acquireTransition(lock, transitionOptions);
   try {
     try {
       writeFileSync(lock, payload, {
@@ -405,16 +519,10 @@ export function acquireLock(
     }
 
     return () => {
-      const releaseTransition = acquireTransition(
-        lock,
-        pid,
-        host,
-        releaseNow(),
-        staleMs,
-        isAlive,
-        onStaleTransitionRecoveryValidated,
-        onStaleHandoffRecoveryValidated,
-      );
+      const releaseTransition = acquireTransition(lock, {
+        ...transitionOptions,
+        now: releaseNow(),
+      });
       try {
         releaseOwnedMarker(lock, payload);
       } finally {

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -346,6 +347,80 @@ describe('Ralph round cache', () => {
         isAlive: (pid) => pid === 21,
       }),
     ).toThrow(/transition recovery is already in progress/);
+  });
+  it('keeps a handoff claimed when a process dies between displacing and restoring it', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const handoff = `${file}.lock.transition.handoff`;
+    const displaced = `${handoff}.displaced.stale`;
+    const staleNow = 2_000 + 30 * 60 * 1000;
+    const successorPayload = lockHolder(
+      21,
+      'local',
+      staleNow,
+      '22222222-2222-4222-8222-222222222222',
+    );
+    writeFileSync(handoff, lockHolder(20, 'local', 2_000));
+
+    // A real termination, not a simulated one: the child runs the production
+    // recovery path and is killed at the exact post-rename/pre-restore
+    // boundary, so no `finally`, no restore, and no cleanup can run. At that
+    // instant the displaced copy is the only surviving record of the
+    // successor's live claim.
+    const crash = path.join(directory, 'crash-at-displaced-handoff.mjs');
+    writeFileSync(
+      crash,
+      [
+        `import { writeFileSync } from 'node:fs';`,
+        `import { acquireLock } from ${JSON.stringify(new URL('../scripts/ralph-round-cache.mjs', import.meta.url).href)};`,
+        `acquireLock(${JSON.stringify(file)}, {`,
+        `  now: ${staleNow},`,
+        `  pid: 22,`,
+        `  host: 'local',`,
+        `  isAlive: () => false,`,
+        `  onStaleHandoffRecoveryValidated: () => {`,
+        `    writeFileSync(${JSON.stringify(handoff)}, ${JSON.stringify(successorPayload)});`,
+        `  },`,
+        `  onHandoffDisplaced: () => process.exit(70),`,
+        `});`,
+        '',
+      ].join('\n'),
+    );
+    const crashed = spawnSync(process.execPath, [crash], { encoding: 'utf8' });
+    expect(crashed.status).toBe(70);
+    expect(existsSync(handoff)).toBe(false);
+    expect(readFileSync(displaced, 'utf8')).toBe(successorPayload);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+
+    // The crash-emptied canonical path must never read as a free gate. A later
+    // claimant restores the interrupted handoff's record first and is then
+    // correctly blocked by the still-live successor.
+    expect(() =>
+      acquireLock(file, {
+        now: staleNow,
+        pid: 23,
+        host: 'local',
+        isAlive: (pid) => pid === 21,
+      }),
+    ).toThrow(/refusing overlapping round/);
+    expect(readFileSync(handoff, 'utf8')).toBe(successorPayload);
+    expect(existsSync(displaced)).toBe(false);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+
+    // Recovery stays bounded rather than wedged: once the restored record is
+    // itself stale and its owner gone, the next round proceeds and leaves no
+    // displaced residue behind.
+    const recovered = acquireLock(file, {
+      now: staleNow + 30 * 60 * 1000,
+      pid: 24,
+      host: 'local',
+      isAlive: () => false,
+    });
+    recovered();
+    expect(existsSync(handoff)).toBe(false);
+    expect(
+      readdirSync(directory).filter((name) => name.endsWith('.stale')),
+    ).toEqual([]);
   });
   it('fails closed for fresh, live, or malformed interrupted handoffs', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));

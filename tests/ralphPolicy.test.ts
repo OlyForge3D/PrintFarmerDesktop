@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +7,14 @@ import { describe, expect, it } from 'vitest';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts: string[]) =>
   readFileSync(path.join(root, ...parts), 'utf8').replaceAll('\r\n', '\n');
+
+function markdownFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) return markdownFiles(full);
+    return entry.isFile() && entry.name.endsWith('.md') ? [full] : [];
+  });
+}
 
 describe('Ralph bounded-round policy', () => {
   const loop = read('.squad', 'agents', 'ralph', 'loop.md');
@@ -192,6 +200,7 @@ describe('Ralph bounded-round policy', () => {
       read('.squad', 'skills', 'agent-collaboration', 'SKILL.md'),
       read('.squad', 'skills', 'git-workflow', 'SKILL.md'),
       read('.squad', 'routing.md'),
+      read('.squad', 'templates', 'issue-lifecycle.md'),
       read('.github', 'workflows', 'squad-review-verdict.yml'),
       read('scripts', 'check-script-reachability.mjs'),
       behindSyncOrder,
@@ -227,5 +236,80 @@ describe('Ralph bounded-round policy', () => {
     expect(gate).toMatch(/loop\.md`\s+step 5/);
     expect(loop).toMatch(/^5\. Immediately before merge/m);
     expect(loop).toMatch(/`NOT_APPLICABLE` is never unattended merge/);
+  });
+
+  it('keeps the issue-lifecycle template bounded and cited to live Ralph policy', () => {
+    const lifecycle = read('.squad', 'templates', 'issue-lifecycle.md');
+
+    expect(lifecycle).toMatch(/one bounded round per activation and exits/i);
+    expect(lifecycle).toMatch(/never polls, idles, or re-scans automatically/i);
+    expect(lifecycle).toMatch(
+      /later round requires a new\s+explicit activation/i,
+    );
+    expect(lifecycle).toContain(
+      'Scan → Categorize → Dispatch → Verify gates → Report → Exit',
+    );
+    expect(lifecycle).toContain('.squad/agents/ralph/loop.md');
+    for (const reference of [
+      'triage-dispatch.md',
+      'pr-gates.md',
+      'reaping.md',
+    ]) {
+      expect(lifecycle).toContain(reference);
+    }
+    expect(lifecycle).not.toContain('ralph-reference.md');
+    expect(lifecycle).not.toMatch(/continuously checks/i);
+    expect(lifecycle).not.toMatch(/auto-merges/i);
+  });
+
+  it('lets no directive reintroduce the retired continuous Ralph cycle', () => {
+    // The one-shot rule is only real if it holds everywhere at once. A single
+    // stray template that still describes a looping monitor, or still points a
+    // reader at the superseded reference, contradicts the compact core wherever
+    // that reader happens to land -- which is exactly how this drift survived.
+    const superseded = path.join(
+      root,
+      '.squad',
+      'templates',
+      'ralph-reference.md',
+    );
+    // Immutable records of what already happened: append-only agent history,
+    // the dated decision log and its inbox, and archived roll-offs. They
+    // legitimately describe activations made under the retired model, so this
+    // guard covers directives only and never rewrites history.
+    const historicalRecord = (document: string) =>
+      ['history.md', 'decisions.md'].includes(path.basename(document)) ||
+      document.includes(`${path.sep}.squad${path.sep}archive${path.sep}`) ||
+      document.includes(`${path.sep}.squad${path.sep}decisions${path.sep}`);
+    const documents = markdownFiles(path.join(root, '.squad'))
+      .concat(markdownFiles(path.join(root, '.github')))
+      .filter((document) => !historicalRecord(document));
+
+    expect(documents.length).toBeGreaterThan(10);
+    expect(documents).toContain(superseded);
+    // Control: the exact strings this guard rejects are the ones the retired
+    // wording used, so a document still carrying them is detected rather than
+    // silently passing an over-narrow pattern.
+    expect(
+      documents.filter((document) =>
+        /→\s*Loop\b/.test(
+          `Scan → Categorize → Dispatch → Watch → Report → Loop\n${readFileSync(document, 'utf8')}`,
+        ),
+      ),
+    ).toEqual(documents);
+
+    for (const document of documents) {
+      const body = readFileSync(document, 'utf8').replaceAll('\r\n', '\n');
+      if (document !== superseded) {
+        expect({
+          document,
+          cites: body.includes('ralph-reference.md'),
+        }).toEqual({ document, cites: false });
+      }
+      expect({ document, loops: /→\s*Loop\b/.test(body) }).toEqual({
+        document,
+        loops: false,
+      });
+    }
   });
 });

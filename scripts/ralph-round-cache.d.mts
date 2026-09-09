@@ -44,6 +44,7 @@ export declare function acquireLock(
     isAlive?: (pid: number) => boolean | null;
     onStaleTransitionRecoveryValidated?: () => void;
     onStaleHandoffRecoveryValidated?: () => void;
+    onHandoffDisplaced?: () => void;
   },
 ): () => void;
 export declare function fingerprint(item: RalphItem): string;
