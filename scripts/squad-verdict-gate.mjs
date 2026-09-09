@@ -285,12 +285,21 @@ const sensitiveProse =
  * `Bish 111 p and Dallas` and matches only Dallas as a roster token,
  * allowing Bishop to review the PR they co-authored.
  *
- * Malformed and out-of-range references fail closed: an invalid code
- * point (NaN, below U+0020, above U+10FFFF, or in the surrogate range
- * U+D800–U+DFFF) is replaced with a single space so the surrounding
- * characters cannot accidentally re-form a roster token from the
- * substitution. `String.fromCodePoint` is additionally guarded to fall
- * back to a space if it throws for any reason.
+ * This decoder assumes its input has already been screened by
+ * `hasMalformedNumericCharacterReference`, which fails the whole
+ * singular declaration closed with a `declarationError` on any `&#`
+ * occurrence that is not a syntactically complete, code-point-safe
+ * reference. That upstream check exists because a silent substitution
+ * here — the previous behaviour, which replaced malformed or unsafe
+ * references with a single space — still left a hidden bypass: after
+ * substitution, `Bish&#xD800;p and Dallas` reached the tokeniser as
+ * `Bish p and Dallas`, matched only "dallas", and silently normalised
+ * to Dallas while leaving Bishop, the obfuscated first co-author,
+ * eligible to review their own PR. Belt-and-suspenders substitution is
+ * retained here as defence in depth: any residual unsafe code point
+ * that ever reaches this function is replaced with a single space and
+ * `String.fromCodePoint` is guarded to fall back to a space if it
+ * throws, so an unexpected caller cannot re-open the bypass.
  */
 function decodeHtmlNumericCharacterReferences(value) {
   return value.replace(
@@ -314,6 +323,53 @@ function decodeHtmlNumericCharacterReferences(value) {
       }
     },
   );
+}
+
+/**
+ * Detect malformed or unsafe HTML numeric character-reference attempts in a
+ * singular `Squad-Author:` value. Every `&#` occurrence must be followed by a
+ * syntactically complete decimal (`&#[0-9]+;`) or hex (`&#[xX][0-9a-fA-F]+;`)
+ * reference whose code point is inside the safe range accepted by
+ * `decodeHtmlNumericCharacterReferences`. Anything else — an unterminated
+ * reference (`Bish&#111p and Dallas`), a non-digit body (`Bish&#xZZZ;p and
+ * Dallas`), a surrogate code point (`Bish&#xD800;p and Dallas`), a code
+ * point below U+0020, or one above U+10FFFF — is treated as malformed so
+ * the singular declaration can fail closed rather than let the decoder's
+ * silent substitution reduce the value to a single visible roster token.
+ *
+ * Scope is deliberately narrow: this is only invoked on the raw value of a
+ * singular `Squad-Author:` line. The strict plural `Squad-Authors` regex
+ * already rejects any `&#` shape outright by lexical validation, and no
+ * other code path decodes numeric references, so no other surface is
+ * disturbed.
+ */
+function hasMalformedNumericCharacterReference(value) {
+  let index = value.indexOf('&#');
+  while (index !== -1) {
+    const terminator = value.indexOf(';', index + 2);
+    if (terminator === -1) {
+      return true;
+    }
+    const body = value.slice(index + 2, terminator);
+    let codePoint;
+    if (/^[xX][0-9a-fA-F]+$/.test(body)) {
+      codePoint = Number.parseInt(body.slice(1), 16);
+    } else if (/^[0-9]+$/.test(body)) {
+      codePoint = Number.parseInt(body, 10);
+    } else {
+      return true;
+    }
+    if (
+      !Number.isFinite(codePoint) ||
+      codePoint < 0x20 ||
+      codePoint > 0x10ffff ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff)
+    ) {
+      return true;
+    }
+    index = value.indexOf('&#', terminator + 1);
+  }
+  return false;
 }
 
 /**
@@ -821,6 +877,38 @@ export function resolveAuthorMembers({
     // regex still rejects entity syntax outright, and `normalizeMember`
     // is only ever reached in the singular branch after this check has
     // already failed closed on any hidden second identity.
+    //
+    // Before decoding runs, malformed or unsafe numeric character-reference
+    // syntax fails the whole singular declaration closed. Hicks flagged
+    // three shapes that the decoder's silent substitution left as hidden
+    // bypasses in the singular branch: `Bish&#111p and Dallas` (missing
+    // terminating semicolon — regex does not match, sanitiser reduces to
+    // `Bish 111p and Dallas`, only "dallas" matches), `Bish&#xZZZ;p and
+    // Dallas` (non-hex body — regex does not match, same reduction), and
+    // `Bish&#xD800;p and Dallas` (surrogate code point — regex matches but
+    // decoder substitutes a space, reaching the tokeniser as `Bish p and
+    // Dallas`). In every case the visible-to-a-human intent was two
+    // authors, only one roster token survived, and the value silently
+    // normalised to Dallas — leaving Bishop eligible to review the PR they
+    // authored. Reject any singular value that carries a malformed or
+    // out-of-range `&#…;` attempt with `declarationError` and empty
+    // members / external authors, so the caller cannot fall through to
+    // branch-name or issue-label inference. Valid decimal (`&#111;`) and
+    // hex (`&#x6f;`) forms with a safe code point still decode below,
+    // preserving the closed multi-identity bypass for entity-obfuscated
+    // roster names.
+    if (isSingular && hasMalformedNumericCharacterReference(value)) {
+      return {
+        members: new Set(),
+        externalAuthors: new Set(),
+        source: 'invalid PR body author declaration',
+        declarationError:
+          'singular Squad-Author contains a malformed or unsafe numeric ' +
+          'character reference; use a valid decimal (&#NNN;) or hex ' +
+          '(&#xHH;) reference to a safe code point, or Squad-Authors for ' +
+          'multiple roster authors',
+      };
+    }
     if (isSingular) {
       const rosterTokensFound = new Set();
       const decoded = decodeHtmlNumericCharacterReferences(value);

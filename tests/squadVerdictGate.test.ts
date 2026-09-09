@@ -1484,70 +1484,155 @@ describe('resolving the authoring squad member', () => {
     }
   });
 
-  // Malformed or out-of-range numeric character references must not crash
-  // the decoder and must not accidentally restore a hidden roster token
-  // through the substitution: an unterminated reference, non-digit body,
-  // surrogate code point, or code point past U+10FFFF is replaced with a
-  // single space so the surrounding characters cannot re-form a roster
-  // name from what was decoded. These strings are not multi-identity
-  // shapes — they resolve normally or produce no roster identity at all —
-  // and the decoder must handle them without throwing.
-  it('handles malformed and out-of-range numeric character references without opening a bypass', () => {
-    // Unterminated reference (no closing `;`): not decoded at all, sanitiser
-    // strips `&#` to whitespace, and only Dallas survives as a roster
-    // token — so this remains a legitimate single-author declaration for
-    // dallas, exactly as a raw `Bish&#111p and Dallas` would render (the
-    // browser does not decode a reference without a terminating semicolon
-    // either).
-    const unterminated = resolveAuthorMembers({
-      prBody: 'Squad-Author: Bish&#111p and Dallas',
-      roster,
-    });
-    // The tokeniser sees only "dallas" here, so the singular value
-    // normalises to a single roster identity. The point of this case is
-    // that the decoder does not throw and does not smuggle a bishop
-    // token in from the malformed reference.
-    expect(
-      unterminated.members.size === 0 || unterminated.members.has('dallas'),
+  // Malformed or unsafe numeric character references inside a singular
+  // `Squad-Author:` declaration must fail the whole declaration closed
+  // rather than let the decoder's silent substitution reduce the value to
+  // a single visible roster token. Hicks flagged three canonical shapes:
+  // an unterminated reference (`Bish&#111p and Dallas`, no `;`), a
+  // non-digit hex body (`Bish&#xZZZ;p and Dallas`), and a surrogate code
+  // point (`Bish&#xD800;p and Dallas`). Pre-fix, the first two never
+  // matched the decoder regex — the sanitiser stripped `&#` to whitespace
+  // and only "dallas" survived as a roster token, silently normalising to
+  // Dallas — while the third matched but was replaced with a space,
+  // leaving `Bish p and Dallas` with only "dallas" again. In every case
+  // Bishop, the obfuscated first co-author, stayed eligible to review the
+  // PR they had authored. The declaration must now be rejected outright,
+  // with no fall-through to branch-name or issue-label inference, and the
+  // gate must fire BLOCKED on the resulting declarationError for a
+  // labelled PR.
+  it('rejects malformed or unsafe numeric character-reference syntax in a singular Squad-Author (Hicks regression)', () => {
+    const attempts = [
+      // Missing terminating semicolon — Hicks' first example.
       'Squad-Author: Bish&#111p and Dallas',
-    ).toBe(true);
-    expect(unterminated.members.has('bishop')).toBe(false);
+      // Non-hex body — Hicks' second example.
+      'Squad-Author: Bish&#xZZZ;p and Dallas',
+      // Surrogate code point — Hicks' third example.
+      'Squad-Author: Bish&#xD800;p and Dallas',
+      // Adjacent shapes that share the same fail-closed rationale: any
+      // `&#…;` whose code point sits outside the safe range the decoder
+      // accepts is a hidden-bypass attempt too, because the pre-fix
+      // decoder substituted a space and left only "dallas" visible.
+      // Above U+10FFFF.
+      'Squad-Author: Bish&#x110000;p and Dallas',
+      // High surrogate boundary.
+      'Squad-Author: Bish&#xDFFF;p and Dallas',
+      // Low control code point (below U+0020).
+      'Squad-Author: Bish&#0;p and Dallas',
+      'Squad-Author: Bish&#x1F;p and Dallas',
+      // Malformed syntax variants that also fell through the pre-fix
+      // decoder without matching: empty body, non-decimal-non-hex body,
+      // and a stray `&#` with no terminator at all.
+      'Squad-Author: Bish&#;p and Dallas',
+      'Squad-Author: Bish&#foo;p and Dallas',
+      'Squad-Author: Bish&#p and Dallas',
+      'Squad-Author: Bish&#x;p and Dallas',
+      // The malformed reference must also fail closed when it sits
+      // alongside a decorated first author, because the singular branch
+      // reaches `normalizeMember`'s last-token behaviour otherwise.
+      'Squad-Author: squad:🔍 Bishop and &#68p allas',
+    ];
+    for (const prBody of attempts) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.externalAuthors.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBeTruthy();
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
 
-    // Non-digit hex body: regex simply does not match, so no decoding
-    // happens. Same reasoning as above — dallas remains the only visible
-    // roster token.
-    const nonDigits = resolveAuthorMembers({
-      prBody: 'Squad-Author: Bish&#xZZZ;p and Dallas',
-      roster,
-    });
-    expect(nonDigits.members.has('bishop')).toBe(false);
+      // Guard the specific defect: no silent normalisation to the last
+      // surviving roster token (Dallas) that would leave the obfuscated
+      // Bishop mention eligible to review.
+      expect(resolved.members.has('dallas'), prBody).toBe(false);
+      expect(resolved.members.has('bishop'), prBody).toBe(false);
 
-    // Surrogate code point (U+D800): replaced with a space by the
-    // decoder, so it cannot re-form Bishop. Dallas is still detected
-    // through the raw tokeniser path — the assertion here is only that
-    // the surrogate did not silently restore Bishop.
-    const surrogate = resolveAuthorMembers({
-      prBody: 'Squad-Author: Bish&#xD800;p and Dallas',
-      roster,
-    });
-    expect(surrogate.members.has('bishop')).toBe(false);
+      // No fall-through to branch or issue-label inference: the presence
+      // of a Squad-Author line — even a malformed one — pins the source
+      // to the declaration error, so an outsider cannot recover
+      // authorship through the branch name they control.
+      const withInference = resolveAuthorMembers({
+        prBody,
+        branchName: 'squad/1-ripley-issue',
+        linkedIssueLabels: ['squad:ripley'],
+        roster,
+      });
+      expect(withInference.members.size, prBody).toBe(0);
+      expect(withInference.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
 
-    // Above U+10FFFF: replaced with a space; must not throw.
-    const outOfRange = resolveAuthorMembers({
-      prBody: 'Squad-Author: Bish&#x110000;p and Dallas',
-      roster,
-    });
-    expect(outOfRange.members.has('bishop')).toBe(false);
+      // In-scope BLOCKED path fires; scope-first ordering keeps
+      // unlabelled PRs NOT_APPLICABLE even with this declaration error.
+      expect(
+        gate({ authorDeclarationError: resolved.declarationError }).state,
+        prBody,
+      ).toBe('failure');
+      const outOfScope = gate({
+        squadLabeled: false,
+        authorDeclarationError: resolved.declarationError,
+      });
+      expect(outOfScope.state, prBody).toBe('success');
+      expect(outOfScope.scope, prBody).toBe('out-of-scope');
+    }
+  });
 
-    // Legitimate decorated singular values are entirely free of numeric
-    // references, so the decoder must be a no-op for them.
-    const decorated = resolveAuthorMembers({
-      prBody: 'Squad-Author: squad:🔍 Bishop',
-      roster,
-    });
-    expect(decorated.declarationError).toBeUndefined();
-    expect([...decorated.members]).toEqual(['bishop']);
-    expect(decorated.source).toBe('PR body Squad-Author');
+  // The malformed-reference rejection must NOT touch the valid decimal /
+  // hex paths that close the entity-obfuscated multi-author bypass. The
+  // three canonical shapes below decode to real letters ("o" and "D") and
+  // therefore reach the multi-identity guard with two visible roster
+  // tokens, which is the pre-existing `singular Squad-Author identifies
+  // multiple roster members` rejection — not the new malformed-reference
+  // rejection. Assert both the fail-closed outcome and that the specific
+  // pre-existing error message is used, so a future revision cannot
+  // silently collapse the two paths and weaken either one.
+  it('still closes the entity-obfuscated multi-author bypass through valid decimal/hex references', () => {
+    for (const prBody of [
+      // Decimal reference — `&#111;` = "o", so this decodes to
+      // "Bishop and Dallas".
+      'Squad-Author: Bish&#111;p and Dallas',
+      // Hex reference — `&#x6f;` = "o".
+      'Squad-Author: Bish&#x6f;p and Dallas',
+      // Uppercase hex marker plus mixed-case digits.
+      'Squad-Author: Bish&#X6F;p and Dallas',
+      // Zero-padded reference — still a safe code point.
+      'Squad-Author: Bish&#x00006F;p and Dallas',
+      'Squad-Author: Bish&#0000111;p and Dallas',
+      // Both authors obfuscated with valid references (`&#68;` = "D").
+      'Squad-Author: Bish&#111;p and &#68;allas',
+    ]) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.members.size, prBody).toBe(0);
+      expect(resolved.declarationError, prBody).toBe(
+        'singular Squad-Author identifies multiple roster members; ' +
+          'use Squad-Authors for multiple roster authors',
+      );
+      expect(resolved.source, prBody).toBe(
+        'invalid PR body author declaration',
+      );
+    }
+  });
+
+  // Valid, safe numeric references that do NOT hide a second roster
+  // identity must not trip the new malformed-reference gate. There is no
+  // singular value that both contains a numeric character reference and
+  // resolves to a real roster member — `normalizeMember` does not decode
+  // entities, so any reference-bearing value ultimately fails on the
+  // unknown-token path — but the malformed-reference gate itself must
+  // pass a valid reference through to the multi-identity guard rather
+  // than short-circuiting on it, and undecorated singular values must
+  // continue to pass through as they always have.
+  it('accepts singular Squad-Author values whose declaration carries no numeric character reference', () => {
+    const acceptable: Array<[string, string]> = [
+      ['Squad-Author: Bishop', 'bishop'],
+      ['Squad-Author: squad:🔍 Bishop', 'bishop'],
+      ['Squad-Author: fact-checker', 'fact-checker'],
+    ];
+    for (const [prBody, expected] of acceptable) {
+      const resolved = resolveAuthorMembers({ prBody, roster });
+      expect(resolved.declarationError, prBody).toBeUndefined();
+      expect([...resolved.members], prBody).toEqual([expected]);
+      expect(resolved.source, prBody).toBe('PR body Squad-Author');
+    }
   });
 
   // Regression: at final SHA 86cb9c88 the workflow short-circuited on any
