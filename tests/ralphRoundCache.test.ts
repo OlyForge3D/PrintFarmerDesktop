@@ -252,6 +252,54 @@ describe('Ralph round cache', () => {
     ).toThrow(/already held by PID 21/);
     release();
   });
+  it('uses no legacy recovery directory and recovers a crashed stale handoff', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const legacyRecovery = `${file}.lock.transition.recovery`;
+    const handoff = `${file}.lock.transition.handoff`;
+
+    writeFileSync(handoff, lockHolder(20, 'local', 2_000));
+    const release = acquireLock(file, {
+      now: 2_000 + 30 * 60 * 1000,
+      pid: 21,
+      host: 'local',
+      isAlive: () => false,
+    });
+
+    expect(existsSync(legacyRecovery)).toBe(false);
+    expect(existsSync(handoff)).toBe(false);
+    release();
+    expect(existsSync(legacyRecovery)).toBe(false);
+    expect(existsSync(handoff)).toBe(false);
+  });
+  it('fails closed for fresh, live, or malformed interrupted handoffs', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
+    const file = path.join(directory, 'cache.json');
+    const handoff = `${file}.lock.transition.handoff`;
+
+    writeFileSync(handoff, lockHolder(20, 'local', 2_000));
+    expect(() =>
+      acquireLock(file, {
+        now: 2_001,
+        pid: 21,
+        host: 'local',
+        isAlive: () => false,
+      }),
+    ).toThrow(/transition recovery is already in progress/);
+    writeFileSync(handoff, lockHolder(20, 'local', 2_000), 'utf8');
+    expect(() =>
+      acquireLock(file, {
+        now: 2_000 + 30 * 60 * 1000,
+        pid: 21,
+        host: 'local',
+        isAlive: () => true,
+      }),
+    ).toThrow(/transition recovery is already in progress/);
+    writeFileSync(handoff, '{"pid":20}');
+    expect(() => acquireLock(file)).toThrow(
+      /transition recovery is malformed; refusing unsafe recovery/,
+    );
+  });
   it('recovers bounded orphaned transition markers while rejecting unsafe holders', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'ralph-cache-'));
     const file = path.join(directory, 'cache.json');

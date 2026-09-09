@@ -6,7 +6,6 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -166,16 +165,58 @@ function acquireTransition(
   onStaleRecoveryValidated,
 ) {
   const transition = `${lock}.transition`;
-  const recoveryGate = `${transition}.recovery`;
+  // This is a claimable handoff record, not the legacy mkdir recovery gate.
+  // Its payload makes an interrupted handoff safely recoverable.
+  const recoveryGate = `${transition}.handoff`;
   const payload = lockPayload(pid, host, now);
 
   try {
-    mkdirSync(recoveryGate);
+    writeFileSync(recoveryGate, payload, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
   } catch (error) {
     if (!error || error.code !== 'EEXIST') throw error;
-    throw new Error(
-      'Ralph cache lock transition recovery is already in progress; refusing overlapping round',
+    const { holder, contents } = readLock(
+      recoveryGate,
+      'lock transition recovery',
     );
+    const ownerAlive = holder.host === host ? isAlive(holder.pid) : null;
+    const stale = now - holder.acquiredAt >= staleMs;
+    // A recovery handoff is never stolen while it is fresh, even when a local
+    // liveness probe says its PID is dead.  That keeps a second claimant from
+    // entering while the first claimant is between validation and replacement.
+    if (!stale || ownerAlive === true) {
+      throw new Error(
+        'Ralph cache lock transition recovery is already in progress; refusing overlapping round',
+      );
+    }
+
+    // The recovery marker has the same durable, verifiable ownership record as
+    // a lock.  It is deliberately a file rather than a mkdir-only directory:
+    // a crashed owner can be recovered using the same bounded stale/dead-owner
+    // rules, rather than wedging all later rounds permanently.
+    if (
+      readLock(recoveryGate, 'lock transition recovery').contents !== contents
+    ) {
+      throw new Error(
+        'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
+      );
+    }
+    rmSync(recoveryGate);
+    try {
+      writeFileSync(recoveryGate, payload, {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+    } catch (recoveryError) {
+      if (recoveryError?.code === 'EEXIST') {
+        throw new Error(
+          'Ralph cache lock transition recovery changed during stale recovery; refusing overlapping round',
+        );
+      }
+      throw recoveryError;
+    }
   }
 
   try {
@@ -215,18 +256,12 @@ function acquireTransition(
         throw recoveryError;
       }
     }
-    // Keep the recovery gate until the transition owner removes its marker.
-    // All transition creation and stale recovery goes through this gate, so a
-    // recoverer cannot delete a successor between validation and replacement.
     return () => {
-      try {
-        releaseOwnedMarker(transition, payload);
-      } finally {
-        rmdirSync(recoveryGate);
-      }
+      releaseOwnedMarker(transition, payload);
+      releaseOwnedMarker(recoveryGate, payload);
     };
   } catch (error) {
-    rmdirSync(recoveryGate);
+    releaseOwnedMarker(recoveryGate, payload);
     throw error;
   }
 }
