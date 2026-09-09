@@ -64,9 +64,9 @@ The gap is concrete, and this repo already pins it: `tests/docsOnlyChange.test.t
 2. **Security policy, threat model, licensing, provenance and published contract documents** — `docs/security/THREAT_MODEL.md`, `docs/adr/0001-printer-calibration-source-provenance.md`, `docs/compliance/**`, `docs/scene-contract.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. Several of these are already CODEOWNER-gated in `.github/CODEOWNERS`; this carve-out is the reviewer-count half of the same intent.
 3. **Any change that alters an agent's safety boundary, merge-safety rules, or destructive-operation permissions.** This is the carve-out that matters most in this repo, because `.squad/**` is documentation by path while governing real autonomous behaviour. A markdown edit here decides whether an unattended agent may merge, force-push, delete a branch, or write outside its own worktree. That is not low-risk prose, whatever its file extension says.
 
-Reference example for carve-out 3: `.squad/agents/ralph/loop.md` §1 (Safety Boundary), §8 (Session Lifecycle and Reaping) and §9 (Merge Safety). A pull request that changes what Ralph is permitted to merge, push or remove takes the **full gate**, even though the file is a single `.md` and CI will correctly classify the change as documentation.
+Reference example for carve-out 3: `.squad/agents/ralph/loop.md`'s opening safety boundary, §5 (Merge Safety), and §6 plus `references/reaping.md` (Session Cleanup). A pull request that changes what Ralph is permitted to merge, push or remove takes the **full gate**, even though the file is a single `.md` and CI will correctly classify the change as documentation.
 
-The carve-out turns on what a change **alters**, not on which file it lives in. Fixing a typo in that same file's §10 reporting format alters no permission and is documentation-only. Adding, relaxing or deleting a clause in §1, §8 or §9 is not. When the two readings are close, take the full gate: an extra reviewer on prose costs minutes, and a rule loosened without review is how an unattended merge goes wrong, which is the incident class `.squad/decisions.md` already records.
+The carve-out turns on what a change **alters**, not on which file it lives in. Fixing a typo in that same file's reporting format alters no permission and is documentation-only. Adding, relaxing or deleting a safety, cleanup, or merge clause is not. When the two readings are close, take the full gate: an extra reviewer on prose costs minutes, and a rule loosened without review is how an unattended merge goes wrong, which is the incident class `.squad/decisions.md` already records.
 
 4. **Anything that is documentation by path but not prose a reviewer reads** — a `docs/**` screenshot, diagram export, or other binary asset. `isDocumentationPath` admits these, correctly, for the question it exists to answer (may CI stand down the steps a prose edit cannot affect). It is the wrong answer here, because the one-reviewer exemption is justified by "one person read the prose".
 
@@ -134,7 +134,7 @@ This calls `GET /actions/runs?head_sha=<sha>` directly — the endpoint that act
 
 **A comment-only verdict — BLOCKING or otherwise — remains explicitly advisory even now that the label channel is binding.** Nothing in the `Sequencing hold` mechanism reads free-text comments; it reads a label, which is why it can be evaluated by a required check at all. A reviewer who wants a verdict enforced must apply a `hold:*` label — a comment alone still does not refuse a merge.
 
-**#740 adds a second, non-binding channel and does not change that.** A `<!-- squad-verdict -->` comment is now read by `.github/workflows/squad-review-verdict.yml`, which re-evaluates on `issue_comment` and writes `squad/pre-pr-verdict` against the live head SHA — so unlike a plain comment it _is_ bound to a commit, which is the specific gap #206 named ("a comment produces no new head, so there is no re-run point bound to the commit"). But `squad/pre-pr-verdict` is **not** in `development`'s required contexts and must not be added: #206's conclusion stands, and the status is consumed by Ralph's merge logic (`.squad/agents/ralph/loop.md` §9), not by branch protection. So there remain exactly two mechanical merge refusals here — a `hold:*` label and draft state.
+**#740 adds a second, non-binding channel and does not change that.** A `<!-- squad-verdict -->` comment is now read by `.github/workflows/squad-review-verdict.yml`, which re-evaluates on `issue_comment` and writes `squad/pre-pr-verdict` against the live head SHA — so unlike a plain comment it _is_ bound to a commit, which is the specific gap #206 named ("a comment produces no new head, so there is no re-run point bound to the commit"). But `squad/pre-pr-verdict` is **not** in `development`'s required contexts and must not be added: #206's conclusion stands, and the status is consumed by Ralph's merge logic (`.squad/agents/ralph/loop.md` §5), not by branch protection. So there remain exactly two mechanical merge refusals here — a `hold:*` label and draft state.
 
 ### `/pulls/{n}/reviews` and `reviewDecision` are not review state here (#414)
 
@@ -215,7 +215,8 @@ against it, which is why nothing in any one of those sessions caught it.
 
 ### The `--is-ancestor` inversion on a squash-merge repo
 
-**This repo squash-merges** (§9.1 of `.squad/agents/ralph/loop.md`). A squash merge
+**This repo squash-merges** (the "Verifying a merge landed" procedure in
+`.squad/agents/ralph/references/pr-gates.md`). A squash merge
 replays the branch's diff as a **new** commit on the target with no parent link back to
 the branch's own commits. So:
 
@@ -236,7 +237,8 @@ branch's moving tip:**
   pre-merge tip — genuinely is an ancestor of the target once merged, because it _is_ the
   commit that landed on it, and stays one permanently (barring a revert).
   `git merge-base --is-ancestor <mergeCommit.oid> origin/development` is honest; the same
-  command given the branch's own last head is not. See §9.1 for this distinction in full.
+  command given the branch's own last head is not. See the named procedure in
+  `.squad/agents/ralph/references/pr-gates.md` for this distinction in full.
 - **Content diff against the merge commit** (use to confirm exactly what landed, e.g. that
   a squash reproduced your held content byte-for-byte):
   `git diff <held-sha> <mergeCommit.oid> -- <paths>`, scoped to the paths you actually
@@ -410,8 +412,9 @@ queue, CI dashboard, epic tracker, backlog snapshot — live here.
    carefully or how recently the sender measured. Before acting on any board
    row, re-query the live source (`gh`, `git ls-remote`, the workflow run) —
    do not act on the row as displayed. Ralph's merge-gate instance of this is
-   codified in `.squad/agents/ralph/loop.md` §9.2 and enforced by
-   `scripts/check-gate-premises.mjs`; that section is the merge-gate-specific
+   codified in the "Re-deriving merge-gate premises" procedure in
+   `.squad/agents/ralph/references/pr-gates.md` and enforced by
+   `scripts/check-gate-premises.mjs`; that reference is the merge-gate-specific
    procedure, and this section generalizes it to board reporting broadly.
 4. **Distinguish `RED` from `PENDING` explicitly.** A status control that
    collapses "checked and failing" and "not checked yet" into one boolean
@@ -490,8 +493,8 @@ The deciding factor is **whether the agent writes**. Nothing else.
 
 Two costs, both measured and both already paid here:
 
-1. **Reviewer sessions consume implementation dispatch slots.** Ralph runs a hard cap of **5 active sessions** (`.squad/agents/ralph/loop.md` §4, which counts analysis sessions against the same five). A reviewer occupying one of those slots is capacity the backlog driver cannot spend on implementation, so review activity starves the queue it exists to serve.
-2. **They strand worktrees that a human has to clear by hand.** There is no automated archival path — §8 of the same file establishes that `archive_session` cannot reach another round's session and that a session cannot archive itself. On 2026-08-08 a manual sweep removed **118 orphaned worktree directories totalling roughly 3.8 GB**, **26 of them in this repo**, caused by exactly this mistake.
+1. **Reviewer sessions consume implementation dispatch slots.** Ralph runs a hard cap of **5 active sessions** (`.squad/agents/ralph/loop.md` §3, which counts analysis sessions against the same five). A reviewer occupying one of those slots is capacity the backlog driver cannot spend on implementation, so review activity starves the queue it exists to serve.
+2. **They strand worktrees that a human has to clear by hand.** There is no automated archival path — §6 of the same file and `references/reaping.md` prohibit Ralph from archiving or deleting sessions. On 2026-08-08 a manual sweep removed **118 orphaned worktree directories totalling roughly 3.8 GB**, **26 of them in this repo**, caused by exactly this mistake.
 
 **This holds unchanged for a multi-reviewer round.** When a change needs several reviewers, spawn them **all** with `task`, in parallel, in one turn. There is no exception for visibility, for the size of the review, or for the number of reviewers.
 

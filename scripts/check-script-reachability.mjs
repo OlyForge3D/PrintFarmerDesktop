@@ -113,10 +113,11 @@ export const UNENFORCED_CHECKS = {
     'session a single command that re-derives instead of a checklist it can ' +
     'recite from memory, which is strictly better than the checklist and ' +
     'strictly weaker than an enforced gate. Discharge path: `.squad/agents/' +
-    'ralph/loop.md` §9.2 instructs invoking it at the start of any merge-gate ' +
-    'decision; wiring it into an automated dispatcher would need the same ' +
-    'privileged, per-PR credential already unavailable to check:required-' +
-    'contexts above.',
+    'ralph/references/pr-gates.md`, under "Re-deriving merge-gate premises", ' +
+    'instructs running it immediately before gating, holding, routing, ' +
+    'reviewing, publishing, or merging any open PR; wiring it into an ' +
+    'automated dispatcher would need the same privileged, per-PR credential ' +
+    'already unavailable to check:required-contexts above.',
   'check:squad-verdict':
     'Its verifier logic IS enforced in CI: tests/squadReviewVerdict.test.ts ' +
     'drives bindStatusToHead, verifySquadVerdict, selectSquadVerdict and ' +
@@ -140,9 +141,9 @@ export const UNENFORCED_CHECKS = {
     '(.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md, ' +
     'reaffirmed in .../copilot-740-squad-verdict-semantics.md), so reading it ' +
     'is Ralph procedure, not a mechanical refusal. Discharge path: ' +
-    ".squad/agents/ralph/loop.md §9 instructs branching on this command's " +
-    'exit code at every merge-gate decision; wiring it into an automated ' +
-    'dispatcher would need the same privileged, per-PR credential ' +
+    '.squad/agents/ralph/loop.md step 5 instructs branching on this ' +
+    "command's exit code at every merge-gate decision; wiring it into an " +
+    'automated dispatcher would need the same privileged, per-PR credential ' +
     'check:required-contexts above is blocked on. Ported from ' +
     'OlyForge3D/PrintFarmer #1316 (fixing PrintFarmer issue #1310), which ' +
     'carries the identical unwired script for the identical reason.',

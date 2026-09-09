@@ -359,21 +359,29 @@ gh pr create --title "{title}" --body "Closes #{number}\n\n{description}" --head
 
 ## Ralph's Role in Issue Lifecycle
 
-Ralph (the work monitor) continuously checks issue and PR state:
+Ralph (the work monitor) runs **one bounded round per activation and exits**. It
+never polls, idles, or re-scans automatically; every later round requires a new
+explicit activation.
+
+Within that single round Ralph:
 
 1. **Triage:** Detects untriaged issues, assigns `squad:{member}` labels
-2. **Spawn:** Launches agents for assigned issues
-3. **Monitor:** Tracks PR state transitions (needsReview → changesRequested → readyToMerge)
-4. **Merge:** Automatically merges approved PRs
-5. **Cleanup:** Marks issues as done when PRs merge
+2. **Spawn:** Launches agents for assigned issues, within the shared session cap
+3. **Monitor:** Records PR state transitions (needsReview → changesRequested → readyToMerge)
+4. **Merge:** Merges only PRs that pass the current-head squad verdict gate and
+   every required check
+5. **Report:** Emits issue buckets, slot count, gate failures, and report-only
+   cleanup candidates, then exits
 
-**Ralph's work-check cycle:**
+**Ralph's bounded round:**
 
 ```
-Scan → Categorize → Dispatch → Watch → Report → Loop
+Scan → Categorize → Dispatch → Verify gates → Report → Exit
 ```
 
-See `.squad/templates/ralph-reference.md` for Ralph's full lifecycle.
+See `.squad/agents/ralph/loop.md` for the authoritative one-shot core, and the
+conditional procedures it links in `.squad/agents/ralph/references/`
+(`triage-dispatch.md`, `pr-gates.md`, `reaping.md`).
 
 ## PR Review Handling
 
@@ -383,7 +391,8 @@ If the project has no human reviewers configured:
 
 1. PR opens
 2. CI runs
-3. If CI passes, Ralph auto-merges
+3. If CI passes and the current-head squad verdict gate reports usable evidence,
+   Ralph merges during a bounded round
 4. Issue closes
 
 ### Human Review Required
@@ -393,7 +402,7 @@ If the project requires human approval:
 1. PR opens
 2. Human reviewer is notified (GitHub/ADO notifications)
 3. Reviewer approves or requests changes
-4. If approved + CI passes, Ralph merges
+4. If approved + CI passes, Ralph merges in its next activated round
 5. If changes requested, agent addresses feedback
 
 ### Squad Member Review

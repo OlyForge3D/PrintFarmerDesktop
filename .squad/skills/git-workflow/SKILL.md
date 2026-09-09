@@ -152,8 +152,8 @@ npm run plan:behind-sync-order -- --claim
   like "already in flight" above, not as a transient error to retry immediately.
 
 See `scripts/plan-behind-sync-order.mjs`'s header comment for the full design and
-`.squad/agents/ralph/loop.md` §9.3 for how Ralph itself consults the same tool before recommending or
-dispatching a sync.
+`.squad/agents/ralph/references/pr-gates.md` for how Ralph itself consults the same tool before
+recommending or dispatching a sync.
 
 ## Merge one PR at a time, and verify each one landed
 

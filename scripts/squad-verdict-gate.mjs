@@ -50,9 +50,9 @@ export const reviewPanel = ['bishop', 'hicks', 'vasquez'];
  *
  * WHY AN OPT-IN LABEL IS SAFE HERE, when opt-in scoping normally is not: the
  * absence of this label removes the gate AND Ralph's merge autonomy together.
- * `.squad/agents/ralph/loop.md` §9 refuses an unattended merge on a PR whose
- * `squad/pre-pr-verdict` status reports NOT_APPLICABLE — a human merges it
- * deliberately instead. So the fail-open direction that would otherwise make
+ * `.squad/agents/ralph/loop.md` step 5 refuses an unattended merge on a PR
+ * whose `squad/pre-pr-verdict` status reports NOT_APPLICABLE — a human merges
+ * it deliberately instead. So the fail-open direction that would otherwise make
  * opt-in scoping dangerous — "forget the label, unreviewed agent code
  * auto-lands" — does not exist. Forgetting the label degrades to "a human has
  * to merge this by hand", which is strictly more conservative, not less.
@@ -125,10 +125,12 @@ export function canAutoScope({ authorMembers, roster, isFork } = {}) {
  * Repository permission levels that may record a review.
  *
  * The authoritative author-authentication check. Ralph merges autonomously
- * using the OWNER's write access (`.squad/agents/ralph/loop.md` §1 lists PR
- * merges among its allowed writes), so a forgeable record would effectively
- * lend the owner's privileges to whoever forged it — an unauthenticated path
- * from a stranger to `development`. Everything below write is rejected,
+ * using the OWNER's write access (`.squad/agents/ralph/loop.md` step 5 has
+ * Ralph perform the PR merge itself — the one write action carved out of an
+ * otherwise fully delegated, main-checkout-read-only policy), so a forgeable
+ * record would effectively lend the owner's privileges to whoever forged it —
+ * an unauthenticated path from a stranger to `development`. Everything below
+ * write is rejected,
  * including `read` (which is what a non-collaborator returns on a public
  * repository) and `triage`.
  *
