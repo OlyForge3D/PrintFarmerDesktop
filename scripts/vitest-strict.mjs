@@ -65,6 +65,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const EXIT_OK = 0;
@@ -224,7 +225,7 @@ export function formatInconclusive({ selector, code } = {}) {
 }
 
 export function resolveVitestBin(require = createRequire(import.meta.url)) {
-  return require.resolve('vitest/vitest.mjs');
+  return join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
 }
 
 /**

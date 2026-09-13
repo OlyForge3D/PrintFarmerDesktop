@@ -148,7 +148,7 @@ docs/security/  Threat model and security review records
 
 ## Development
 
-Prerequisites: Node.js 22+, Rust (stable), and a supported platform toolchain.
+Prerequisites: Node.js 22.12+, Rust (stable), and a supported platform toolchain.
 
 ```
 npm install
