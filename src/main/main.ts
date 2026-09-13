@@ -211,7 +211,7 @@ if (!enforceSingleInstance()) {
     .whenReady()
     .then(() => {
       if (process.platform === 'darwin' && !app.isPackaged) {
-        app.dock.setIcon(
+        app.dock?.setIcon(
           resolveAppIconPath(app.getAppPath(), process.resourcesPath, false),
         );
       }

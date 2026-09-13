@@ -975,12 +975,13 @@ describe('flattenPartTree hostile shapes', () => {
 describe('<PartTree /> single roving tab stop', () => {
   // Duplicate references legitimately warn; the warning itself is asserted in
   // the diagnostics suite above, so keep it out of this suite's output.
-  let warn: ReturnType<typeof vi.spyOn>;
+  let restoreWarn: () => void;
   beforeEach(() => {
-    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    restoreWarn = () => warn.mockRestore();
   });
   afterEach(() => {
-    warn.mockRestore();
+    restoreWarn();
   });
 
   it('keeps exactly one tab stop for a duplicated child reference', () => {

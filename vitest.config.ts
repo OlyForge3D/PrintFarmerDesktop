@@ -16,6 +16,9 @@ export default defineConfig({
     // budget via `vi.setConfig({ testTimeout })` instead of raising this
     // global value — see issue #734.
     testTimeout: 5000,
+    // This suite contains many subprocess-heavy files. Bounding workers avoids
+    // CPU contention turning their explicit per-file budgets into false hangs.
+    maxWorkers: 4,
     // Test files whose names end in `.acceptance.test.ts` exercise
     // main-process modules against fetch-shaped fakes. Under the default
     // `jsdom` environment, `AbortController`/`AbortSignal` come from jsdom's
@@ -28,11 +31,8 @@ export default defineConfig({
     // is Node/undici end to end, no jsdom involved. Route these files to
     // `node` so their runtime matches production. The convention for other
     // main-process tests in this repo is a per-file `// @vitest-environment
-    // node` pragma (see e.g. `tests/calibrationHttp.test.ts`); this glob
-    // covers acceptance files that a sibling branch owns and cannot receive
-    // an in-file pragma via this repo's changes without cross-branch
-    // coordination.
-    environmentMatchGlobs: [['tests/**/*.acceptance.test.ts', 'node']],
+    // node` pragma (see e.g. `tests/calibrationHttp.test.ts`). Vitest 5 removed
+    // `environmentMatchGlobs`, so acceptance files use the same pragma.
   },
   resolve: {
     alias: {

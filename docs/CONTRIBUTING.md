@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Node.js 22+** and npm.
+- **Node.js 22.12+** and npm.
 - **Rust (stable)** via [rustup](https://rustup.rs).
 - **A C++ toolchain for the sidecar linker:**
   - **Windows:** Visual Studio 2022+ with the **Desktop development with C++**

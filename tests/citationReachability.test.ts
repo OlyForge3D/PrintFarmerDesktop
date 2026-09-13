@@ -12,12 +12,14 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   collectCitations,
   isForgeCitation,
   isGitObjectToken,
 } from '../scripts/citation-corpus.mjs';
+
+vi.setConfig({ testTimeout: 30_000 });
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
