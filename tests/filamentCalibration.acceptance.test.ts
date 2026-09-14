@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 /**
  * Filament-calibration acceptance suite (owner reframe 2026-08-23).
  *

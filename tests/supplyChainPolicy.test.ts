@@ -81,6 +81,7 @@ interface WorkflowStep {
   run?: string;
   uses?: string;
   continueOnError?: string;
+  if?: string;
 }
 
 function parseWorkflowSteps(workflow: string, jobName: string): WorkflowStep[] {
@@ -114,7 +115,7 @@ function parseWorkflowSteps(workflow: string, jobName: string): WorkflowStep[] {
     }
     if (current === null) continue;
 
-    const property = /^ {8}(name|run|uses|continue-on-error):\s*(.+)$/.exec(
+    const property = /^ {8}(name|run|uses|continue-on-error|if):\s*(.+)$/.exec(
       line,
     );
     if (!property) continue;
@@ -123,7 +124,7 @@ function parseWorkflowSteps(workflow: string, jobName: string): WorkflowStep[] {
     const key =
       property[1] === 'continue-on-error'
         ? 'continueOnError'
-        : (property[1] as 'name' | 'run' | 'uses');
+        : (property[1] as 'name' | 'run' | 'uses' | 'if');
     current[key] = value.trim();
   }
 
@@ -459,6 +460,10 @@ describe('the release workflow enforces compliance before publication', () => {
       expect(steps[index]?.run).toBe(run);
       return index;
     });
+    const swiftShader =
+      steps[indexOfName('Packaged WebGL2 (SwiftShader fallback)')];
+    expect(swiftShader?.if).toContain("runner.os == 'Windows'");
+
     const ordered = [
       indexOfRun('npm run package'),
       indexOfRun('node scripts/verify-packaged-sidecar.mjs'),

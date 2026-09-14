@@ -122,7 +122,7 @@ describe('Playwright secondary diagnostics reporting', () => {
       // in this guard, so failing here is the correct report.
       expect(run.stdout).toContain(STDOUT_NOISE_SENTINEL);
       const report = JSON.parse(readFileSync(reportFile, 'utf8')) as JsonReport;
-      expect(report.config.version).toBe('1.61.1');
+      expect(report.config.version).toBe('1.63.0');
       const results = resultsByTitle(report);
 
       const bodyCleanup = requiredResult(

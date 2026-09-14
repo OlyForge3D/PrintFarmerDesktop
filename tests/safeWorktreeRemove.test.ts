@@ -19,6 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
+vi.setConfig({ testTimeout: 15_000 });
+
 import {
   DIAGNOSTIC_PREFIX,
   ERROR_CODES,

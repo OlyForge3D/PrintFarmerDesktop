@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/unbound-method, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/unbound-method, @typescript-eslint/no-unsafe-assignment */
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerProfile } from '@shared/ipc';
 import {
@@ -758,32 +758,31 @@ function fakeSidecar(
   return { api, pullBatches, statuses };
 }
 
-function fakeRemote(): {
-  api: SyncRemote;
-  getChanges: ReturnType<typeof vi.fn>;
-  getCollection: ReturnType<typeof vi.fn>;
-  getCollections: ReturnType<typeof vi.fn>;
-  getCollectionMembers: ReturnType<typeof vi.fn>;
-  getTag: ReturnType<typeof vi.fn>;
-  apply: ReturnType<typeof vi.fn>;
-} {
-  const getChanges = vi.fn(() => Promise.resolve(page([], null, false, 0)));
-  const getCollection = vi.fn(() =>
+function fakeRemote() {
+  const getChanges = vi.fn<SyncRemote['getChanges']>(() =>
+    Promise.resolve(page([], null, false, 0)),
+  );
+  const getCollection = vi.fn<SyncRemote['getCollection']>(() =>
     Promise.resolve(collection(REMOTE_COLLECTION_ID, 10)),
   );
-  const getCollections = vi.fn(() => Promise.resolve([]));
-  const getCollectionMembers = vi.fn(() => Promise.resolve([]));
-  const getTag = vi.fn();
-  const apply = vi.fn();
+  const getCollections = vi.fn<SyncRemote['getCollections']>(() =>
+    Promise.resolve([]),
+  );
+  const getCollectionMembers = vi.fn<SyncRemote['getCollectionMembers']>(() =>
+    Promise.resolve([]),
+  );
+  const getTag = vi.fn<SyncRemote['getTag']>();
+  const apply = vi.fn<SyncRemote['apply']>();
+  const api: SyncRemote = {
+    getChanges,
+    getCollection,
+    getCollections,
+    getCollectionMembers,
+    getTag,
+    apply,
+  };
   return {
-    api: {
-      getChanges,
-      getCollection,
-      getCollections,
-      getCollectionMembers,
-      getTag,
-      apply,
-    },
+    api,
     getChanges,
     getCollection,
     getCollections,

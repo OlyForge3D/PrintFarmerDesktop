@@ -505,7 +505,11 @@ jobs:
         run: npx playwright test e2e/release.gpu.spec.ts
 
       - name: Packaged WebGL2 (SwiftShader fallback)
-        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
+        # Electron 44's SwiftShader Vulkan backend cannot initialize on GitHub's
+        # macOS virtual GPU. Host-default WebGL2 remains required above on both
+        # platforms; the software fallback is exercised on Windows, where the
+        # packaged backend is available.
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'Windows'
         env:
           PRINTFARMER_E2E_GPU_MODE: swiftshader
         run: npx playwright test e2e/release.gpu.spec.ts

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SyncHttpClient, SyncHttpError } from '../src/main/syncHttp.js';
+import {
+  SyncHttpClient,
+  SyncHttpError,
+  type SyncTokenProvider,
+} from '../src/main/syncHttp.js';
 
 const CHANGE_PAGE = {
   changes: [],
@@ -328,12 +332,13 @@ describe('SyncHttpClient', () => {
   });
 });
 
-function tokens(): {
-  getToken: ReturnType<typeof vi.fn>;
-  refreshToken: ReturnType<typeof vi.fn>;
-} {
+function tokens() {
   return {
-    getToken: vi.fn(() => Promise.resolve('token-1')),
-    refreshToken: vi.fn(() => Promise.resolve('token-2')),
-  };
+    getToken: vi.fn<(profileId: string) => Promise<string>>(() =>
+      Promise.resolve('token-1'),
+    ),
+    refreshToken: vi.fn<(profileId: string) => Promise<string>>(() =>
+      Promise.resolve('token-2'),
+    ),
+  } satisfies SyncTokenProvider;
 }

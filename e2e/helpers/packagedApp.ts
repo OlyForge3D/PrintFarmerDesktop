@@ -847,7 +847,6 @@ function gpuArguments(mode: PackagedGpuMode): string[] {
     '--enable-unsafe-swiftshader',
   ];
 }
-
 async function allocateLoopbackPort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const server = createServer();

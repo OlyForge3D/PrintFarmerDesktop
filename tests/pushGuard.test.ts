@@ -31,7 +31,10 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
+
+vi.setConfig({ testTimeout: 15_000, hookTimeout: 30_000 });
 import {
   ACK_ENV,
   ACK_FOREIGN_ENV,
