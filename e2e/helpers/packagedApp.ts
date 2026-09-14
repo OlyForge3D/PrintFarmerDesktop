@@ -837,13 +837,18 @@ export async function launchPackagedApp(
   }
 }
 
-function gpuArguments(mode: PackagedGpuMode): string[] {
+export function gpuArguments(
+  mode: PackagedGpuMode,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   if (mode === 'default') {
     return [];
   }
   return [
     '--use-gl=angle',
-    '--use-angle=swiftshader',
+    platform === 'darwin'
+      ? '--use-angle=swiftshader-webgl'
+      : '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader',
   ];
 }

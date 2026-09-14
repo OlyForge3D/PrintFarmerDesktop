@@ -11,6 +11,7 @@ import {
   createPackagedStartupTrace,
   decodeBoundedUtf8Tail,
   FIRST_LAUNCH_TIMEOUT_MS,
+  gpuArguments,
   launchInstrumentedElectronTestApp,
   MAX_PROCESS_OUTPUT_BYTES,
   runWithPackagedTestCleanup,
@@ -18,6 +19,24 @@ import {
   type PackagedFailureDiagnostics,
 } from '../e2e/helpers/packagedApp.js';
 
+describe('packaged GPU arguments', () => {
+  it('uses the platform-supported SwiftShader fallback', () => {
+    expect(gpuArguments('default', 'darwin')).toEqual([]);
+    expect(gpuArguments('swiftshader', 'darwin')).toEqual([
+      '--use-gl=angle',
+      '--use-angle=swiftshader-webgl',
+      '--enable-unsafe-swiftshader',
+    ]);
+    expect(gpuArguments('swiftshader', 'win32')).toEqual([
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader',
+    ]);
+    expect(gpuArguments('swiftshader', 'linux')).toEqual(
+      gpuArguments('swiftshader', 'win32'),
+    );
+  });
+});
 describe('packaged test failure cleanup', () => {
   it('keeps the body failure primary while attaching logs and retaining cleanup errors', async () => {
     const events: string[] = [];
