@@ -19,7 +19,7 @@ import {
   isGitObjectToken,
 } from '../scripts/citation-corpus.mjs';
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

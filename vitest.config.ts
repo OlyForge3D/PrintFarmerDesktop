@@ -18,7 +18,7 @@ export default defineConfig({
     testTimeout: 5000,
     // This suite contains many subprocess-heavy files. Bounding workers avoids
     // CPU contention turning their explicit per-file budgets into false hangs.
-    maxWorkers: 4,
+    maxWorkers: 2,
     // Test files whose names end in `.acceptance.test.ts` exercise
     // main-process modules against fetch-shaped fakes. Under the default
     // `jsdom` environment, `AbortController`/`AbortSignal` come from jsdom's

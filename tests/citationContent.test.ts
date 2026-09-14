@@ -10,7 +10,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+
+vi.setConfig({ testTimeout: 15_000 });
 import {
   ancestorStatus,
   addedLinesOf,

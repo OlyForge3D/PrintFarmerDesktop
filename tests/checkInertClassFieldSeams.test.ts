@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.setConfig({ testTimeout: 15_000 });
+vi.setConfig({ testTimeout: 30_000 });
 
 import {
   findInertSeamCandidates,

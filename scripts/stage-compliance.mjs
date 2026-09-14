@@ -40,7 +40,9 @@ const complianceFiles = [
   },
   {
     destination: 'ELECTRON_LICENSE.txt',
-    source: path.join(electronDist, 'LICENSE'),
+    source: existsSync(path.join(electronDist, 'LICENSE'))
+      ? path.join(electronDist, 'LICENSE')
+      : path.join(repoRoot, 'node_modules', 'electron', 'LICENSE'),
   },
   {
     destination: 'LICENSES.chromium.html',
