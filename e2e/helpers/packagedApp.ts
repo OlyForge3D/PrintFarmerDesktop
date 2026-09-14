@@ -837,22 +837,16 @@ export async function launchPackagedApp(
   }
 }
 
-export function gpuArguments(
-  mode: PackagedGpuMode,
-  platform: NodeJS.Platform = process.platform,
-): string[] {
+function gpuArguments(mode: PackagedGpuMode): string[] {
   if (mode === 'default') {
     return [];
   }
   return [
     '--use-gl=angle',
-    platform === 'darwin'
-      ? '--use-angle=swiftshader-webgl'
-      : '--use-angle=swiftshader',
+    '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader',
   ];
 }
-
 async function allocateLoopbackPort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const server = createServer();
