@@ -161,22 +161,8 @@ jobs:
             printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
             exit 1
           fi
-          certificate_path="$RUNNER_TEMP/printfarmer-release.p12"
-          keychain_path="$RUNNER_TEMP/printfarmer-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 24)"
-          cleanup() {
-            security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
-            rm -f "$certificate_path"
-          }
-          trap cleanup EXIT
-          printf '%s' "$CERTIFICATE_BASE64" | openssl base64 -d -A -out "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
-          export APPLE_SIGNING_KEYCHAIN="$keychain_path"
-          node scripts/release-environment.mjs \
+          node scripts/macos-signing-keychain.mjs -- \
+            node scripts/release-environment.mjs \
             --allow APPLE_SIGNING_IDENTITY \
             --allow APPLE_SIGNING_KEYCHAIN \
             -- node scripts/sign-macos-release.mjs \

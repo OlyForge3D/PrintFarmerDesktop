@@ -31,11 +31,19 @@ Windows certificate material is decoded only inside the dedicated app-signing
 and Squirrel-construction step. The signer runs in a scrubbed child environment
 containing the certificate path and password plus the minimum Windows process
 environment. macOS certificate material is imported into a temporary keychain
-only for the dedicated sidecar/app signing process. A separate scrubbed process
-receives only the Apple ID notarization credentials. The temporary certificate
-and keychain are removed by step-local `finally`/`trap` cleanup before ordinary
-archive makers run. Credentials are never exported through `GITHUB_ENV`,
-written into the repository, or uploaded as artifacts.
+only for the dedicated sidecar/app signing process. The temporary keychain is
+added to the front of the user keychain search list while preserving its prior
+entries, allowing codesign to build the certificate chain; the prior list is
+restored before the temporary keychain is deleted. Before signing, CI checks
+that the configured identity is present and valid for code signing, but emits
+only generic missing/invalid diagnostics rather than certificate identities or
+fingerprints. The signing child receives only the identity and temporary
+keychain path, not the certificate bytes or password. A separate scrubbed
+process receives only the Apple ID notarization credentials. The temporary
+certificate and keychain are removed before ordinary archive makers run, and
+any search-list or cleanup failure fails the release step. Credentials are
+never exported through `GITHUB_ENV`, written into the repository, or uploaded
+as artifacts.
 
 Generate the detached update-signing key pair on a trusted offline machine:
 
