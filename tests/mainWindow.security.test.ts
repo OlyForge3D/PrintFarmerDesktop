@@ -20,6 +20,8 @@ const bootState = vi.hoisted(() => ({
   windowOptions: [] as Record<string, unknown>[],
   applicationNames: [] as string[],
   aboutPanelOptions: [] as Record<string, unknown>[],
+  webContentsListeners: new Map<string, unknown>(),
+  openedExternally: [] as string[],
   appListeners: new Map<string, (...args: unknown[]) => unknown>(),
   readyResolved: Promise.resolve(),
 }));
@@ -28,7 +30,9 @@ vi.mock('electron', () => {
   class FakeBrowserWindow {
     static getAllWindows = () => [];
     webContents = {
-      on: () => undefined,
+      on: (event: string, listener: unknown) => {
+        bootState.webContentsListeners.set(event, listener);
+      },
       setWindowOpenHandler: () => undefined,
       session: { setPermissionRequestHandler: () => undefined },
     };
@@ -73,6 +77,12 @@ vi.mock('electron', () => {
       buildFromTemplate: (t: unknown) => t,
     },
     safeStorage: { isEncryptionAvailable: () => false },
+    shell: {
+      openExternal: (url: string) => {
+        bootState.openedExternally.push(url);
+        return Promise.resolve();
+      },
+    },
     session: {
       defaultSession: { webRequest: { onHeadersReceived: () => undefined } },
     },
@@ -102,7 +112,7 @@ vi.mock('../src/main/syncEngine.js', () => ({
 }));
 
 // Injected by the Vite main-process plugin at build time; absent under vitest.
-vi.stubGlobal('MAIN_WINDOW_VITE_DEV_SERVER_URL', undefined);
+vi.stubGlobal('MAIN_WINDOW_VITE_DEV_SERVER_URL', 'http://localhost:5173');
 vi.stubGlobal('MAIN_WINDOW_VITE_NAME', 'main_window');
 
 let bootstrapped = false;
@@ -149,6 +159,80 @@ describe('main window webPreferences', () => {
       unknown
     >;
     expect(prefs[flag]).toBe(expected);
+  });
+});
+
+describe('startup diagnostics', () => {
+  it('logs preload failures so a missing bridge is actionable', () => {
+    const listener = bootState.webContentsListeners.get('preload-error') as (
+      event: unknown,
+      preloadPath: string,
+      error: Error,
+    ) => void;
+    const failure = new Error('preload failed');
+    const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      listener({}, 'preload.js', failure);
+      expect(logError).toHaveBeenCalledWith(
+        '[preload] failed to load preload.js',
+        failure,
+      );
+    } finally {
+      logError.mockRestore();
+    }
+  });
+
+  it.each([
+    ['error', true],
+    ['warning', true],
+    ['info', false],
+    ['debug', false],
+  ] as const)(
+    'handles renderer %s messages using the current Electron payload',
+    (level, shouldLog) => {
+      const listener = bootState.webContentsListeners.get(
+        'console-message',
+      ) as (details: {
+        level: 'error' | 'warning' | 'info' | 'debug';
+        message: string;
+        sourceId: string;
+        lineNumber: number;
+      }) => void;
+      const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        listener({
+          level,
+          message: 'renderer message',
+          sourceId: 'http://localhost:5173/src/renderer/App.tsx',
+          lineNumber: 46,
+        });
+        if (shouldLog) {
+          expect(logError).toHaveBeenCalledWith(
+            `[renderer:${level}] renderer message (http://localhost:5173/src/renderer/App.tsx:46)`,
+          );
+        } else {
+          expect(logError).not.toHaveBeenCalled();
+        }
+      } finally {
+        logError.mockRestore();
+      }
+    },
+  );
+});
+
+describe('development navigation wiring', () => {
+  it('passes the Forge dev-server URL to the navigation guard', () => {
+    const listener = bootState.webContentsListeners.get('will-navigate') as (
+      event: { preventDefault: () => void },
+      url: string,
+    ) => void;
+    const preventDefault = vi.fn();
+
+    listener({ preventDefault }, 'http://localhost:5173/');
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(bootState.openedExternally).toEqual([]);
   });
 });
 

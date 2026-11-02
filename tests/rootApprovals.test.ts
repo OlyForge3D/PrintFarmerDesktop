@@ -83,6 +83,243 @@ function fakeFileSystem(): RootApprovalFileSystem & {
   };
 }
 
+describe('batch catalog authorization', () => {
+  async function approvedStore() {
+    const fileSystem = fakeFileSystem();
+    const root = path.resolve('batch-root');
+    const outside = path.resolve('batch-outside', 'stray.stl');
+    const absent = path.join(root, 'gone.stl');
+    const inside = Array.from({ length: 200 }, (_, index) =>
+      path.join(root, `part-${index}.stl`),
+    );
+    fileSystem.realpaths.set(root, root);
+    fileSystem.realpaths.set(outside, outside);
+    for (const file of inside) fileSystem.realpaths.set(file, file);
+    let nextId = 0;
+    const store = new RootApprovalStore({
+      userDataPath: path.resolve('user-data-batch'),
+      fileSystem,
+      createId: () =>
+        nextId++ === 0
+          ? '44444444-4444-4444-8444-444444444444'
+          : '55555555-5555-4555-8555-555555555555',
+      now: () => 0,
+    });
+    await store.approveFromPicker(root);
+    return { fileSystem, store, inside, outside, absent };
+  }
+
+  it('authorizes contained files and returns null for absent or unapproved ones, in input order', async () => {
+    const { store, inside, outside, absent } = await approvedStore();
+    const results = await store.authorizeFiles([inside[0]!, outside, absent]);
+    expect(results).toEqual([
+      { sourcePath: inside[0], canonicalPath: inside[0] },
+      null,
+      null,
+    ]);
+    // Control: the single-file path must agree on every input.
+    await expect(store.authorizeFile(inside[0]!)).resolves.toEqual(results[0]);
+    await expect(store.authorizeFile(outside)).rejects.toBeInstanceOf(
+      RootApprovalError,
+    );
+    await expect(store.authorizeFile(absent)).rejects.toBeInstanceOf(
+      RootApprovalError,
+    );
+  });
+
+  it('refuses every file once the root identity changes', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    expect((await store.authorizeFiles(inside)).every(Boolean)).toBe(true);
+    fileSystem.identity.ino = 99n;
+    expect((await store.authorizeFiles(inside)).every((r) => r === null)).toBe(
+      true,
+    );
+  });
+
+  it('bounds concurrent checks across overlapping batches and rechecks approvals', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    let reads = 0;
+    let active = 0;
+    let peak = 0;
+    const readFile = fileSystem.readFile.bind(fileSystem);
+    const realpath = fileSystem.realpath.bind(fileSystem);
+    fileSystem.readFile = (filePath) => {
+      reads += 1;
+      return readFile(filePath);
+    };
+    fileSystem.realpath = async (filePath) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active -= 1;
+      return realpath(filePath);
+    };
+
+    const [first, second] = await Promise.all([
+      store.authorizeFiles(inside),
+      store.authorizeFiles(inside),
+    ]);
+
+    expect(first.every(Boolean)).toBe(true);
+    expect(second.every(Boolean)).toBe(true);
+    expect(reads).toBe(4);
+    expect(peak).toBe(32);
+    // Control: the unbatched single-file path reads the store per file.
+    reads = 0;
+    await Promise.all(inside.map((file) => store.authorizeFile(file)));
+    expect(reads).toBe(inside.length);
+  });
+
+  it('checks more than 10,000 catalog paths without marking them missing', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    const root = path.dirname(inside[0]!);
+    const files = Array.from({ length: 10_538 }, (_, index) =>
+      path.join(root, `large-catalog-${index}.stl`),
+    );
+    for (const file of files) fileSystem.realpaths.set(file, file);
+
+    const results = await store.authorizeFiles(files);
+
+    expect(results).toHaveLength(files.length);
+    expect(results.every((result) => result !== null)).toBe(true);
+    expect(results[10_537]).toEqual({
+      sourcePath: files[10_537],
+      canonicalPath: files[10_537],
+    });
+  });
+
+  it('reports unexpected file-check errors instead of treating them as missing', async () => {
+    const { fileSystem, store, inside, absent } = await approvedStore();
+    const realpath = fileSystem.realpath.bind(fileSystem);
+    fileSystem.realpath = (filePath) =>
+      filePath === inside[1]
+        ? Promise.reject(
+            Object.assign(new Error('too many files'), { code: 'EMFILE' }),
+          )
+        : realpath(filePath);
+
+    const availableAndAbsent = await store.authorizeFiles([inside[0]!, absent]);
+    expect(availableAndAbsent[0]?.sourcePath).toBe(inside[0]);
+    expect(availableAndAbsent[1]).toBeNull();
+    await expect(
+      store.authorizeFiles([inside[0]!, inside[1]!]),
+    ).rejects.toMatchObject({
+      code: 'APPROVAL_CHECK_FAILED',
+    });
+    await expect(
+      store.authorizeFiles([inside[0]!, inside[1]!]),
+    ).rejects.toThrow('then retry');
+    await expect(store.authorizeFile(inside[1]!)).rejects.toMatchObject({
+      code: 'APPROVAL_CHECK_FAILED',
+    });
+  });
+
+  it('reports an inaccessible approved root and a corrupt approval store', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    const root = path.dirname(inside[0]!);
+    const realpath = fileSystem.realpath.bind(fileSystem);
+    fileSystem.realpath = (filePath) =>
+      filePath === root
+        ? Promise.reject(
+            Object.assign(new Error('access denied'), { code: 'EACCES' }),
+          )
+        : realpath(filePath);
+
+    await expect(store.authorizeFiles([inside[0]!])).rejects.toMatchObject({
+      code: 'APPROVAL_CHECK_FAILED',
+    });
+    await expect(store.authorizeFiles([inside[0]!])).rejects.toThrow(
+      'approved folder',
+    );
+
+    fileSystem.realpath = realpath;
+    fileSystem.files.set(
+      path.join(path.resolve('user-data-batch'), 'approved-roots.v1.json'),
+      Buffer.from('{broken'),
+    );
+    await expect(store.authorizeFiles([inside[0]!])).rejects.toMatchObject({
+      code: 'CORRUPT_APPROVAL_STORE',
+    });
+  });
+
+  it('can authorize one file despite an unrelated root check failure', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    const firstRoot = path.dirname(inside[0]!);
+    const secondRoot = path.resolve('second-batch-root');
+    const secondFile = path.join(secondRoot, 'part.stl');
+    fileSystem.realpaths.set(secondRoot, secondRoot);
+    fileSystem.realpaths.set(secondFile, secondFile);
+    await store.approveFromPicker(secondRoot);
+    const realpath = fileSystem.realpath.bind(fileSystem);
+    fileSystem.realpath = (filePath) =>
+      filePath === firstRoot
+        ? Promise.reject(
+            Object.assign(new Error('access denied'), { code: 'EACCES' }),
+          )
+        : realpath(filePath);
+
+    await expect(store.authorizeFile(secondFile)).resolves.toEqual({
+      sourcePath: secondFile,
+      canonicalPath: secondFile,
+    });
+    await expect(store.authorizeFile(inside[0]!)).rejects.toMatchObject({
+      code: 'APPROVAL_CHECK_FAILED',
+    });
+  });
+
+  it('does not return paths when a root changes identity during the batch', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    const realpath = fileSystem.realpath.bind(fileSystem);
+    fileSystem.realpath = (filePath) => {
+      if (filePath === inside[0]) fileSystem.identity.ino = 99n;
+      return realpath(filePath);
+    };
+
+    await expect(store.authorizeFiles([inside[0]!])).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED',
+    });
+  });
+
+  it('finishes an in-flight batch before resetting approvals', async () => {
+    const { fileSystem, store, inside } = await approvedStore();
+    const realpath = fileSystem.realpath.bind(fileSystem);
+    let release = (): void => undefined;
+    let markStarted = (): void => undefined;
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    fileSystem.realpath = async (filePath) => {
+      if (filePath === inside[0]) {
+        markStarted();
+        await paused;
+      }
+      return realpath(filePath);
+    };
+
+    const batch = store.authorizeFiles([inside[0]!]);
+    await started;
+    let resetFinished = false;
+    const reset = store.reset().then(() => {
+      resetFinished = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      expect(resetFinished).toBe(false);
+    } finally {
+      release();
+    }
+
+    await expect(batch).resolves.toEqual([
+      { sourcePath: inside[0], canonicalPath: inside[0] },
+    ]);
+    await reset;
+    await expect(store.authorizeFiles([inside[0]!])).resolves.toEqual([null]);
+  });
+});
+
 describe('main-owned root approvals', () => {
   it('compares Windows-sized file IDs losslessly as bigint', () => {
     const first = 9_007_199_254_740_992n;

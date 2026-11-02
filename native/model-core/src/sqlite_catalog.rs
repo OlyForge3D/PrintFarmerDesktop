@@ -136,6 +136,7 @@ impl SqliteCatalog {
                 return Err(error);
             }
         }
+        crate::catalog_query::register_sqlite(&conn)?;
         Ok(Self { conn })
     }
 
@@ -836,6 +837,35 @@ impl SqliteCatalog {
 }
 
 impl CatalogStore for SqliteCatalog {
+    fn matching_model_hashes(
+        &self,
+        query: &crate::catalog_query::ModelQuery,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        crate::catalog_query::matching_hashes_sqlite(&self.conn, query, limit)
+    }
+
+    fn model_exists(&self, hash: &str) -> Result<bool, String> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM models WHERE hash=?1)",
+                [hash],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("catalog model lookup failed: {error}"))
+    }
+
+    fn collection_contains_model(&self, id: &str, hash: &str) -> Result<bool, String> {
+        self.conn.query_row("SELECT EXISTS(SELECT 1 FROM collection_models WHERE collection_id=?1 AND model_hash=?2)", params![id, hash], |row| row.get(0))
+            .map_err(|error| format!("catalog membership lookup failed: {error}"))
+    }
+    fn query_models(
+        &self,
+        query: &crate::catalog_query::ModelQuery,
+    ) -> Result<crate::catalog_query::ModelPage, String> {
+        crate::catalog_query::query_sqlite(&self.conn, query)
+    }
+
     fn begin_batch(&mut self) -> Result<(), String> {
         self.conn
             .execute_batch("BEGIN IMMEDIATE")
@@ -988,39 +1018,139 @@ impl CatalogStore for SqliteCatalog {
             .collect()
     }
 
-    fn reset_catalog(&mut self) -> CatalogResetSummary {
-        self.conn
-            .execute_batch("BEGIN IMMEDIATE")
-            .expect("catalog reset failed: begin transaction");
-        let result = (|| -> rusqlite::Result<CatalogResetSummary> {
-            let models_removed: i64 =
+    fn reset_catalog(&mut self) -> Result<CatalogResetSummary, String> {
+        self.begin_batch()?;
+        let result = (|| {
+            let counts: (usize, usize, usize, usize) = self
+                .conn
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM models), (SELECT COUNT(*) FROM source_roots),
+                        (SELECT COUNT(*) FROM tags), (SELECT COUNT(*) FROM collections)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(sql_error)?;
+            for table in ["source_roots", "models", "tags", "collections"] {
                 self.conn
-                    .query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))?;
-            let source_roots_removed: i64 =
-                self.conn
-                    .query_row("SELECT COUNT(*) FROM source_roots", [], |row| row.get(0))?;
-            // Root deletion removes every location first. Model deletion can
-            // then cascade favorites, memberships, tags assignments, and
-            // thumbnail rows without touching tag/collection definitions.
-            self.conn.execute("DELETE FROM source_roots", [])?;
-            self.conn.execute("DELETE FROM models", [])?;
+                    .execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(sql_error)?;
+            }
             Ok(CatalogResetSummary {
-                models_removed: models_removed as usize,
-                source_roots_removed: source_roots_removed as usize,
+                models_removed: counts.0,
+                source_roots_removed: counts.1,
+                tags_removed: counts.2,
+                collections_removed: counts.3,
             })
         })();
-        match result {
-            Ok(summary) => {
-                self.conn
-                    .execute_batch("COMMIT")
-                    .expect("catalog reset failed: commit transaction");
-                summary
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                panic!("catalog reset failed: {error}");
+        crate::catalog::finish_catalog_batch(self, result)
+    }
+
+    fn organization_records(&self) -> Result<Vec<crate::organization::OrganizationRecord>, String> {
+        use crate::organization::{OrganizationKind, OrganizationRecord};
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT 'tag', t.id, t.name,
+                    (SELECT COUNT(*) FROM model_tags mt WHERE mt.tag_id=t.id),
+                    t.sync_profile_id, t.sync_read_only FROM tags t
+             UNION ALL
+             SELECT 'collection', c.id, c.name,
+                    (SELECT COUNT(*) FROM collection_models cm WHERE cm.collection_id=c.id),
+                    c.sync_profile_id, c.sync_read_only FROM collections c",
+            )
+            .map_err(sql_error)?;
+        let mut records = stmt
+            .query_map([], |row| {
+                let kind: String = row.get(0)?;
+                let profile: Option<String> = row.get(4)?;
+                let read_only: bool = row.get(5)?;
+                Ok(OrganizationRecord {
+                    kind: if kind == "tag" {
+                        OrganizationKind::Tag
+                    } else {
+                        OrganizationKind::Collection
+                    },
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    model_count: row.get(3)?,
+                    bindings: profile
+                        .into_iter()
+                        .map(|profile| (profile, read_only))
+                        .collect(),
+                })
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        let indices: std::collections::HashMap<_, _> = records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| ((record.kind, record.id.clone()), index))
+            .collect();
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT entity_type, local_id, profile_id, visibility='Shared'
+             FROM sync_entities
+             WHERE entity_type IN ('Tag','ModelCollection') AND local_id IS NOT NULL AND tombstone=0
+             UNION ALL
+             SELECT entity_type, entity_id, profile_id, 0 FROM sync_outbox
+             WHERE entity_type='ModelCollection' AND operation_kind='Create' AND state<>'acked'",
+            )
+            .map_err(sql_error)?;
+        let bindings = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                ))
+            })
+            .map_err(sql_error)?;
+        for binding in bindings {
+            let (entity_type, id, profile, read_only) = binding.map_err(sql_error)?;
+            let kind = if entity_type == "Tag" {
+                OrganizationKind::Tag
+            } else {
+                OrganizationKind::Collection
+            };
+            if let Some(index) = indices.get(&(kind, id)) {
+                records[*index].bindings.push((profile, read_only));
             }
         }
+        Ok(records)
+    }
+
+    fn organization_member_hashes(
+        &self,
+        kind: crate::organization::OrganizationKind,
+        id: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        let sql = match kind {
+            crate::organization::OrganizationKind::Tag =>
+                "SELECT model_hash FROM model_tags WHERE tag_id=?1 ORDER BY model_hash LIMIT ?2",
+            crate::organization::OrganizationKind::Collection =>
+                "SELECT model_hash FROM collection_models WHERE collection_id=?1 ORDER BY model_hash LIMIT ?2",
+        };
+        let mut stmt = self.conn.prepare(sql).map_err(sql_error)?;
+        let hashes = stmt
+            .query_map(params![id, limit as i64], |row| row.get(0))
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        Ok(hashes)
+    }
+
+    fn delete_tag_checked(&mut self, id: &str) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM model_tags WHERE tag_id=?1", params![id])
+            .map_err(sql_error)?;
+        self.conn
+            .execute("DELETE FROM tags WHERE id=?1", params![id])
+            .map_err(sql_error)?;
+        Ok(())
     }
 
     fn favorite_hashes(&self) -> Vec<String> {
@@ -1247,6 +1377,11 @@ impl CatalogStore for SqliteCatalog {
     }
 
     fn delete_collection(&mut self, id: &str) {
+        self.delete_collection_checked(id)
+            .expect("catalog write failed: delete collection");
+    }
+
+    fn delete_collection_checked(&mut self, id: &str) -> Result<(), String> {
         // collection_models cascades via its FK, but delete explicitly in case
         // foreign keys are not enforced on this connection.
         self.conn
@@ -1254,13 +1389,19 @@ impl CatalogStore for SqliteCatalog {
                 "DELETE FROM collection_models WHERE collection_id = ?1",
                 params![id],
             )
-            .expect("catalog write failed: delete memberships");
+            .map_err(|error| format!("catalog delete memberships failed: {error}"))?;
         self.conn
             .execute("DELETE FROM collections WHERE id = ?1", params![id])
-            .expect("catalog write failed: delete collection");
+            .map_err(|error| format!("catalog delete collection failed: {error}"))?;
+        Ok(())
     }
 
     fn add_model_to_collection(&mut self, id: &str, hash: &str) -> bool {
+        self.add_model_to_collection_checked(id, hash)
+            .expect("catalog write failed: add to collection")
+    }
+
+    fn add_model_to_collection_checked(&mut self, id: &str, hash: &str) -> Result<bool, String> {
         let both_exist: bool = self
             .conn
             .query_row(
@@ -1270,10 +1411,10 @@ impl CatalogStore for SqliteCatalog {
                 |_| Ok(()),
             )
             .optional()
-            .expect("catalog read failed: collection/model exists")
+            .map_err(|error| format!("catalog collection/model lookup failed: {error}"))?
             .is_some();
         if !both_exist {
-            return false;
+            return Ok(false);
         }
         self.conn
             .execute(
@@ -1281,18 +1422,24 @@ impl CatalogStore for SqliteCatalog {
                  VALUES(?1, ?2)",
                 params![id, hash],
             )
-            .expect("catalog write failed: add to collection");
-        true
+            .map_err(|error| format!("catalog membership add failed: {error}"))?;
+        Ok(true)
     }
 
     fn remove_model_from_collection(&mut self, id: &str, hash: &str) {
+        self.remove_model_from_collection_checked(id, hash)
+            .expect("catalog write failed: remove from collection");
+    }
+
+    fn remove_model_from_collection_checked(&mut self, id: &str, hash: &str) -> Result<(), String> {
         self.conn
             .execute(
                 "DELETE FROM collection_models \
                  WHERE collection_id = ?1 AND model_hash = ?2",
                 params![id, hash],
             )
-            .expect("catalog write failed: remove from collection");
+            .map_err(|error| format!("catalog membership removal failed: {error}"))?;
+        Ok(())
     }
 
     fn sync_status(&self, profile_id: &str) -> Result<SyncStatusDto, String> {
@@ -4282,7 +4429,7 @@ fn format_to_db(format: ModelFormat) -> &'static str {
     }
 }
 
-fn format_from_db(value: &str) -> ModelFormat {
+pub(crate) fn format_from_db(value: &str) -> ModelFormat {
     match value {
         "threeMf" => ModelFormat::ThreeMf,
         "obj" => ModelFormat::Obj,
@@ -5859,20 +6006,21 @@ mod tests {
             )
             .unwrap();
 
-        let summary = store.reset_catalog();
+        let summary = store.reset_catalog().unwrap();
 
         assert_eq!(
             summary,
             CatalogResetSummary {
                 models_removed: 1,
                 source_roots_removed: 2,
+                tags_removed: 1,
+                collections_removed: 1,
             }
         );
         assert!(store.models().is_empty());
         assert!(store.favorite_hashes().is_empty());
-        assert_eq!(store.all_tags()[0].name, "Keep tag");
-        assert_eq!(store.all_collections()[0].name, "Keep collection");
-        assert_eq!(store.all_collections()[0].member_count, 0);
+        assert!(store.all_tags().is_empty());
+        assert!(store.all_collections().is_empty());
         let thumbnail_count: i64 = store
             .conn
             .query_row("SELECT COUNT(*) FROM thumbnails", [], |row| row.get(0))
@@ -5945,6 +6093,111 @@ mod tests {
 
         store.delete_collection(&coll.id);
         assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn collection_delete_rpc_rolls_back_on_database_error() {
+        for synced in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let model_path = dir.path().join("m.stl");
+            write(&model_path, b"bytes");
+            let mut store = SqliteCatalog::open_in_memory().unwrap();
+            reconcile_root(&mut store, "r", &scan(dir.path()));
+            let hash = store.models()[0].hash.clone();
+
+            let collection = if synced {
+                store.bind_sync_profile("profile", "binding", 1).unwrap();
+                store
+                    .create_collection_with_sync("Example", "profile", "binding", 1)
+                    .unwrap()
+            } else {
+                store.create_collection("Example").unwrap()
+            };
+            assert!(store.add_model_to_collection(&collection.id, &hash));
+            let pending = if synced {
+                store.outbound_operations("profile", &[], 10).unwrap().len()
+            } else {
+                0
+            };
+            store
+                .conn
+                .execute_batch(
+                    "CREATE TRIGGER reject_collection_delete BEFORE DELETE ON collections
+                     BEGIN SELECT RAISE(FAIL, 'injected delete failure'); END;",
+                )
+                .unwrap();
+            let method = if synced {
+                "deleteCollectionWithSync"
+            } else {
+                "deleteCollection"
+            };
+            let request = serde_json::json!({
+                "id": 1,
+                "method": method,
+                "params": {
+                    "id": collection.id,
+                    "profileId": "profile",
+                    "profileBinding": "binding",
+                    "now": 2
+                }
+            });
+            let handshake = serde_json::json!({"id": 2, "method": "handshake"});
+            let input = format!("{request}\n{handshake}\n");
+            let mut output = Vec::new();
+            crate::serve::run(
+                &mut store,
+                std::io::Cursor::new(input.as_bytes()),
+                &mut output,
+            )
+            .unwrap();
+            let responses: Vec<serde_json::Value> = String::from_utf8(output)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(responses.len(), 2);
+            assert_eq!(responses[0]["ok"], false);
+            assert!(responses[0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected delete failure"));
+            assert_eq!(responses[1]["ok"], true, "sidecar must remain usable");
+            assert!(store
+                .collection_contains_model(&collection.id, &hash)
+                .unwrap());
+            assert!(store
+                .all_collections()
+                .iter()
+                .any(|c| c.id == collection.id));
+            assert!(store.model(&hash).is_some());
+            assert!(model_path.exists());
+            if synced {
+                assert_eq!(
+                    store.outbound_operations("profile", &[], 10).unwrap().len(),
+                    pending
+                );
+            }
+
+            store
+                .conn
+                .execute_batch("DROP TRIGGER reject_collection_delete")
+                .unwrap();
+            let mut output = Vec::new();
+            crate::serve::run(
+                &mut store,
+                std::io::Cursor::new(format!("{request}\n").into_bytes()),
+                &mut output,
+            )
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(response["ok"], true);
+            assert!(store
+                .all_collections()
+                .iter()
+                .all(|c| c.id != collection.id));
+            assert!(store.model(&hash).is_some());
+            assert!(model_path.exists());
+        }
     }
 
     #[test]

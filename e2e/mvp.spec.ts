@@ -186,7 +186,7 @@ test('loads the catalog from the sidecar', async () => {
   // fresh, isolated catalog is empty, but the control must still render, which
   // proves the sidecar spawned and answered without error.
   await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
-  await expect(page.getByText('0 of 0')).toBeVisible();
+  await expect(page.getByText('0 of 0', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Search models')).toBeVisible();
 });
 

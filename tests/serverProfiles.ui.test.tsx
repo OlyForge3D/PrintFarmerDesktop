@@ -49,7 +49,7 @@ const connected: ServerProfile = {
 
 function installApi(api: Partial<PrintFarmerApi>): void {
   Object.defineProperty(window, 'printFarmer', {
-    value: api,
+    value: withModelPaging(api),
     configurable: true,
   });
 }
@@ -264,3 +264,4 @@ describe('<ServerProfilesDialog />', () => {
     expect(onMutationSettled).toHaveBeenCalledOnce();
   });
 });
+import { withModelPaging } from './helpers/libraryPage';

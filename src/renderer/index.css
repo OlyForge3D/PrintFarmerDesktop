@@ -173,9 +173,61 @@ select:disabled {
 
 .workspace--library {
   display: grid;
-  grid-template-columns:
-    var(--sidebar-width) minmax(0, 1fr)
-    var(--inspector-width);
+  grid-template-columns: auto minmax(0, 1fr) var(--inspector-width);
+}
+
+/* User-resizable sidebar column; the width is set inline by the resizer. */
+.library-sidebar-pane {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.library-sidebar-pane > .library-sidebar {
+  flex: 1 1 auto;
+}
+
+.library-sidebar-pane.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.library-sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  z-index: 2;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.library-sidebar-resizer::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  content: '';
+  transition: background-color 120ms ease-out;
+}
+
+.library-sidebar-resizer:hover::after,
+.library-sidebar-pane.resizing .library-sidebar-resizer::after {
+  background: var(--accent);
+}
+
+.library-sidebar-resizer:focus-visible {
+  outline: none;
+}
+
+.library-sidebar-resizer:focus-visible::after {
+  left: 2px;
+  width: 3px;
+  background: var(--focus);
 }
 
 .library-sidebar,
@@ -209,7 +261,8 @@ select:disabled {
   pointer-events: none;
 }
 
-.sidebar-search input {
+.sidebar-search input,
+.organization-filter-body > input {
   width: 100%;
   height: 32px;
   min-width: 0;
@@ -221,6 +274,14 @@ select:disabled {
 }
 
 .sidebar-search input::placeholder {
+  color: var(--quiet);
+}
+
+.organization-filter-body > input {
+  padding: 0 8px;
+}
+
+.sidebar-collections input::placeholder {
   color: var(--quiet);
 }
 
@@ -243,6 +304,208 @@ select:disabled {
 .sidebar-navigation {
   flex: 0 0 auto;
   padding: 2px 8px 10px;
+}
+
+.sidebar-collections {
+  min-width: 0;
+  margin: 0 12px 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+}
+
+.sidebar-collections.collapsed {
+  padding-bottom: 0;
+}
+
+.sidebar-collections > legend {
+  margin: 0;
+  padding: 0 4px;
+}
+
+.organization-filter-toggle {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.organization-filter-toggle:hover {
+  color: var(--text);
+}
+
+.organization-filter-chevron {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 120ms ease-out;
+}
+
+.collapsed .organization-filter-chevron {
+  transform: rotate(-45deg);
+}
+
+.organization-filter-selected {
+  color: var(--accent);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.organization-filter-body > input {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.collection-filter-hint {
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.collection-filter-options {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.collection-filter-options label {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.collection-filter-options label > span:first-of-type {
+  flex: 1;
+}
+
+.organization-filter-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.organization-filter-note {
+  margin: -4px 12px 12px;
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.collection-manager-list {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.collection-manager-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.collection-manager-list li > label {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.collection-manager-list .collection-name {
+  flex: 1;
+}
+
+.collection-manager-list .collection-count {
+  color: var(--quiet);
+  font-variant-numeric: tabular-nums;
+}
+
+.collection-manager-rename {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+}
+
+.collection-manager-rename input {
+  flex: 1;
+  min-width: 0;
+}
+
+.collection-manager-choice {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 10px;
+  padding: 8px;
+  border: 1px solid var(--border);
+}
+
+.collection-manager-choice label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.collection-manager-delete {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.collection-manager-delete p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.collection-manager-preview {
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+}
+
+.collection-manager-preview ul {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+
+.library-pagination {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.library-pagination label,
+.library-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.library-pagination small {
+  color: var(--quiet);
 }
 
 .sidebar-section + .sidebar-section {
@@ -635,6 +898,9 @@ select:disabled {
 }
 
 .sort-control select,
+.library-pagination select,
+.library-pagination button,
+.sidebar-collections > button,
 .command-button {
   height: 32px;
   border: 1px solid var(--border);
@@ -645,6 +911,28 @@ select:disabled {
 
 .sort-control select {
   padding: 0 24px 0 8px;
+}
+
+.library-pagination select {
+  padding: 0 8px;
+}
+
+.library-pagination button,
+.sidebar-collections > button {
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.library-pagination button:hover:not(:disabled),
+.sidebar-collections > button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.library-pagination button:disabled,
+.sidebar-collections > button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .command-button {
@@ -714,6 +1002,35 @@ select:disabled {
   color: var(--danger);
   cursor: pointer;
   font-weight: 600;
+}
+
+.library-error-alert {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.library-error-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.library-error-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.library-error-details {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.library-error-details pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .library-content {
@@ -2344,13 +2661,21 @@ select:disabled {
 }
 
 .location-path {
-  display: -webkit-box;
-  overflow: hidden;
+  display: block;
   color: var(--muted);
   line-height: 15px;
   overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: normal;
+  user-select: text;
+}
+
+.inspector-subheading {
+  margin: 14px 0 8px;
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
 }
 
 .inspector-hint,
@@ -2961,6 +3286,26 @@ select:disabled {
   }
 
   /* Let the command bar stack rather than ellipsise the view's own name. */
+  .library-commandbar {
+    min-height: 0;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+  }
+
+  .library-commandbar > div:first-child {
+    flex: 1 1 100%;
+  }
+}
+
+/*
+ * A widened library sidebar narrows the model list independently of the
+ * viewport, so the command bar also stacks based on the pane's own width.
+ */
+.library-pane {
+  container: library-pane / inline-size;
+}
+
+@container library-pane (max-width: 640px) {
   .library-commandbar {
     min-height: 0;
     flex-wrap: wrap;

@@ -3,15 +3,18 @@ import type {
   AppInfoResponse,
   ListServerProfilesResponse,
   LogicalModel,
+  ResetCatalogResponse,
   UploadJob,
   ServerProfile,
   VendorMetadata,
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
+import { LibraryErrorAlert } from './library/LibraryErrorAlert';
 import { useFavorites } from './library/useFavorites';
 import { useModelTags } from './library/useModelTags';
 import { useModelCollections } from './library/useModelCollections';
 import { ModelGrid } from './library/ModelGrid';
+import { LibraryPagination } from './library/LibraryPagination';
 import { PropertiesInspector } from './library/PropertiesInspector';
 import {
   FILTER_LABELS,
@@ -24,7 +27,11 @@ import {
   type FilterKey,
   type SortKey,
 } from './library/filter';
-import { folderBasename, libraryPresentation } from './library/presentation';
+import {
+  folderBasename,
+  libraryPresentation,
+  type LibraryPresentationState,
+} from './library/presentation';
 import { useVendorMetadata } from './library/useVendorMetadata';
 import { computeSceneStats, type SceneStats } from './library/sceneStats';
 import { isolateHiddenObjectIds } from './library/partTreeModel';
@@ -53,7 +60,12 @@ import {
 import './shell/shell.css';
 import appIconUrl from '../../assets/icon.png';
 import { ServerProfilesDialog } from './serverProfiles/ServerProfilesDialog';
+import {
+  CollectionManager,
+  type CollectionTargetKind,
+} from './library/CollectionManager';
 import { UploadsWorkspace } from './uploads/UploadsWorkspace';
+import { OrganizationWorkspace } from './library/OrganizationWorkspace';
 import { RetargetWorkflow } from './retarget/RetargetWorkflow';
 import type { RetargetTarget } from './retarget/useRetargetWorkflow';
 import { CalibrationWorkspace } from './calibration';
@@ -74,7 +86,8 @@ type ModalOwner =
   | 'previewPreparation'
   | 'preview'
   | 'retargetPreparation'
-  | 'retarget';
+  | 'retarget'
+  | 'collections';
 
 export function App(): React.JSX.Element {
   const [activeWorkspace, setActiveWorkspace] =
@@ -95,6 +108,12 @@ export function App(): React.JSX.Element {
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
+  const [collectionIds, setCollectionIds] = useState<string[]>([]);
+  const [tagIds, setTagIds] = useState<string[]>([]);
+  const [organizationRevision, setOrganizationRevision] = useState(0);
+  const [collectionManager, setCollectionManager] = useState<{
+    target: CollectionTargetKind | undefined;
+  } | null>(null);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [selectedHashes, setSelectedHashes] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -146,7 +165,7 @@ export function App(): React.JSX.Element {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const statusbarRef = useRef<HTMLDivElement | null>(null);
 
-  const library = useLibrary();
+  const library = useLibrary({ query, filter, sort }, collectionIds, tagIds);
   const setModalOwner = useCallback((owner: ModalOwner): void => {
     modalOwnerRef.current = owner;
     setModalOwnerState(owner);
@@ -216,16 +235,23 @@ export function App(): React.JSX.Element {
     !previewOpen &&
     !library.importDraft &&
     !importPreparing &&
+    !collectionManager &&
     library.sourceRoots.length === 0;
   const retargetOpen = retargetTarget !== null;
+  const collectionsOpen = collectionManager !== null;
   const modalOpen =
     onboardingOpen ||
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
-    retargetOpen;
+    retargetOpen ||
+    collectionsOpen;
   const backgroundExcluded =
-    previewOpen || library.importDraft !== null || profilesOpen || retargetOpen;
+    previewOpen ||
+    library.importDraft !== null ||
+    profilesOpen ||
+    retargetOpen ||
+    collectionsOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
   const commitFolderImport = library.confirmImport;
@@ -355,30 +381,23 @@ export function App(): React.JSX.Element {
         library.lastReport,
         libraryView,
         library.sourceRoots.length,
+        library.totalModels,
       ),
     [
       library.lastReport,
       library.models,
       library.sourceRoots.length,
+      library.totalModels,
       library.status,
       libraryView,
     ],
   );
-  const counts = useMemo<LibraryCounts>(
-    () => ({
-      all: library.models.length,
-      favorites: library.models.filter((model) => favorites.has(model.hash))
-        .length,
-      stl: library.models.filter((model) => model.format === 'stl').length,
-      threeMf: library.models.filter((model) => model.format === 'threeMf')
-        .length,
-      obj: library.models.filter((model) => model.format === 'obj').length,
-      duplicates: library.models.filter((model) => model.locations.length > 1)
-        .length,
-      missing: library.models.filter((model) => !isAvailable(model)).length,
-    }),
-    [library.models, favorites],
-  );
+  const counts: LibraryCounts = library.counts;
+  const collectionScope = JSON.stringify(collectionIds);
+  useEffect(() => {
+    const content = document.querySelector<HTMLElement>('.library-content');
+    if (content) content.scrollTop = 0;
+  }, [library.page, library.pageSize, query, filter, sort, collectionScope]);
   const handleModelSelection = useCallback(
     (
       model: LogicalModel,
@@ -496,6 +515,12 @@ export function App(): React.JSX.Element {
   }, [refreshUploadJobs]);
 
   useEffect(() => {
+    if (!library.resultsCurrent) {
+      setSelectedHashes(new Set());
+      setSelectedHash(null);
+      selectionAnchorRef.current = null;
+      return;
+    }
     const catalogHashes = new Set(library.models.map((model) => model.hash));
     setSelectedHashes((current) => {
       const next = new Set(
@@ -504,7 +529,7 @@ export function App(): React.JSX.Element {
       return next.size === current.size ? current : next;
     });
     if (selectedHash && !catalogHashes.has(selectedHash)) setSelectedHash(null);
-  }, [library.models, selectedHash]);
+  }, [library.models, library.resultsCurrent, selectedHash]);
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
@@ -1003,6 +1028,46 @@ export function App(): React.JSX.Element {
     setProfilesOpen(false);
     releaseModal('profiles');
   };
+  const openCollectionManager = (target?: CollectionTargetKind): void => {
+    if (busy || reserveModal('collections') === null) return;
+    setCollectionManager({ target });
+  };
+  const closeCollectionManager = (): void => {
+    setCollectionManager(null);
+    releaseModal('collections');
+  };
+  const resetCatalog = async (): Promise<ResetCatalogResponse | null> => {
+    const result = await library.resetCatalog();
+    if (result) {
+      setCollectionIds([]);
+      setTagIds([]);
+      setSelectedHash(null);
+      setSelectedHashes(new Set());
+      selectionAnchorRef.current = null;
+      setOrganizationRevision((value) => value + 1);
+    }
+    return result;
+  };
+  // Organization edits can finish after their workspace unmounts, so they
+  // refresh through the latest inspector hooks rather than a stale closure.
+  const modelOrganizationRef = useRef({ modelTags, modelCollections });
+  modelOrganizationRef.current = { modelTags, modelCollections };
+  const collectionsChanged = (): void => {
+    void library.refresh();
+    void modelOrganizationRef.current.modelTags.refresh();
+    void modelOrganizationRef.current.modelCollections.refresh();
+  };
+  const organizationDeleted = (
+    kind: 'tag' | 'collection',
+    ids: readonly string[],
+  ): void => {
+    library.forgetOrganizationDefinitions(kind, ids);
+    const removed = new Set(ids);
+    const keep = (current: string[]): string[] =>
+      current.filter((id) => !removed.has(id));
+    if (kind === 'tag') setTagIds(keep);
+    else setCollectionIds(keep);
+  };
   const openUploadQueue = (): void => {
     setUploadError(null);
     refreshUploadJobs();
@@ -1209,6 +1274,12 @@ export function App(): React.JSX.Element {
                   onQueryChange={setQuery}
                   onFilterChange={setFilter}
                   onAddFolder={beginImport}
+                  collections={library.collections}
+                  selectedCollections={collectionIds}
+                  onCollectionsChange={setCollectionIds}
+                  tags={library.tags}
+                  selectedTags={tagIds}
+                  onTagsChange={setTagIds}
                 />
 
                 <main
@@ -1222,8 +1293,7 @@ export function App(): React.JSX.Element {
                         {FILTER_LABELS[filter]}
                       </h1>
                       <span className="library-result-count">
-                        {presentation.visibleModels.length} of{' '}
-                        {library.models.length}
+                        {library.filteredTotal} of {library.totalModels}
                       </span>
                       <span
                         className="library-selection-count"
@@ -1270,6 +1340,7 @@ export function App(): React.JSX.Element {
                         className="command-button upload-selected"
                         disabled={
                           workspaceActionsDisabled ||
+                          !library.resultsCurrent ||
                           selectedForUpload.length === 0 ||
                           !activeServer ||
                           !activeServer.availability.modelUpload.available
@@ -1312,7 +1383,11 @@ export function App(): React.JSX.Element {
                         setSelectedHash(hashes[0] ?? null);
                         selectionAnchorRef.current = hashes[0] ?? null;
                       }}
-                      disabled={presentation.visibleModels.length === 0}
+                      disabled={
+                        presentation.visibleModels.length === 0 ||
+                        !library.resultsCurrent ||
+                        library.status === 'loading'
+                      }
                     >
                       Select all visible
                     </button>
@@ -1326,6 +1401,25 @@ export function App(): React.JSX.Element {
                       disabled={selectedHashes.size === 0}
                     >
                       Clear selection
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openCollectionManager(
+                          selectedHashes.size > 0 ? 'selected' : 'query',
+                        )
+                      }
+                      disabled={
+                        workspaceActionsDisabled ||
+                        !library.resultsCurrent ||
+                        (selectedHashes.size === 0 &&
+                          library.filteredTotal === 0)
+                      }
+                      title="Add or remove the selected models, or every model matching the current filters, in collections."
+                    >
+                      {selectedHashes.size > 0
+                        ? 'Collect selected…'
+                        : 'Collect all matching…'}
                     </button>
                     {activeServer?.availability.modelUpload.mode ===
                       'legacyModelOnly' && selectedHashes.size > 0 ? (
@@ -1377,49 +1471,76 @@ export function App(): React.JSX.Element {
                   </div>
 
                   {library.error ? (
-                    <div className="library-alert" role="alert">
-                      <Icon name="missing" />
-                      <span>{library.error}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void library.refresh();
-                        }}
-                      >
-                        Retry
-                      </button>
-                    </div>
+                    <LibraryErrorAlert
+                      error={library.error}
+                      className="library-alert"
+                      onDismiss={library.dismissError}
+                      onRetry={() => {
+                        void library.refresh();
+                      }}
+                    />
                   ) : null}
 
-                  <div className="library-content">
+                  <div
+                    className="library-content"
+                    aria-busy={library.status === 'loading'}
+                  >
                     <ModelGrid
-                      models={presentation.visibleModels}
+                      models={
+                        library.resultsCurrent && library.status !== 'loading'
+                          ? presentation.visibleModels
+                          : []
+                      }
+                      thumbnailsEnabled={
+                        library.status !== 'loading' && !backgroundExcluded
+                      }
                       selectedHashes={selectedHashes}
                       onSelect={handleModelSelection}
                       onPreview={previewModel}
                       previewDisabled={workspaceActionsDisabled}
                       isFavorite={isFavorite}
                       onToggleFavorite={(model) => {
-                        void toggleFavorite(model.hash);
+                        void toggleFavorite(model.hash).then(library.refresh);
                       }}
-                      emptyLabel={emptyState({
-                        state: presentation.state,
-                        query,
-                        busy: workspaceActionsDisabled,
-                        showOnboardingAction: !onboardingOpen,
-                        onAddFolder: () => {
-                          beginImport();
-                        },
-                        onClear: () => {
-                          setQuery('');
-                          setFilter('all');
-                        },
-                        serverProfile: activeServer,
-                        serverConnectDisabled: serverProfilesDisabled,
-                        onConnectServer: openProfiles,
-                      })}
+                      emptyLabel={
+                        !library.resultsCurrent && library.error ? (
+                          <p>
+                            Could not load this page. Retry the library request
+                            above.
+                          </p>
+                        ) : (
+                          emptyState({
+                            state: presentation.state,
+                            query,
+                            busy: workspaceActionsDisabled,
+                            showOnboardingAction: !onboardingOpen,
+                            onAddFolder: () => {
+                              beginImport();
+                            },
+                            onClear: () => {
+                              setQuery('');
+                              setFilter('all');
+                              setCollectionIds([]);
+                              setTagIds([]);
+                            },
+                            serverProfile: activeServer,
+                            serverConnectDisabled: serverProfilesDisabled,
+                            onConnectServer: openProfiles,
+                          })
+                        )
+                      }
                     />
                   </div>
+                  <LibraryPagination
+                    page={library.page}
+                    pageSize={library.pageSize}
+                    total={library.filteredTotal}
+                    busy={
+                      library.status === 'loading' || workspaceActionsDisabled
+                    }
+                    onPageChange={library.setPage}
+                    onPageSizeChange={library.setPageSize}
+                  />
                 </main>
 
                 <PropertiesInspector
@@ -1459,10 +1580,12 @@ export function App(): React.JSX.Element {
                     void modelTags.remove(tagId);
                   }}
                   onToggleCollection={(id) => {
-                    void modelCollections.toggle(id);
+                    void modelCollections.toggle(id).then(library.refresh);
                   }}
                   onCreateCollection={(name) => {
-                    void modelCollections.createAndAdd(name);
+                    void modelCollections
+                      .createAndAdd(name)
+                      .then(library.refresh);
                   }}
                 />
               </>
@@ -1545,9 +1668,10 @@ export function App(): React.JSX.Element {
             {activeWorkspace === 'sources' ? (
               <SourcesWorkspace
                 roots={library.sourceRoots}
-                modelCount={library.models.length}
+                modelCount={library.totalModels}
                 busy={library.status !== 'idle'}
                 error={library.error}
+                onDismissError={library.dismissError}
                 scanActivity={library.scanActivity}
                 onAddFolder={beginImport}
                 onRefresh={() => {
@@ -1557,7 +1681,16 @@ export function App(): React.JSX.Element {
                   void library.rescanRoot(rootId);
                 }}
                 onRemoveRoot={library.removeRoot}
-                onResetCatalog={library.resetCatalog}
+                onResetCatalog={resetCatalog}
+              />
+            ) : null}
+
+            {activeWorkspace === 'organization' ? (
+              <OrganizationWorkspace
+                busy={library.status !== 'idle'}
+                revision={organizationRevision}
+                onChanged={collectionsChanged}
+                onDeleted={organizationDeleted}
               />
             ) : null}
           </div>
@@ -1586,6 +1719,7 @@ export function App(): React.JSX.Element {
           draft={library.importDraft}
           busy={library.status === 'scanning'}
           error={library.error}
+          onDismissError={library.dismissError}
           onCancel={cancelImport}
           onConfirm={confirmImport}
         />
@@ -1649,13 +1783,29 @@ export function App(): React.JSX.Element {
           onClose={closeProfiles}
         />
       ) : null}
+
+      {collectionManager ? (
+        <CollectionManager
+          collections={library.collections}
+          selectedHashes={[...selectedHashes]}
+          queryRequest={library.queryRequest}
+          matchingTotal={library.filteredTotal}
+          queryPending={library.queryPending}
+          {...(collectionManager.target
+            ? { initialTarget: collectionManager.target }
+            : {})}
+          onChanged={collectionsChanged}
+          onDeleted={(id) => organizationDeleted('collection', [id])}
+          onDeleteError={setAppError}
+          onClose={closeCollectionManager}
+        />
+      ) : null}
     </div>
   );
 }
 
 interface EmptyStateOptions {
-  state:
-    'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated';
+  state: LibraryPresentationState;
   query: string;
   busy: boolean;
   showOnboardingAction: boolean;
@@ -1677,6 +1827,15 @@ function emptyState({
   serverConnectDisabled,
   onConnectServer,
 }: EmptyStateOptions): React.ReactNode {
+  if (state === 'loading') {
+    return (
+      <div className="purposeful-empty-state" role="status">
+        <span className="loading-indicator" aria-hidden="true" />
+        <h3>Loading models</h3>
+        <p>Fetching the current page from your local catalog.</p>
+      </div>
+    );
+  }
   if (state === 'onboarding') {
     return (
       <div className="purposeful-empty-state">

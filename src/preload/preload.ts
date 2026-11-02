@@ -21,6 +21,8 @@ import {
   type ImportRootRequest,
   type ImportRootResponse,
   type ListModelsResponse,
+  type QueryModelsRequest,
+  type QueryModelsResponse,
   type ResetCatalogResponse,
   type ListFavoritesResponse,
   type FavoriteModelRequest,
@@ -33,10 +35,21 @@ import {
   type RemoveModelTagRequest,
   type RemoveModelTagResponse,
   type ListCollectionsResponse,
+  type ListOrganizationResponse,
+  type PreviewOrganizationDeletionRequest,
+  type PreviewOrganizationDeletionResponse,
+  type ApplyOrganizationDeletionRequest,
+  type ApplyOrganizationDeletionResponse,
   type CollectionsForModelRequest,
   type CollectionsForModelResponse,
   type CreateCollectionRequest,
   type CreateCollectionResponse,
+  type RenameCollectionRequest,
+  type RenameCollectionResponse,
+  type PreviewCollectionChangeRequest,
+  type PreviewCollectionChangeResponse,
+  type ApplyCollectionChangeRequest,
+  type ApplyCollectionChangeResponse,
   type DeleteCollectionRequest,
   type DeleteCollectionResponse,
   type CollectionMembershipRequest,
@@ -150,6 +163,50 @@ import {
 } from '@shared/ipc';
 
 const api: PrintFarmerApi = {
+  listOrganization: (): Promise<ListOrganizationResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ListOrganization,
+    ) as Promise<ListOrganizationResponse>,
+  previewOrganizationDeletion: (
+    request: PreviewOrganizationDeletionRequest,
+  ): Promise<PreviewOrganizationDeletionResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.PreviewOrganizationDeletion,
+      request,
+    ) as Promise<PreviewOrganizationDeletionResponse>,
+  applyOrganizationDeletion: (
+    request: ApplyOrganizationDeletionRequest,
+  ): Promise<ApplyOrganizationDeletionResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ApplyOrganizationDeletion,
+      request,
+    ) as Promise<ApplyOrganizationDeletionResponse>,
+  renameCollection: (
+    request: RenameCollectionRequest,
+  ): Promise<RenameCollectionResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RenameCollection,
+      request,
+    ) as Promise<RenameCollectionResponse>,
+  previewCollectionChange: (
+    request: PreviewCollectionChangeRequest,
+  ): Promise<PreviewCollectionChangeResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.PreviewCollectionChange,
+      request,
+    ) as Promise<PreviewCollectionChangeResponse>,
+  applyCollectionChange: (
+    request: ApplyCollectionChangeRequest,
+  ): Promise<ApplyCollectionChangeResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ApplyCollectionChange,
+      request,
+    ) as Promise<ApplyCollectionChangeResponse>,
+  queryModels: (request: QueryModelsRequest): Promise<QueryModelsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.QueryModels,
+      request,
+    ) as Promise<QueryModelsResponse>,
   getAppInfo: (): Promise<AppInfoResponse> =>
     ipcRenderer.invoke(IpcChannel.AppInfo) as Promise<AppInfoResponse>,
   pingSidecar: (request: SidecarPingRequest): Promise<SidecarPingResponse> =>

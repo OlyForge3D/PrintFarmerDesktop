@@ -31,7 +31,7 @@ describe('ipc contract', () => {
   });
 
   it('validates redacted server profile IPC without changing the contract version', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(6);
+    expect(IPC_CONTRACT_VERSION).toBe(10);
     const request = ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
       displayName: 'Production farm',
       baseUrl: 'http://10.0.0.20',
@@ -116,17 +116,23 @@ describe('ipc contract', () => {
         reset: true,
         modelsRemoved: 12,
         sourceRootsRemoved: 2,
+        tagsRemoved: 0,
+        collectionsRemoved: 0,
       }),
     ).toEqual({
       reset: true,
       modelsRemoved: 12,
       sourceRootsRemoved: 2,
+      tagsRemoved: 0,
+      collectionsRemoved: 0,
     });
     expect(() =>
       ipcSchemas[IpcChannel.ResetCatalog].response.parse({
         reset: true,
         modelsRemoved: -1,
         sourceRootsRemoved: 0,
+        tagsRemoved: 0,
+        collectionsRemoved: 0,
       }),
     ).toThrow();
     expect(() =>
@@ -134,9 +140,70 @@ describe('ipc contract', () => {
         reset: true,
         modelsRemoved: 0,
         sourceRootsRemoved: 0,
+        tagsRemoved: 0,
+        collectionsRemoved: 0,
         filesDeleted: 1,
       }),
     ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.ResetCatalog].response.parse({
+        reset: true,
+        modelsRemoved: 0,
+        sourceRootsRemoved: 0,
+      }),
+    ).toThrow();
+  });
+
+  it('validates organization deletion previews against their own counts', () => {
+    const entry = (id: string, modelCount: number, deleteScope = 'local') => ({
+      kind: 'collection',
+      id,
+      name: id,
+      modelCount,
+      synced: deleteScope !== 'local',
+      deleteScope,
+    });
+    const preview = ipcSchemas[IpcChannel.PreviewOrganizationDeletion].response;
+    const valid = {
+      kind: 'collection',
+      entries: [entry('a', 2), entry('b', 0, 'sync')],
+      assignmentsRemoved: 2,
+      serverDeletions: 1,
+      fingerprint: 'f'.repeat(64),
+    };
+    expect(preview.parse(valid)).toEqual(valid);
+    expect(() => preview.parse({ ...valid, assignmentsRemoved: 1 })).toThrow();
+    expect(() => preview.parse({ ...valid, serverDeletions: 0 })).toThrow();
+    expect(() =>
+      preview.parse({ ...valid, entries: [entry('a', 2), entry('a', 0)] }),
+    ).toThrow();
+    expect(() =>
+      preview.parse({
+        ...valid,
+        entries: [entry('a', 2), entry('b', 0, 'readOnly')],
+        serverDeletions: 0,
+      }),
+    ).toThrow();
+    expect(() => preview.parse({ ...valid, kind: 'tag' })).toThrow();
+
+    const request = ipcSchemas[IpcChannel.PreviewOrganizationDeletion].request;
+    expect(() =>
+      request.parse({ kind: 'tag', ids: ['x', 'x'], emptyOnly: true }),
+    ).toThrow();
+    expect(() =>
+      request.parse({ kind: 'tag', ids: [], emptyOnly: true }),
+    ).toThrow();
+    expect(() =>
+      request.parse({
+        kind: 'tag',
+        ids: ['x'],
+        emptyOnly: true,
+        profileId: 'renderer-supplied',
+      }),
+    ).toThrow();
+    expect(
+      request.parse({ kind: 'tag', ids: ['x'], emptyOnly: false }),
+    ).toEqual({ kind: 'tag', ids: ['x'], emptyOnly: false });
   });
 
   it('rejects a sidecar ping request with an empty nonce', () => {
@@ -274,23 +341,26 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
-  it('accepts a valid scene response', () => {
-    const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
-      sceneVersion: 2,
-      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
-      indices: [0, 1, 2],
-      bounds: { min: [0, 0, 0], max: [1, 1, 0] },
-      sourceFormat: 'threeMf',
-      faceColors: null,
-      objects: [],
-      rootObjectIds: [],
-      plates: [],
-    });
-    expect(value.indices).toEqual([0, 1, 2]);
-    expect(value.sourceFormat).toBe('threeMf');
-    // Absent parts default to an empty array.
-    expect(value.parts).toEqual([]);
-  });
+  it.each(['stl', 'threeMf', 'obj', 'step'])(
+    'accepts a valid %s scene response',
+    (format) => {
+      const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
+        sceneVersion: 2,
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+        sourceFormat: format,
+        faceColors: null,
+        objects: [],
+        rootObjectIds: [],
+        plates: [],
+      });
+      expect(value.indices).toEqual([0, 1, 2]);
+      expect(value.sourceFormat).toBe(format);
+      // Absent parts default to an empty array.
+      expect(value.parts).toEqual([]);
+    },
+  );
 
   it('parses scene parts and rejects a negative triangle start', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
@@ -577,6 +647,39 @@ describe('ipc contract', () => {
       ipcSchemas[IpcChannel.ListModels].response.parse([
         { hash: 'x', format: 'gltf', size: 1, locations: [] },
       ]),
+    ).toThrow();
+  });
+
+  it('accepts a catalog larger than 10K files containing STEP without dropping models', () => {
+    const formats = ['stl', 'threeMf', 'obj', 'step'] as const;
+    const models = Array.from({ length: 10_001 }, (_, index) => ({
+      hash: `model-${index}`,
+      format: formats[index % formats.length],
+      size: 1,
+      locations: [],
+    }));
+
+    const value = ipcSchemas[IpcChannel.ListModels].response.parse(models);
+
+    expect(value).toEqual(models);
+    expect(value.filter((model) => model.format === 'step')).toHaveLength(2500);
+  });
+
+  it('preserves STEP preview counts and rejects malformed counts', () => {
+    const preview = {
+      modelCount: 4,
+      totalBytes: 4,
+      skippedErrors: 0,
+      complete: true,
+      formats: { stl: 1, threeMf: 1, obj: 1, step: 1 },
+      folders: [],
+      foldersTruncated: false,
+    };
+    const schema = ipcSchemas[IpcChannel.PreviewImport].response;
+
+    expect(schema.parse(preview).formats.step).toBe(1);
+    expect(() =>
+      schema.parse({ ...preview, formats: { ...preview.formats, step: -1 } }),
     ).toThrow();
   });
 

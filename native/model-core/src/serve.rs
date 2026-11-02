@@ -15,6 +15,8 @@
 //! - `handshake` — params ignored; returns `{protocolVersion, sidecarVersion,
 //!   sceneDtoVersion, parserSemanticsVersion, sceneCacheRecipe}`.
 //! - `loadScene` — params `{"path":<string>}`; returns a [`crate::rpc::SceneMeshDto`].
+//! - `loadScenePacked` — the same params; bounded binary buffer frames followed
+//!   by scene metadata with buffer references.
 //! - `extractVendorMetadata` — params `{"path":<string>}`; returns a
 //!   [`crate::rpc::VendorMetadataDto`] (slicer identity, core metadata, per-plate
 //!   slice stats, embedded thumbnail part names).
@@ -31,8 +33,9 @@
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
 //!   [`crate::rpc::LogicalModelDto`]s.
-//! - `resetCatalog` — params ignored; clears indexed models and source roots
-//!   while preserving source files, organization definitions, and server state.
+//! - `queryModels` — bounded library page with global counts and source summaries.
+//! - `resetCatalog` — clears the local catalog and organization while preserving
+//!   source files and server state without queuing remote deletions.
 //! - `listFavorites`/`addFavorite`/`removeFavorite` — persist local-only
 //!   favorite hashes in the catalog without exposing any filesystem or sync
 //!   primitive to the renderer.
@@ -46,7 +49,7 @@
 //! in tests) an ephemeral in-memory store is used.
 
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
@@ -61,7 +64,7 @@ use crate::calibration::{
     ReplayCalibrationOpParams, ResolveCalibrationConflictParams,
     SaveCalibrationWorkspaceStateParams, SettleCalibrationOpParams, StageCalibrationPhotoParams,
 };
-use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
+use crate::catalog::{finish_catalog_batch, reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::retarget::{
     PreflightReport, RetargetEngine, RetargetError, RetargetOptions, RetargetRpcOutcome,
     TargetReference,
@@ -885,13 +888,61 @@ fn dispatch(
                 store.models().iter().map(LogicalModelDto::from).collect();
             serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
         }
+        "queryModels" => {
+            let query: crate::catalog_query::ModelQuery = serde_json::from_value(params)
+                .map_err(|error| format!("invalid queryModels params: {error}"))?;
+            let page = store.query_models(&query)?;
+            Ok(serde_json::json!({
+                "models": page.models.iter().map(LogicalModelDto::from).collect::<Vec<_>>(),
+                "counts": page.counts,
+                "filteredTotal": page.filtered_total,
+                "page": page.page,
+                "pageSize": page.page_size,
+                "sources": page.sources.iter().map(|source| serde_json::json!({
+                    "rootId": source.root_id,
+                    "totalModels": source.total_models,
+                    "availableModels": source.available_models,
+                    "availableLocations": source.available_locations,
+                    "missingLocations": source.missing_locations,
+                    "sample": crate::rpc::ModelLocationDto::from(&source.sample),
+                })).collect::<Vec<_>>(),
+            }))
+        }
         "resetCatalog" => {
-            let summary = store.reset_catalog();
+            let summary = store.reset_catalog()?;
             Ok(serde_json::json!({
                 "reset": true,
                 "modelsRemoved": summary.models_removed,
                 "sourceRootsRemoved": summary.source_roots_removed,
+                "tagsRemoved": summary.tags_removed,
+                "collectionsRemoved": summary.collections_removed,
             }))
+        }
+        "listOrganization" => {
+            let request: crate::organization::ListOrganizationRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid listOrganization params: {error}"))?;
+            serde_json::to_value(crate::organization::list(
+                store,
+                request.sync_context.as_ref(),
+            )?)
+            .map_err(|error| format!("failed to serialize organization: {error}"))
+        }
+        "previewOrganizationDeletion" => {
+            let request: crate::organization::DeleteOrganizationRequest =
+                serde_json::from_value(params).map_err(|error| {
+                    format!("invalid previewOrganizationDeletion params: {error}")
+                })?;
+            serde_json::to_value(crate::organization::preview(store, &request)?)
+                .map_err(|error| format!("failed to serialize organization preview: {error}"))
+        }
+        "applyOrganizationDeletion" => {
+            let request: crate::organization::ApplyOrganizationDeletionRequest =
+                serde_json::from_value(params).map_err(|error| {
+                    format!("invalid applyOrganizationDeletion params: {error}")
+                })?;
+            serde_json::to_value(crate::organization::apply(store, &request)?)
+                .map_err(|error| format!("failed to serialize organization deletion: {error}"))
         }
         "listFavorites" => serde_json::to_value(store.favorite_hashes())
             .map_err(|e| format!("failed to serialize favorites: {e}")),
@@ -983,6 +1034,34 @@ fn dispatch(
             serde_json::to_value(CollectionDto::from(&created))
                 .map_err(|e| format!("failed to serialize collection: {e}"))
         }
+        "renameCollection" => {
+            let request: crate::collection_change::RenameCollectionRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid renameCollection params: {error}"))?;
+            let collection = crate::collection_change::rename(store, &request)?;
+            serde_json::to_value(CollectionDto::from(&collection))
+                .map_err(|error| format!("failed to serialize collection: {error}"))
+        }
+        "previewCollectionChange" => {
+            let request: crate::collection_change::CollectionChangeRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid previewCollectionChange params: {error}"))?;
+            serde_json::to_value(crate::collection_change::preview(store, &request)?)
+                .map_err(|error| format!("failed to serialize collection preview: {error}"))
+        }
+        "applyCollectionChange" => {
+            let request: crate::collection_change::ApplyCollectionChangeRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid applyCollectionChange params: {error}"))?;
+            let result = crate::collection_change::apply(store, &request)?;
+            Ok(serde_json::json!({
+                "operation": result.operation,
+                "modelCount": result.model_count,
+                "changedMemberships": result.changed_memberships,
+                "unchangedMemberships": result.unchanged_memberships,
+                "collections": result.collections.iter().map(CollectionDto::from).collect::<Vec<_>>(),
+            }))
+        }
         "createCollectionWithSync" => {
             let params: SyncedCollectionParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid createCollectionWithSync params: {e}"))?;
@@ -1024,7 +1103,9 @@ fn dispatch(
             let id = params
                 .id
                 .ok_or_else(|| "deleteCollection requires an id".to_string())?;
-            store.delete_collection(&id);
+            store.begin_batch()?;
+            let result = store.delete_collection_checked(&id);
+            finish_catalog_batch(store, result)?;
             let collections: Vec<CollectionDto> = store
                 .all_collections()
                 .iter()
@@ -1328,6 +1409,27 @@ pub fn run_with_retarget<R: BufRead, W: Write>(
 ) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
+        if let Ok(request) = serde_json::from_str::<Request>(&line) {
+            if request.method == "loadScenePacked" {
+                let loaded = (|| {
+                    let params: PathParams = serde_json::from_value(request.params)
+                        .map_err(|e| format!("invalid loadScenePacked params: {e}"))?;
+                    let scene = crate::scene::load_scene(Path::new(&params.path))
+                        .map_err(|e| format!("{}: {e}", e.code()))?;
+                    crate::scene_transport::PackedScene::from_scene(&scene)
+                })();
+                match loaded {
+                    Ok(scene) => scene.write_response(request.id, &mut output)?,
+                    Err(message) => {
+                        serde_json::to_writer(&mut output, &Response::err(request.id, message))
+                            .map_err(std::io::Error::other)?;
+                        output.write_all(b"\n")?;
+                        output.flush()?;
+                    }
+                }
+                continue;
+            }
+        }
         if let Some(response) = handle_line_with_retarget(store, retarget, &line) {
             output.write_all(response.as_bytes())?;
             output.write_all(b"\n")?;
@@ -1870,6 +1972,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("Animals/Cats")).unwrap();
         std::fs::write(dir.path().join("Animals/Cats/cat.stl"), b"cat").unwrap();
         std::fs::write(dir.path().join("Animals/dog.3mf"), b"dog").unwrap();
+        std::fs::write(dir.path().join("Animals/cad.step"), b"cad").unwrap();
         let mut store = InMemoryCatalog::new();
 
         let request = serde_json::json!({
@@ -1881,10 +1984,11 @@ mod tests {
         let value: Value = serde_json::from_str(&out).unwrap();
 
         assert_eq!(value["ok"], true, "preview response was {value}");
-        assert_eq!(value["result"]["modelCount"], 2);
+        assert_eq!(value["result"]["modelCount"], 3);
         assert_eq!(value["result"]["complete"], true);
         assert_eq!(value["result"]["formats"]["stl"], 1);
         assert_eq!(value["result"]["formats"]["threeMf"], 1);
+        assert_eq!(value["result"]["formats"]["step"], 1);
         assert_eq!(value["result"]["folders"][0]["relativePath"], "Animals");
         assert!(store.models().is_empty());
     }

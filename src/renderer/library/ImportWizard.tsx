@@ -10,12 +10,14 @@ import {
 } from './importPlan';
 import { basename, formatBytes } from './model';
 import { Icon } from '../ui/Icon';
+import { LibraryErrorAlert } from './LibraryErrorAlert';
 
 export interface ImportWizardProps {
   draft: ImportDraft;
   busy: boolean;
   error: string | null;
   onCancel: () => void;
+  onDismissError: () => void;
   onConfirm: (plan: ImportPlan, remember: boolean) => Promise<boolean>;
 }
 
@@ -24,6 +26,7 @@ export function ImportWizard({
   busy,
   error,
   onCancel,
+  onDismissError,
   onConfirm,
 }: ImportWizardProps): React.JSX.Element {
   const [choices, setChoices] = useState<ImportChoices>(() =>
@@ -155,13 +158,17 @@ export function ImportWizard({
           <SummaryStat label="STL" value={draft.preview.formats.stl} />
           <SummaryStat label="3MF" value={draft.preview.formats.threeMf} />
           <SummaryStat label="OBJ" value={draft.preview.formats.obj} />
+          {draft.preview.formats.step !== undefined ? (
+            <SummaryStat label="STEP" value={draft.preview.formats.step} />
+          ) : null}
         </div>
 
         {error ? (
-          <div className="import-alert" role="alert">
-            <Icon name="missing" />
-            <span>{error}</span>
-          </div>
+          <LibraryErrorAlert
+            error={error}
+            className="import-alert"
+            onDismiss={onDismissError}
+          />
         ) : null}
         {draft.preview.skippedErrors > 0 ? (
           <p className="import-warning">

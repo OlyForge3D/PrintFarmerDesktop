@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { LogicalModel } from '@shared/ipc';
 import {
   formatBytes,
@@ -10,6 +11,7 @@ import { Icon } from '../ui/Icon';
 
 export interface ModelCardProps {
   model: LogicalModel;
+  thumbnailEnabled?: boolean;
   selected: boolean;
   onSelect: (
     model: LogicalModel,
@@ -24,6 +26,7 @@ export interface ModelCardProps {
 /** A single selectable model tile in the library grid. */
 export function ModelCard({
   model,
+  thumbnailEnabled = true,
   selected,
   onSelect,
   onPreview,
@@ -34,10 +37,26 @@ export function ModelCard({
   const name = modelDisplayName(model);
   const available = isAvailable(model);
   const format = formatLabel(model.format);
-  const thumbnail = useThumbnail(model);
+  const cardRef = useRef<HTMLLIElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setVisible(entry?.isIntersecting ?? false),
+      { rootMargin: '120px' },
+    );
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, []);
+  const thumbnail = useThumbnail(model, visible && thumbnailEnabled);
 
   return (
-    <li className="model-card">
+    <li className="model-card" ref={cardRef}>
       {onToggleFavorite ? (
         <button
           type="button"

@@ -16,7 +16,8 @@ Early development. See the implementation plan and the tracked work items.
 ## Architecture
 
 - **Electron** shell with a hardened main/preload/renderer boundary.
-- **React + strict TypeScript + Vite** renderer with a virtualized library grid.
+- **React + strict TypeScript + Vite** renderer with a paged library grid and
+  viewport-triggered thumbnails.
 - **Three.js (WebGL2)** for interactive viewing and deterministic thumbnails.
 - **Rust sidecar** (`native/model-core`) that owns SQLite (WAL), folder
   scanning/watching, streaming SHA-256 hashing, pure-Rust STL/OBJ parsing, plus
@@ -27,6 +28,46 @@ Early development. See the implementation plan and the tracked work items.
 
 Source models are never moved, modified, or uploaded without an explicit user
 action.
+
+The library indexes STL, OBJ, 3MF, and STEP (`.step`/`.stp`) files. STEP
+indexing does not require STEP tessellation support; 3D preview of STEP models
+requires a sidecar built with the optional `step` feature. Library errors can
+be dismissed without changing imported data, or retried to refresh the catalog.
+Long diagnostic messages are available under **Error details**.
+
+The library loads one database-backed page at a time: **48 items** by default,
+with **24, 48, 96, or 192** items per page. The page-size preference is saved
+locally. Search, format/review filters, collection selection, and sorting apply
+to the entire catalog before pagination, and changing them returns to page one.
+Select multiple **Collections** to show their combined members; a model in
+several selected collections appears only once. Clear the collection selection
+to browse all collections, including uncollected models. **Tags** work the same
+way (any selected tag matches); when both tags and collections are selected, a
+model must match both scopes.
+
+**Manage** (in the Collections filter) or **Collect selected… / Collect all
+matching…** (in the selection toolbar) opens the collection manager. There you
+can create, rename, and delete collections (deleting asks for confirmation and
+removes only the grouping, never models or files; a synchronized collection may
+also be deleted on the connected server) and bulk **add** or **remove** memberships for
+either the selected models or every model matching the current filters across
+all pages. Each bulk change shows an exact per-collection preview and must be
+confirmed; if the matching models or memberships change before you confirm, the
+change is refused and nothing is written. Bulk changes only edit collection
+membership — source files and other memberships are untouched.
+
+Thumbnails are requested only near the viewport; queued requests are skipped
+when their cards leave the page, and the thumbnail cache retains at most 256
+entries. Selection and **Select all visible** apply to the current page.
+Sidebar counts and source summaries cover the whole non-removed catalog, not
+just the page, and use availability recorded at the last scan. Files are
+reauthorized before previews and thumbnail generation.
+
+A model is marked **Missing** when none of its cataloged copies is available
+in an approved folder; this does not delete the original files. Reconnect or
+reauthorize the source folder and rescan it to update its catalog status.
+Unexpected errors checking file access are reported as library errors instead
+of being counted as missing files.
 
 The packaged Windows/macOS release matrix, WebGL2 capability reporting,
 SwiftShader fallback, accessibility gate, and manual physical-GPU qualification
@@ -152,8 +193,13 @@ Prerequisites: Node.js 22.12+, Rust (stable), and a supported platform toolchain
 
 ```
 npm install
+npm run build:sidecar
 npm start
 ```
+
+Build and stage the sidecar before the first launch in a fresh checkout or
+worktree, and rebuild it after changing native code. `npm start` rebuilds the
+Electron and renderer bundles, not the Rust executable.
 
 ### Optional native `lib3mf` validation
 

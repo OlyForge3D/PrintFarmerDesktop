@@ -169,7 +169,7 @@ describe('sidecar ping handler', () => {
     const sidecar = Object.create(SidecarClient.prototype) as SidecarClient;
     sidecar.handshake = vi.fn(() =>
       Promise.resolve({
-        protocolVersion: 1,
+        protocolVersion: 3,
         sidecarVersion: '9.9.9',
         sceneCacheRecipe: 'scene/v2.2',
       }),

@@ -14,7 +14,15 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { IpcChannel, ipcSchemas } from '@shared/ipc';
+import {
+  IpcChannel,
+  ipcSchemas,
+  type LogicalModel,
+  type QueryModelsResponse,
+} from '@shared/ipc';
+import { modelPage } from './helpers/libraryPage';
+import { defaultLibraryView } from '../src/renderer/library/filter';
+import type { RootApprovalStore } from '../src/main/rootApprovals.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -158,6 +166,9 @@ interface HarnessOptions {
   canonicalize?: (requested: string) => Promise<string>;
   /** Lets a test hold the scene-cache shred open and observe what waits on it. */
   purge?: () => Promise<void>;
+  catalog?: LogicalModel[];
+  page?: QueryModelsResponse;
+  authorizeFiles?: RootApprovalStore['authorizeFiles'];
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -188,10 +199,14 @@ function harness(options: HarnessOptions = {}): Harness {
       pngBase64: 'AA==',
     }),
     scanRoot: record('sidecar', 'scanRoot'),
+    listModels: record('sidecar', 'listModels', options.catalog ?? []),
+    queryModels: record('sidecar', 'queryModels', options.page),
     resetCatalog: record('sidecar', 'resetCatalog', {
       reset: true,
       modelsRemoved: 3,
       sourceRootsRemoved: 1,
+      tagsRemoved: 0,
+      collectionsRemoved: 0,
     }),
     handshake: () => Promise.resolve({ sidecarVersion: '0' }),
     dispose: () => undefined,
@@ -247,6 +262,7 @@ function harness(options: HarnessOptions = {}): Harness {
       }
       return Promise.reject(new TestApprovalError(DENIED));
     },
+    authorizeFiles: options.authorizeFiles ?? (() => Promise.resolve([])),
     resolve: () => Promise.reject(new TestApprovalError(DENIED)),
     approveFromPicker: (selectedPath: string) => {
       rootApproved = true;
@@ -288,6 +304,246 @@ function senderEvent(id: number) {
     },
   };
 }
+
+describe('IPC handler layer: catalog location authorization', () => {
+  const catalog: LogicalModel[] = [
+    {
+      hash: 'first',
+      format: 'stl',
+      size: 2,
+      locations: [
+        {
+          rootId: 'approved',
+          path: '/catalog/part.stl',
+          rootRelative: 'part.stl',
+          size: 2,
+          available: true,
+        },
+        {
+          rootId: 'stale',
+          path: '/private/gone.stl',
+          rootRelative: 'gone.stl',
+          size: 2,
+          available: false,
+        },
+        {
+          rootId: 'unapproved',
+          path: '/private/elsewhere.stl',
+          rootRelative: 'elsewhere.stl',
+          size: 2,
+          available: true,
+        },
+      ],
+    },
+    {
+      hash: 'second',
+      format: 'stl',
+      size: 2,
+      locations: [
+        {
+          rootId: 'approved',
+          path: '/catalog/part.stl',
+          rootRelative: 'part.stl',
+          size: 2,
+          available: true,
+        },
+      ],
+    },
+  ];
+
+  it('preserves authorization order and redacts unavailable paths', async () => {
+    const authorizeFiles = vi.fn<RootApprovalStore['authorizeFiles']>((paths) =>
+      Promise.resolve([
+        { sourcePath: paths[0]!, canonicalPath: '/real/part.stl' },
+        null,
+        null,
+      ]),
+    );
+    const h = harness({ catalog, authorizeFiles });
+    const result = await Promise.resolve(
+      h.handlers.get(IpcChannel.ListModels)!(senderEvent(1), undefined),
+    );
+
+    expect(authorizeFiles).toHaveBeenCalledWith([
+      '/catalog/part.stl',
+      '/private/elsewhere.stl',
+      '/catalog/part.stl',
+    ]);
+    expect(result).toEqual([
+      {
+        ...catalog[0],
+        locations: [
+          { ...catalog[0]!.locations[0], path: '/real/part.stl' },
+          { ...catalog[0]!.locations[1], path: 'gone.stl' },
+          {
+            ...catalog[0]!.locations[2],
+            path: 'elsewhere.stl',
+            available: false,
+          },
+        ],
+      },
+      {
+        ...catalog[1],
+        locations: [
+          { ...catalog[1]!.locations[0], path: 'part.stl', available: false },
+        ],
+      },
+    ]);
+  });
+
+  it('authorizes only the returned page and source samples, preserving page counts', async () => {
+    const request = {
+      ...defaultLibraryView,
+      collectionIds: ['selected'],
+      excludedRootIds: [],
+      page: 1,
+      pageSize: 48 as const,
+    };
+    const page = modelPage(catalog, { ...request, collectionIds: [] });
+    const authorizeFiles = vi.fn<RootApprovalStore['authorizeFiles']>((paths) =>
+      Promise.resolve(
+        paths.map((sourcePath) =>
+          sourcePath.startsWith('/catalog/')
+            ? {
+                sourcePath,
+                canonicalPath: sourcePath.replace('/catalog/', '/real/'),
+              }
+            : null,
+        ),
+      ),
+    );
+    const h = harness({ page, authorizeFiles });
+    const result = (await h.handlers.get(IpcChannel.QueryModels)!(
+      senderEvent(1),
+      request,
+    )) as QueryModelsResponse;
+    expect(h.downstream).toContainEqual({
+      target: 'sidecar',
+      method: 'queryModels',
+      args: [request],
+    });
+    expect(h.downstream.some((call) => call.method === 'listModels')).toBe(
+      false,
+    );
+    const expectedPaths = [
+      ...page.models.flatMap((model) => model.locations),
+      ...page.sources.map((source) => source.sample),
+    ]
+      .filter((location) => location.available)
+      .map((location) => location.path);
+    expect(authorizeFiles).toHaveBeenCalledWith(expectedPaths);
+    expect(result.filteredTotal).toBe(page.filteredTotal);
+    expect(result.counts).toEqual(page.counts);
+    expect(
+      result.models
+        .flatMap((model) => model.locations)
+        .find((location) => location.rootId === 'unapproved')?.path,
+    ).toBe('elsewhere.stl');
+    expect(
+      result.sources.find((source) => source.rootId === 'unapproved')?.sample
+        .path,
+    ).toBe('elsewhere.stl');
+  });
+
+  it('rejects oversized page requests before reaching the sidecar', async () => {
+    const h = harness();
+    await expect(
+      Promise.resolve().then(() =>
+        h.handlers.get(IpcChannel.QueryModels)!(senderEvent(1), {
+          ...defaultLibraryView,
+          collectionIds: [],
+          excludedRootIds: [],
+          page: 1,
+          pageSize: 5000,
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(h.downstream).toEqual([]);
+  });
+
+  it('propagates page authorization failures rather than inventing missing files', async () => {
+    const request = {
+      ...defaultLibraryView,
+      collectionIds: [],
+      excludedRootIds: [],
+      page: 1,
+      pageSize: 48 as const,
+    };
+    const page = modelPage(catalog, request);
+    const h = harness({
+      page,
+      authorizeFiles: () =>
+        Promise.reject(new Error('approval snapshot failed')),
+    });
+    await expect(
+      h.handlers.get(IpcChannel.QueryModels)!(senderEvent(1), request),
+    ).rejects.toThrow('approval snapshot failed');
+  });
+
+  it('propagates approval-store errors instead of claiming files are missing', async () => {
+    const h = harness({
+      catalog,
+      authorizeFiles: () =>
+        Promise.reject(new Error('Approved folders could not be read.')),
+    });
+
+    await expect(
+      Promise.resolve(
+        h.handlers.get(IpcChannel.ListModels)!(senderEvent(1), undefined),
+      ),
+    ).rejects.toThrow('Approved folders could not be read.');
+  });
+
+  it('rejects incomplete or mismatched authorization results', async () => {
+    const incomplete = harness({
+      catalog,
+      authorizeFiles: () => Promise.resolve([]),
+    });
+    await expect(
+      Promise.resolve(
+        incomplete.handlers.get(IpcChannel.ListModels)!(
+          senderEvent(1),
+          undefined,
+        ),
+      ),
+    ).rejects.toThrow('incomplete results');
+
+    const sparseResults: Awaited<
+      ReturnType<RootApprovalStore['authorizeFiles']>
+    > = [];
+    sparseResults.length = 3;
+    const sparse = harness({
+      catalog,
+      authorizeFiles: () => Promise.resolve(sparseResults),
+    });
+    await expect(
+      Promise.resolve(
+        sparse.handlers.get(IpcChannel.ListModels)!(senderEvent(1), undefined),
+      ),
+    ).rejects.toThrow('incomplete results');
+
+    const mismatched = harness({
+      catalog,
+      authorizeFiles: () =>
+        Promise.resolve([
+          {
+            sourcePath: '/different/file.stl',
+            canonicalPath: '/other/file.stl',
+          },
+          null,
+          null,
+        ]),
+    });
+    await expect(
+      Promise.resolve(
+        mismatched.handlers.get(IpcChannel.ListModels)!(
+          senderEvent(1),
+          undefined,
+        ),
+      ),
+    ).rejects.toThrow('mismatched results');
+  });
+});
 
 /**
  * Channels whose *request schema* exposes a `path` key, derived from
@@ -509,6 +765,8 @@ describe.skip('IPC handler layer: renderer-supplied filesystem paths', () => {
         reset: true,
         modelsRemoved: 3,
         sourceRootsRemoved: 1,
+        tagsRemoved: 0,
+        collectionsRemoved: 0,
       });
       expect(h.downstream.map((call) => call.method)).toEqual([
         'resetCatalog',

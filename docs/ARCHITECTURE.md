@@ -26,9 +26,41 @@ or uploads source models without an explicit user action.
 
 All renderer↔main messages are defined once in `src/shared/ipc.ts` with Zod
 schemas. The main process validates every request and response; the renderer
-gets static types. Desktop IPC is currently version 2. It is intentionally
-independent from the Rust sidecar RPC handshake, which remains protocol version
-1; bump each constant only for changes to its own wire boundary.
+gets static types. Desktop IPC is currently version 10. It is intentionally
+independent from the Rust sidecar RPC handshake (protocol version 5); bump each
+constant only for changes to its own wire boundary.
+
+Scene previews use `loadScenePacked`: little-endian float32 positions, uint32
+indices and byte colors are base64-encoded in bounded 256 KiB binary chunks.
+The final JSON metadata references those buffers; identical aggregate/object
+buffers are transferred once. Main validates and assembles them into typed
+arrays, and the viewer reuses them without expanding millions of JSON numbers.
+The transport permits at most 512 MiB of unique geometry per scene and
+64 × 1024 × 1024 UTF-16 code units per text frame. Exceeding either limit rejects
+the request, not the app.
+Legacy `loadScene` remains available for JSON clients. Scene cache serialization
+stops at its 64 MiB budget before constructing an oversized string.
+
+Library startup uses `catalog:queryModels` / sidecar `queryModels`, not the
+legacy unbounded `listModels`. SQLite filters and orders indexed metadata before
+hydrating at most 192 model records; the renderer defaults to 48 per page.
+Counts and source-root aggregates are computed in the same read transaction as
+the page. Collection and tag membership are additive (`EXISTS`, not a
+duplicating join); tag and collection scopes intersect.
+Bulk collection changes (`previewCollectionChange` / `applyCollectionChange`)
+resolve their target — explicit hashes (≤500) or a filter query (paging
+ignored, ≤100,000 model/collection pairs) — inside one catalog batch and return a
+SHA-256 fingerprint over the operation, sync binding, destinations, names, and
+per-pair membership. Apply recomputes it in a new batch and refuses on any
+drift, so a stale preview never writes.
+Literal Unicode substring search is parameterized, and a case-insensitive
+natural-name collation plus hash tie-breaker keeps page ordering deterministic.
+Name ordering is Unicode case-folded rather than host-locale-dependent.
+Main validates page limits/totals and reuses the existing authorization/redaction
+pass for the page and one sample location per source root. Global availability
+counts describe the last reconciliation; they do not perform an eager filesystem
+probe for every catalog entry. Source-root removal is applied before filtering
+and pagination. Legacy `listModels` remains for existing non-library clients.
 
 ## Data model
 

@@ -14,6 +14,7 @@ export type IconName =
   | 'search'
   | 'server'
   | 'star'
+  | 'tag'
   | 'upload'
   | 'view';
 
@@ -61,6 +62,13 @@ function iconPath(name: IconName): React.JSX.Element {
         <>
           <rect x="4" y="5" width="16" height="14" rx="1" />
           <path d="M8 9h8M8 13h8" />
+        </>
+      );
+    case 'tag':
+      return (
+        <>
+          <path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7l8.3 8.3a1 1 0 0 1 0 1.4l-7 7a1 1 0 0 1-1.4 0z" />
+          <circle cx="8" cy="8" r="1.5" />
         </>
       );
     case 'cube':

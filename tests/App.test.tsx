@@ -24,6 +24,7 @@ import { ALL_PLATES } from '../src/renderer/viewer/plateSelection.js';
 import type { PreviewWorkspaceProps } from '../src/renderer/viewer/PreviewWorkspace.js';
 import { createCalibrationState } from '../src/renderer/calibration/domain';
 import { emptyWorkflowDrafts } from '../src/renderer/calibration/workspaceTypes';
+import { modelPage, withModelPaging } from './helpers/libraryPage';
 
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
@@ -84,7 +85,7 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
 
 function installApi(api: Partial<PrintFarmerApi>): void {
   Object.defineProperty(window, 'printFarmer', {
-    value: api,
+    value: withModelPaging(api),
     configurable: true,
     writable: true,
   });
@@ -261,6 +262,246 @@ describe('<App />', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     window.localStorage.clear();
+  });
+
+  it('keeps long catalog errors compact and dismissible in Library and Sources', async () => {
+    const error = `Catalog refresh failed: ${'Invalid model format. '.repeat(1000)}`;
+    const listModels = vi.fn().mockRejectedValue(new Error(error));
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 8,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '44.3.0',
+      }),
+      listModels,
+    });
+    render(<App />);
+
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('Catalog refresh failed')).toBeVisible();
+    expect(alert.querySelector('details')).not.toHaveAttribute('open');
+    expect(alert.querySelector('pre')?.textContent).toBe(error);
+    fireEvent.click(
+      within(alert).getByRole('button', { name: 'Dismiss library error' }),
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(listModels).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh catalog' }));
+    const nextAlert = await screen.findByRole('alert');
+    fireEvent.click(within(nextAlert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(3));
+    const retryAlert = await screen.findByRole('alert');
+    fireEvent.click(
+      within(retryAlert).getByRole('button', { name: 'Dismiss library error' }),
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('filters by tags and opens the collection manager for matching models', async () => {
+    const model = {
+      hash: 'tagged-model',
+      format: 'stl' as const,
+      size: 100,
+      locations: [
+        {
+          rootId: 'root-1',
+          path: 'C:\\models\\orc.stl',
+          rootRelative: 'orc.stl',
+          size: 100,
+          available: true,
+        },
+      ],
+    };
+    const queryModels = vi
+      .fn<PrintFarmerApi['queryModels']>()
+      .mockImplementation((request) =>
+        Promise.resolve(
+          modelPage([model], request, [], {}, { 'tagged-model': ['red'] }),
+        ),
+      );
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 10,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '44.3.0',
+      }),
+      queryModels,
+      listTags: vi.fn().mockResolvedValue([{ id: 'red', name: 'Red' }]),
+      listCollections: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 'c1', name: 'Orcs', sharedToFarm: false, memberCount: 0 },
+        ]),
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('no thumbnail')),
+    });
+    render(<App />);
+
+    await screen.findByText('orc.stl');
+    const tags = await screen.findByRole('group', { name: 'Tags filter' });
+    fireEvent.click(within(tags).getByRole('checkbox', { name: 'Red' }));
+    await waitFor(() =>
+      expect(queryModels.mock.lastCall?.[0]).toEqual(
+        expect.objectContaining({ tagIds: ['red'], page: 1 }),
+      ),
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Collect all matching…' }),
+    );
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Manage collections',
+    });
+    expect(
+      within(dialog).getByRole('radio', { name: /All 1 model matching/ }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole('button', { name: 'Rename Orcs' }),
+    ).toBeVisible();
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Close collection manager' }),
+    );
+    expect(
+      screen.queryByRole('dialog', { name: 'Manage collections' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('drops deleted tags from the library sidebar even when the user leaves mid-deletion', async () => {
+    const queryModels = vi
+      .fn<PrintFarmerApi['queryModels']>()
+      .mockImplementation((request) => Promise.resolve(modelPage([], request)));
+    const tag = {
+      kind: 'tag' as const,
+      id: 'red',
+      name: 'Red',
+      modelCount: 0,
+      synced: false,
+      deleteScope: 'local' as const,
+    };
+    const listOrganization = vi.fn().mockResolvedValue([tag]);
+    const listTags = vi.fn().mockResolvedValue([{ id: 'red', name: 'Red' }]);
+    let finishDeletion: () => void = () => undefined;
+    const applyOrganizationDeletion = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishDeletion = () => {
+            listOrganization.mockResolvedValue([]);
+            listTags.mockResolvedValue([]);
+            resolve({
+              kind: 'tag',
+              deletedIds: ['red'],
+              assignmentsRemoved: 0,
+            });
+          };
+        }),
+    );
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 10,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '44.3.0',
+      }),
+      queryModels,
+      listTags,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listOrganization,
+      previewOrganizationDeletion: vi.fn().mockResolvedValue({
+        kind: 'tag',
+        entries: [tag],
+        assignmentsRemoved: 0,
+        serverDeletions: 0,
+        fingerprint: 'c'.repeat(64),
+      }),
+      applyOrganizationDeletion,
+    });
+    render(<App />);
+
+    const tags = await screen.findByRole('group', { name: 'Tags filter' });
+    fireEvent.click(await within(tags).findByRole('checkbox', { name: 'Red' }));
+    await waitFor(() =>
+      expect(queryModels.mock.lastCall?.[0]).toEqual(
+        expect.objectContaining({ tagIds: ['red'] }),
+      ),
+    );
+
+    expect(
+      within(tags).queryByRole('button', { name: /Manage/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tags & Collections' }));
+    await screen.findByRole('heading', {
+      name: 'Tags & Collections',
+      level: 1,
+    });
+    fireEvent.click(screen.getByRole('radio', { name: /Tags/ }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Select all unused (1)' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Review deletion…' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Delete 1 tag' }),
+    );
+    await waitFor(() => expect(applyOrganizationDeletion).toHaveBeenCalled());
+
+    // Leave before the deletion completes; the library must still update.
+    fireEvent.click(screen.getByRole('button', { name: 'Library' }));
+    await screen.findByRole('heading', { name: 'All models', level: 1 });
+    await act(async () => {
+      finishDeletion();
+      await Promise.resolve();
+    });
+    const freshTags = await screen.findByRole('group', { name: 'Tags filter' });
+    await waitFor(() =>
+      expect(
+        within(freshTags).queryByRole('checkbox', { name: 'Red' }),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(queryModels.mock.lastCall?.[0]).toEqual(
+        expect.objectContaining({ tagIds: [] }),
+      ),
+    );
+  });
+
+  it('shows indexed STEP models in their own format scope', async () => {
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 8,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '44.3.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([
+        {
+          hash: 'step-model',
+          format: 'step',
+          size: 100,
+          locations: [
+            {
+              rootId: 'root-1',
+              path: 'C:\\models\\part.step',
+              rootRelative: 'part.step',
+              size: 100,
+              available: true,
+            },
+          ],
+        },
+      ]),
+      renderThumbnail: vi
+        .fn()
+        .mockRejectedValue(new Error('STEP preview unavailable')),
+    });
+    render(<App />);
+
+    await screen.findByText('part.step');
+    fireEvent.click(screen.getByRole('button', { name: /^STEP/ }));
+    expect(screen.getByRole('heading', { name: 'STEP' })).toBeVisible();
+    expect(await screen.findByText('part.step')).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('uses the canonical application icon in the custom titlebar', async () => {

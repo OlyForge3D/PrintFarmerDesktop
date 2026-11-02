@@ -6,15 +6,15 @@ import { URL } from 'node:url';
  * includes the Vite dev server; in production only the packaged app protocol
  * is used, so external navigation is always delegated to the OS browser.
  */
-function isInternalUrl(target: string): boolean {
-  const devServer = process.env['ELECTRON_RENDERER_URL'];
-  if (devServer && target.startsWith(devServer)) {
-    return true;
-  }
+function isInternalUrl(target: string, devServerOrigin?: string): boolean {
   try {
     const url = new URL(target);
     // Packaged renderer is loaded from file:// inside the app bundle.
-    return url.protocol === 'file:';
+    return (
+      url.protocol === 'file:' ||
+      ((url.protocol === 'http:' || url.protocol === 'https:') &&
+        url.origin === devServerOrigin)
+    );
   } catch {
     return false;
   }
@@ -25,9 +25,15 @@ function isInternalUrl(target: string): boolean {
  * renderer can never navigate the top frame to an untrusted origin, and any
  * attempt to open a new window is redirected to the default OS browser.
  */
-export function hardenWindow(window: BrowserWindow): void {
+export function hardenWindow(
+  window: BrowserWindow,
+  devServerUrl?: string | null,
+): void {
+  const devServerOrigin = devServerUrl
+    ? new URL(devServerUrl).origin
+    : undefined;
   window.webContents.on('will-navigate', (event, url) => {
-    if (!isInternalUrl(url)) {
+    if (!isInternalUrl(url, devServerOrigin)) {
       event.preventDefault();
       void shell.openExternal(url).catch((error: unknown) => {
         console.error('[security] failed to open external URL', error);

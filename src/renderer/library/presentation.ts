@@ -3,7 +3,12 @@ import { selectLibraryView, type LibraryView } from './filter';
 import type { LibraryStatus } from './useLibrary';
 
 export type LibraryPresentationState =
-  'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated';
+  | 'loading'
+  | 'onboarding'
+  | 'scanning'
+  | 'empty-scan'
+  | 'empty-filter'
+  | 'populated';
 
 export interface LibraryPresentation {
   state: LibraryPresentationState;
@@ -20,14 +25,19 @@ export function libraryPresentation(
   lastReport: ReconcileReport | null,
   view: LibraryView,
   configuredRootCount = 0,
+  catalogTotal?: number,
 ): LibraryPresentation {
-  const visibleModels = selectLibraryView(models, view);
+  const visibleModels =
+    catalogTotal === undefined ? selectLibraryView(models, view) : models;
+  if (status === 'loading') {
+    return { state: 'loading', visibleModels };
+  }
 
   if (status === 'scanning') {
     return { state: 'scanning', visibleModels };
   }
 
-  if (models.length === 0) {
+  if ((catalogTotal ?? models.length) === 0) {
     return {
       state:
         lastReport || configuredRootCount > 0 ? 'empty-scan' : 'onboarding',

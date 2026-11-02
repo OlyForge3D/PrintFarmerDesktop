@@ -63,6 +63,32 @@ function makeFakeChannel(
   };
 }
 
+function emitEmptyPackedScene(id: number, emit: (line: string) => void): void {
+  emit(
+    JSON.stringify({
+      id,
+      ok: true,
+      sceneBuffer: { index: 0, byteLength: 0, offset: 0, data: '' },
+    }),
+  );
+  emit(
+    JSON.stringify({
+      id,
+      ok: true,
+      result: {
+        encoding: 'packed-v1',
+        scene: {
+          sceneVersion: 2,
+          positions: { buffer: 0, length: 0, elementType: 'f32' },
+          indices: { buffer: 0, length: 0, elementType: 'u32' },
+          bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+          sourceFormat: 'stl',
+        },
+      },
+    }),
+  );
+}
+
 describe('SidecarClient', () => {
   it('rejects a sidecar with an incompatible protocol version', async () => {
     const { channel } = makeFakeChannel((request, emit) => {
@@ -70,14 +96,17 @@ describe('SidecarClient', () => {
         JSON.stringify({
           id: request.id,
           ok: true,
-          result: { protocolVersion: 2, sidecarVersion: 'stale' },
+          result: {
+            protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION + 1,
+            sidecarVersion: 'stale',
+          },
         }),
       );
     });
     const client = new SidecarClient(() => channel);
 
     await expect(client.handshake()).rejects.toThrow(
-      'sidecar protocol mismatch: expected 1, received 2',
+      `sidecar protocol mismatch: expected ${SIDECAR_RPC_PROTOCOL_VERSION}, received ${SIDECAR_RPC_PROTOCOL_VERSION + 1}`,
     );
   });
 
@@ -91,7 +120,10 @@ describe('SidecarClient', () => {
           ok: true,
           result:
             request.method === 'handshake'
-              ? { protocolVersion: 1, sidecarVersion: 'test' }
+              ? {
+                  protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+                  sidecarVersion: 'test',
+                }
               : [],
         }),
       );
@@ -113,6 +145,10 @@ describe('SidecarClient', () => {
     const methods: string[] = [];
     const { channel } = makeFakeChannel((request, emit) => {
       methods.push(request.method);
+      if (request.method === 'loadScenePacked') {
+        emitEmptyPackedScene(request.id, emit);
+        return;
+      }
       emit(
         JSON.stringify({
           id: request.id,
@@ -120,7 +156,7 @@ describe('SidecarClient', () => {
           result:
             request.method === 'handshake'
               ? {
-                  protocolVersion: 1,
+                  protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
                   sidecarVersion: 'test',
                   sceneCacheRecipe: 'scene/v2.2',
                 }
@@ -133,11 +169,13 @@ describe('SidecarClient', () => {
     });
 
     await expect(client.sceneCacheRecipe()).resolves.toBe('scene/v2.2');
-    await expect(client.loadSceneWithRecipe('C:/part.stl')).resolves.toEqual({
+    await expect(
+      client.loadSceneWithRecipe('C:/part.stl'),
+    ).resolves.toMatchObject({
       scene: { sceneVersion: 2 },
       cacheRecipe: 'scene/v2.2',
     });
-    expect(methods).toEqual(['handshake', 'loadScene']);
+    expect(methods).toEqual(['handshake', 'loadScenePacked']);
   });
 
   it('uses the replacement channel recipe when the sidecar restarts before loading', async () => {
@@ -147,7 +185,7 @@ describe('SidecarClient', () => {
           id: request.id,
           ok: true,
           result: {
-            protocolVersion: 1,
+            protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
             sidecarVersion: 'old',
             sceneCacheRecipe: 'scene/v2.1',
           },
@@ -155,6 +193,10 @@ describe('SidecarClient', () => {
       );
     });
     const second = makeFakeChannel((request, emit) => {
+      if (request.method === 'loadScenePacked') {
+        emitEmptyPackedScene(request.id, emit);
+        return;
+      }
       emit(
         JSON.stringify({
           id: request.id,
@@ -162,7 +204,7 @@ describe('SidecarClient', () => {
           result:
             request.method === 'handshake'
               ? {
-                  protocolVersion: 1,
+                  protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
                   sidecarVersion: 'new',
                   sceneCacheRecipe: 'scene/v2.2',
                 }
@@ -181,7 +223,9 @@ describe('SidecarClient', () => {
 
     await expect(client.sceneCacheRecipe()).resolves.toBe('scene/v2.1');
     first.closeFromSidecar(0);
-    await expect(client.loadSceneWithRecipe('C:/part.stl')).resolves.toEqual({
+    await expect(
+      client.loadSceneWithRecipe('C:/part.stl'),
+    ).resolves.toMatchObject({
       scene: { sceneVersion: 2 },
       cacheRecipe: 'scene/v2.2',
     });
@@ -190,13 +234,20 @@ describe('SidecarClient', () => {
 
   it('keeps a missing scene recipe as an explicit unversioned state', async () => {
     const { channel } = makeFakeChannel((request, emit) => {
+      if (request.method === 'loadScenePacked') {
+        emitEmptyPackedScene(request.id, emit);
+        return;
+      }
       emit(
         JSON.stringify({
           id: request.id,
           ok: true,
           result:
             request.method === 'handshake'
-              ? { protocolVersion: 1, sidecarVersion: 'legacy' }
+              ? {
+                  protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+                  sidecarVersion: 'legacy',
+                }
               : { sceneVersion: 2 },
         }),
       );
@@ -206,7 +257,9 @@ describe('SidecarClient', () => {
     });
 
     await expect(client.sceneCacheRecipe()).resolves.toBeUndefined();
-    await expect(client.loadSceneWithRecipe('C:/part.stl')).resolves.toEqual({
+    await expect(
+      client.loadSceneWithRecipe('C:/part.stl'),
+    ).resolves.toMatchObject({
       scene: { sceneVersion: 2 },
     });
   });
@@ -219,7 +272,10 @@ describe('SidecarClient', () => {
           JSON.stringify({
             id: request.id,
             ok: true,
-            result: { protocolVersion: 1, sidecarVersion: 'test' },
+            result: {
+              protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+              sidecarVersion: 'test',
+            },
           }),
         );
       if (request.id === 1) releaseFirst = respond;
@@ -293,9 +349,9 @@ describe('SidecarClient', () => {
     });
   });
 
-  it('keeps Desktop IPC v6 independent from sidecar protocol v1', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(6);
-    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(1);
+  it('keeps Desktop IPC v10 independent from sidecar protocol v5', () => {
+    expect(IPC_CONTRACT_VERSION).toBe(10);
+    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(5);
   });
   it('resolves a handshake response', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
@@ -303,13 +359,16 @@ describe('SidecarClient', () => {
         JSON.stringify({
           id: req.id,
           ok: true,
-          result: { protocolVersion: 1, sidecarVersion: '0.1.0' },
+          result: {
+            protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+            sidecarVersion: '0.1.0',
+          },
         }),
       );
     });
     const client = new SidecarClient(() => channel);
     await expect(client.handshake()).resolves.toEqual({
-      protocolVersion: 1,
+      protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
       sidecarVersion: '0.1.0',
     });
   });
@@ -320,25 +379,22 @@ describe('SidecarClient', () => {
         JSON.stringify({
           id: req.id,
           ok: true,
-          result: { protocolVersion: 2, sidecarVersion: 'future' },
+          result: {
+            protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION + 1,
+            sidecarVersion: 'future',
+          },
         }),
       );
     });
     const client = new SidecarClient(() => channel);
     await expect(client.handshake()).rejects.toThrow(
-      /sidecar protocol mismatch: expected 1, received 2/,
+      `sidecar protocol mismatch: expected ${SIDECAR_RPC_PROTOCOL_VERSION}, received ${SIDECAR_RPC_PROTOCOL_VERSION + 1}`,
     );
   });
 
-  it('sends a well-formed loadScene request and resolves the result', async () => {
+  it('sends a well-formed packed scene request and resolves the result', async () => {
     const { channel, sent } = makeFakeChannel((req, emit) => {
-      emit(
-        JSON.stringify({
-          id: req.id,
-          ok: true,
-          result: { positions: [0, 0, 0], indices: [], sourceFormat: 'stl' },
-        }),
-      );
+      emitEmptyPackedScene(req.id, emit);
     });
     const client = new SidecarClient(() => channel);
     const result = await client.loadScene('C:/models/part.stl');
@@ -347,9 +403,51 @@ describe('SidecarClient', () => {
       method: string;
       params: { path: string };
     };
-    expect(request.method).toBe('loadScene');
+    expect(request.method).toBe('loadScenePacked');
     expect(request.params.path).toBe('C:/models/part.stl');
   });
+
+  it.each(['chunk', 'result'])(
+    'rejects a malformed scene %s and retries before the dying process closes',
+    async (kind) => {
+      const first = makeFakeChannel((request, emit) => {
+        emit(
+          JSON.stringify({
+            id: request.id,
+            ok: true,
+            ...(kind === 'chunk'
+              ? {
+                  sceneBuffer: {
+                    index: 0,
+                    byteLength: 4,
+                    offset: 3,
+                    data: 'AAAAAA==',
+                  },
+                }
+              : { result: { encoding: 'packed-v1', scene: {} } }),
+          }),
+        );
+      });
+      // A real child emits close later, not from kill() synchronously.
+      first.channel.close = vi.fn();
+      const second = makeFakeChannel((request, emit) => {
+        emitEmptyPackedScene(request.id, emit);
+      });
+      let starts = 0;
+      const client = new SidecarClient(() => {
+        starts += 1;
+        return starts === 1 ? first.channel : second.channel;
+      });
+      await expect(client.loadScene('broken.stl')).rejects.toThrow(
+        kind === 'chunk' ? /Invalid scene buffer/ : /Required/,
+      );
+      await expect(client.loadScene('next.stl')).resolves.toMatchObject({
+        sourceFormat: 'stl',
+      });
+      expect(starts).toBe(2);
+      client.dispose();
+    },
+  );
 
   it('sends server_binding in getRemoteModelLink requests and returns the response', async () => {
     const mockLink = {
@@ -747,7 +845,10 @@ describe('SidecarClient', () => {
         JSON.stringify({
           id: request.id,
           ok: true,
-          result: { protocolVersion: 1, sidecarVersion: '0.1.0' },
+          result: {
+            protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+            sidecarVersion: '0.1.0',
+          },
         }),
       );
     });
@@ -801,6 +902,8 @@ describe('SidecarClient', () => {
             reset: true,
             modelsRemoved: 12,
             sourceRootsRemoved: 2,
+            tagsRemoved: 0,
+            collectionsRemoved: 0,
           },
         }),
       );
@@ -811,6 +914,8 @@ describe('SidecarClient', () => {
       reset: true,
       modelsRemoved: 12,
       sourceRootsRemoved: 2,
+      tagsRemoved: 0,
+      collectionsRemoved: 0,
     });
     expect(JSON.parse(sent[0] ?? '{}')).toMatchObject({
       method: 'resetCatalog',
@@ -880,8 +985,8 @@ describe('SidecarClient', () => {
     });
     const client = new SidecarClient(() => channel);
     const [first, second] = await Promise.all([
-      client.loadScene('a'),
-      client.loadScene('b'),
+      client.extractVendorMetadata('a'),
+      client.extractVendorMetadata('b'),
     ]);
     expect(first).toEqual({ echoed: 1 });
     expect(second).toEqual({ echoed: 2 });
@@ -921,7 +1026,10 @@ describe('SidecarClient', () => {
             JSON.stringify({
               id: req.id,
               ok: true,
-              result: { protocolVersion: 1, sidecarVersion: '0.1.0' },
+              result: {
+                protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+                sidecarVersion: '0.1.0',
+              },
             }),
           );
         }
@@ -931,7 +1039,7 @@ describe('SidecarClient', () => {
     const client = new SidecarClient(factory);
     await expect(client.handshake()).rejects.toThrow();
     await expect(client.handshake()).resolves.toMatchObject({
-      protocolVersion: 1,
+      protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
     });
     expect(starts).toBe(2);
   });

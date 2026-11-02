@@ -17,6 +17,7 @@ import {
   MAX_SCENE_ENTRY_BYTES,
   SceneCacheService,
   sceneCacheKey,
+  serializeSceneCache,
   type SceneCacheFileSystem,
   type SceneCacheSidecar,
 } from '../src/main/sceneCache';
@@ -25,6 +26,46 @@ import type { RecipeBoundScene } from '../src/main/sidecar';
 
 const temporaryDirectories: string[] = [];
 const CACHE_DIRECTORY = 'scene-cache.v1';
+
+describe('bounded scene cache serialization', () => {
+  it('keeps the JSON format and exact UTF-8 budget for ordinary and typed arrays', () => {
+    const original = scene(1);
+    original.statusMessages = ['folder \u2603'];
+    const typed = {
+      ...original,
+      positions: Float32Array.from(original.positions),
+      indices: Uint32Array.from(original.indices),
+      faceColors: new Uint8Array([1, 2, 3]),
+    };
+    const expected = JSON.stringify({ ...original, faceColors: [1, 2, 3] });
+    const budget = Buffer.byteLength(expected, 'utf8');
+    expect(serializeSceneCache(typed, budget)).toBe(expected);
+    expect(serializeSceneCache(typed, budget - 1)).toBeNull();
+    expect(serializeSceneCache(original, MAX_SCENE_ENTRY_BYTES)).toBe(
+      JSON.stringify(original),
+    );
+  });
+
+  it('never passes a giant number array to stringify and stops at the budget', () => {
+    const loaded = {
+      ...scene(1),
+      positions: new Float32Array(100_000).fill(1.1234567),
+    };
+    const original = JSON.stringify;
+    let largestArray = 0;
+    const spy = vi.spyOn(JSON, 'stringify').mockImplementation((value) => {
+      if (Array.isArray(value))
+        largestArray = Math.max(largestArray, value.length);
+      return original(value);
+    });
+    try {
+      expect(serializeSceneCache(loaded, 250_000)).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(largestArray).toBe(8192);
+  });
+});
 
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(

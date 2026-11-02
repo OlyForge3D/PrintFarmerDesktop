@@ -1,4 +1,9 @@
-import type { LogicalModel, ModelLocation, ReconcileReport } from '@shared/ipc';
+import type {
+  LibrarySourceSummary,
+  LogicalModel,
+  ModelLocation,
+  ReconcileReport,
+} from '@shared/ipc';
 import { basename } from './model';
 
 const STORAGE_KEY = 'printfarmer.library.sourceRoots.v1';
@@ -117,8 +122,19 @@ export function filterModelsByRemovedRoots(
 export function summarizeSourceRoots(
   models: LogicalModel[],
   storedRoots: StoredSourceRoot[],
+  summaries?: LibrarySourceSummary[],
 ): SourceRootSummary[] {
   const derivedRoots = deriveSourceRoots(models);
+  for (const summary of summaries ?? []) {
+    derivedRoots.set(summary.rootId, {
+      rootId: summary.rootId,
+      path: rootPathFromLocation(summary.sample),
+      totalModels: summary.totalModels,
+      availableModels: summary.availableModels,
+      availableLocations: summary.availableLocations,
+      missingLocations: summary.missingLocations,
+    });
+  }
   const storedById = new Map(
     storedRoots.map((root) => [
       root.rootId,

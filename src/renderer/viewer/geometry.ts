@@ -11,7 +11,9 @@ import * as THREE from 'three';
 import type { Bounds, SceneMesh } from './types';
 
 /** Compute the axis-aligned bounds of a flat `[x, y, z, ...]` position array. */
-export function computeBounds(positions: readonly number[]): Bounds {
+export function computeBounds(
+  positions: readonly number[] | Float32Array,
+): Bounds {
   if (positions.length < 3) {
     return { min: [0, 0, 0], max: [0, 0, 0] };
   }
@@ -173,9 +175,17 @@ export function toBufferGeometry(
   hiddenParts?: ReadonlySet<number>,
 ): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
-  const positions = Float32Array.from(mesh.positions);
+  const positions =
+    mesh.positions instanceof Float32Array
+      ? mesh.positions
+      : Float32Array.from(mesh.positions);
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setIndex(visibleIndices(mesh, hiddenParts));
+  geometry.setIndex(
+    mesh.indices instanceof Uint32Array &&
+      (!hiddenParts || hiddenParts.size === 0)
+      ? new THREE.BufferAttribute(mesh.indices, 1)
+      : visibleIndices(mesh, hiddenParts),
+  );
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 

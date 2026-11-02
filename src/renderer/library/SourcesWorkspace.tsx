@@ -3,6 +3,7 @@ import type { ResetCatalogResponse } from '@shared/ipc';
 import { Icon } from '../ui/Icon';
 import { reconcileHeadline, type SourceRootSummary } from './sourceRoots';
 import type { LibraryScanActivity } from './useLibrary';
+import { LibraryErrorAlert } from './LibraryErrorAlert';
 
 export interface SourcesWorkspaceProps {
   roots: SourceRootSummary[];
@@ -12,6 +13,7 @@ export interface SourcesWorkspaceProps {
   scanActivity: LibraryScanActivity;
   onAddFolder: () => void;
   onRefresh: () => void;
+  onDismissError: () => void;
   onRescanRoot: (rootId: string) => void;
   onRemoveRoot: (rootId: string) => void;
   onResetCatalog: () => Promise<ResetCatalogResponse | null>;
@@ -30,6 +32,7 @@ export function SourcesWorkspace({
   scanActivity,
   onAddFolder,
   onRefresh,
+  onDismissError,
   onRescanRoot,
   onRemoveRoot,
   onResetCatalog,
@@ -102,21 +105,21 @@ export function SourcesWorkspace({
       </div>
 
       {error ? (
-        <div className="catalog-sources-alert error" role="alert">
-          <Icon name="missing" />
-          <span>{error}</span>
-        </div>
+        <LibraryErrorAlert
+          error={error}
+          className="catalog-sources-alert error"
+          onDismiss={onDismissError}
+          onRetry={onRefresh}
+        />
       ) : null}
       {resetSummary ? (
         <div className="catalog-sources-alert success" role="status">
           <span>
-            Catalog cleared. Removed {resetSummary.modelsRemoved} indexed{' '}
-            {resetSummary.modelsRemoved === 1 ? 'model' : 'models'} and{' '}
-            {resetSummary.sourceRootsRemoved}{' '}
-            {resetSummary.sourceRootsRemoved === 1
-              ? 'source folder'
-              : 'source folders'}
-            .
+            Catalog cleared. Removed{' '}
+            {countLabel(resetSummary.modelsRemoved, 'indexed model')},{' '}
+            {countLabel(resetSummary.sourceRootsRemoved, 'source folder')},{' '}
+            {countLabel(resetSummary.tagsRemoved, 'tag')}, and{' '}
+            {countLabel(resetSummary.collectionsRemoved, 'collection')}.
           </span>
         </div>
       ) : null}
@@ -255,12 +258,13 @@ export function SourcesWorkspace({
               <strong>Clear this local catalog?</strong>
               <p>
                 This removes indexed models, source folders, favorites,
-                thumbnail records, tag assignments, and collection memberships.
+                thumbnail records, and every tag and collection on this
+                computer, including their assignments.
               </p>
               <p>
-                Your original files, tags and collection definitions, server
-                connections, remote data, upload history, and calibration
-                projects stay.
+                Your original files, server connections, upload history, and
+                calibration projects stay. Nothing is deleted on PrintFarmer;
+                synchronized tags and collections may return on the next sync.
               </p>
               <div>
                 <button
@@ -326,4 +330,8 @@ function sourceRootDetail(root: SourceRootSummary): string {
     return `${root.availableModels} of ${root.totalModels} models available`;
   }
   return root.lastReport ? reconcileHeadline(root.lastReport) : 'Ready to scan';
+}
+
+function countLabel(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }

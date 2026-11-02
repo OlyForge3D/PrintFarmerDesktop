@@ -154,6 +154,8 @@ describe('catalog multi-selection and upload queue UI', () => {
       reset: true,
       modelsRemoved: 3,
       sourceRootsRemoved: 1,
+      tagsRemoved: 2,
+      collectionsRemoved: 1,
     });
     installApi({ resetCatalog });
     const { container } = render(<App />);
@@ -174,7 +176,10 @@ describe('catalog multi-selection and upload queue UI', () => {
     expect(resetCatalog).not.toHaveBeenCalled();
     expect(screen.getByText('Clear this local catalog?')).toBeVisible();
     expect(
-      screen.getByText(/original files, tags and collection definitions/i),
+      screen.getByText(/every tag and collection on this computer/i),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/Nothing is deleted on PrintFarmer/i),
     ).toBeVisible();
 
     fireEvent.click(
@@ -183,7 +188,7 @@ describe('catalog multi-selection and upload queue UI', () => {
     await waitFor(() => expect(resetCatalog).toHaveBeenCalledOnce());
     expect(
       await screen.findByText(
-        'Catalog cleared. Removed 3 indexed models and 1 source folder.',
+        'Catalog cleared. Removed 3 indexed models, 1 source folder, 2 tags, and 1 collection.',
       ),
     ).toBeVisible();
 
@@ -297,7 +302,7 @@ function installApi(overrides: Partial<PrintFarmerApi>): void {
     ...overrides,
   };
   Object.defineProperty(window, 'printFarmer', {
-    value: api,
+    value: withModelPaging(api),
     configurable: true,
   });
 }
@@ -377,3 +382,4 @@ function uploadJob(): UploadJob {
     },
   };
 }
+import { withModelPaging } from './helpers/libraryPage';
