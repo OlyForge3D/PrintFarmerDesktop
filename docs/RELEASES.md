@@ -1,9 +1,11 @@
 # Signed releases
 
-Official `v*` tags run `.github/workflows/release.yml`. A tagged release fails
-closed unless all platform signing, notarization, and update-signing credentials
-are available. Manual workflow runs remain unsigned dry runs so contributors can
-exercise packaging without production credentials.
+Official `v*` tag pushes run `.github/workflows/release.yml`. Both stable and
+beta releases require Developer ID signing and notarization for macOS. Stable
+releases additionally require Windows Authenticode and update-metadata signing.
+Each release fails closed if a credential required for its channel is missing.
+Manual workflow runs remain unsigned dry runs, even when dispatched on a tag,
+so contributors can exercise packaging without production credentials.
 
 ## Required GitHub Actions secrets
 
@@ -81,14 +83,22 @@ requires tag `v1.2.3`).
 ## Beta prereleases
 
 A semver prerelease tag (`v1.2.3-beta.1`, matched by the `-` in the tag name)
-publishes an unsigned GitHub prerelease. Every signing, notarization, and
-metadata-signing step is gated on a stable tag, so a beta cannot reach a
-credential even if one is configured. Betas ship:
+publishes a GitHub prerelease with signed and notarized macOS artifacts.
+The macOS job uses the same isolated signing and notarization processes as
+stable releases and requires all six `APPLE_*` secrets in the table above.
+Missing credentials, rejected notarization, invalid signatures, or a failed
+stapled-ticket/Gatekeeper check fail the build and prevent publication; there
+is no unsigned macOS beta fallback. Windows Authenticode and update-metadata
+signing remain stable-only. Betas ship:
 
 | Platform | Artifacts                                      | Trust state                                     |
 | -------- | ---------------------------------------------- | ----------------------------------------------- |
 | Windows  | Unsigned Squirrel `Setup.exe` and portable ZIP | No Authenticode signature, so SmartScreen warns |
-| macOS    | Universal ZIP and DMG                          | Ad-hoc signed only, not notarized or stapled    |
+| macOS    | Universal ZIP and DMG                          | Developer ID signed, notarized, and stapled     |
+
+This policy applies to new tags built with this workflow. Previously published
+unsigned betas are unchanged; publish a new beta version rather than replacing
+or retagging existing release artifacts.
 
 `package.json` must carry the prerelease version too, so tag `v1.2.3-beta.1`
 requires version `1.2.3-beta.1`.
@@ -98,9 +108,9 @@ present. GitHub excludes prereleases from `releases/latest`, which is the URL
 the app reads, so a beta is never offered as an automatic update. Beta builds
 still embed the update public key when it is configured, so an installed beta
 upgrades itself once the next stable release is published. Because a beta signs
-no metadata, the publish job verifies the private key still matches that
-embedded public key, rather than leaving a mismatched pair to surface at the
-next stable release.
+no update metadata, the publish job verifies the private key still matches that
+embedded public key when both keys are configured, rather than leaving a
+mismatched pair to surface at the next stable release.
 
 ## In-app update trust and recovery
 

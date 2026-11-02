@@ -9,6 +9,7 @@ import {
   runIsolatedReleaseCommand,
 } from '../scripts/release-environment.mjs';
 import { signMacRelease } from '../scripts/sign-macos-release.mjs';
+import { notarizeMacRelease } from '../scripts/notarize-macos-release.mjs';
 import {
   signWindowsRelease,
   WINDOWS_TIMESTAMP_SERVER,
@@ -100,6 +101,75 @@ describe('isolated release processes', () => {
 });
 
 describe('dedicated platform signing', () => {
+  it.each(['APPLE_SIGNING_IDENTITY', 'APPLE_SIGNING_KEYCHAIN'])(
+    'refuses macOS signing before any command when %s is missing',
+    async (missing) => {
+      const environment: Record<string, string> = {
+        APPLE_SIGNING_IDENTITY: 'Developer ID Application: Example (TEAMID)',
+        APPLE_SIGNING_KEYCHAIN: '/tmp/release.keychain-db',
+      };
+      delete environment[missing];
+      const runCommandImplementation = vi.fn();
+      const signAppImplementation = vi.fn();
+
+      await expect(
+        signMacRelease({
+          appPath: 'out/Example.app',
+          sidecarPath: 'out/sidecar',
+          environment,
+          runCommandImplementation,
+          signAppImplementation,
+        }),
+      ).rejects.toThrow(`${missing} is required`);
+      expect(runCommandImplementation).not.toHaveBeenCalled();
+      expect(signAppImplementation).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID'])(
+    'refuses notarization and stapling when %s is missing',
+    async (missing) => {
+      const environment: Record<string, string> = {
+        APPLE_ID: 'releases@example.com',
+        APPLE_APP_SPECIFIC_PASSWORD: 'placeholder-password',
+        APPLE_TEAM_ID: 'TEAMID',
+      };
+      delete environment[missing];
+      const notarizeImplementation = vi.fn();
+      const stapleImplementation = vi.fn();
+
+      await expect(
+        notarizeMacRelease({
+          appPath: 'out/Example.app',
+          environment,
+          notarizeImplementation,
+          stapleImplementation,
+        }),
+      ).rejects.toThrow(`${missing} is required`);
+      expect(notarizeImplementation).not.toHaveBeenCalled();
+      expect(stapleImplementation).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not staple when Apple rejects notarization', async () => {
+    const stapleImplementation = vi.fn();
+    await expect(
+      notarizeMacRelease({
+        appPath: 'out/Example.app',
+        environment: {
+          APPLE_ID: 'releases@example.com',
+          APPLE_APP_SPECIFIC_PASSWORD: 'placeholder-password',
+          APPLE_TEAM_ID: 'TEAMID',
+        },
+        notarizeImplementation: vi
+          .fn()
+          .mockRejectedValue(new Error('notarization rejected')),
+        stapleImplementation,
+      }),
+    ).rejects.toThrow('notarization rejected');
+    expect(stapleImplementation).not.toHaveBeenCalled();
+  });
+
   it('fails closed when a Windows signing credential is missing', () => {
     expect(() =>
       windowsSignOptions({

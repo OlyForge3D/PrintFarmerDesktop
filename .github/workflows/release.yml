@@ -18,12 +18,12 @@ on:
 permissions:
   contents: write
 
-# A semver prerelease tag (`v0.2.0-beta.1`) publishes unsigned beta artifacts.
-# Only a stable tag (`v0.2.0`) may use signing credentials or publish signed
-# update metadata.
+# All release tag pushes sign and notarize macOS artifacts. Only stable tags
+# additionally sign Windows artifacts and publish signed update metadata.
+# Manual runs stay unsigned, including when a tag is selected.
 env:
-  IS_STABLE_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
-  IS_BETA_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-') }}
+  IS_STABLE_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
+  IS_BETA_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-') }}
 
 jobs:
   make:
@@ -121,7 +121,7 @@ jobs:
           }
 
       - name: Sign universal sidecar and macOS application
-        if: env.IS_STABLE_RELEASE == 'true' && runner.os == 'macOS'
+        if: (env.IS_STABLE_RELEASE == 'true' || env.IS_BETA_RELEASE == 'true') && runner.os == 'macOS'
         shell: bash
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -160,7 +160,7 @@ jobs:
             --sidecar "out/PrintFarmer Desktop-darwin-universal/PrintFarmer Desktop.app/Contents/Resources/sidecar/model-core"
 
       - name: Notarize macOS application
-        if: env.IS_STABLE_RELEASE == 'true' && runner.os == 'macOS'
+        if: (env.IS_STABLE_RELEASE == 'true' || env.IS_BETA_RELEASE == 'true') && runner.os == 'macOS'
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -215,7 +215,7 @@ jobs:
           }
 
       - name: Verify universal app, nested sidecar, and notarization
-        if: env.IS_STABLE_RELEASE == 'true' && runner.os == 'macOS'
+        if: (env.IS_STABLE_RELEASE == 'true' || env.IS_BETA_RELEASE == 'true') && runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -227,17 +227,6 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
           spctl --assess --type execute --verbose=2 "$app_path"
-
-      - name: Verify universal app and nested sidecar (beta)
-        if: env.IS_BETA_RELEASE == 'true' && runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          app_path="$(find out -type d -name 'PrintFarmer Desktop.app' -print -quit)"
-          [[ -n "$app_path" ]] || { echo 'Packaged app not found' >&2; exit 1; }
-          sidecar="$app_path/Contents/Resources/sidecar/model-core"
-          lipo "$sidecar" -verify_arch x86_64 arm64
-          codesign --verify --deep --strict --verbose=2 "$app_path"
 
       - name: Verify SBOM reproduces from the lockfiles
         run: npm run verify:sbom
@@ -278,7 +267,7 @@ jobs:
 
   publish:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: make
     runs-on: ubuntu-latest
     permissions:
@@ -389,7 +378,7 @@ jobs:
             - The universal macOS app and nested Rust sidecar are signed, notarized, and stapled.
             - `latest.json` is signed by `latest.json.sig`; the app verifies it before staging an update.
 
-      - name: Publish unsigned beta prerelease
+      - name: Publish beta prerelease
         if: env.IS_BETA_RELEASE == 'true'
         uses: softprops/action-gh-release@v2
         with:
@@ -397,7 +386,7 @@ jobs:
           fail_on_unmatched_files: true
           prerelease: true
           body: |
-            Unsigned beta. Not for production use.
+            Beta prerelease. Not for production use.
             - Windows artifacts carry no Authenticode signature, so SmartScreen warns before the installer runs.
-            - The macOS app is ad-hoc signed only, is not notarized, and Gatekeeper blocks it until it is opened from the context menu.
+            - The universal macOS app and nested Rust sidecar are Developer ID signed; the app is notarized and stapled.
             - No `latest.json` is published, so this build is never offered as an automatic update.

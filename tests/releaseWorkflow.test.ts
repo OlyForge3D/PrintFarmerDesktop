@@ -34,12 +34,14 @@ describe('signed release workflow', () => {
       'Sign universal sidecar and macOS application',
     );
     const notarize = workflow.indexOf('Notarize macOS application');
+    const macArchives = workflow.indexOf('Make macOS publishable archives');
 
     expect(build).toBeGreaterThan(-1);
     expect(packageApp).toBeGreaterThan(build);
     expect(windowsSign).toBeGreaterThan(packageApp);
     expect(macSign).toBeGreaterThan(packageApp);
     expect(notarize).toBeGreaterThan(macSign);
+    expect(macArchives).toBeGreaterThan(notarize);
     expect(workflow).toContain(
       'PRINTFARMER_SIDECAR_SOURCE: ${{ matrix.platform ==',
     );
@@ -71,6 +73,18 @@ describe('signed release workflow', () => {
     expect(release).toBeGreaterThan(metadata);
   });
 
+  it('fails publication when macOS signing or notarization verification fails', () => {
+    for (const name of [
+      'Sign universal sidecar and macOS application',
+      'Notarize macOS application',
+      'Verify universal app, nested sidecar, and notarization',
+    ]) {
+      expect(step(name)).not.toContain('continue-on-error');
+      expect(step(name)).toContain('set -euo pipefail');
+    }
+    expect(workflow).toContain('    needs: make');
+  });
+
   it('normalizes release asset names before signing their download URLs', () => {
     expect(workflow).toContain(
       "sed -E 's/[^A-Za-z0-9._-]+/./g; s/^\\.+//; s/\\.+$//'",
@@ -99,6 +113,7 @@ describe('signed release workflow', () => {
       'Add universal macOS Rust targets',
       'Build universal macOS sidecar (release)',
       'Package unsigned application',
+      'Make unsigned Windows installer',
       'Make Windows portable archive',
       'Make macOS publishable archives',
       'Verify SBOM reproduces from the lockfiles',

@@ -46,10 +46,17 @@ Tag and package version must match exactly, and the workflow enforces it. Tag
 `v1.2.3-beta.4` requires `package.json` version `1.2.3-beta.4`.
 
 A tag containing `-` is a beta (`IS_BETA_RELEASE`); a tag without one is stable
-(`IS_STABLE_RELEASE`). That single character decides whether signing credentials
-are reachable, so never hand-write a tag name.
+(`IS_STABLE_RELEASE`). Both channels require macOS Developer ID signing and
+notarization; only stable tags also sign Windows artifacts and update metadata.
+These release modes apply only to tag pushes, not manual workflow runs.
+Never hand-write a tag name.
 
 ## 1. Pick the release commit
+
+Before opening a beta version-bump PR, confirm all six `APPLE_*` secrets listed
+in `docs/RELEASES.md` are configured. A beta fails closed without them; it cannot
+fall back to an unsigned macOS build. Stable releases also require the Windows
+and update-signing credentials.
 
 Betas cut from `development`. Confirm it is green first — the tag build repeats
 these checks and cutting from red only wastes a matrix build:
@@ -158,6 +165,9 @@ A beta must report `isPrerelease: true` and carry four assets:
 
 A beta must **not** publish `latest.json`. The workflow fails closed if one
 appears, because GA update metadata served from a prerelease would be unsigned.
+The macOS app and nested sidecar must be Developer ID signed, and the app must
+be notarized and stapled; the workflow verifies these before publication.
+Windows beta artifacts remain unsigned.
 
 ## GA releases
 
@@ -167,16 +177,16 @@ consequences of `IS_STABLE_RELEASE`:
 - Every signing, notarization, and update-signing secret listed in
   `docs/RELEASES.md` must be present. The job **fails closed** if any is
   missing, mid-build, after the matrix has already run.
-- Windows artifacts get Authenticode signatures; the macOS app and its nested
-  Rust sidecar are signed, notarized, and stapled.
+- Windows artifacts additionally get Authenticode signatures. The macOS app and
+  nested Rust sidecar use the same signing/notarization path as beta releases.
 - The publish job additionally emits `latest.json` and `latest.json.sig`. These
   are what installed apps read to self-update, so verify both are attached and
   that `latest.json` names the version just shipped.
 - Verify with `isPrerelease: false` and six assets (the four above plus the two
   metadata files).
 
-Because GA is the only path that touches credentials and the only path that can
-push an update to installed apps, confirm the signing secrets are configured
+GA is the only path that can push an automatic update to installed apps.
+Confirm the additional Windows and update-signing secrets are configured
 _before_ opening the bump PR rather than discovering it after a 40-minute build.
 
 ## Related
