@@ -24,7 +24,9 @@ describe('signed release workflow', () => {
     return workflow.slice(start, next < 0 ? workflow.length : next);
   }
 
-  it('packages without credentials before any signing or notarization', () => {
+  it('preflights credentials before building and signs after packaging', () => {
+    const preflight = workflow.indexOf('Preflight macOS release credentials');
+    const install = workflow.indexOf('Install dependencies');
     const build = workflow.indexOf('Build universal macOS sidecar (release)');
     const packageApp = workflow.indexOf('Package unsigned application');
     const windowsSign = workflow.indexOf(
@@ -36,7 +38,9 @@ describe('signed release workflow', () => {
     const notarize = workflow.indexOf('Notarize macOS application');
     const macArchives = workflow.indexOf('Make macOS publishable archives');
 
-    expect(build).toBeGreaterThan(-1);
+    expect(preflight).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(preflight);
+    expect(build).toBeGreaterThan(install);
     expect(packageApp).toBeGreaterThan(build);
     expect(windowsSign).toBeGreaterThan(packageApp);
     expect(macSign).toBeGreaterThan(packageApp);
@@ -54,6 +58,21 @@ describe('signed release workflow', () => {
     expect(workflow).toContain('APPLE_APP_SPECIFIC_PASSWORD');
     expect(workflow).toContain('UPDATE_SIGNING_PRIVATE_KEY_BASE64');
     expect(workflow).toContain('UPDATE_SIGNING_PUBLIC_KEY_BASE64');
+
+    const preflight = step('Preflight macOS release credentials');
+    for (const secret of [
+      'APPLE_CERTIFICATE_P12_BASE64',
+      'APPLE_CERTIFICATE_PASSWORD',
+      'APPLE_SIGNING_IDENTITY',
+      'APPLE_ID',
+      'APPLE_APP_SPECIFIC_PASSWORD',
+      'APPLE_TEAM_ID',
+    ]) {
+      expect(preflight).toContain(`[[ -n "$${secret}" ]]`);
+    }
+    expect(preflight).toContain(
+      'Tagged macOS releases require GitHub secrets:',
+    );
 
     const notarize = step('Notarize macOS application');
     for (const secret of [

@@ -52,6 +52,10 @@ key embedded into the release build.
 
 ## Release sequence
 
+Before a tagged macOS release build, CI checks that all six required Apple
+secrets are present. This presence-only preflight does not decode or pass their
+values to the build processes.
+
 1. Each platform builds its Rust sidecar and runs `electron-forge package`
    without signing or notarization credentials. The resulting application
    already contains the generated compliance resources and embedded public
@@ -68,9 +72,10 @@ key embedded into the release build.
 4. CI verifies Windows signatures and timestamps, the universal sidecar and
    outer macOS signatures, architectures, stapled ticket, Gatekeeper
    assessment, packaged resources, and reproducible compliance outputs.
-5. After both jobs pass, the publish job hashes the Windows installer and
-   universal macOS ZIP into `latest.json`, signs those exact bytes with Ed25519,
-   and publishes the artifacts with `latest.json.sig`.
+5. After both jobs pass, the publish job publishes the platform artifacts.
+   Stable releases also hash the Windows installer and universal macOS ZIP into
+   `latest.json`, sign those exact bytes with Ed25519, and publish
+   `latest.json.sig`. Beta releases do not publish update metadata.
 
 Before upload, CI normalizes every artifact name to the
 `[A-Za-z0-9._-]` set. Metadata generation rejects any other name so GitHub

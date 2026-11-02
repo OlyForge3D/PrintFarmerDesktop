@@ -46,6 +46,30 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Preflight macOS release credentials
+        if: (env.IS_STABLE_RELEASE == 'true' || env.IS_BETA_RELEASE == 'true') && runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$APPLE_CERTIFICATE_P12_BASE64" ]] || missing+=(APPLE_CERTIFICATE_P12_BASE64)
+          [[ -n "$APPLE_CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
+          [[ -n "$APPLE_SIGNING_IDENTITY" ]] || missing+=(APPLE_SIGNING_IDENTITY)
+          [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
+          [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          if (( ${#missing[@]} )); then
+            printf 'Tagged macOS releases require GitHub secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
