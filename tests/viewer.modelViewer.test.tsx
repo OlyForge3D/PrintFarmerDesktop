@@ -78,8 +78,20 @@ async function loadHarness() {
 
     class MockWebGLRenderer {
       domElement = document.createElement('canvas');
-      setPixelRatio = vi.fn();
-      setSize = vi.fn();
+      pixelRatio = 1;
+      // Mirrors three.js: the drawing buffer is CSS size × pixel ratio, and
+      // the element's CSS size is only written when `updateStyle` is not false.
+      setPixelRatio = vi.fn((ratio: number) => {
+        this.pixelRatio = ratio;
+      });
+      setSize = vi.fn((width: number, height: number, updateStyle = true) => {
+        this.domElement.width = Math.floor(width * this.pixelRatio);
+        this.domElement.height = Math.floor(height * this.pixelRatio);
+        if (updateStyle) {
+          this.domElement.style.width = `${width}px`;
+          this.domElement.style.height = `${height}px`;
+        }
+      });
       render = vi.fn();
       dispose = vi.fn();
 
@@ -182,6 +194,28 @@ describe('<ModelViewer />', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it('CSS-sizes the canvas to fill its container on a HiDPI display (#823)', async () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300);
+    const { ModelViewer, lastRenderer } = await loadHarness();
+
+    const { container } = render(
+      <ModelViewer mesh={simpleMesh('mesh-a')} className="viewer-canvas" />,
+    );
+
+    const canvas = lastRenderer().domElement;
+    expect(canvas.parentElement).toBe(container.firstElementChild);
+    // Drawing buffer is scaled by the pixel ratio for a crisp image...
+    expect(canvas.width).toBe(800);
+    expect(canvas.height).toBe(600);
+    // ...while the element itself is laid out at the container's size, so the
+    // 2× buffer is never displayed at 2× and clipped by the container.
+    expect(canvas.style.display).toBe('block');
+    expect(canvas.style.width).toBe('100%');
+    expect(canvas.style.height).toBe('100%');
   });
 
   it('disposes the scene graph when the viewer unmounts', async () => {
