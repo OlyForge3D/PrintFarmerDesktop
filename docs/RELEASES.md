@@ -85,35 +85,6 @@ nonexistent file.
 The package version must exactly match the tag (`package.json` version `1.2.3`
 requires tag `v1.2.3`).
 
-## macOS bundle versions
-
-The app and its Electron helpers use numeric `CFBundleShortVersionString` and
-`CFBundleVersion` values. The short version is the SemVer release core; the
-build version increases for each supported prerelease and final release. The
-full SemVer remains in `package.json`, `app.getVersion()`, tags, and artifact
-names. For example, `0.1.0-beta.6` has short version `0.1.0` and build version
-`6.0.4`; `0.1.0` has build version `6.3.8`. Forge checks the actual app and
-helper plists before ad-hoc signing.
-
-The encoding also works with Core Foundation's legacy numeric version API,
-which can represent only `NN.N.N`. It supports major versions `0–1`, minor and
-patch versions `0–9`, and the ordered prereleases `alpha.0–7`, `beta.0–29`,
-and `rc.0–9`, followed by the final release. Build metadata, other prerelease
-forms, and out-of-range values fail macOS packaging explicitly; extend the
-scheme before releasing an unsupported version instead of reusing a build
-number. Windows and Linux packaging continue to use the original SemVer.
-
-For reproducibility, let `core = major * 100 + minor * 10 + patch`. Prerelease
-stage indices are `0–7` for alpha, `8–37` for beta, `38–47` for rc, and `48`
-for a final release. The integer `100 + core * 49 + stage` is written as
-`floor(integer / 100).floor((integer % 100) / 10).(integer % 10)`. These
-contiguous slots preserve SemVer ordering and avoid collisions across version
-boundaries. Apple documents the
-[`CFBundleVersion`](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion),
-[`CFBundleShortVersionString`](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring),
-and [legacy numeric parser](<https://developer.apple.com/documentation/corefoundation/cfbundlegetversionnumber(_:)>)
-constraints.
-
 ## Beta prereleases
 
 A semver prerelease tag (`v1.2.3-beta.1`, matched by the `-` in the tag name)
