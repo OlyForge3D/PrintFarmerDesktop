@@ -6,9 +6,14 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { adhocSignMacApps } from './scripts/adhoc-sign-macos-app.mjs';
+import {
+  configureMacBundleVersions,
+  verifyMacBundleVersions,
+} from './scripts/macos-bundle-versions.mjs';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const iconBasePath = path.join(repoRoot, 'assets', 'icon');
@@ -16,6 +21,16 @@ const windowsIconPath = `${iconBasePath}.ico`;
 // Squirrel's bundled default is a pale-green spinner with no product name on
 // it. Regenerate with `npx electron scripts/generate-installer-gif.mjs`.
 const installerLoadingGifPath = path.join(repoRoot, 'assets', 'installing.gif');
+
+function readAppVersion(): string {
+  const manifest = JSON.parse(
+    readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+  ) as { version?: unknown };
+  if (typeof manifest.version !== 'string') {
+    throw new Error('package.json must contain a string version');
+  }
+  return manifest.version;
+}
 
 function runBuildScript(scriptName: string, description: string): void {
   const script = path.join(repoRoot, 'scripts', scriptName);
@@ -47,7 +62,8 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   hooks: {
     // Validate and stage generated resources before packaging.
-    prePackage: () => {
+    prePackage: (forgeConfig, platform) => {
+      configureMacBundleVersions(forgeConfig, platform, readAppVersion);
       runBuildScript('verify-target-profiles.mjs', 'verifying target profiles');
       runBuildScript('stage-sidecar.mjs', 'staging the sidecar');
       // The SBOM is generated before staging so the packaged copy is derived
@@ -61,6 +77,7 @@ const config: ForgeConfig = {
     },
     postPackage: (_forgeConfig, { platform, outputPaths }) => {
       if (platform === 'darwin' && process.platform === 'darwin') {
+        verifyMacBundleVersions(outputPaths, readAppVersion());
         adhocSignMacApps(outputPaths);
       }
       return Promise.resolve();
