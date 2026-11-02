@@ -62,7 +62,7 @@ Do not resemble a decorative SaaS dashboard, an embedded website, a consumer set
 
 ## Evidence on Hand
 
-Pre-release. Version 0.1.0-beta.4, working software, real printers in-house, and no public users.
+Pre-release beta (`package.json` holds the current version), working software, real printers in-house, and no public users.
 
 Real and citable: the shipped application itself; `docs/ARCHITECTURE.md`; `docs/security/THREAT_MODEL.md`; and `docs/release-validation.md`, which records the packaged Windows/macOS release matrix, WebGL2 capability reporting, SwiftShader fallback, and the accessibility gate.
 
