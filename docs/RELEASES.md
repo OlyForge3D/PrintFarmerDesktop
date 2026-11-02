@@ -31,11 +31,30 @@ Windows certificate material is decoded only inside the dedicated app-signing
 and Squirrel-construction step. The signer runs in a scrubbed child environment
 containing the certificate path and password plus the minimum Windows process
 environment. macOS certificate material is imported into a temporary keychain
-only for the dedicated sidecar/app signing process. A separate scrubbed process
-receives only the Apple ID notarization credentials. The temporary certificate
-and keychain are removed by step-local `finally`/`trap` cleanup before ordinary
-archive makers run. Credentials are never exported through `GITHUB_ENV`,
-written into the repository, or uploaded as artifacts.
+only for the dedicated sidecar/app signing process. The temporary keychain is
+added to the front of the user keychain search list while preserving its prior
+entries, allowing codesign to build the certificate chain; the prior list is
+restored before the temporary keychain is deleted. Before signing, CI checks
+that the configured identity is present and valid for code signing, but emits
+only generic missing/invalid diagnostics rather than certificate identities or
+fingerprints. Identity rows with trailing status annotations are still treated
+as present; only the valid-identity query determines code-signing validity.
+The signing child receives only the identity and temporary
+keychain path, not the certificate bytes or password. A separate scrubbed
+process receives only the Apple ID notarization credentials. The temporary
+certificate and keychain are removed before ordinary archive makers run, and
+any search-list or cleanup failure fails the release step. Credentials are
+never exported through `GITHUB_ENV`, written into the repository, or uploaded
+as artifacts.
+
+The signing step replaces its Bash entry process with the helper via `exec`,
+so runner cancellation reaches the helper rather than only its parent shell.
+On normal `SIGINT`/`SIGTERM` cancellation the helper stops starting signing
+work, forwards cancellation to its active signing child, waits for that child
+to close, and runs the same restoration/removal path. Cleanup commands are
+allowed to finish rather than being aborted by cancellation. `SIGKILL`,
+runner termination, or a child that refuses to exit cannot guarantee cleanup.
+PKCS#12 passwords are passed unchanged, including significant whitespace.
 
 Generate the detached update-signing key pair on a trusted offline machine:
 

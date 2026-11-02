@@ -170,6 +170,8 @@ describe('signed release workflow', () => {
     expect(macSign).toContain('APPLE_CERTIFICATE_P12_BASE64');
     expect(macSign).toContain('APPLE_CERTIFICATE_PASSWORD');
     expect(macSign).toContain('APPLE_SIGNING_IDENTITY');
+    expect(macSign).toContain('scripts/macos-signing-keychain.mjs');
+    expect(macSign).toContain('scripts/release-environment.mjs');
     expect(macSign).not.toContain('APPLE_ID');
     expect(macSign).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
 
