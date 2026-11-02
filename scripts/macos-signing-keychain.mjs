@@ -44,7 +44,11 @@ function parseKeychainList(output) {
 function identityRows(output) {
   return output
     .split(/\r?\n/)
-    .map((line) => /^\s*\d+\)\s+([0-9a-f]{40,64})\s+"(.*)"$/i.exec(line))
+    .map((line) =>
+      /^\s*\d+\)\s+([0-9a-f]{40,64})\s+"(.*)"(?:\s+\([^"\r\n]*\))*\s*$/i.exec(
+        line,
+      ),
+    )
     .filter(Boolean)
     .map((match) => ({ fingerprint: match[1], name: match[2] }));
 }

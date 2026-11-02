@@ -38,11 +38,13 @@ async function temporaryRoot() {
 function makeProcess({
   validIdentity = true,
   identityPresent = true,
+  identityAnnotation = '',
   failLabels = [],
   onSigning,
 }: {
   validIdentity?: boolean;
   identityPresent?: boolean;
+  identityAnnotation?: string;
   failLabels?: string[];
   onSigning?: (environment: NodeJS.ProcessEnv) => void;
 } = {}) {
@@ -109,7 +111,7 @@ function makeProcess({
         code: 0,
         signal: null,
         stdout: includeIdentity
-          ? `  1) ${fingerprint} "${identity}"\n     1 valid identities found\n`
+          ? `  1) ${fingerprint} "${identity}"${isValidQuery ? '' : identityAnnotation}\n     ${validIdentity ? 1 : 0} valid identities found\n`
           : '     0 valid identities found\n',
       };
     }
@@ -140,9 +142,31 @@ const environment = (temporaryDirectory: string) => ({
 
 describe('macOS signing keychain lifecycle', () => {
   it.runIf(process.platform !== 'win32').each(['SIGINT', 'SIGTERM'] as const)(
-    'restores temporary state when the helper process actually receives %s',
+    'restores temporary state when the workflow Bash entry process receives %s',
     async (signal) => {
       const root = await temporaryRoot();
+      const workflow = await readFile(
+        new URL('../.github/workflows/release.yml', import.meta.url),
+        'utf8',
+      );
+      const signingStep = workflow
+        .split(
+          '      - name: Sign universal sidecar and macOS application\n',
+        )[1]
+        ?.split('\n      - name:')[0];
+      const runBlock = signingStep?.split('        run: |\n')[1];
+      if (!runBlock) throw new Error('macOS signing step run block missing');
+      const helperPath = path.join(root, 'test-helper.mjs');
+      const stepPath = path.join(root, 'test-step.sh');
+      await writeFile(
+        stepPath,
+        runBlock
+          .replace(/^ {10}/gm, '')
+          .replace(
+            'scripts/macos-signing-keychain.mjs',
+            JSON.stringify(helperPath),
+          ),
+      );
       const moduleUrl = new URL(
         '../scripts/macos-signing-keychain.mjs',
         import.meta.url,
@@ -168,7 +192,7 @@ describe('macOS signing keychain lifecycle', () => {
                   stdout: '',
                 });
               }, { once: true });
-              process.stdout.write('READY\\n');
+              process.stdout.write('READY ' + process.pid + '\\n');
             });
           }
           if (args[0] === 'create-keychain') {
@@ -198,10 +222,17 @@ describe('macOS signing keychain lifecycle', () => {
           process.exitCode = 1;
         }
       `;
+      await writeFile(helperPath, script);
       const child = spawn(
-        process.execPath,
-        ['--input-type=module', '-e', script],
-        { stdio: ['ignore', 'pipe', 'pipe'] },
+        '/bin/bash',
+        ['--noprofile', '--norc', '-e', '-o', 'pipefail', stepPath],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: {
+            ...environment(root),
+            PATH: `${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+          },
+        },
       );
       const closed = new Promise<[number | null, NodeJS.Signals | null]>(
         (resolve, reject) => {
@@ -214,12 +245,18 @@ describe('macOS signing keychain lifecycle', () => {
       let output = '';
       let diagnostic = '';
       let signalSent = false;
-      const timeout = setTimeout(() => child.kill('SIGKILL'), 3_000);
+      const timeout = setTimeout(() => {
+        const helperPid = /READY (\d+)\n/.exec(output)?.[1];
+        if (helperPid && Number(helperPid) !== child.pid) {
+          process.kill(Number(helperPid), 'SIGKILL');
+        }
+        child.kill('SIGKILL');
+      }, 3_000);
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
         output += chunk;
-        if (!signalSent && output.includes('READY\n')) {
+        if (!signalSent && /READY \d+\n/.test(output)) {
           signalSent = true;
           child.kill(signal);
         }
@@ -230,6 +267,7 @@ describe('macOS signing keychain lifecycle', () => {
       try {
         const [code, exitSignal] = await closed;
         expect(signalSent).toBe(true);
+        expect(output).toContain(`READY ${child.pid}\n`);
         expect(code).toBe(1);
         expect(exitSignal).toBeNull();
         expect(diagnostic).toContain(signal);
@@ -238,7 +276,11 @@ describe('macOS signing keychain lifecycle', () => {
             await readFile(path.join(root, 'search-list.json'), 'utf8'),
           ),
         ).toEqual(originalKeychains);
-        expect(await readdir(root)).toEqual(['search-list.json']);
+        expect((await readdir(root)).sort()).toEqual([
+          'search-list.json',
+          'test-helper.mjs',
+          'test-step.sh',
+        ]);
       } finally {
         clearTimeout(timeout);
       }
@@ -319,47 +361,62 @@ describe('macOS signing keychain lifecycle', () => {
     expect(await readdir(root)).toEqual([]);
   });
 
-  it('distinguishes invalid and missing identities without exposing identity or secrets', async () => {
-    const root = await temporaryRoot();
-    const process = makeProcess({ validIdentity: false });
-    const options = {
-      command: 'node',
-      args: ['sign-release.mjs'],
-      environment: environment(root),
-      runProcessImplementation: process.runProcessImplementation,
-    };
+  it.each(['', ' (CSSMERR_TP_NOT_TRUSTED)', ' (CSSMERR_TP_CERT_EXPIRED)   '])(
+    'distinguishes invalid%s and missing identities without exposing identity or secrets',
+    async (identityAnnotation) => {
+      const root = await temporaryRoot();
+      const process = makeProcess({ validIdentity: false, identityAnnotation });
+      const options = {
+        command: 'node',
+        args: ['sign-release.mjs'],
+        environment: environment(root),
+        runProcessImplementation: process.runProcessImplementation,
+      };
 
-    const invalidIdentityError = await withMacSigningKeychain(options).then(
-      () => '',
-      (error: Error) => error.message,
-    );
-    expect(invalidIdentityError).toContain('not valid for code signing');
-    expect(invalidIdentityError).not.toContain(identity);
-    expect(invalidIdentityError).not.toContain(fingerprint);
-    expect(invalidIdentityError).not.toContain('certificate-password-secret');
-    expect(process.searchList()).toEqual(originalKeychains);
+      const invalidIdentityError = await withMacSigningKeychain(options).then(
+        () => '',
+        (error: Error) => error.message,
+      );
+      expect(invalidIdentityError).toContain('not valid for code signing');
+      expect(invalidIdentityError).not.toContain(identity);
+      expect(invalidIdentityError).not.toContain(fingerprint);
+      expect(invalidIdentityError).not.toContain('certificate-password-secret');
+      expect(invalidIdentityError).not.toContain('CSSMERR');
+      expect(process.calls.some(({ command }) => command === 'node')).toBe(
+        false,
+      );
+      expect(process.searchList()).toEqual(originalKeychains);
 
-    const missingIdentityProcess = makeProcess({ identityPresent: false });
-    const missingIdentityError = await withMacSigningKeychain({
-      ...options,
-      runProcessImplementation: missingIdentityProcess.runProcessImplementation,
-    }).then(
-      () => '',
-      (error: Error) => error.message,
-    );
-    expect(missingIdentityError).toContain('No matching code-signing identity');
-    expect(missingIdentityError).not.toContain(identity);
-    expect(missingIdentityError).not.toContain(fingerprint);
-    expect(missingIdentityError).not.toContain('certificate-password-secret');
-    expect(missingIdentityProcess.searchList()).toEqual(originalKeychains);
-    expect(await readdir(root)).toEqual([]);
-    expect(
-      process.calls.some(({ environment: childEnvironment }) =>
-        Object.values(childEnvironment).includes('certificate-password-secret'),
-      ),
-    ).toBe(false);
-    expect(process.searchList()).toEqual(originalKeychains);
-  });
+      const missingIdentityProcess = makeProcess({
+        identityPresent: false,
+        identityAnnotation,
+      });
+      const missingIdentityError = await withMacSigningKeychain({
+        ...options,
+        runProcessImplementation:
+          missingIdentityProcess.runProcessImplementation,
+      }).then(
+        () => '',
+        (error: Error) => error.message,
+      );
+      expect(missingIdentityError).toContain(
+        'No matching code-signing identity',
+      );
+      expect(missingIdentityError).not.toContain(identity);
+      expect(missingIdentityError).not.toContain(fingerprint);
+      expect(missingIdentityError).not.toContain('certificate-password-secret');
+      expect(missingIdentityProcess.searchList()).toEqual(originalKeychains);
+      expect(await readdir(root)).toEqual([]);
+      expect(
+        process.calls.some(({ environment: childEnvironment }) =>
+          Object.values(childEnvironment).includes(
+            'certificate-password-secret',
+          ),
+        ),
+      ).toBe(false);
+      expect(process.searchList()).toEqual(originalKeychains);
+    },
+  );
 
   it('restores and removes temporary material when signing fails', async () => {
     const root = await temporaryRoot();

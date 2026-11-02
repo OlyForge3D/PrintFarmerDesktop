@@ -161,7 +161,7 @@ jobs:
             printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
             exit 1
           fi
-          node scripts/macos-signing-keychain.mjs -- \
+          exec node scripts/macos-signing-keychain.mjs -- \
             node scripts/release-environment.mjs \
             --allow APPLE_SIGNING_IDENTITY \
             --allow APPLE_SIGNING_KEYCHAIN \
