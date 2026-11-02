@@ -229,10 +229,11 @@ cargo test --features lib3mf
 
 ## Signed releases
 
-Official `v*` tags build signed Windows artifacts and a signed, notarized
-universal macOS app. The universal Rust sidecar is signed before the outer
-Electron app. After both platform jobs verify their artifacts, CI publishes a
-detached Ed25519-signed `latest.json` update manifest.
+Official `v*` tags build a signed, notarized universal macOS app. Stable
+releases additionally build signed Windows artifacts and publish a detached
+Ed25519-signed `latest.json` update manifest; beta releases keep Windows
+unsigned and do not publish update metadata. The universal Rust sidecar is
+signed before the outer Electron app.
 
 Build installers locally with `npm run make`, which remains unsigned unless
 `PRINTFARMER_REQUIRE_SIGNING=1` and every platform credential is present:
