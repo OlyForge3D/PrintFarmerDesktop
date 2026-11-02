@@ -34,11 +34,22 @@ pub struct PackedScene {
     buffers: Vec<Vec<u8>>,
 }
 
-#[derive(Default)]
 struct BufferStore {
     buffers: Vec<Vec<u8>>,
     hashes: HashMap<[u8; 32], Vec<usize>>,
     bytes: usize,
+    byte_limit: usize,
+}
+
+impl Default for BufferStore {
+    fn default() -> Self {
+        Self {
+            buffers: Vec::new(),
+            hashes: HashMap::new(),
+            bytes: 0,
+            byte_limit: MAX_SCENE_BUFFER_BYTES,
+        }
+    }
 }
 
 impl BufferStore {
@@ -47,21 +58,30 @@ impl BufferStore {
         length: usize,
         element_type: &'static str,
         width: usize,
-        bytes: impl Iterator<Item = u8>,
+        bytes: impl Iterator<Item = u8> + Clone,
     ) -> Result<PackedArray, String> {
         let byte_length = length
             .checked_mul(width)
-            .filter(|&n| n <= MAX_SCENE_BUFFER_BYTES)
+            .filter(|&n| n <= self.byte_limit)
             .ok_or("scene geometry exceeds the 512 MiB preview transport limit")?;
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(byte_length)
-            .map_err(|_| "not enough memory to transfer scene geometry")?;
-        buffer.extend(bytes);
-        let hash: [u8; 32] = Sha256::digest(&buffer).into();
+        let mut hasher = Sha256::new();
+        let mut source = bytes.clone();
+        let mut chunk = [0; 4096];
+        loop {
+            let mut count = 0;
+            for (index, byte) in source.by_ref().take(chunk.len()).enumerate() {
+                chunk[index] = byte;
+                count += 1;
+            }
+            if count == 0 {
+                break;
+            }
+            hasher.update(&chunk[..count]);
+        }
+        let hash: [u8; 32] = hasher.finalize().into();
         if let Some(candidates) = self.hashes.get(&hash) {
             for &index in candidates {
-                if self.buffers[index] == buffer {
+                if self.buffers[index].iter().copied().eq(bytes.clone()) {
                     return Ok(PackedArray {
                         buffer: index,
                         length,
@@ -70,14 +90,20 @@ impl BufferStore {
                 }
             }
         }
-        self.bytes = self
+        let total_bytes = self
             .bytes
             .checked_add(byte_length)
-            .filter(|&n| n <= MAX_SCENE_BUFFER_BYTES)
+            .filter(|&n| n <= self.byte_limit)
             .ok_or("scene geometry exceeds the 512 MiB preview transport limit")?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(byte_length)
+            .map_err(|_| "not enough memory to transfer scene geometry")?;
+        buffer.extend(bytes);
         let index = self.buffers.len();
         self.buffers.push(buffer);
         self.hashes.entry(hash).or_default().push(index);
+        self.bytes = total_bytes;
         Ok(PackedArray {
             buffer: index,
             length,
@@ -365,6 +391,23 @@ mod tests {
             .add(MAX_SCENE_BUFFER_BYTES / 4 + 1, "f32", 4, std::iter::empty())
             .is_err());
         assert!(store.buffers.is_empty());
+    }
+
+    #[test]
+    fn remaining_budget_rejects_unique_geometry_but_still_allows_deduplication() {
+        let mut store = BufferStore {
+            byte_limit: 8,
+            ..Default::default()
+        };
+        let first = store.add(6, "u8", 1, [1; 6].into_iter()).unwrap();
+        let duplicate = store.add(6, "u8", 1, [1; 6].into_iter()).unwrap();
+        assert_eq!(first.buffer, duplicate.buffer);
+        assert!(store.add(6, "u8", 1, [2; 6].into_iter()).is_err());
+        assert_eq!(store.bytes, 6);
+        assert_eq!(store.buffers, vec![vec![1; 6]]);
+        store.add(2, "u8", 1, [3; 2].into_iter()).unwrap();
+        assert_eq!(store.bytes, 8);
+        assert!(store.add(1, "u8", 1, [4].into_iter()).is_err());
     }
 
     #[test]

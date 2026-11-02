@@ -37,7 +37,9 @@ buffers are transferred once. Main validates and assembles them into typed
 arrays, and the viewer reuses them without expanding millions of JSON numbers.
 The transport permits at most 512 MiB of unique geometry per scene and
 64 × 1024 × 1024 UTF-16 code units per text frame. Exceeding either limit rejects
-the request, not the app.
+the request, not the app. Geometry is hashed and compared against retained
+buffers before allocating a candidate; only unique buffers that fit the
+remaining transport budget are copied.
 Legacy `loadScene` remains available for JSON clients. Scene cache serialization
 stops at its 64 MiB budget before constructing an oversized string.
 
@@ -50,9 +52,12 @@ duplicating join); tag and collection scopes intersect.
 Bulk collection changes (`previewCollectionChange` / `applyCollectionChange`)
 resolve their target — explicit hashes (≤500) or a filter query (paging
 ignored, ≤100,000 model/collection pairs) — inside one catalog batch and return a
-SHA-256 fingerprint over the operation, sync binding, destinations, names, and
-per-pair membership. Apply recomputes it in a new batch and refuses on any
-drift, so a stale preview never writes.
+SHA-256 fingerprint over the operation, sync binding, destinations, mutation
+scopes, names, and per-pair membership. Apply recomputes it in a new batch and
+refuses on any drift, so a stale preview never writes. Rename and bulk membership
+changes use the same all-profile provenance rules as organization deletion:
+shared and foreign-profile collections are read-only, owned collections require
+their active profile, and truly local destinations never enqueue sync work.
 Literal Unicode substring search is parameterized, and a case-insensitive
 natural-name collation plus hash tie-breaker keeps page ordering deterministic.
 Name ordering is Unicode case-folded rather than host-locale-dependent.

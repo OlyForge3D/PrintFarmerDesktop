@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::{finish_catalog_batch, CatalogStore, Collection};
 use crate::catalog_query::ModelQuery;
-use crate::sync::{SyncEntityType, SyncVisibility};
+use crate::organization::{self, DeleteScope, OrganizationEntry, OrganizationKind};
 
 const MAX_MEMBERSHIP_CHANGES: usize = 100_000;
 
@@ -90,6 +90,7 @@ pub struct CollectionChangeResult {
 struct Selection {
     hashes: Vec<String>,
     collection_ids: Vec<String>,
+    synced_collection_ids: BTreeSet<String>,
     preview: CollectionChangePreview,
 }
 
@@ -98,20 +99,18 @@ fn feed(hasher: &mut Sha256, value: &str) {
     hasher.update(value.as_bytes());
 }
 
-fn editable_collection<S: CatalogStore + ?Sized>(
-    store: &S,
-    id: &str,
-    context: Option<&SyncContext>,
-) -> Result<(), String> {
-    if let Some(context) = context {
-        if store
-            .entity_revision_by_local(&context.profile_id, SyncEntityType::ModelCollection, id)?
-            .is_some_and(|entity| entity.visibility == SyncVisibility::Shared)
-        {
-            return Err("shared remote collections are read-only; no changes were applied".into());
-        }
+fn editable_collection(entries: &[OrganizationEntry], id: &str) -> Result<DeleteScope, String> {
+    let entry = entries
+        .iter()
+        .find(|entry| entry.kind == OrganizationKind::Collection && entry.id == id)
+        .ok_or("the collection no longer exists")?;
+    if entry.delete_scope == DeleteScope::ReadOnly {
+        return Err(
+            "a selected collection is shared or belongs to another server profile; no changes were applied"
+                .into(),
+        );
     }
-    Ok(())
+    Ok(entry.delete_scope)
 }
 
 fn selection<S: CatalogStore + ?Sized>(
@@ -137,9 +136,7 @@ fn selection<S: CatalogStore + ?Sized>(
     if collection_ids.len() != request.collection_ids.len() {
         return Err("duplicate destination collections".into());
     }
-    if let Some(context) = &request.sync_context {
-        store.validate_sync_profile_binding(&context.profile_id, &context.profile_binding)?;
-    }
+    let entries = organization::list(store, request.sync_context.as_ref())?;
     let hashes = match &request.target {
         ChangeTarget::Selected { hashes } => {
             if hashes.is_empty()
@@ -196,15 +193,20 @@ fn selection<S: CatalogStore + ?Sized>(
         None => hasher.update([0]),
     }
     let mut targets = Vec::with_capacity(collection_ids.len());
+    let mut synced_collection_ids = BTreeSet::new();
     for id in &collection_ids {
         let collection = collections
             .iter()
             .find(|collection| &collection.id == id)
             .ok_or("a destination collection no longer exists; reload and review the change")?;
-        editable_collection(store, id, request.sync_context.as_ref())?;
+        let scope = editable_collection(&entries, id)?;
+        if scope == DeleteScope::Sync {
+            synced_collection_ids.insert(id.clone());
+        }
         feed(&mut hasher, id);
         feed(&mut hasher, &collection.name);
         hasher.update([u8::from(collection.shared_to_farm)]);
+        hasher.update([u8::from(scope == DeleteScope::Sync)]);
         targets.push(TargetPreview {
             collection_id: id.clone(),
             name: collection.name.clone(),
@@ -233,6 +235,7 @@ fn selection<S: CatalogStore + ?Sized>(
     Ok(Selection {
         hashes,
         collection_ids,
+        synced_collection_ids,
         preview,
     })
 }
@@ -265,17 +268,19 @@ pub fn apply<S: CatalogStore + ?Sized>(
             return Err("the matching models, destination collections, or memberships changed; review a fresh preview before applying".into());
         }
         for id in &selected.collection_ids {
+            let context = request
+                .change
+                .sync_context
+                .as_ref()
+                .filter(|_| selected.synced_collection_ids.contains(id));
             for hash in &selected.hashes {
                 let present = store.collection_contains_model(id, hash)?;
-                if request.change.sync_context.is_none()
+                if context.is_none()
                     && present != (request.change.operation == ChangeOperation::Remove)
                 {
                     continue;
                 }
-                match (
-                    request.change.operation,
-                    request.change.sync_context.as_ref(),
-                ) {
+                match (request.change.operation, context) {
                     (ChangeOperation::Add, Some(context)) => {
                         if !store.add_model_to_collection_with_sync_in_batch(
                             id,
@@ -340,19 +345,21 @@ pub fn rename<S: CatalogStore + ?Sized>(
     }
     store.begin_batch()?;
     let result = (|| {
-        if let Some(context) = &request.sync_context {
-            store.validate_sync_profile_binding(&context.profile_id, &context.profile_binding)?;
-        }
+        let entries = organization::list(store, request.sync_context.as_ref())?;
         let current = store
             .all_collections()
             .into_iter()
             .find(|collection| collection.id == request.id)
             .ok_or("the collection no longer exists")?;
-        editable_collection(store, &request.id, request.sync_context.as_ref())?;
+        let scope = editable_collection(&entries, &request.id)?;
         if current.name == name {
             return Ok(current);
         }
-        match &request.sync_context {
+        match request
+            .sync_context
+            .as_ref()
+            .filter(|_| scope == DeleteScope::Sync)
+        {
             Some(context) => store.update_collection_with_sync_in_batch(
                 &request.id,
                 name,
@@ -374,6 +381,7 @@ mod tests {
     use super::*;
     use crate::catalog::{InMemoryCatalog, LocationUpsert};
     use crate::model::{FileFingerprint, ModelFormat};
+    use crate::sync::{EntityRevisionDto, SyncEntityType, SyncOperationKind, SyncVisibility};
     use std::path::PathBuf;
 
     fn seed(store: &mut dyn CatalogStore, count: usize) -> (String, String) {
@@ -612,6 +620,181 @@ mod tests {
         .is_err());
     }
 
+    fn sync_context(profile: &str) -> SyncContext {
+        SyncContext {
+            profile_id: profile.into(),
+            profile_binding: format!("binding-{profile}"),
+            now: 3,
+        }
+    }
+
+    fn map_collection(store: &mut dyn CatalogStore, id: &str, visibility: SyncVisibility) {
+        store
+            .provision_entity_mapping(EntityRevisionDto {
+                profile_id: "a".into(),
+                entity_type: SyncEntityType::ModelCollection,
+                local_id: Some(id.into()),
+                remote_id: format!("remote-{id}"),
+                revision: 1,
+                concurrency_token: None,
+                tombstone: false,
+                visibility,
+                snapshot: None,
+                updated_at: 1,
+            })
+            .unwrap();
+    }
+
+    fn foreign_disconnected_and_shared_destinations_reject_all_changes(
+        store: &mut dyn CatalogStore,
+    ) {
+        let (local, foreign) = seed(store, 2);
+        store.bind_sync_profile("a", "binding-a", 1).unwrap();
+        store.bind_sync_profile("b", "binding-b", 1).unwrap();
+        let active = store
+            .create_collection_with_sync("Active", "b", "binding-b", 1)
+            .unwrap();
+        store.add_model_to_collection(&active.id, "h000");
+        for visibility in [SyncVisibility::Private, SyncVisibility::Shared] {
+            map_collection(store, &foreign, visibility);
+            for profile in [None, Some("b"), Some("a")] {
+                if visibility == SyncVisibility::Private && profile == Some("a") {
+                    continue;
+                }
+                let before_a = store.outbound_operations("a", &[], 100).unwrap();
+                let before_b = store.outbound_operations("b", &[], 100).unwrap();
+                let before = store.all_collections();
+                for operation in [ChangeOperation::Add, ChangeOperation::Remove] {
+                    let mut request = change(
+                        operation,
+                        selected(&[if operation == ChangeOperation::Add {
+                            "h001"
+                        } else {
+                            "h000"
+                        }]),
+                        &[&local, &active.id, &foreign],
+                    );
+                    request.sync_context = profile.map(sync_context);
+                    assert!(preview(store, &request).is_err());
+                    assert!(apply(
+                        store,
+                        &ApplyCollectionChangeRequest {
+                            change: request,
+                            fingerprint: "0".repeat(64),
+                        },
+                    )
+                    .is_err());
+                }
+                assert!(rename(
+                    store,
+                    &RenameCollectionRequest {
+                        id: foreign.clone(),
+                        name: "Changed".into(),
+                        sync_context: profile.map(sync_context),
+                    },
+                )
+                .is_err());
+                assert_eq!(store.all_collections(), before);
+                assert_eq!(store.outbound_operations("a", &[], 100).unwrap(), before_a);
+                assert_eq!(store.outbound_operations("b", &[], 100).unwrap(), before_b);
+                for id in [&local, &foreign, &active.id] {
+                    assert!(store.collection_contains_model(id, "h000").unwrap());
+                    assert!(!store.collection_contains_model(id, "h001").unwrap());
+                }
+            }
+        }
+    }
+
+    fn mixed_local_and_owned_changes_only_sync_owned_destinations(store: &mut dyn CatalogStore) {
+        let (local, _) = seed(store, 2);
+        let hash = "a".repeat(64);
+        store.upsert_location(LocationUpsert {
+            hash: hash.clone(),
+            format: ModelFormat::Stl,
+            size: 1,
+            root_id: "r".into(),
+            path: PathBuf::from("/m/synced.stl"),
+            root_relative: PathBuf::from("synced.stl"),
+            fingerprint: FileFingerprint {
+                size: 1,
+                modified_unix_secs: Some(1),
+            },
+        });
+        store.bind_sync_profile("a", "binding-a", 1).unwrap();
+        let owned = store
+            .create_collection_with_sync("Owned", "a", "binding-a", 1)
+            .unwrap();
+        let before = store.outbound_operations("a", &[], 100).unwrap();
+        let mut request = change(
+            ChangeOperation::Add,
+            selected(&[&hash]),
+            &[&local, &owned.id],
+        );
+        request.sync_context = Some(sync_context("a"));
+        let (_, result) = preview_then_apply(store, request);
+        assert_eq!(result.changed_memberships, 2);
+        let after = store.outbound_operations("a", &[], 100).unwrap();
+        assert_eq!(after.len(), before.len() + 1);
+        let membership = after
+            .iter()
+            .find(|operation| operation.entity_type == SyncEntityType::ModelCollectionMembership)
+            .unwrap();
+        assert_eq!(membership.payload["collectionId"], owned.id);
+        assert_eq!(membership.operation, SyncOperationKind::Create);
+
+        for operation in [ChangeOperation::Add, ChangeOperation::Remove] {
+            let mut request = change(operation, selected(&[&hash]), &[&local, &owned.id]);
+            request.sync_context = Some(sync_context("a"));
+            preview_then_apply(store, request);
+        }
+        assert_eq!(store.outbound_operations("a", &[], 100).unwrap(), before);
+        rename(
+            store,
+            &RenameCollectionRequest {
+                id: local,
+                name: "Local renamed".into(),
+                sync_context: Some(sync_context("a")),
+            },
+        )
+        .unwrap();
+        assert_eq!(store.outbound_operations("a", &[], 100).unwrap(), before);
+        rename(
+            store,
+            &RenameCollectionRequest {
+                id: owned.id.clone(),
+                name: "Owned renamed".into(),
+                sync_context: Some(sync_context("a")),
+            },
+        )
+        .unwrap();
+        assert!(store
+            .outbound_operations("a", &[], 100)
+            .unwrap()
+            .iter()
+            .any(|operation| operation.operation == SyncOperationKind::Update
+                && operation.entity_id == owned.id));
+    }
+
+    fn changing_local_destination_to_synced_invalidates_preview(store: &mut dyn CatalogStore) {
+        let (local, _) = seed(store, 2);
+        store.bind_sync_profile("a", "binding-a", 1).unwrap();
+        let mut request = change(ChangeOperation::Add, selected(&["h001"]), &[&local]);
+        request.sync_context = Some(sync_context("a"));
+        let fingerprint = preview(store, &request).unwrap().fingerprint;
+        map_collection(store, &local, SyncVisibility::Private);
+        let error = apply(
+            store,
+            &ApplyCollectionChangeRequest {
+                change: request,
+                fingerprint,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("fresh preview"), "{error}");
+        assert!(!store.collection_contains_model(&local, "h001").unwrap());
+        assert!(store.outbound_operations("a", &[], 100).unwrap().is_empty());
+    }
+
     macro_rules! both_stores {
         ($($name:ident),* $(,)?) => {
             mod memory {
@@ -632,5 +815,8 @@ mod tests {
         stale_fingerprint_rejects_without_writes,
         rename_keeps_identity_and_memberships,
         invalid_requests_are_rejected,
+        foreign_disconnected_and_shared_destinations_reject_all_changes,
+        mixed_local_and_owned_changes_only_sync_owned_destinations,
+        changing_local_destination_to_synced_invalidates_preview,
     );
 }
