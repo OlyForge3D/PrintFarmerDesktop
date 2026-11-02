@@ -45,6 +45,13 @@ any search-list or cleanup failure fails the release step. Credentials are
 never exported through `GITHUB_ENV`, written into the repository, or uploaded
 as artifacts.
 
+On normal `SIGINT`/`SIGTERM` cancellation the helper stops starting signing
+work, forwards cancellation to its active signing child, waits for that child
+to close, and runs the same restoration/removal path. Cleanup commands are
+allowed to finish rather than being aborted by cancellation. `SIGKILL`,
+runner termination, or a child that refuses to exit cannot guarantee cleanup.
+PKCS#12 passwords are passed unchanged, including significant whitespace.
+
 Generate the detached update-signing key pair on a trusted offline machine:
 
 ```sh

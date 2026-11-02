@@ -6,7 +6,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 function requiredEnvironment(environment, name) {
-  const value = environment[name]?.trim();
+  const rawValue = environment[name];
+  const value = name === 'CERTIFICATE_PASSWORD' ? rawValue : rawValue?.trim();
   if (!value) {
     throw new Error(`${name} is required for macOS release signing`);
   }
@@ -55,12 +56,20 @@ function matchesIdentity(row, identity) {
   );
 }
 
-function runProcess(command, args, { environment, captureOutput = false }) {
+function runProcess(
+  command,
+  args,
+  { environment, captureOutput = false, cancellationSignal },
+) {
   return new Promise((resolve, reject) => {
+    cancellationSignal?.throwIfAborted();
+    const isolatedProcessGroup =
+      cancellationSignal !== undefined && process.platform !== 'win32';
     const child = spawn(command, args, {
       env: environment,
       stdio: captureOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       windowsHide: true,
+      detached: isolatedProcessGroup,
     });
     let stdout = '';
     if (captureOutput) {
@@ -70,11 +79,28 @@ function runProcess(command, args, { environment, captureOutput = false }) {
       });
       child.stderr.resume();
     }
-    child.once('error', () =>
-      reject(new Error('process could not be started')),
-    );
-    child.once('exit', (code, signal) => {
-      resolve({ code, signal, stdout });
+    let processError;
+    const cancel = () => {
+      try {
+        if (isolatedProcessGroup && child.pid !== undefined) {
+          process.kill(-child.pid, cancellationSignal.reason.signal);
+        } else {
+          child.kill(cancellationSignal.reason.signal);
+        }
+      } catch (error) {
+        if (error.code !== 'ESRCH') {
+          processError = new Error('signing process cancellation failed');
+        }
+      }
+    };
+    cancellationSignal?.addEventListener('abort', cancel, { once: true });
+    child.once('error', () => {
+      processError = new Error('process could not be started');
+    });
+    child.once('close', (code, signal) => {
+      cancellationSignal?.removeEventListener('abort', cancel);
+      if (processError) reject(processError);
+      else resolve({ code, signal, stdout });
     });
   });
 }
@@ -92,8 +118,9 @@ function safeProcessError(label, result) {
 async function runSecurity(
   args,
   label,
-  { environment, runProcessImplementation },
+  { environment, runProcessImplementation, cancellationSignal },
 ) {
+  cancellationSignal?.throwIfAborted();
   let result;
   try {
     result = await runProcessImplementation('/usr/bin/security', args, {
@@ -121,12 +148,13 @@ async function attemptCleanup(label, action, failures) {
   }
 }
 
-export async function withMacSigningKeychain({
+async function signingKeychainLifecycle({
   command,
   args,
   environment = process.env,
   runProcessImplementation = runProcess,
   temporaryDirectory = environment.RUNNER_TEMP || os.tmpdir(),
+  cancellationSignal,
 }) {
   if (!command) throw new Error('A macOS signing command is required');
 
@@ -147,8 +175,15 @@ export async function withMacSigningKeychain({
   let keychainCreationAttempted = false;
   let originalKeychains;
   let primaryFailure;
+  const setupSecurity = (args, label) =>
+    runSecurity(args, label, {
+      environment,
+      runProcessImplementation,
+      cancellationSignal,
+    });
 
   try {
+    cancellationSignal.throwIfAborted();
     workspace = await mkdtemp(
       path.join(temporaryDirectory, 'printfarmer-signing-'),
     );
@@ -158,30 +193,24 @@ export async function withMacSigningKeychain({
     await writeFile(certificatePath, certificate, { mode: 0o600, flag: 'wx' });
 
     originalKeychains = parseKeychainList(
-      await runSecurity(['list-keychains', '-d', 'user'], 'search-list read', {
-        environment,
-        runProcessImplementation,
-      }),
+      await setupSecurity(['list-keychains', '-d', 'user'], 'search-list read'),
     );
 
     const keychainPassword = randomBytes(24).toString('hex');
     keychainCreationAttempted = true;
-    await runSecurity(
+    await setupSecurity(
       ['create-keychain', '-p', keychainPassword, keychainPath],
       'creation',
-      { environment, runProcessImplementation },
     );
-    await runSecurity(
+    await setupSecurity(
       ['set-keychain-settings', '-lut', '21600', keychainPath],
       'configuration',
-      { environment, runProcessImplementation },
     );
-    await runSecurity(
+    await setupSecurity(
       ['unlock-keychain', '-p', keychainPassword, keychainPath],
       'unlock',
-      { environment, runProcessImplementation },
     );
-    await runSecurity(
+    await setupSecurity(
       [
         'import',
         certificatePath,
@@ -193,9 +222,8 @@ export async function withMacSigningKeychain({
         '/usr/bin/codesign',
       ],
       'certificate import',
-      { environment, runProcessImplementation },
     );
-    await runSecurity(
+    await setupSecurity(
       [
         'set-key-partition-list',
         '-S',
@@ -206,30 +234,26 @@ export async function withMacSigningKeychain({
         keychainPath,
       ],
       'private-key access configuration',
-      { environment, runProcessImplementation },
     );
     const searchList = [
       keychainPath,
       ...originalKeychains.filter((item) => item !== keychainPath),
     ];
-    await runSecurity(
+    await setupSecurity(
       ['list-keychains', '-d', 'user', '-s', ...searchList],
       'search-list update',
-      { environment, runProcessImplementation },
     );
 
     const allIdentities = identityRows(
-      await runSecurity(
+      await setupSecurity(
         ['find-identity', '-p', 'codesigning', keychainPath],
         'identity validation',
-        { environment, runProcessImplementation },
       ),
     );
     const validIdentities = identityRows(
-      await runSecurity(
+      await setupSecurity(
         ['find-identity', '-v', '-p', 'codesigning', keychainPath],
         'identity validation',
-        { environment, runProcessImplementation },
       ),
     );
     const matchingIdentity = allIdentities.some((row) =>
@@ -253,10 +277,12 @@ export async function withMacSigningKeychain({
     );
     signingEnvironment.APPLE_SIGNING_KEYCHAIN = keychainPath;
     let result;
+    cancellationSignal.throwIfAborted();
     try {
       result = await runProcessImplementation(command, args, {
         environment: signingEnvironment,
         captureOutput: false,
+        cancellationSignal,
       });
     } catch {
       throw new Error('macOS signing process failed');
@@ -264,6 +290,7 @@ export async function withMacSigningKeychain({
     if (result.code !== 0 || result.signal) {
       throw safeProcessError('macOS signing process', result);
     }
+    cancellationSignal.throwIfAborted();
   } catch (error) {
     primaryFailure =
       error instanceof Error ? error : new Error('macOS signing setup failed');
@@ -319,6 +346,9 @@ export async function withMacSigningKeychain({
     );
   }
 
+  primaryFailure ??= cancellationSignal.aborted
+    ? cancellationSignal.reason
+    : undefined;
   if (primaryFailure && cleanupFailures.length) {
     throw new Error(
       `${primaryFailure.message}; cleanup failed: ${cleanupFailures.join(', ')}`,
@@ -329,6 +359,32 @@ export async function withMacSigningKeychain({
     throw new Error(
       `macOS signing cleanup failed: ${cleanupFailures.join(', ')}`,
     );
+  }
+}
+
+export async function withMacSigningKeychain(options) {
+  const controller = new AbortController();
+  const cancel = (signal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(
+        Object.assign(new Error(`macOS signing cancelled by ${signal}`), {
+          signal,
+        }),
+      );
+    }
+  };
+  const interrupt = () => cancel('SIGINT');
+  const terminate = () => cancel('SIGTERM');
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', terminate);
+  try {
+    await signingKeychainLifecycle({
+      ...options,
+      cancellationSignal: controller.signal,
+    });
+  } finally {
+    process.off('SIGINT', interrupt);
+    process.off('SIGTERM', terminate);
   }
 }
 

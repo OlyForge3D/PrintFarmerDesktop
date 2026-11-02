@@ -8,6 +8,7 @@ export function withMacSigningKeychain(options: {
     options: {
       environment: NodeJS.ProcessEnv;
       captureOutput?: boolean;
+      cancellationSignal?: AbortSignal;
     },
   ) => Promise<{
     code: number | null;
