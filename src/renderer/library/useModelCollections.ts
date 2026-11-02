@@ -10,10 +10,17 @@ export interface ModelCollectionsState {
   createAndAdd: (name: string) => Promise<void>;
 }
 
+interface CollectionsSnapshot {
+  all: Collection[];
+  mine: Collection[];
+}
+
 /**
  * Loads every collection plus the membership of one model (by hash), and
  * mutates membership through the sidecar. Collections are catalog data, so all
  * mutations round-trip and the authoritative results replace local state.
+ * Only the newest request may publish, so a slow older read can never restore
+ * collections that a later read (for example after a deletion) removed.
  */
 export function useModelCollections(
   hash: string | null,
@@ -23,33 +30,54 @@ export function useModelCollections(
   const [error, setError] = useState<string | null>(null);
   const activeHashRef = useRef(hash);
   activeHashRef.current = hash;
+  const generationRef = useRef(0);
 
-  const load = useCallback(async (target: string) => {
-    setError(null);
-    try {
-      const [collections, mine] = await Promise.all([
-        window.printFarmer.listCollections(),
-        window.printFarmer.collectionsForModel({ hash: target }),
-      ]);
-      if (activeHashRef.current === target) {
-        setAll(collections);
-        setMembership(new Set(mine.map((c) => c.id)));
+  useEffect(
+    () => () => {
+      generationRef.current += 1;
+    },
+    [],
+  );
+
+  const request = useCallback(
+    async (target: string, action: () => Promise<CollectionsSnapshot>) => {
+      const generation = ++generationRef.current;
+      const isCurrent = (): boolean =>
+        generation === generationRef.current &&
+        activeHashRef.current === target;
+      setError(null);
+      try {
+        const next = await action();
+        if (isCurrent()) {
+          setAll(next.all);
+          setMembership(new Set(next.mine.map((c) => c.id)));
+        }
+      } catch (err: unknown) {
+        if (isCurrent()) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       }
-    } catch (err: unknown) {
-      if (activeHashRef.current === target) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    }
+    },
+    [],
+  );
+
+  const read = useCallback(async (target: string) => {
+    const [collections, mine] = await Promise.all([
+      window.printFarmer.listCollections(),
+      window.printFarmer.collectionsForModel({ hash: target }),
+    ]);
+    return { all: collections, mine };
   }, []);
 
   const refresh = useCallback(async () => {
     if (!hash) {
+      generationRef.current += 1;
       setAll([]);
       setMembership(new Set());
       return;
     }
-    await load(hash);
-  }, [hash, load]);
+    await request(hash, () => read(hash));
+  }, [hash, read, request]);
 
   useEffect(() => {
     void refresh();
@@ -60,19 +88,15 @@ export function useModelCollections(
       if (!hash) {
         return;
       }
-      setError(null);
-      try {
-        const request = { collectionId, hash };
+      await request(hash, async () => {
+        const change = { collectionId, hash };
         const mine = membership.has(collectionId)
-          ? await window.printFarmer.removeModelFromCollection(request)
-          : await window.printFarmer.addModelToCollection(request);
-        setMembership(new Set(mine.map((c) => c.id)));
-        setAll(await window.printFarmer.listCollections());
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+          ? await window.printFarmer.removeModelFromCollection(change)
+          : await window.printFarmer.addModelToCollection(change);
+        return { all: await window.printFarmer.listCollections(), mine };
+      });
     },
-    [hash, membership],
+    [hash, membership, request],
   );
 
   const createAndAdd = useCallback(
@@ -80,19 +104,16 @@ export function useModelCollections(
       if (!hash || name.trim().length === 0) {
         return;
       }
-      setError(null);
-      try {
+      await request(hash, async () => {
         const created = await window.printFarmer.createCollection({ name });
         await window.printFarmer.addModelToCollection({
           collectionId: created.id,
           hash,
         });
-        await load(hash);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+        return read(hash);
+      });
     },
-    [hash, load],
+    [hash, read, request],
   );
 
   return { all, membership, error, refresh, toggle, createAndAdd };

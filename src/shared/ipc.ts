@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 6 as const;
+export const IPC_CONTRACT_VERSION = 10 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -130,17 +130,24 @@ export const IpcChannel = {
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
   ListModels: 'catalog:listModels',
+  QueryModels: 'catalog:queryModels',
   ResetCatalog: 'catalog:reset',
   ListFavorites: 'catalog:listFavorites',
   AddFavorite: 'catalog:addFavorite',
   RemoveFavorite: 'catalog:removeFavorite',
   ListTags: 'catalog:listTags',
+  ListOrganization: 'catalog:listOrganization',
+  PreviewOrganizationDeletion: 'catalog:previewOrganizationDeletion',
+  ApplyOrganizationDeletion: 'catalog:applyOrganizationDeletion',
   TagsForModel: 'catalog:tagsForModel',
   AddModelTag: 'catalog:addModelTag',
   RemoveModelTag: 'catalog:removeModelTag',
   ListCollections: 'catalog:listCollections',
   CollectionsForModel: 'catalog:collectionsForModel',
   CreateCollection: 'catalog:createCollection',
+  RenameCollection: 'catalog:renameCollection',
+  PreviewCollectionChange: 'catalog:previewCollectionChange',
+  ApplyCollectionChange: 'catalog:applyCollectionChange',
   DeleteCollection: 'catalog:deleteCollection',
   AddModelToCollection: 'catalog:addModelToCollection',
   RemoveModelFromCollection: 'catalog:removeModelFromCollection',
@@ -201,7 +208,7 @@ export type SidecarPingResponse = z.infer<typeof SidecarPingResponse>;
 // --- model:loadScene ------------------------------------------------------
 
 /** Supported model formats, matching the sidecar's `ModelFormat` serde names. */
-export const ModelFormat = z.enum(['stl', 'threeMf', 'obj']);
+export const ModelFormat = z.enum(['stl', 'threeMf', 'obj', 'step']);
 export type ModelFormat = z.infer<typeof ModelFormat>;
 export const SceneLoadStatus = z.enum(['complete', 'partial', 'unsupported']);
 export type SceneLoadStatus = z.infer<typeof SceneLoadStatus>;
@@ -242,15 +249,46 @@ export const SceneTransform = z.object({
 });
 export type SceneTransform = z.infer<typeof SceneTransform>;
 
+const ScenePositions = z.union([
+  z
+    .custom<Float32Array>(
+      (value) =>
+        ArrayBuffer.isView(value) &&
+        Object.prototype.toString.call(value) === '[object Float32Array]',
+    )
+    .refine((values) => values.every(Number.isFinite), {
+      message: 'Scene positions must be finite.',
+    }),
+  z.array(z.number()),
+]);
+
+const SceneIndices = z.union([
+  z.custom<Uint32Array>(
+    (value) =>
+      ArrayBuffer.isView(value) &&
+      Object.prototype.toString.call(value) === '[object Uint32Array]',
+  ),
+  z.array(z.number().int().nonnegative()),
+]);
+
+const SceneFaceColors = z.union([
+  z.custom<Uint8Array>(
+    (value) =>
+      ArrayBuffer.isView(value) &&
+      Object.prototype.toString.call(value) === '[object Uint8Array]',
+  ),
+  z.array(z.number().int().min(0).max(255)),
+]);
+
 export const SceneMaterial = z.object({
   baseColor: Rgb.nullable().optional(),
-  faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
+  faceColors: SceneFaceColors.nullable().optional(),
 });
 export type SceneMaterial = z.infer<typeof SceneMaterial>;
 
 export const SceneObjectMesh = z.object({
-  positions: z.array(z.number()),
-  indices: z.array(z.number().int().nonnegative()),
+  positions: ScenePositions,
+  indices: SceneIndices,
   bounds: Bounds,
 });
 export type SceneObjectMesh = z.infer<typeof SceneObjectMesh>;
@@ -292,11 +330,11 @@ export type ScenePlate = z.infer<typeof ScenePlate>;
  */
 export const SceneMesh = z.object({
   sceneVersion: z.literal(2),
-  positions: z.array(z.number()),
-  indices: z.array(z.number().int().nonnegative()),
+  positions: ScenePositions,
+  indices: SceneIndices,
   bounds: Bounds,
   sourceFormat: ModelFormat,
-  faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
+  faceColors: SceneFaceColors.nullable().optional(),
   status: SceneLoadStatus.default('complete'),
   statusMessages: z.array(z.string()).default([]),
   parts: z.array(ScenePart).default([]),
@@ -510,6 +548,8 @@ export const ImportPreviewResponse = z.object({
     stl: z.number().int().nonnegative(),
     threeMf: z.number().int().nonnegative(),
     obj: z.number().int().nonnegative(),
+    /** Older sidecars omit the STEP preview count. */
+    step: z.number().int().nonnegative().optional(),
   }),
   folders: z.array(ImportFolder).max(500),
   foldersTruncated: z.boolean(),
@@ -562,6 +602,108 @@ export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 export const ListModelsResponse = z.array(LogicalModel);
 export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
 
+export const LibraryPageSize = z.union([
+  z.literal(24),
+  z.literal(48),
+  z.literal(96),
+  z.literal(192),
+]);
+export type LibraryPageSize = z.infer<typeof LibraryPageSize>;
+export const QueryModelsRequest = z
+  .object({
+    query: z.string().max(4096),
+    filter: z.enum([
+      'all',
+      'favorites',
+      'stl',
+      'threeMf',
+      'obj',
+      'step',
+      'duplicates',
+      'missing',
+    ]),
+    sort: z.enum([
+      'name-asc',
+      'name-desc',
+      'size-asc',
+      'size-desc',
+      'date-asc',
+      'date-desc',
+    ]),
+    collectionIds: z.array(z.string().min(1).max(4096)).max(4096),
+    tagIds: z.array(z.string().min(1).max(4096)).max(4096).optional(),
+    excludedRootIds: z.array(z.string().min(1).max(4096)).max(4096),
+    page: z.number().int().min(1).max(1_000_000),
+    pageSize: LibraryPageSize,
+  })
+  .strict();
+export type QueryModelsRequest = z.infer<typeof QueryModelsRequest>;
+export const LibraryCatalogCounts = z.object({
+  all: z.number().int().nonnegative(),
+  favorites: z.number().int().nonnegative(),
+  stl: z.number().int().nonnegative(),
+  threeMf: z.number().int().nonnegative(),
+  obj: z.number().int().nonnegative(),
+  step: z.number().int().nonnegative(),
+  duplicates: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+});
+export const LibrarySourceSummary = z.object({
+  rootId: z.string().min(1),
+  totalModels: z.number().int().nonnegative(),
+  availableModels: z.number().int().nonnegative(),
+  availableLocations: z.number().int().nonnegative(),
+  missingLocations: z.number().int().nonnegative(),
+  sample: ModelLocation,
+});
+export type LibrarySourceSummary = z.infer<typeof LibrarySourceSummary>;
+export const QueryModelsResponse = z
+  .object({
+    models: z.array(LogicalModel).max(192),
+    counts: LibraryCatalogCounts,
+    sources: z.array(LibrarySourceSummary),
+    filteredTotal: z.number().int().nonnegative(),
+    page: z.number().int().min(1).max(1_000_000),
+    pageSize: LibraryPageSize,
+  })
+  .superRefine((result, context) => {
+    const pages = Math.max(
+      1,
+      Math.ceil(result.filteredTotal / result.pageSize),
+    );
+    const expected = Math.min(
+      result.pageSize,
+      Math.max(0, result.filteredTotal - (result.page - 1) * result.pageSize),
+    );
+    const formats =
+      result.counts.stl +
+      result.counts.threeMf +
+      result.counts.obj +
+      result.counts.step;
+    if (
+      formats !== result.counts.all ||
+      Object.values(result.counts).some((count) => count > result.counts.all) ||
+      result.sources.some(
+        (source) =>
+          source.sample.rootId !== source.rootId ||
+          source.availableModels > source.totalModels,
+      ) ||
+      new Set(result.sources.map((source) => source.rootId)).size !==
+        result.sources.length ||
+      result.page > pages ||
+      result.models.length !== expected ||
+      result.filteredTotal > result.counts.all ||
+      new Set(result.models.map((model) => model.hash)).size !==
+        result.models.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid catalog page totals or membership.',
+      });
+    }
+  });
+export type QueryModelsResponse = z.infer<typeof QueryModelsResponse>;
+
 export const ResetCatalogRequest = z.void();
 export type ResetCatalogRequest = z.infer<typeof ResetCatalogRequest>;
 
@@ -570,6 +712,8 @@ export const ResetCatalogResponse = z
     reset: z.literal(true),
     modelsRemoved: z.number().int().nonnegative(),
     sourceRootsRemoved: z.number().int().nonnegative(),
+    tagsRemoved: z.number().int().nonnegative(),
+    collectionsRemoved: z.number().int().nonnegative(),
   })
   .strict();
 export type ResetCatalogResponse = z.infer<typeof ResetCatalogResponse>;
@@ -686,6 +830,213 @@ export type CollectionMembershipRequest = z.infer<
 export const CollectionMembershipResponse = z.array(Collection);
 export type CollectionMembershipResponse = z.infer<
   typeof CollectionMembershipResponse
+>;
+
+export const RenameCollectionRequest = z
+  .object({
+    id: z.string().min(1).max(4096),
+    name: z.string().trim().min(1).max(128),
+  })
+  .strict();
+export type RenameCollectionRequest = z.infer<typeof RenameCollectionRequest>;
+export const RenameCollectionResponse = Collection;
+export type RenameCollectionResponse = z.infer<typeof RenameCollectionResponse>;
+
+export const CollectionChangeTarget = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('selected'),
+      hashes: z
+        .array(z.string().min(1).max(256))
+        .min(1)
+        .max(500)
+        .superRefine((hashes, context) => {
+          if (new Set(hashes).size !== hashes.length)
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Duplicate selected models.',
+            });
+        }),
+    })
+    .strict(),
+  z.object({ kind: z.literal('query'), query: QueryModelsRequest }).strict(),
+]);
+export type CollectionChangeTarget = z.infer<typeof CollectionChangeTarget>;
+export const CollectionChangeOperation = z.enum(['add', 'remove']);
+export type CollectionChangeOperation = z.infer<
+  typeof CollectionChangeOperation
+>;
+export const PreviewCollectionChangeRequest = z
+  .object({
+    operation: CollectionChangeOperation,
+    target: CollectionChangeTarget,
+    collectionIds: z.array(z.string().min(1).max(4096)).min(1).max(64),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (new Set(request.collectionIds).size !== request.collectionIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Duplicate destination collections.',
+      });
+    }
+  });
+export type PreviewCollectionChangeRequest = z.infer<
+  typeof PreviewCollectionChangeRequest
+>;
+export const PreviewCollectionChangeResponse = z
+  .object({
+    operation: CollectionChangeOperation,
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    modelCount: z.number().int().min(1).max(100_000),
+    changeCount: z.number().int().nonnegative(),
+    unchangedCount: z.number().int().nonnegative(),
+    targets: z
+      .array(
+        z.object({
+          collectionId: z.string().min(1),
+          name: z.string(),
+          changeCount: z.number().int().nonnegative(),
+          unchangedCount: z.number().int().nonnegative(),
+        }),
+      )
+      .min(1)
+      .max(64),
+  })
+  .superRefine((preview, context) => {
+    const pairs = preview.modelCount * preview.targets.length;
+    if (
+      pairs > 100_000 ||
+      preview.changeCount + preview.unchangedCount !== pairs ||
+      preview.targets.some(
+        (target) =>
+          target.changeCount + target.unchangedCount !== preview.modelCount,
+      ) ||
+      preview.targets.reduce((sum, target) => sum + target.changeCount, 0) !==
+        preview.changeCount ||
+      new Set(preview.targets.map((target) => target.collectionId)).size !==
+        preview.targets.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid collection preview counts.',
+      });
+    }
+  });
+export type PreviewCollectionChangeResponse = z.infer<
+  typeof PreviewCollectionChangeResponse
+>;
+export const ApplyCollectionChangeRequest = z
+  .object({
+    change: PreviewCollectionChangeRequest,
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type ApplyCollectionChangeRequest = z.infer<
+  typeof ApplyCollectionChangeRequest
+>;
+export const ApplyCollectionChangeResponse = z.object({
+  operation: CollectionChangeOperation,
+  modelCount: z.number().int().min(1).max(100_000),
+  changedMemberships: z.number().int().nonnegative().max(100_000),
+  unchangedMemberships: z.number().int().nonnegative().max(100_000),
+  collections: z.array(Collection),
+});
+export type ApplyCollectionChangeResponse = z.infer<
+  typeof ApplyCollectionChangeResponse
+>;
+
+// Definition deletion is distinct from changing a model's memberships.
+export const OrganizationKind = z.enum(['tag', 'collection']);
+export type OrganizationKind = z.infer<typeof OrganizationKind>;
+export const OrganizationEntry = z
+  .object({
+    kind: OrganizationKind,
+    id: z.string().min(1).max(4096),
+    name: z.string().min(1),
+    modelCount: z.number().int().nonnegative(),
+    synced: z.boolean(),
+    deleteScope: z.enum(['local', 'sync', 'readOnly']),
+  })
+  .strict();
+export type OrganizationEntry = z.infer<typeof OrganizationEntry>;
+export const ListOrganizationResponse = z.array(OrganizationEntry);
+export type ListOrganizationResponse = z.infer<typeof ListOrganizationResponse>;
+export const PreviewOrganizationDeletionRequest = z
+  .object({
+    kind: OrganizationKind,
+    ids: z.array(z.string().min(1).max(4096)).min(1).max(500),
+    emptyOnly: z.boolean(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (new Set(request.ids).size !== request.ids.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Duplicate organization items.',
+      });
+    }
+  });
+export type PreviewOrganizationDeletionRequest = z.infer<
+  typeof PreviewOrganizationDeletionRequest
+>;
+export const PreviewOrganizationDeletionResponse = z
+  .object({
+    kind: OrganizationKind,
+    entries: z.array(OrganizationEntry).min(1).max(500),
+    assignmentsRemoved: z.number().int().nonnegative().max(100_000),
+    serverDeletions: z.number().int().nonnegative().max(500),
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict()
+  .superRefine((preview, context) => {
+    if (
+      preview.entries.some(
+        (entry) =>
+          entry.kind !== preview.kind || entry.deleteScope === 'readOnly',
+      ) ||
+      new Set(preview.entries.map((entry) => entry.id)).size !==
+        preview.entries.length ||
+      preview.entries.reduce((sum, entry) => sum + entry.modelCount, 0) !==
+        preview.assignmentsRemoved ||
+      preview.entries.filter((entry) => entry.deleteScope === 'sync').length !==
+        preview.serverDeletions
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid organization deletion preview.',
+      });
+    }
+  });
+export type PreviewOrganizationDeletionResponse = z.infer<
+  typeof PreviewOrganizationDeletionResponse
+>;
+export const ApplyOrganizationDeletionRequest = z
+  .object({
+    selection: PreviewOrganizationDeletionRequest,
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type ApplyOrganizationDeletionRequest = z.infer<
+  typeof ApplyOrganizationDeletionRequest
+>;
+export const ApplyOrganizationDeletionResponse = z
+  .object({
+    kind: OrganizationKind,
+    deletedIds: z.array(z.string().min(1).max(4096)).min(1).max(500),
+    assignmentsRemoved: z.number().int().nonnegative().max(100_000),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if (new Set(result.deletedIds).size !== result.deletedIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Duplicate deleted organization items.',
+      });
+    }
+  });
+export type ApplyOrganizationDeletionResponse = z.infer<
+  typeof ApplyOrganizationDeletionResponse
 >;
 
 // --- dialog:openFolder ----------------------------------------------------
@@ -7559,6 +7910,10 @@ export const ipcSchemas = {
     request: ListModelsRequest,
     response: ListModelsResponse,
   },
+  [IpcChannel.QueryModels]: {
+    request: QueryModelsRequest,
+    response: QueryModelsResponse,
+  },
   [IpcChannel.ResetCatalog]: {
     request: ResetCatalogRequest,
     response: ResetCatalogResponse,
@@ -7595,6 +7950,18 @@ export const ipcSchemas = {
     request: ListCollectionsRequest,
     response: ListCollectionsResponse,
   },
+  [IpcChannel.ListOrganization]: {
+    request: z.void(),
+    response: ListOrganizationResponse,
+  },
+  [IpcChannel.PreviewOrganizationDeletion]: {
+    request: PreviewOrganizationDeletionRequest,
+    response: PreviewOrganizationDeletionResponse,
+  },
+  [IpcChannel.ApplyOrganizationDeletion]: {
+    request: ApplyOrganizationDeletionRequest,
+    response: ApplyOrganizationDeletionResponse,
+  },
   [IpcChannel.CollectionsForModel]: {
     request: CollectionsForModelRequest,
     response: CollectionsForModelResponse,
@@ -7602,6 +7969,18 @@ export const ipcSchemas = {
   [IpcChannel.CreateCollection]: {
     request: CreateCollectionRequest,
     response: CreateCollectionResponse,
+  },
+  [IpcChannel.RenameCollection]: {
+    request: RenameCollectionRequest,
+    response: RenameCollectionResponse,
+  },
+  [IpcChannel.PreviewCollectionChange]: {
+    request: PreviewCollectionChangeRequest,
+    response: PreviewCollectionChangeResponse,
+  },
+  [IpcChannel.ApplyCollectionChange]: {
+    request: ApplyCollectionChangeRequest,
+    response: ApplyCollectionChangeResponse,
   },
   [IpcChannel.DeleteCollection]: {
     request: DeleteCollectionRequest,
@@ -7884,6 +8263,7 @@ export interface PrintFarmerApi {
   previewImport(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
   importRoot(request: ImportRootRequest): Promise<ImportRootResponse>;
   listModels(): Promise<ListModelsResponse>;
+  queryModels(request: QueryModelsRequest): Promise<QueryModelsResponse>;
   resetCatalog(): Promise<ResetCatalogResponse>;
   listFavorites(): Promise<ListFavoritesResponse>;
   addFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;
@@ -7895,12 +8275,28 @@ export interface PrintFarmerApi {
     request: RemoveModelTagRequest,
   ): Promise<RemoveModelTagResponse>;
   listCollections(): Promise<ListCollectionsResponse>;
+  listOrganization(): Promise<ListOrganizationResponse>;
+  previewOrganizationDeletion(
+    request: PreviewOrganizationDeletionRequest,
+  ): Promise<PreviewOrganizationDeletionResponse>;
+  applyOrganizationDeletion(
+    request: ApplyOrganizationDeletionRequest,
+  ): Promise<ApplyOrganizationDeletionResponse>;
   collectionsForModel(
     request: CollectionsForModelRequest,
   ): Promise<CollectionsForModelResponse>;
   createCollection(
     request: CreateCollectionRequest,
   ): Promise<CreateCollectionResponse>;
+  renameCollection(
+    request: RenameCollectionRequest,
+  ): Promise<RenameCollectionResponse>;
+  previewCollectionChange(
+    request: PreviewCollectionChangeRequest,
+  ): Promise<PreviewCollectionChangeResponse>;
+  applyCollectionChange(
+    request: ApplyCollectionChangeRequest,
+  ): Promise<ApplyCollectionChangeResponse>;
   deleteCollection(
     request: DeleteCollectionRequest,
   ): Promise<DeleteCollectionResponse>;

@@ -3,17 +3,18 @@
  * produces this normalized, format-agnostic mesh; the viewer and thumbnail
  * renderer consume it without ever knowing whether it came from STL or 3MF.
  *
- * Positions and indices are kept as flat arrays (the shape the RPC layer will
- * deliver): `positions` is `[x, y, z, x, y, z, ...]` and `indices` references
+ * Positions and indices are flat numeric arrays or packed typed buffers:
+ * `positions` is `[x, y, z, x, y, z, ...]` and `indices` references
  * vertices in triples. `faceColors`, when present, is one `[r, g, b]` triple of
  * 0–255 bytes per triangle (currently only STL supplies per-facet colors).
  */
 import type {
   SceneMesh as IpcSceneMesh,
   ScenePart as IpcScenePart,
+  ModelFormat as IpcModelFormat,
 } from '../../shared/ipc';
 
-export type ModelFormat = 'stl' | 'threeMf' | 'obj';
+export type ModelFormat = IpcModelFormat;
 export type SceneLoadStatus = 'complete' | 'partial' | 'unsupported';
 
 export interface Bounds {
@@ -42,12 +43,12 @@ export interface SceneTransform {
 
 export interface SceneMaterial {
   readonly baseColor?: readonly [number, number, number] | null | undefined;
-  readonly faceColors?: readonly number[] | null | undefined;
+  readonly faceColors?: readonly number[] | Uint8Array | null | undefined;
 }
 
 export interface SceneObjectMesh {
-  readonly positions: readonly number[];
-  readonly indices: readonly number[];
+  readonly positions: readonly number[] | Float32Array;
+  readonly indices: readonly number[] | Uint32Array;
   readonly bounds: Bounds;
 }
 
@@ -77,7 +78,7 @@ export interface SceneMesh {
   readonly indices: Readonly<IpcSceneMesh['indices']>;
   readonly bounds: Bounds;
   readonly sourceFormat: ModelFormat;
-  readonly faceColors?: readonly number[] | null | undefined;
+  readonly faceColors?: readonly number[] | Uint8Array | null | undefined;
   readonly status: IpcSceneMesh['status'];
   readonly statusMessages: Readonly<IpcSceneMesh['statusMessages']>;
   readonly parts: readonly ScenePart[];

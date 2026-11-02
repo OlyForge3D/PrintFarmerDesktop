@@ -16,7 +16,12 @@
 
 ```
 npm install
+npm run build:sidecar
 ```
+
+The sidecar command builds the release executable with SQLite and stages it
+where the development app expects it. Run it in each fresh checkout/worktree
+and again after native changes; `npm start` does not build the Rust sidecar.
 
 ## Everyday commands
 
@@ -25,6 +30,7 @@ Renderer/main/preload (run from the repo root):
 | Command                                 | Purpose                                         |
 | --------------------------------------- | ----------------------------------------------- |
 | `npm start`                             | Launch the app with hot reload                  |
+| `npm run build:sidecar`                 | Build and stage the development sidecar         |
 | `npm run typecheck`                     | Strict TypeScript check (no emit)               |
 | `npm run lint`                          | ESLint (type-aware)                             |
 | `npm run format`                        | Prettier check (`format:write` fixes)           |

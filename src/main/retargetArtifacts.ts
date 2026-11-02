@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
+import { ModelFormat } from '@shared/ipc';
 import type {
   BrowserWindow,
   OpenDialogOptions,
@@ -68,7 +69,7 @@ const models = z
     z
       .object({
         hash: z.string().regex(sha),
-        format: z.enum(['stl', 'threeMf', 'obj']),
+        format: ModelFormat,
         locations: z
           .array(
             z

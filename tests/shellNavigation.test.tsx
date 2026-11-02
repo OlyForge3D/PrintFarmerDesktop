@@ -188,7 +188,13 @@ describe('shell navigation', () => {
     await waitFor(() => expect(railLibrary).toBeDisabled());
 
     await act(async () => {
-      releaseReset({ reset: true, modelsRemoved: 1, sourceRootsRemoved: 1 });
+      releaseReset({
+        reset: true,
+        modelsRemoved: 1,
+        sourceRootsRemoved: 1,
+        tagsRemoved: 0,
+        collectionsRemoved: 0,
+      });
       // Let the resolved reset settle through the library hook before asserting.
       await Promise.resolve();
     });
@@ -196,7 +202,7 @@ describe('shell navigation', () => {
     await waitFor(() => expect(railLibrary).toBeEnabled());
     expect(
       await screen.findByText(
-        'Catalog cleared. Removed 1 indexed model and 1 source folder.',
+        'Catalog cleared. Removed 1 indexed model, 1 source folder, 0 tags, and 0 collections.',
       ),
     ).toBeVisible();
   });
@@ -266,6 +272,8 @@ function installApi(overrides: Partial<PrintFarmerApi> = {}): void {
       reset: true,
       modelsRemoved: 1,
       sourceRootsRemoved: 1,
+      tagsRemoved: 0,
+      collectionsRemoved: 0,
     }),
     getCalibrationAvailability: vi.fn().mockResolvedValue({
       available: false,
@@ -291,7 +299,8 @@ function installApi(overrides: Partial<PrintFarmerApi> = {}): void {
     ...overrides,
   };
   Object.defineProperty(window, 'printFarmer', {
-    value: api,
+    value: withModelPaging(api),
     configurable: true,
   });
 }
+import { withModelPaging } from './helpers/libraryPage';

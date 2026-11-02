@@ -53,7 +53,14 @@ describe('Path C — IPC contract', () => {
     // renderer parsing a v5 main's response (extra field a strict schema
     // requires) — fails; that is a breaking wire change even though it is
     // purely additive at the type level.
-    expect(IPC_CONTRACT_VERSION).toBe(6);
+    //
+    // v8 → v9 rationale: library organization added strict `tagIds` to
+    // QueryModelsRequest plus rename and preview/apply bulk collection
+    // channels; an older main rejects those requests.
+    //
+    // v9 → v10 rationale: tag and collection definition management added the
+    // listOrganization and preview/apply organization deletion channels.
+    expect(IPC_CONTRACT_VERSION).toBe(10);
   });
 
   it('registers all five surviving cascade channels', () => {

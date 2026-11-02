@@ -464,8 +464,8 @@ export class SceneCacheService {
       ) {
         return;
       }
-      const payload = JSON.stringify(scene);
-      if (Buffer.byteLength(payload, 'utf8') > this.maxEntryBytes) return;
+      const payload = serializeSceneCache(scene, this.maxEntryBytes);
+      if (payload === null) return;
       const entryPath = this.entryPath(key);
       const temporaryPath = path.join(
         this.cacheDirectory,
@@ -536,6 +536,77 @@ export class SceneCacheService {
       release();
     }
   }
+}
+
+/**
+ * Bound cache serialization before joining text or expanding typed arrays.
+ * Geometry is chunked; the resulting small entries keep the existing JSON format.
+ */
+export function serializeSceneCache(
+  scene: Scene,
+  maxBytes: number,
+): string | null {
+  let numbers =
+    scene.positions.length +
+    scene.indices.length +
+    (scene.faceColors?.length ?? 0);
+  for (const object of scene.objects) {
+    numbers +=
+      (object.mesh?.positions.length ?? 0) +
+      (object.mesh?.indices.length ?? 0) +
+      (object.material.faceColors?.length ?? 0);
+  }
+  if (numbers * 2 > maxBytes) return null;
+
+  const fragments: string[] = [];
+  let bytes = 0;
+  const append = (fragment: string): boolean => {
+    bytes += Buffer.byteLength(fragment, 'utf8');
+    if (bytes > maxBytes) return false;
+    fragments.push(fragment);
+    return true;
+  };
+  const visit = (value: unknown): boolean => {
+    const typed =
+      value instanceof Float32Array ||
+      value instanceof Uint32Array ||
+      value instanceof Uint8Array;
+    if (typed || Array.isArray(value)) {
+      if (!append('[')) return false;
+      if (typed || typeof value[0] === 'number') {
+        for (let start = 0; start < value.length; start += 8192) {
+          const chunk = typed
+            ? Array.from(value.subarray(start, start + 8192))
+            : value.slice(start, start + 8192);
+          const json = JSON.stringify(chunk);
+          if ((start > 0 && !append(',')) || !append(json.slice(1, -1)))
+            return false;
+        }
+      } else {
+        for (let index = 0; index < value.length; index += 1) {
+          if ((index > 0 && !append(',')) || !visit(value[index])) return false;
+        }
+      }
+      return append(']');
+    }
+    if (value !== null && typeof value === 'object') {
+      if (!append('{')) return false;
+      let first = true;
+      for (const [key, child] of Object.entries(value)) {
+        if (child === undefined) continue;
+        if (
+          (!first && !append(',')) ||
+          !append(`${JSON.stringify(key)}:`) ||
+          !visit(child)
+        )
+          return false;
+        first = false;
+      }
+      return append('}');
+    }
+    return append(JSON.stringify(value));
+  };
+  return visit(scene) ? fragments.join('') : null;
 }
 
 export function sceneCacheKey(modelHash: string, recipe: string): string {

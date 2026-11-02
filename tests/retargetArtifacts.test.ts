@@ -77,6 +77,11 @@ async function fixture(options?: {
           locations: [],
         },
         {
+          hash: 'e'.repeat(64),
+          format: 'step',
+          locations: [],
+        },
+        {
           hash: sourceHash,
           format: 'threeMf',
           locations: [

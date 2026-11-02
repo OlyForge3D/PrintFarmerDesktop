@@ -5,11 +5,18 @@ import type {
   ImportRootRequest,
   ImportRootResponse,
   LogicalModel,
+  OrganizationKind,
   ReconcileReport,
   ResetCatalogResponse,
   ScanRootResponse,
   Tag,
+  LibraryPageSize,
+  LibrarySourceSummary,
+  QueryModelsRequest,
+  QueryModelsResponse,
 } from '@shared/ipc';
+import { LibraryPageSize as PageSizeSchema } from '@shared/ipc';
+import { defaultLibraryView, type LibraryView } from './filter';
 import { rootIdForPath } from './model';
 import {
   filterModelsByRemovedRoots,
@@ -45,6 +52,20 @@ export interface ImportDraft {
 export interface Library {
   /** Every logical model currently visible in the library UI. */
   models: LogicalModel[];
+  resultsCurrent: boolean;
+  totalModels: number;
+  filteredTotal: number;
+  counts: QueryModelsResponse['counts'];
+  collections: Collection[];
+  tags: Tag[];
+  /** Effective filter request for the current page (used by bulk "all matching"). */
+  queryRequest: QueryModelsRequest;
+  /** True while search debounce or a query is still settling. */
+  queryPending: boolean;
+  page: number;
+  pageSize: LibraryPageSize;
+  setPage: (page: number) => void;
+  setPageSize: (size: LibraryPageSize) => void;
   status: LibraryStatus;
   error: string | null;
   /** Reconciliation summary from the most recent folder scan. */
@@ -75,6 +96,17 @@ export interface Library {
   cancelImport: () => void;
   /** Re-read the catalog without scanning. */
   refresh: () => Promise<void>;
+  /**
+   * Drop deleted tag or collection definitions from the cached catalog at once
+   * and discard any in-flight read that could still contain them. Follow with
+   * {@link Library.refresh} to re-read authoritative state.
+   */
+  forgetOrganizationDefinitions: (
+    kind: OrganizationKind,
+    ids: readonly string[],
+  ) => void;
+  /** Dismiss the current notification without changing catalog or import state. */
+  dismissError: () => void;
 }
 
 function messageOf(err: unknown): string {
@@ -86,8 +118,50 @@ function messageOf(err: unknown): string {
  * prepares read-only folder previews, then imports confirmed organization rules
  * through the Rust sidecar and refreshes the list.
  */
-export function useLibrary(): Library {
+const PAGE_SIZE_KEY = 'printfarmer.library.pageSize.v1';
+const EMPTY_COUNTS: QueryModelsResponse['counts'] = {
+  all: 0,
+  favorites: 0,
+  stl: 0,
+  threeMf: 0,
+  obj: 0,
+  step: 0,
+  duplicates: 0,
+  missing: 0,
+};
+
+function storedPageSize(): LibraryPageSize {
+  try {
+    const parsed = PageSizeSchema.safeParse(
+      Number(globalThis.localStorage?.getItem(PAGE_SIZE_KEY)),
+    );
+    return parsed.success ? parsed.data : 48;
+  } catch {
+    return 48;
+  }
+}
+
+export function useLibrary(
+  view: Pick<LibraryView, 'query' | 'filter' | 'sort'> = defaultLibraryView,
+  collectionIds: readonly string[] = [],
+  tagIds: readonly string[] = [],
+): Library {
   const [catalogModels, setCatalogModels] = useState<LogicalModel[]>([]);
+  const [counts, setCounts] = useState(EMPTY_COUNTS);
+  const [filteredTotal, setFilteredTotal] = useState(0);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [sourceSummaries, setSourceSummaries] = useState<
+    LibrarySourceSummary[]
+  >([]);
+  const [loadedQueryKey, setLoadedQueryKey] = useState('');
+  const [paging, setPaging] = useState(() => ({
+    page: 1,
+    size: storedPageSize(),
+    scope: '',
+  }));
+  const [search, setSearch] = useState(view.query);
+  const responseRevision = useRef(0);
   const [storedRoots, setStoredRoots] = useState<StoredSourceRoot[]>(() =>
     loadStoredSourceRoots(),
   );
@@ -117,13 +191,79 @@ export function useLibrary(): Library {
       ),
     [storedRoots],
   );
+  const collectionKey = JSON.stringify([...collectionIds].sort());
+  const tagKey = JSON.stringify([...tagIds].sort());
+  const rootKey = JSON.stringify([...removedRootIds].sort());
+  const scope = JSON.stringify([
+    search,
+    view.filter,
+    view.sort,
+    collectionKey,
+    tagKey,
+    rootKey,
+  ]);
+  const page = paging.scope === scope ? paging.page : 1;
+  const request = useMemo<QueryModelsRequest>(
+    () => ({
+      query: search,
+      filter: view.filter,
+      sort: view.sort,
+      collectionIds: JSON.parse(collectionKey) as string[],
+      tagIds: JSON.parse(tagKey) as string[],
+      excludedRootIds: JSON.parse(rootKey) as string[],
+      page,
+      pageSize: paging.size,
+    }),
+    [
+      search,
+      view.filter,
+      view.sort,
+      collectionKey,
+      tagKey,
+      rootKey,
+      page,
+      paging.size,
+    ],
+  );
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const setPage = useCallback(
+    (next: number) => {
+      setPaging((current) => ({
+        ...current,
+        scope,
+        page: Math.max(
+          1,
+          Math.min(next, Math.max(1, Math.ceil(filteredTotal / current.size))),
+        ),
+      }));
+    },
+    [scope, filteredTotal],
+  );
+  const setPageSize = useCallback(
+    (size: LibraryPageSize) => {
+      setPaging({ page: 1, size, scope });
+      try {
+        globalThis.localStorage?.setItem(PAGE_SIZE_KEY, String(size));
+      } catch {
+        // Best-effort renderer preference; paging still works without storage.
+      }
+    },
+    [scope],
+  );
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(view.query), 200);
+    return () => clearTimeout(timer);
+  }, [view.query]);
   const models = useMemo(
     () => filterModelsByRemovedRoots(catalogModels, removedRootIds),
     [catalogModels, removedRootIds],
   );
   const sourceRoots = useMemo(
-    () => summarizeSourceRoots(catalogModels, storedRoots),
-    [catalogModels, storedRoots],
+    () => summarizeSourceRoots(catalogModels, storedRoots, sourceSummaries),
+    [catalogModels, storedRoots, sourceSummaries],
   );
   const sourceRootsRef = useRef(sourceRoots);
   sourceRootsRef.current = sourceRoots;
@@ -155,18 +295,51 @@ export function useLibrary(): Library {
       preserveStatus?: boolean;
       throwOnError?: boolean;
     }): Promise<void> => {
+      const revision = ++responseRevision.current;
+      const target = requestRef.current;
+      const targetScope = scopeRef.current;
       if (!options?.preserveStatus) {
         setStatus('loading');
       }
       try {
-        setCatalogModels(await window.printFarmer.listModels());
+        const [result, definitions, tagDefinitions] = await Promise.all([
+          window.printFarmer.queryModels(target),
+          window.printFarmer.listCollections(),
+          window.printFarmer.listTags(),
+        ]);
+        if (
+          revision !== responseRevision.current ||
+          target !== requestRef.current
+        )
+          return;
+        setError(null);
+        setCatalogModels(result.models);
+        setCounts(result.counts);
+        setFilteredTotal(result.filteredTotal);
+        setSourceSummaries(result.sources);
+        setCollections(definitions);
+        setTags(tagDefinitions);
+        setLoadedQueryKey(JSON.stringify({ ...target, page: result.page }));
+        setPaging((current) => ({
+          ...current,
+          page: result.page,
+          scope: targetScope,
+        }));
       } catch (err: unknown) {
-        setError(messageOf(err));
+        if (
+          revision === responseRevision.current &&
+          target === requestRef.current
+        )
+          setError(messageOf(err));
         if (options?.throwOnError) {
           throw err;
         }
       } finally {
-        if (!options?.preserveStatus) {
+        if (
+          !options?.preserveStatus &&
+          revision === responseRevision.current &&
+          target === requestRef.current
+        ) {
           setStatus('idle');
         }
       }
@@ -178,6 +351,26 @@ export function useLibrary(): Library {
     setError(null);
     await loadCatalog();
   }, [loadCatalog]);
+
+  const forgetOrganizationDefinitions = useCallback(
+    (kind: OrganizationKind, ids: readonly string[]) => {
+      if (ids.length === 0) return;
+      responseRevision.current += 1;
+      const deleted = new Set(ids);
+      if (kind === 'tag') {
+        setTags((current) => current.filter((tag) => !deleted.has(tag.id)));
+      } else {
+        setCollections((current) =>
+          current.filter((collection) => !deleted.has(collection.id)),
+        );
+      }
+    },
+    [],
+  );
+
+  const dismissError = useCallback(() => {
+    setError(null);
+  }, []);
 
   const addFolder = useCallback(async () => {
     if (importInFlightRef.current) {
@@ -430,6 +623,13 @@ export function useLibrary(): Library {
     try {
       const result = await window.printFarmer.resetCatalog();
       setCatalogModels([]);
+      responseRevision.current += 1;
+      setCollections([]);
+      setTags([]);
+      setCounts(EMPTY_COUNTS);
+      setFilteredTotal(0);
+      setSourceSummaries([]);
+      setPaging((current) => ({ ...current, page: 1 }));
       setStoredRoots([]);
       setLastReport(null);
       setLastImport(null);
@@ -445,11 +645,29 @@ export function useLibrary(): Library {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void loadCatalog({ preserveStatus: importInFlightRef.current });
+    return () => {
+      responseRevision.current += 1;
+    };
+  }, [loadCatalog, request]);
 
   return {
     models,
+    resultsCurrent: loadedQueryKey === JSON.stringify(request),
+    totalModels: counts.all,
+    filteredTotal,
+    counts,
+    collections,
+    tags,
+    queryRequest: request,
+    queryPending:
+      view.query !== search ||
+      loadedQueryKey !== JSON.stringify(request) ||
+      status === 'loading',
+    page,
+    pageSize: paging.size,
+    setPage,
+    setPageSize,
     status,
     error,
     lastReport,
@@ -465,5 +683,7 @@ export function useLibrary(): Library {
     resetCatalog,
     cancelImport,
     refresh,
+    forgetOrganizationDefinitions,
+    dismissError,
   };
 }

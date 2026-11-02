@@ -5,7 +5,8 @@ import type { IconName } from '../ui/Icon';
  * here and a component that renders its landmark — not editing the shell's
  * skip link, focus restore, rail markup, and status label one ternary at a time.
  */
-export type WorkspaceId = 'library' | 'calibration' | 'uploads' | 'sources';
+export type WorkspaceId =
+  'library' | 'calibration' | 'uploads' | 'organization' | 'sources';
 
 /**
  * `places` are where operators do the product's work. `services` are app-level
@@ -58,6 +59,15 @@ const WORKSPACES: readonly WorkspaceDefinition[] = [
     landmarkId: 'uploads-main',
     skipTarget: 'upload queue',
     headingSelector: '[data-uploads-heading]',
+    group: 'services',
+  },
+  {
+    id: 'organization',
+    label: 'Tags & Collections',
+    icon: 'tag',
+    landmarkId: 'organization-main',
+    skipTarget: 'tags and collections',
+    headingSelector: '[data-organization-heading]',
     group: 'services',
   },
   {

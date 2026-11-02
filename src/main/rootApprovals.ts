@@ -8,6 +8,7 @@ import { z } from 'zod';
 const STORE_VERSION = 1;
 const MAX_ROOTS = 256;
 const MAX_STORE_BYTES = 512 * 1024;
+const AUTHORIZE_FILES_CONCURRENCY = 32;
 
 const ApprovalStore = z
   .object({
@@ -62,7 +63,10 @@ export interface ApprovedFile {
 export class RootApprovalError extends Error {
   constructor(
     readonly code:
-      'APPROVAL_REQUIRED' | 'CORRUPT_APPROVAL_STORE' | 'INVALID_ROOT',
+      | 'APPROVAL_REQUIRED'
+      | 'APPROVAL_CHECK_FAILED'
+      | 'CORRUPT_APPROVAL_STORE'
+      | 'INVALID_ROOT',
     message: string,
   ) {
     super(message);
@@ -190,10 +194,8 @@ export class RootApprovalStore {
     sourcePath: string;
     canonicalPath: string;
   }> {
-    let canonicalFile: string;
-    try {
-      canonicalFile = await this.fileSystem.realpath(filePath);
-    } catch {
+    const canonicalFile = await this.canonicalCatalogFile(filePath);
+    if (canonicalFile === null) {
       throw new RootApprovalError(
         'APPROVAL_REQUIRED',
         'The catalog source is unavailable or no longer approved.',
@@ -201,26 +203,141 @@ export class RootApprovalStore {
     }
 
     const store = await this.readStore();
+    let checkFailure: RootApprovalError | undefined;
     for (const root of store.roots) {
-      let currentRoot: string;
       try {
-        currentRoot = await this.fileSystem.realpath(root.canonicalPath);
-        const identity = await this.lstatBigInt(currentRoot);
-        if (!matchesStoredIdentity(root, identity)) continue;
-      } catch {
-        continue;
-      }
-      if (
-        samePath(currentRoot, root.canonicalPath) &&
-        isWithinRoot(currentRoot, canonicalFile)
-      ) {
-        return { sourcePath: filePath, canonicalPath: canonicalFile };
+        const approved = await this.currentApprovedRoot(root);
+        if (approved && isWithinRoot(approved.canonicalPath, canonicalFile)) {
+          return { sourcePath: filePath, canonicalPath: canonicalFile };
+        }
+      } catch (error) {
+        if (
+          !(error instanceof RootApprovalError) ||
+          error.code !== 'APPROVAL_CHECK_FAILED'
+        ) {
+          throw error;
+        }
+        checkFailure ??= error;
       }
     }
+    if (checkFailure) throw checkFailure;
     throw new RootApprovalError(
       'APPROVAL_REQUIRED',
       'This catalog location must be reauthorized with the native folder picker before it can be uploaded.',
     );
+  }
+
+  /**
+   * Batch form of {@link authorizeFile} for catalog listings. Bounded
+   * concurrency avoids exhausting file handles, and the approval snapshot is
+   * rechecked before returning. A `null` entry means the file is unavailable
+   * or outside every currently approved root.
+   */
+  async authorizeFiles(
+    filePaths: readonly string[],
+  ): Promise<Array<{ sourcePath: string; canonicalPath: string } | null>> {
+    if (filePaths.length === 0) return [];
+    return this.withLock(async () => {
+      const results: Array<{
+        sourcePath: string;
+        canonicalPath: string;
+      } | null> = Array.from({ length: filePaths.length }, () => null);
+      const approvedRoots = await this.currentApprovedRoots();
+      if (approvedRoots.length === 0) return results;
+      let next = 0;
+      let failure: Error | undefined;
+      const worker = async (): Promise<void> => {
+        while (next < filePaths.length && !failure) {
+          const index = next;
+          next += 1;
+          const filePath = filePaths[index]!;
+          try {
+            const canonicalFile = await this.canonicalCatalogFile(filePath);
+            if (
+              canonicalFile !== null &&
+              approvedRoots.some((root) =>
+                isWithinRoot(root.canonicalPath, canonicalFile),
+              )
+            ) {
+              results[index] = {
+                sourcePath: filePath,
+                canonicalPath: canonicalFile,
+              };
+            }
+          } catch (error) {
+            failure ??=
+              error instanceof Error
+                ? error
+                : new Error('Library file checks failed.', { cause: error });
+          }
+        }
+      };
+      const workers = Math.min(AUTHORIZE_FILES_CONCURRENCY, filePaths.length);
+      await Promise.all(Array.from({ length: workers }, worker));
+      if (failure) throw failure;
+
+      const verifiedRoots = await this.currentApprovedRoots();
+      if (
+        approvedRoots.length !== verifiedRoots.length ||
+        approvedRoots.some(
+          (root, index) => !sameApprovedRoot(root, verifiedRoots[index]!),
+        )
+      ) {
+        throw new RootApprovalError(
+          'APPROVAL_REQUIRED',
+          'Approved folders changed while checking the library. Reauthorize the affected folder or retry.',
+        );
+      }
+      return results;
+    });
+  }
+
+  private async canonicalCatalogFile(filePath: string): Promise<string | null> {
+    try {
+      return await this.fileSystem.realpath(filePath);
+    } catch (error) {
+      if (isMissingPath(error)) return null;
+      throw new RootApprovalError(
+        'APPROVAL_CHECK_FAILED',
+        'Library files could not be checked. Verify drive access and file permissions, then retry.',
+      );
+    }
+  }
+
+  private async currentApprovedRoot(
+    root: ApprovalStore['roots'][number],
+  ): Promise<CurrentApprovedRoot | null> {
+    try {
+      const currentPath = await this.fileSystem.realpath(root.canonicalPath);
+      const identity = await this.lstatBigInt(currentPath);
+      if (
+        matchesStoredIdentity(root, identity) &&
+        samePath(currentPath, root.canonicalPath)
+      ) {
+        return {
+          canonicalPath: currentPath,
+          deviceId: identity.dev.toString(),
+          fileId: identity.ino.toString(),
+        };
+      }
+      return null;
+    } catch (error) {
+      if (isMissingPath(error)) return null;
+      throw new RootApprovalError(
+        'APPROVAL_CHECK_FAILED',
+        'An approved folder could not be checked. Verify drive access and folder permissions, then retry.',
+      );
+    }
+  }
+
+  private async currentApprovedRoots(): Promise<CurrentApprovedRoot[]> {
+    const store = await this.readStore();
+    const approved: CurrentApprovedRoot[] = [];
+    for (const root of store.roots) {
+      const current = await this.currentApprovedRoot(root);
+      if (current) approved.push(current);
+    }
+    return approved;
   }
 
   async openApprovedFile(filePath: string): Promise<ApprovedFile> {
@@ -431,6 +548,23 @@ function samePath(left: string, right: string): boolean {
   return path.normalize(left) === path.normalize(right);
 }
 
+interface CurrentApprovedRoot {
+  canonicalPath: string;
+  deviceId: string;
+  fileId: string;
+}
+
+function sameApprovedRoot(
+  left: CurrentApprovedRoot,
+  right: CurrentApprovedRoot,
+): boolean {
+  return (
+    samePath(left.canonicalPath, right.canonicalPath) &&
+    left.deviceId === right.deviceId &&
+    left.fileId === right.fileId
+  );
+}
+
 export function sameFileIdentity(
   left: Pick<BigIntStats, 'dev' | 'ino'>,
   right: Pick<BigIntStats, 'dev' | 'ino'>,
@@ -464,5 +598,14 @@ function isMissing(error: unknown): boolean {
     error !== null &&
     'code' in error &&
     (error as { code?: unknown }).code === 'ENOENT'
+  );
+}
+
+function isMissingPath(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
   );
 }

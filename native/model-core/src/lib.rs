@@ -8,16 +8,20 @@
 pub mod cache;
 pub mod calibration;
 pub mod catalog;
+pub mod catalog_query;
+pub mod collection_change;
 pub mod geometry;
 pub mod hash;
 pub mod limits;
 pub mod model;
 pub mod obj;
+pub mod organization;
 pub mod retarget;
 pub mod rpc;
 pub mod scan;
 pub mod scene;
 pub mod scene_status;
+pub mod scene_transport;
 pub mod schema;
 pub mod serve;
 pub mod smart_import;
@@ -36,7 +40,7 @@ pub mod watch;
 
 /// Version of the RPC protocol spoken by this sidecar. Bumped on any
 /// breaking change to the framing or message envelope.
-pub const RPC_PROTOCOL_VERSION: u32 = 1;
+pub const RPC_PROTOCOL_VERSION: u32 = 5;
 
 /// Semantic version of the sidecar binary, sourced from Cargo at build time.
 pub fn sidecar_version() -> &'static str {

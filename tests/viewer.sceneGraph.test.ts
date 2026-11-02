@@ -127,6 +127,39 @@ function matrixFromThreeMfTransform(values: readonly number[]): number[] {
 }
 
 describe('buildViewerSceneGraph', () => {
+  it('uses packed geometry without copying it into number arrays and keeps full-detail rendering', () => {
+    const original = multiObjectScene();
+    const scene: SceneMesh = {
+      ...original,
+      objects: original.objects.map((object) => ({
+        ...object,
+        mesh: object.mesh
+          ? {
+              ...object.mesh,
+              positions: Float32Array.from(object.mesh.positions),
+              indices: Uint32Array.from(object.mesh.indices),
+            }
+          : object.mesh,
+      })),
+    };
+    const graph = buildViewerSceneGraph(scene);
+    const meshes: THREE.Mesh[] = [];
+    const isMesh = (node: THREE.Object3D): node is THREE.Mesh =>
+      node instanceof THREE.Mesh;
+    graph.root.traverse((node) => {
+      if (isMesh(node)) meshes.push(node);
+    });
+    expect(meshes).toHaveLength(2);
+    const body = scene.objects[1]?.mesh;
+    expect(meshes[0]?.geometry.getAttribute('position').array).toBe(
+      body?.positions,
+    );
+    expect(meshes[0]?.geometry.index?.array).toBe(body?.indices);
+    expect(meshes[0]?.geometry.index?.count).toBe(3);
+    graph.setHidden(new Set(['body']));
+    expect(meshes[0]?.parent?.visible).toBe(false);
+    graph.dispose();
+  });
   it('builds a nested plate/object hierarchy and respects hidden ancestors', () => {
     const graph = buildViewerSceneGraph(multiObjectScene(), new Set(['root']));
     const plateGroup = graph.root.children[0];

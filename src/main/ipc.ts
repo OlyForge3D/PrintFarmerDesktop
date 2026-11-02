@@ -14,6 +14,9 @@ import {
   IPC_CONTRACT_VERSION,
   IpcChannel,
   ListModelsResponse,
+  QueryModelsResponse,
+  type LogicalModel,
+  type ModelLocation,
   ipcSchemas,
   type OpenModelFileResponse,
   type OpenFolderResponse,
@@ -1321,37 +1324,84 @@ export function registerIpcHandlers(
     return ipcSchemas[IpcChannel.ImportRoot].response.parse(raw);
   });
 
-  ipcMain.handle(IpcChannel.ListModels, async () => {
-    const raw = await sidecar.listModels();
-    const models = ListModelsResponse.parse(raw);
-    const filtered = await Promise.all(
-      models.map(async (model) => ({
+  const authorizeCatalogModels = async (
+    models: LogicalModel[],
+    extraLocations: ModelLocation[] = [],
+  ): Promise<{ models: LogicalModel[]; extraLocations: ModelLocation[] }> => {
+    const locations = [
+      ...models.flatMap((model) => model.locations),
+      ...extraLocations,
+    ];
+    const availablePaths = locations
+      .filter((location) => location.available)
+      .map((location) => location.path);
+    const authorized = await approvals.authorizeFiles(availablePaths);
+    if (authorized.length !== availablePaths.length) {
+      throw new Error(
+        'Library file authorization returned incomplete results.',
+      );
+    }
+    let nextAuthorized = 0;
+    const authorizeLocation = (location: ModelLocation): ModelLocation => {
+      const result = location.available ? authorized[nextAuthorized++] : null;
+      if (result === undefined) {
+        throw new Error(
+          'Library file authorization returned incomplete results.',
+        );
+      }
+      if (result && result.sourcePath !== location.path) {
+        throw new Error(
+          'Library file authorization returned mismatched results.',
+        );
+      }
+      return result
+        ? { ...location, path: result.canonicalPath }
+        : {
+            ...location,
+            path: path.basename(location.path),
+            available: false,
+          };
+    };
+    return {
+      models: models.map((model) => ({
         ...model,
-        locations: await Promise.all(
-          model.locations.map(async (location) => {
-            if (!location.available) {
-              return {
-                ...location,
-                path: path.basename(location.path),
-                available: false,
-              };
-            }
-            try {
-              const approved = await approvals.authorizeFile(location.path);
-              return { ...location, path: approved.canonicalPath };
-            } catch {
-              return {
-                ...location,
-                path: path.basename(location.path),
-                available: false,
-              };
-            }
-          }),
-        ),
+        locations: model.locations.map(authorizeLocation),
       })),
-    );
-    return ipcSchemas[IpcChannel.ListModels].response.parse(filtered);
+      extraLocations: extraLocations.map(authorizeLocation),
+    };
+  };
+
+  ipcMain.handle(IpcChannel.ListModels, async () => {
+    const models = ListModelsResponse.parse(await sidecar.listModels());
+    const filtered = await authorizeCatalogModels(models);
+    return ipcSchemas[IpcChannel.ListModels].response.parse(filtered.models);
   });
+
+  ipcMain.handle(
+    IpcChannel.QueryModels,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.QueryModels].request.parse(rawRequest);
+      const result = QueryModelsResponse.parse(
+        await sidecar.queryModels(request),
+      );
+      if (result.pageSize !== request.pageSize || result.page > request.page) {
+        throw new Error('Catalog returned a mismatched page.');
+      }
+      const filtered = await authorizeCatalogModels(
+        result.models,
+        result.sources.map((source) => source.sample),
+      );
+      return QueryModelsResponse.parse({
+        ...result,
+        models: filtered.models,
+        sources: result.sources.map((source, index) => ({
+          ...source,
+          sample: filtered.extraLocations[index],
+        })),
+      });
+    },
+  );
 
   ipcMain.handle(IpcChannel.ResetCatalog, async () => {
     const raw = await sidecar.resetCatalog();
@@ -1468,6 +1518,164 @@ export function registerIpcHandlers(
           )
         : await sidecar.deleteCollection(request.id);
       return ipcSchemas[IpcChannel.DeleteCollection].response.parse(raw);
+    },
+  );
+
+  const collectionMutationContext = async () => {
+    const context = await activeSyncContext();
+    return context
+      ? {
+          profileId: context.profileId,
+          profileBinding: context.binding,
+          now: Math.floor(Date.now() / 1000),
+        }
+      : undefined;
+  };
+
+  ipcMain.handle(IpcChannel.ListOrganization, async () =>
+    ipcSchemas[IpcChannel.ListOrganization].response.parse(
+      await sidecar.listOrganization(await collectionMutationContext()),
+    ),
+  );
+  ipcMain.handle(
+    IpcChannel.PreviewOrganizationDeletion,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.PreviewOrganizationDeletion].request.parse(
+          rawRequest,
+        );
+      const result = ipcSchemas[
+        IpcChannel.PreviewOrganizationDeletion
+      ].response.parse(
+        await sidecar.previewOrganizationDeletion(
+          request,
+          await collectionMutationContext(),
+        ),
+      );
+      if (
+        result.kind !== request.kind ||
+        result.entries.length !== request.ids.length ||
+        result.entries.some(
+          (entry) =>
+            !request.ids.includes(entry.id) ||
+            (request.emptyOnly && entry.modelCount !== 0),
+        )
+      ) {
+        throw new Error(
+          'The catalog returned a mismatched organization deletion preview.',
+        );
+      }
+      return result;
+    },
+  );
+  ipcMain.handle(
+    IpcChannel.ApplyOrganizationDeletion,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.ApplyOrganizationDeletion].request.parse(
+          rawRequest,
+        );
+      const result = ipcSchemas[
+        IpcChannel.ApplyOrganizationDeletion
+      ].response.parse(
+        await sidecar.applyOrganizationDeletion(
+          request,
+          await collectionMutationContext(),
+        ),
+      );
+      if (
+        result.kind !== request.selection.kind ||
+        result.deletedIds.length !== request.selection.ids.length ||
+        result.deletedIds.some((id) => !request.selection.ids.includes(id))
+      ) {
+        throw new Error(
+          'The catalog returned a mismatched organization deletion result.',
+        );
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.RenameCollection,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RenameCollection].request.parse(rawRequest);
+      const result = ipcSchemas[IpcChannel.RenameCollection].response.parse(
+        await sidecar.renameCollection(
+          request,
+          await collectionMutationContext(),
+        ),
+      );
+      if (result.id !== request.id || result.name !== request.name) {
+        throw new Error('The catalog returned a mismatched collection rename.');
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.PreviewCollectionChange,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.PreviewCollectionChange].request.parse(
+          rawRequest,
+        );
+      const result = ipcSchemas[
+        IpcChannel.PreviewCollectionChange
+      ].response.parse(
+        await sidecar.previewCollectionChange(
+          request,
+          await collectionMutationContext(),
+        ),
+      );
+      if (
+        result.operation !== request.operation ||
+        result.targets.length !== request.collectionIds.length ||
+        result.targets.some(
+          (target) => !request.collectionIds.includes(target.collectionId),
+        ) ||
+        (request.target.kind === 'selected' &&
+          result.modelCount !== request.target.hashes.length)
+      ) {
+        throw new Error(
+          'The catalog returned a mismatched collection change preview.',
+        );
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.ApplyCollectionChange,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.ApplyCollectionChange].request.parse(rawRequest);
+      const result = ipcSchemas[
+        IpcChannel.ApplyCollectionChange
+      ].response.parse(
+        await sidecar.applyCollectionChange(
+          request,
+          await collectionMutationContext(),
+        ),
+      );
+      const pairs = result.modelCount * request.change.collectionIds.length;
+      if (
+        result.operation !== request.change.operation ||
+        pairs > 100_000 ||
+        result.changedMemberships + result.unchangedMemberships !== pairs ||
+        (request.change.target.kind === 'selected' &&
+          result.modelCount !== request.change.target.hashes.length) ||
+        request.change.collectionIds.some(
+          (id) =>
+            !result.collections.some((collection) => collection.id === id),
+        )
+      ) {
+        throw new Error(
+          'The catalog returned a mismatched collection change result. Reload the library to verify the outcome.',
+        );
+      }
+      return result;
     },
   );
 

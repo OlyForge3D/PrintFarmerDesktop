@@ -6,12 +6,14 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import type {
   ImportRootResponse,
   LogicalModel,
   PrintFarmerApi,
 } from '@shared/ipc';
+import { modelPage, withModelPaging } from './helpers/libraryPage';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { PropertiesInspector } from '../src/renderer/library/PropertiesInspector.js';
@@ -62,7 +64,7 @@ import { saveStoredSourceRoots } from '../src/renderer/library/sourceRoots.js';
 
 function installApi(api: Partial<PrintFarmerApi>): void {
   Object.defineProperty(window, 'printFarmer', {
-    value: api,
+    value: withModelPaging(api),
     configurable: true,
     writable: true,
   });
@@ -108,6 +110,7 @@ describe('library model helpers', () => {
     expect(formatLabel('stl')).toBe('STL');
     expect(formatLabel('threeMf')).toBe('3MF');
     expect(formatLabel('obj')).toBe('OBJ');
+    expect(formatLabel('step')).toBe('STEP');
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(2048)).toBe('2.0 KB');
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB');
@@ -148,6 +151,37 @@ describe('useLibrary', () => {
     expect(result.current.error).toBeNull();
   });
 
+  it('loads only a page in a mixed-format catalog larger than 10K files', async () => {
+    const models = Array.from({ length: 10_001 }, (_, index) =>
+      model({
+        hash: `model-${index}`,
+        format: index % 2 === 0 ? 'step' : 'stl',
+      }),
+    );
+    const queryModels = vi
+      .fn<PrintFarmerApi['queryModels']>()
+      .mockImplementation((request) =>
+        Promise.resolve(modelPage(models, request)),
+      );
+    const listModels = vi.fn();
+    installApi({ queryModels, listModels });
+
+    const { result } = renderHook(() => useLibrary());
+
+    await waitFor(() => expect(result.current.status).toBe('idle'));
+    expect(result.current.models).toHaveLength(48);
+    expect(result.current.totalModels).toBe(10001);
+    expect(result.current.counts.step).toBe(5001);
+    expect(listModels).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+    expect(
+      selectLibraryView(result.current.models, {
+        ...defaultLibraryView,
+        filter: 'step',
+      }),
+    ).toHaveLength(24);
+  });
+
   it('clears renderer catalog state only after a successful backend reset', async () => {
     saveStoredSourceRoots([
       {
@@ -160,13 +194,29 @@ describe('useLibrary', () => {
       reset: true,
       modelsRemoved: 1,
       sourceRootsRemoved: 1,
+      tagsRemoved: 0,
+      collectionsRemoved: 0,
     });
     installApi({
       listModels: vi.fn().mockResolvedValue([model()]),
+      listCollections: vi.fn(() =>
+        Promise.resolve(
+          resetCatalog.mock.calls.length > 0
+            ? []
+            : [{ id: 'c1', name: 'Orcs', sharedToFarm: false, memberCount: 1 }],
+        ),
+      ),
+      listTags: vi.fn(() =>
+        Promise.resolve(
+          resetCatalog.mock.calls.length > 0 ? [] : [{ id: 't1', name: 'red' }],
+        ),
+      ),
       resetCatalog,
     });
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(result.current.models).toHaveLength(1));
+    expect(result.current.collections).toHaveLength(1);
+    expect(result.current.tags).toHaveLength(1);
     expect(result.current.sourceRoots).toHaveLength(1);
 
     let summary;
@@ -178,10 +228,14 @@ describe('useLibrary', () => {
       reset: true,
       modelsRemoved: 1,
       sourceRootsRemoved: 1,
+      tagsRemoved: 0,
+      collectionsRemoved: 0,
     });
     expect(resetCatalog).toHaveBeenCalledOnce();
     expect(result.current.models).toEqual([]);
     expect(result.current.sourceRoots).toEqual([]);
+    expect(result.current.collections).toEqual([]);
+    expect(result.current.tags).toEqual([]);
     expect(result.current.lastReport).toBeNull();
     expect(result.current.status).toBe('idle');
     await waitFor(() =>
@@ -244,7 +298,7 @@ describe('useLibrary', () => {
     const listModels = vi
       .fn()
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([model()]);
+      .mockResolvedValueOnce([model({ format: 'step' })]);
     installApi({
       openFolder,
       previewImport,
@@ -283,6 +337,7 @@ describe('useLibrary', () => {
       commonTags: ['printable'],
     });
     expect(result.current.models).toHaveLength(1);
+    expect(result.current.models[0]?.format).toBe('step');
     expect(result.current.lastReport?.added).toBe(1);
     expect(result.current.lastImport?.modelsOrganized).toBe(1);
     expect(result.current.importDraft).toBeNull();
@@ -292,7 +347,8 @@ describe('useLibrary', () => {
     const listModels = vi
       .fn()
       .mockResolvedValueOnce([])
-      .mockRejectedValueOnce(new Error('refresh offline'));
+      .mockRejectedValueOnce(new Error('refresh offline'))
+      .mockRejectedValueOnce(new Error('still offline'));
     installApi({
       openFolder: vi.fn().mockResolvedValue({
         path: 'C:\\models',
@@ -343,6 +399,13 @@ describe('useLibrary', () => {
     expect(result.current.error).toContain(
       'Import completed, but the catalog could not be refreshed: refresh offline',
     );
+    act(() => result.current.dismissError());
+    expect(result.current.error).toBeNull();
+    expect(result.current.lastImport?.report.added).toBe(1);
+    expect(listModels).toHaveBeenCalledTimes(2);
+
+    await act(async () => result.current.refresh());
+    expect(result.current.error).toBe('still offline');
   });
 
   it('refreshes the catalog after an interrupted import outcome', async () => {
@@ -609,18 +672,26 @@ describe('useLibrary', () => {
     expect(result.current.sourceRoots[0]?.status).toBe('available');
   });
 
-  it('hides removed source roots locally from the library surface', async () => {
-    installApi({ listModels: vi.fn().mockResolvedValue([model()]) });
+  it('excludes removed source roots from the bounded library query', async () => {
+    const queryModels = vi
+      .fn<PrintFarmerApi['queryModels']>()
+      .mockImplementation((request) =>
+        Promise.resolve(modelPage([model()], request)),
+      );
+    installApi({ queryModels });
 
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(result.current.models).toHaveLength(1));
 
-    act(() => {
+    await act(async () => {
       result.current.removeRoot('root-1');
+      await Promise.resolve();
     });
 
     expect(result.current.models).toEqual([]);
     expect(result.current.sourceRoots).toEqual([]);
+    await waitFor(() => expect(result.current.totalModels).toBe(0));
+    expect(queryModels.mock.lastCall?.[0].excludedRootIds).toEqual(['root-1']);
   });
 
   it('surfaces an error when the catalog cannot be read', async () => {
@@ -631,6 +702,26 @@ describe('useLibrary', () => {
     const { result } = renderHook(() => useLibrary());
 
     await waitFor(() => expect(result.current.error).toBe('sidecar offline'));
+  });
+
+  it('keeps the existing catalog on an approval failure and recovers on retry', async () => {
+    const listModels = vi
+      .fn()
+      .mockResolvedValueOnce([model()])
+      .mockRejectedValueOnce(new Error('Approved folders could not be read.'))
+      .mockResolvedValueOnce([model()]);
+    installApi({ listModels });
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+
+    await act(async () => result.current.refresh());
+    expect(result.current.error).toBe('Approved folders could not be read.');
+    expect(result.current.models).toEqual([model()]);
+
+    await act(async () => result.current.refresh());
+    expect(result.current.error).toBeNull();
+    expect(result.current.models).toEqual([model()]);
+    expect(listModels).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -667,6 +758,37 @@ describe('smart import', () => {
 
   beforeEach(() => {
     forgetImportPlan(draft.rootId);
+  });
+
+  it('dismisses an import error without cancelling the prepared import', () => {
+    const onDismissError = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <ImportWizard
+        draft={{
+          ...draft,
+          preview: {
+            ...draft.preview,
+            formats: { ...draft.preview.formats, step: 2 },
+          },
+        }}
+        busy={false}
+        error="Import failed"
+        onDismissError={onDismissError}
+        onCancel={onCancel}
+        onConfirm={vi.fn().mockResolvedValue(true)}
+      />,
+    );
+
+    expect(screen.getByText('STEP')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('Import failed');
+    expect(screen.queryByText('Error details')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss library error' }),
+    );
+    expect(onDismissError).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeVisible();
   });
 
   it('defaults top-level folders to collections and nested folders to tags', () => {
@@ -782,6 +904,7 @@ describe('smart import', () => {
         busy={false}
         error={null}
         onCancel={vi.fn()}
+        onDismissError={vi.fn()}
         onConfirm={onConfirm}
       />,
     );
@@ -838,6 +961,7 @@ describe('smart import', () => {
         busy={false}
         error={null}
         onCancel={vi.fn()}
+        onDismissError={vi.fn()}
         onConfirm={vi.fn().mockResolvedValue(true)}
       />,
     );
@@ -880,6 +1004,7 @@ describe('smart import', () => {
         busy={false}
         error={null}
         onCancel={vi.fn()}
+        onDismissError={vi.fn()}
         onConfirm={onConfirm}
       />,
     );
@@ -938,6 +1063,7 @@ describe('smart import', () => {
         busy={false}
         error={null}
         onCancel={vi.fn()}
+        onDismissError={vi.fn()}
         onConfirm={vi.fn().mockResolvedValue(true)}
       />,
     );
@@ -974,6 +1100,7 @@ describe('smart import', () => {
         busy={false}
         error={null}
         onCancel={vi.fn()}
+        onDismissError={vi.fn()}
         onConfirm={onConfirm}
       />,
     );
@@ -1414,9 +1541,97 @@ describe('<PropertiesInspector />', () => {
     ).toBeVisible();
     expect(container.querySelectorAll('.location-list > li')).toHaveLength(26);
   });
+
+  it('shows every full location path inside the File section', () => {
+    installApi({
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('no renderer')),
+    });
+    const longPath =
+      'D:\\Printing\\Archive\\Very long vendor folder name\\Nested\\Deeper\\Still deeper\\widget-final-v12.stl';
+    const missingPath = 'E:\\Offline drive\\widget-final-v12.stl';
+    render(
+      <PropertiesInspector
+        model={model({
+          locations: [
+            {
+              rootId: 'root-a',
+              path: longPath,
+              rootRelative: 'widget-final-v12.stl',
+              size: 2048,
+              available: true,
+            },
+            {
+              rootId: 'root-b',
+              path: missingPath,
+              rootRelative: 'widget-final-v12.stl',
+              size: 2048,
+              available: false,
+            },
+          ],
+        })}
+        favorite={false}
+        stats={null}
+        vendorMetadata={null}
+        tags={[]}
+        collections={[]}
+        collectionMembership={new Set()}
+        organizationError={null}
+        previewDisabled={false}
+        onToggleFavorite={vi.fn()}
+        onPreview={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onToggleCollection={vi.fn()}
+        onCreateCollection={vi.fn()}
+      />,
+    );
+
+    const file = screen
+      .getByRole('heading', { name: 'File', level: 3 })
+      .closest('section') as HTMLElement;
+    expect(
+      within(file).getByRole('heading', { name: 'Locations', level: 4 }),
+    ).toBeVisible();
+    const items = within(file).getAllByRole('listitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      `Available${longPath}`,
+      `Missing${missingPath}`,
+    ]);
+    expect(
+      screen.queryByRole('heading', { name: 'Locations', level: 3 }),
+    ).toBeNull();
+    const sections = screen
+      .getAllByRole('heading', { level: 3 })
+      .map((heading) => heading.textContent);
+    expect(sections.indexOf('Collections')).toBeLessThan(
+      sections.indexOf('Tags'),
+    );
+  });
 });
 
 describe('useModelTags', () => {
+  it('does not restore deleted tags from an older same-model refresh', async () => {
+    let finishOldRead = (): void => undefined;
+    const tagsForModel = vi
+      .fn<PrintFarmerApi['tagsForModel']>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOldRead = () => resolve([{ id: 'old', name: 'Deleted' }]);
+          }),
+      )
+      .mockResolvedValue([]);
+    installApi({ tagsForModel });
+    const { result } = renderHook(() => useModelTags('h1'));
+    await waitFor(() => expect(tagsForModel).toHaveBeenCalledOnce());
+    await act(async () => result.current.refresh());
+    await act(async () => {
+      finishOldRead();
+      await Promise.resolve();
+    });
+    expect(result.current.tags).toEqual([]);
+  });
+
   it('loads tags for the selected model and adds/removes them', async () => {
     const tagsForModel = vi.fn().mockResolvedValue([{ id: 'a', name: 'A' }]);
     const addModelTag = vi.fn().mockResolvedValue([
@@ -1465,6 +1680,33 @@ describe('useModelCollections', () => {
     sharedToFarm: false,
     memberCount: 0,
   };
+
+  it('does not restore deleted collections from an older same-model refresh', async () => {
+    let finishOldRead = (): void => undefined;
+    const listCollections = vi
+      .fn<PrintFarmerApi['listCollections']>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOldRead = () => resolve([dragons]);
+          }),
+      )
+      .mockResolvedValue([]);
+    const collectionsForModel = vi
+      .fn()
+      .mockResolvedValueOnce([dragons])
+      .mockResolvedValue([]);
+    installApi({ listCollections, collectionsForModel });
+    const { result } = renderHook(() => useModelCollections('h1'));
+    await waitFor(() => expect(listCollections).toHaveBeenCalledOnce());
+    await act(async () => result.current.refresh());
+    await act(async () => {
+      finishOldRead();
+      await Promise.resolve();
+    });
+    expect(result.current.all).toEqual([]);
+    expect([...result.current.membership]).toEqual([]);
+  });
 
   it('loads collections and membership, then toggles a model in', async () => {
     const listCollections = vi.fn().mockResolvedValue([dragons, terrain]);

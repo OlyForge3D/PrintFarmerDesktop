@@ -173,7 +173,7 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await page.getByRole('button', { name: 'Clear local catalog' }).click();
       await expect(
         page.getByText(
-          'Catalog cleared. Removed 1 indexed model and 1 source folder.',
+          /^Catalog cleared\. Removed 1 indexed model, 1 source folder, \d+ tags?, and \d+ collections?\.$/,
         ),
       ).toBeVisible();
       await expect(sourcesPane.getByText('No folders connected')).toBeVisible();

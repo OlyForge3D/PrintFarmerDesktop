@@ -12,31 +12,51 @@ export interface ModelTagsState {
 /**
  * Loads and mutates the tags assigned to one model (by content hash) through
  * the sidecar. Tags are catalog data, so every mutation round-trips to the
- * sidecar and the returned authoritative list replaces local state.
+ * sidecar and the returned authoritative list replaces local state. Only the
+ * newest request may publish its result, so a slow older read can never
+ * restore tags that a later read (for example after a deletion) removed.
  */
 export function useModelTags(hash: string | null): ModelTagsState {
   const [tags, setTags] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const activeHashRef = useRef(hash);
   activeHashRef.current = hash;
+  const generationRef = useRef(0);
+
+  useEffect(
+    () => () => {
+      generationRef.current += 1;
+    },
+    [],
+  );
+
+  const request = useCallback(
+    async (target: string, action: () => Promise<Tag[]>) => {
+      const generation = ++generationRef.current;
+      const isCurrent = (): boolean =>
+        generation === generationRef.current &&
+        activeHashRef.current === target;
+      setError(null);
+      try {
+        const next = await action();
+        if (isCurrent()) setTags(next);
+      } catch (err: unknown) {
+        if (isCurrent()) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     if (!hash) {
+      generationRef.current += 1;
       setTags([]);
       return;
     }
-    setError(null);
-    try {
-      const next = await window.printFarmer.tagsForModel({ hash });
-      if (activeHashRef.current === hash) {
-        setTags(next);
-      }
-    } catch (err: unknown) {
-      if (activeHashRef.current === hash) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    }
-  }, [hash]);
+    await request(hash, () => window.printFarmer.tagsForModel({ hash }));
+  }, [hash, request]);
 
   useEffect(() => {
     void refresh();
@@ -47,14 +67,9 @@ export function useModelTags(hash: string | null): ModelTagsState {
       if (!hash || name.trim().length === 0) {
         return;
       }
-      setError(null);
-      try {
-        setTags(await window.printFarmer.addModelTag({ hash, name }));
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      await request(hash, () => window.printFarmer.addModelTag({ hash, name }));
     },
-    [hash],
+    [hash, request],
   );
 
   const remove = useCallback(
@@ -62,14 +77,11 @@ export function useModelTags(hash: string | null): ModelTagsState {
       if (!hash) {
         return;
       }
-      setError(null);
-      try {
-        setTags(await window.printFarmer.removeModelTag({ hash, tagId }));
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      await request(hash, () =>
+        window.printFarmer.removeModelTag({ hash, tagId }),
+      );
     },
-    [hash],
+    [hash, request],
   );
 
   return { tags, error, refresh, add, remove };

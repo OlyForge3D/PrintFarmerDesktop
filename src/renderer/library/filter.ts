@@ -9,7 +9,14 @@ export type SortKey =
   | 'date-asc'
   | 'date-desc';
 export type FilterKey =
-  'all' | 'favorites' | 'stl' | 'threeMf' | 'obj' | 'duplicates' | 'missing';
+  | 'all'
+  | 'favorites'
+  | 'stl'
+  | 'threeMf'
+  | 'obj'
+  | 'step'
+  | 'duplicates'
+  | 'missing';
 
 export interface LibraryView {
   query: string;
@@ -79,6 +86,7 @@ function matchesFilter(
     case 'stl':
     case 'threeMf':
     case 'obj':
+    case 'step':
       return model.format === filter;
     case 'all':
     default:

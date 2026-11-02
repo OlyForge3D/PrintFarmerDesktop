@@ -82,12 +82,14 @@ pub struct LocationUpsert {
     pub fingerprint: FileFingerprint,
 }
 
-/// Result of clearing local indexed content. Organization definitions and
-/// server-backed state are deliberately outside this operation.
+/// Result of clearing the local catalog without deleting source files or
+/// sending server deletions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CatalogResetSummary {
     pub models_removed: usize,
     pub source_roots_removed: usize,
+    pub tags_removed: usize,
+    pub collections_removed: usize,
 }
 
 /// Storage abstraction for the catalog. Implementations must keep logical model
@@ -175,9 +177,52 @@ pub trait CatalogStore {
     /// All logical models known to the catalog.
     fn models(&self) -> Vec<LogicalModel>;
 
-    /// Clear local models, locations, roots, favorites, and memberships while
-    /// preserving source files, tags, collections, and server-backed state.
-    fn reset_catalog(&mut self) -> CatalogResetSummary;
+    fn query_models(
+        &self,
+        query: &crate::catalog_query::ModelQuery,
+    ) -> Result<crate::catalog_query::ModelPage, String> {
+        crate::catalog_query::query_memory(self, query)
+    }
+
+    fn matching_model_hashes(
+        &self,
+        query: &crate::catalog_query::ModelQuery,
+        limit: usize,
+    ) -> Result<Vec<ContentHash>, String> {
+        crate::catalog_query::matching_hashes_memory(self, query, limit)
+    }
+
+    fn model_exists(&self, hash: &str) -> Result<bool, String> {
+        Ok(self.model(hash).is_some())
+    }
+
+    fn collection_contains_model(&self, id: &str, hash: &str) -> Result<bool, String> {
+        Ok(self
+            .collections_for_model(hash)
+            .iter()
+            .any(|collection| collection.id == id))
+    }
+
+    /// Clear local indexed content and organization, preserving source files
+    /// and server-backed state without queuing remote deletions.
+    fn reset_catalog(&mut self) -> Result<CatalogResetSummary, String>;
+
+    fn organization_records(&self) -> Result<Vec<crate::organization::OrganizationRecord>, String> {
+        Err("organization management is unavailable for this store".into())
+    }
+
+    fn organization_member_hashes(
+        &self,
+        _kind: crate::organization::OrganizationKind,
+        _id: &str,
+        _limit: usize,
+    ) -> Result<Vec<String>, String> {
+        Err("organization membership lookup is unavailable for this store".into())
+    }
+
+    fn delete_tag_checked(&mut self, _id: &str) -> Result<(), String> {
+        Err("tag deletion is unavailable for this store".into())
+    }
 
     /// Logical models with more than one physical location.
     fn duplicate_groups(&self) -> Vec<LogicalModel> {
@@ -249,14 +294,28 @@ pub trait CatalogStore {
     /// Delete a collection and all of its memberships. Default: no-op.
     fn delete_collection(&mut self, _id: &str) {}
 
+    fn delete_collection_checked(&mut self, id: &str) -> Result<(), String> {
+        self.delete_collection(id);
+        Ok(())
+    }
+
     /// Add a model to a collection. Returns `true` if both exist and the
     /// membership now holds. Default: `false`.
     fn add_model_to_collection(&mut self, _id: &str, _hash: &str) -> bool {
         false
     }
 
+    fn add_model_to_collection_checked(&mut self, id: &str, hash: &str) -> Result<bool, String> {
+        Ok(self.add_model_to_collection(id, hash))
+    }
+
     /// Remove a model from a collection. Default: no-op.
     fn remove_model_from_collection(&mut self, _id: &str, _hash: &str) {}
+
+    fn remove_model_from_collection_checked(&mut self, id: &str, hash: &str) -> Result<(), String> {
+        self.remove_model_from_collection(id, hash);
+        Ok(())
+    }
 
     fn create_collection_with_sync(
         &mut self,
@@ -315,6 +374,20 @@ pub trait CatalogStore {
         profile_binding: &str,
         now: i64,
     ) -> Result<(), String> {
+        self.begin_batch()?;
+        let result =
+            self.delete_collection_with_sync_in_batch(id, profile_id, profile_binding, now);
+        finish_catalog_batch(self, result)
+    }
+
+    /// Caller owns the catalog transaction, including all outbox changes.
+    fn delete_collection_with_sync_in_batch(
+        &mut self,
+        id: &str,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<(), String> {
         self.validate_sync_profile_binding(profile_id, profile_binding)?;
         let mapping =
             self.entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?;
@@ -332,29 +405,24 @@ pub trait CatalogStore {
         {
             return Err("shared remote collections are read-only".to_string());
         }
-        self.begin_batch()?;
-        let result = (|| {
-            self.delete_collection(id);
-            if mapping.is_some() || has_pending_create {
-                self.enqueue_outbound_operations(
-                    profile_id,
-                    &sync::new_operation_token("local-batch"),
-                    vec![EnqueueOutboundOperationDto {
-                        operation_id: sync::new_operation_token("local-delete-collection"),
-                        entity_type: SyncEntityType::ModelCollection,
-                        operation: sync::SyncOperationKind::Delete,
-                        entity_id: id.to_string(),
-                        payload: serde_json::json!({}),
-                        base_revision: mapping.as_ref().map(|value| value.revision),
-                        concurrency_token: mapping.and_then(|value| value.concurrency_token),
-                        created_at: now,
-                    }],
-                )?;
-            }
-
-            Ok(())
-        })();
-        finish_catalog_batch(self, result)
+        self.delete_collection_checked(id)?;
+        if mapping.is_some() || has_pending_create {
+            self.enqueue_outbound_operations(
+                profile_id,
+                &sync::new_operation_token("local-batch"),
+                vec![EnqueueOutboundOperationDto {
+                    operation_id: sync::new_operation_token("local-delete-collection"),
+                    entity_type: SyncEntityType::ModelCollection,
+                    operation: sync::SyncOperationKind::Delete,
+                    entity_id: id.to_string(),
+                    payload: serde_json::json!({}),
+                    base_revision: mapping.as_ref().map(|value| value.revision),
+                    concurrency_token: mapping.and_then(|value| value.concurrency_token),
+                    created_at: now,
+                }],
+            )?;
+        }
+        Ok(())
     }
 
     fn update_collection_with_sync(
@@ -367,6 +435,28 @@ pub trait CatalogStore {
         now: i64,
     ) -> Result<Collection, String> {
         self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        self.begin_batch()?;
+        let result = self.update_collection_with_sync_in_batch(
+            id,
+            name,
+            shared_to_farm,
+            profile_id,
+            profile_binding,
+            now,
+        );
+        finish_catalog_batch(self, result)
+    }
+
+    /// The caller owns the batch and has validated the sync profile binding.
+    fn update_collection_with_sync_in_batch(
+        &mut self,
+        id: &str,
+        name: &str,
+        shared_to_farm: bool,
+        profile_id: &str,
+        _profile_binding: &str,
+        now: i64,
+    ) -> Result<Collection, String> {
         let mapping =
             self.entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?;
         let has_pending_create = self
@@ -383,7 +473,6 @@ pub trait CatalogStore {
         {
             return Err("shared remote collections are read-only".to_string());
         }
-        self.begin_batch()?;
         let result = (|| {
             let collection = self
                 .update_collection(id, name, shared_to_farm)
@@ -410,7 +499,7 @@ pub trait CatalogStore {
             }
             Ok(collection)
         })();
-        finish_catalog_batch(self, result)
+        result
     }
 
     fn add_model_to_collection_with_sync(
@@ -422,20 +511,36 @@ pub trait CatalogStore {
         now: i64,
     ) -> Result<bool, String> {
         self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        self.begin_batch()?;
+        let result = self.add_model_to_collection_with_sync_in_batch(
+            id,
+            hash,
+            profile_id,
+            profile_binding,
+            now,
+        );
+        finish_catalog_batch(self, result)
+    }
+
+    /// The caller owns the batch and has validated the sync profile binding.
+    fn add_model_to_collection_with_sync_in_batch(
+        &mut self,
+        id: &str,
+        hash: &str,
+        profile_id: &str,
+        _profile_binding: &str,
+        now: i64,
+    ) -> Result<bool, String> {
         if self
             .entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?
             .is_some_and(|value| value.visibility == SyncVisibility::Shared)
         {
             return Err("shared remote collections are read-only".to_string());
         }
-        let already_present = self
-            .collections_for_model(hash)
-            .iter()
-            .any(|collection| collection.id == id);
-        self.begin_batch()?;
+        let already_present = self.collection_contains_model(id, hash)?;
         let result = (|| {
             let pending_delete = self.pending_membership_delete(profile_id, id, hash)?;
-            let added = self.add_model_to_collection(id, hash);
+            let added = self.add_model_to_collection_checked(id, hash)?;
             // Coalesce a rapid remove-then-add toggle: if the compensating
             // Delete never left the outbox, the server was never told the
             // membership went away, so cancelling it nets to zero outbound
@@ -471,7 +576,7 @@ pub trait CatalogStore {
             }
             Ok(added)
         })();
-        finish_catalog_batch(self, result)
+        result
     }
 
     fn remove_model_from_collection_with_sync(
@@ -483,17 +588,33 @@ pub trait CatalogStore {
         now: i64,
     ) -> Result<(), String> {
         self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        self.begin_batch()?;
+        let result = self.remove_model_from_collection_with_sync_in_batch(
+            id,
+            hash,
+            profile_id,
+            profile_binding,
+            now,
+        );
+        finish_catalog_batch(self, result)
+    }
+
+    /// The caller owns the batch and has validated the sync profile binding.
+    fn remove_model_from_collection_with_sync_in_batch(
+        &mut self,
+        id: &str,
+        hash: &str,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<(), String> {
         if self
             .entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?
             .is_some_and(|value| value.visibility == SyncVisibility::Shared)
         {
             return Err("shared remote collections are read-only".to_string());
         }
-        let existed = self
-            .collections_for_model(hash)
-            .iter()
-            .any(|collection| collection.id == id);
-        self.begin_batch()?;
+        let existed = self.collection_contains_model(id, hash)?;
         let result = (|| {
             let collection_remote = self
                 .entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?
@@ -508,7 +629,7 @@ pub trait CatalogStore {
                 _ => None,
             };
             let pending_membership = self.pending_membership_create(profile_id, id, hash)?;
-            self.remove_model_from_collection(id, hash);
+            self.remove_model_from_collection_checked(id, hash)?;
             // Coalesce a rapid add-then-remove toggle: if the compensating
             // Create never left the outbox, the server was never told about
             // this membership, so cancelling it nets to zero outbound
@@ -553,7 +674,7 @@ pub trait CatalogStore {
             }
             Ok(())
         })();
-        finish_catalog_batch(self, result)
+        result
     }
 
     /// Read the opaque, profile-scoped synchronization checkpoint.
@@ -1002,7 +1123,7 @@ pub struct ReconcileReport {
     pub hash_errors: usize,
 }
 
-fn finish_catalog_batch<S: CatalogStore + ?Sized, T>(
+pub(crate) fn finish_catalog_batch<S: CatalogStore + ?Sized, T>(
     store: &mut S,
     result: Result<T, String>,
 ) -> Result<T, String> {
@@ -1339,7 +1460,7 @@ impl CatalogStore for InMemoryCatalog {
         out
     }
 
-    fn reset_catalog(&mut self) -> CatalogResetSummary {
+    fn reset_catalog(&mut self) -> Result<CatalogResetSummary, String> {
         let source_roots_removed = self
             .index
             .keys()
@@ -1349,13 +1470,114 @@ impl CatalogStore for InMemoryCatalog {
         let summary = CatalogResetSummary {
             models_removed: self.models.len(),
             source_roots_removed,
+            tags_removed: self.tags.len(),
+            collections_removed: self.collections.len(),
         };
         self.models.clear();
         self.index.clear();
         self.favorites.clear();
         self.model_tags.clear();
         self.collection_members.clear();
-        summary
+        self.tags.clear();
+        self.collections.clear();
+        self.sync_materialized.clear();
+        Ok(summary)
+    }
+
+    fn organization_records(&self) -> Result<Vec<crate::organization::OrganizationRecord>, String> {
+        use crate::organization::{OrganizationKind, OrganizationRecord};
+        let mut records: Vec<_> = self
+            .tags
+            .iter()
+            .map(|(id, name)| OrganizationRecord {
+                kind: OrganizationKind::Tag,
+                id: id.clone(),
+                name: name.clone(),
+                model_count: self
+                    .model_tags
+                    .values()
+                    .filter(|tags| tags.contains(id))
+                    .count(),
+                bindings: Vec::new(),
+            })
+            .chain(self.collections.iter().map(|(id, (name, _))| {
+                OrganizationRecord {
+                    kind: OrganizationKind::Collection,
+                    id: id.clone(),
+                    name: name.clone(),
+                    model_count: self
+                        .collection_members
+                        .get(id)
+                        .map_or(0, |members| members.len()),
+                    bindings: Vec::new(),
+                }
+            }))
+            .collect();
+        for record in &mut records {
+            let entity_type = match record.kind {
+                OrganizationKind::Tag => SyncEntityType::Tag,
+                OrganizationKind::Collection => SyncEntityType::ModelCollection,
+            };
+            record.bindings.extend(
+                self.sync_entities
+                    .values()
+                    .filter(|entity| {
+                        entity.entity_type == entity_type
+                            && !entity.tombstone
+                            && entity.local_id.as_deref() == Some(record.id.as_str())
+                    })
+                    .map(|entity| {
+                        (
+                            entity.profile_id.clone(),
+                            entity.visibility == SyncVisibility::Shared,
+                        )
+                    }),
+            );
+            record.bindings.extend(
+                self.sync_outbox
+                    .values()
+                    .filter(|operation| {
+                        operation.entity_type == entity_type
+                            && operation.operation == sync::SyncOperationKind::Create
+                            && operation.state != OutboundState::Acked
+                            && operation.entity_id == record.id
+                    })
+                    .map(|operation| (operation.profile_id.clone(), false)),
+            );
+        }
+        Ok(records)
+    }
+
+    fn organization_member_hashes(
+        &self,
+        kind: crate::organization::OrganizationKind,
+        id: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        let mut hashes: Vec<_> = match kind {
+            crate::organization::OrganizationKind::Tag => self
+                .model_tags
+                .iter()
+                .filter(|(_, tags)| tags.contains(id))
+                .map(|(hash, _)| hash.clone())
+                .collect(),
+            crate::organization::OrganizationKind::Collection => self
+                .collection_members
+                .get(id)
+                .map(|hashes| hashes.iter().cloned().collect())
+                .unwrap_or_default(),
+        };
+        hashes.sort();
+        hashes.truncate(limit);
+        Ok(hashes)
+    }
+
+    fn delete_tag_checked(&mut self, id: &str) -> Result<(), String> {
+        self.tags.remove(id);
+        for tags in self.model_tags.values_mut() {
+            tags.remove(id);
+        }
+        Ok(())
     }
 
     fn favorite_hashes(&self) -> Vec<ContentHash> {
@@ -3596,7 +3818,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_catalog_clears_indexed_content_but_preserves_organization_definitions() {
+    fn reset_catalog_clears_indexed_content_and_organization_definitions() {
         let dir = tempfile::tempdir().unwrap();
         let model_path = dir.path().join("m.stl");
         write(&model_path, b"bytes");
@@ -3608,20 +3830,21 @@ mod tests {
         let collection = store.create_collection("Keep collection").unwrap();
         store.add_model_to_collection(&collection.id, &hash);
 
-        let summary = store.reset_catalog();
+        let summary = store.reset_catalog().unwrap();
 
         assert_eq!(
             summary,
             CatalogResetSummary {
                 models_removed: 1,
                 source_roots_removed: 1,
+                tags_removed: 1,
+                collections_removed: 1,
             }
         );
         assert!(store.models().is_empty());
         assert!(store.favorite_hashes().is_empty());
-        assert_eq!(store.all_tags()[0].name, "Keep tag");
-        assert_eq!(store.all_collections()[0].name, "Keep collection");
-        assert_eq!(store.all_collections()[0].member_count, 0);
+        assert!(store.all_tags().is_empty());
+        assert!(store.all_collections().is_empty());
         assert!(model_path.exists(), "reset must not delete source files");
     }
 

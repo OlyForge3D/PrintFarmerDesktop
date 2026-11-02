@@ -1,7 +1,17 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import type { CalibrationWorkspaceStageId } from '@shared/ipc';
+import type {
+  CalibrationWorkspaceStageId,
+  QueryModelsRequest,
+  RenameCollectionRequest,
+  PreviewCollectionChangeRequest,
+  ApplyCollectionChangeRequest,
+  PreviewOrganizationDeletionRequest,
+  ApplyOrganizationDeletionRequest,
+} from '@shared/ipc';
 import { emitCalibrationLog } from './calibrationLog.js';
+import { createSidecarLineFramer } from './sidecarFraming.js';
+import { SidecarSceneBuffers } from './sidecarScene.js';
 
 /**
  * Supervised client for the Rust `model-core` sidecar.
@@ -23,9 +33,17 @@ export interface SidecarChannel {
   /** Register the handler invoked once per received response line. */
   onMessage(handler: (line: string) => void): void;
   /** Register the handler invoked when the process/channel closes. */
-  onClose(handler: (info: { code: number | null }) => void): void;
+  onClose(
+    handler: (info: { code: number | null; error?: Error }) => void,
+  ): void;
   /** Terminate the channel and its process. */
   close(): void;
+}
+
+export interface CatalogMutationContext {
+  profileId: string;
+  profileBinding: string;
+  now: number;
 }
 
 /** Creates a fresh channel bound to a newly spawned sidecar process. */
@@ -36,17 +54,19 @@ interface ResponseEnvelope {
   ok: boolean;
   result?: unknown;
   error?: string;
+  sceneBuffer?: unknown;
 }
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  sceneBuffers?: SidecarSceneBuffers;
 }
 
 /** Default per-request timeout. Parsing a very large model can be slow. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-export const SIDECAR_RPC_PROTOCOL_VERSION = 1 as const;
+export const SIDECAR_RPC_PROTOCOL_VERSION = 5 as const;
 /** Imports get a longer watchdog; expiry terminates the mutating sidecar. */
 export const DEFAULT_MUTATION_TIMEOUT_MS = 15 * 60_000;
 /** Maximum wait for a killed sidecar to confirm process closure. */
@@ -343,7 +363,7 @@ export class SidecarClient {
 
   /** Parse a model file into a normalized scene mesh (raw wire object). */
   async loadScene(filePath: string): Promise<unknown> {
-    return this.request('loadScene', { path: filePath });
+    return this.request('loadScenePacked', { path: filePath });
   }
 
   async loadSceneWithRecipe(filePath: string): Promise<RecipeBoundScene> {
@@ -354,7 +374,7 @@ export class SidecarClient {
         throw new Error('sidecar restarted before the scene request');
       }
       const scene = await this.dispatchRequest(
-        'loadScene',
+        'loadScenePacked',
         { path: filePath },
         {
           timeoutMs: this.requestTimeoutMs,
@@ -484,6 +504,10 @@ export class SidecarClient {
     return this.request('listModels', {});
   }
 
+  async queryModels(request: QueryModelsRequest): Promise<unknown> {
+    return this.request('queryModels', request);
+  }
+
   /** Clear indexed models and source roots while preserving source files. */
   async resetCatalog(): Promise<unknown> {
     return this.request(
@@ -586,6 +610,32 @@ export class SidecarClient {
     return this.request('listCollections', {});
   }
 
+  async listOrganization(
+    syncContext?: CatalogMutationContext,
+  ): Promise<unknown> {
+    return this.request('listOrganization', { syncContext });
+  }
+
+  async previewOrganizationDeletion(
+    request: PreviewOrganizationDeletionRequest,
+    syncContext?: CatalogMutationContext,
+  ): Promise<unknown> {
+    return this.request('previewOrganizationDeletion', {
+      ...request,
+      syncContext,
+    });
+  }
+
+  async applyOrganizationDeletion(
+    request: ApplyOrganizationDeletionRequest,
+    syncContext?: CatalogMutationContext,
+  ): Promise<unknown> {
+    return this.mutationRequest('applyOrganizationDeletion', {
+      ...request,
+      selection: { ...request.selection, syncContext },
+    });
+  }
+
   /** List the collections a model belongs to (raw wire array). */
   async collectionsForModel(hash: string): Promise<unknown> {
     return this.request('collectionsForModel', { hash });
@@ -594,6 +644,33 @@ export class SidecarClient {
   /** Create a collection; returns the created collection (raw wire object). */
   async createCollection(name: string): Promise<unknown> {
     return this.mutationRequest('createCollection', { name });
+  }
+
+  async renameCollection(
+    request: RenameCollectionRequest,
+    syncContext?: CatalogMutationContext,
+  ): Promise<unknown> {
+    return this.mutationRequest('renameCollection', {
+      ...request,
+      syncContext,
+    });
+  }
+
+  async previewCollectionChange(
+    request: PreviewCollectionChangeRequest,
+    syncContext?: CatalogMutationContext,
+  ): Promise<unknown> {
+    return this.request('previewCollectionChange', { ...request, syncContext });
+  }
+
+  async applyCollectionChange(
+    request: ApplyCollectionChangeRequest,
+    syncContext?: CatalogMutationContext,
+  ): Promise<unknown> {
+    return this.mutationRequest('applyCollectionChange', {
+      ...request,
+      change: { ...request.change, syncContext },
+    });
   }
 
   async createCollectionWithSync(
@@ -1257,6 +1334,9 @@ export class SidecarClient {
         resolve,
         reject,
         timer,
+        ...(method === 'loadScenePacked'
+          ? { sceneBuffers: new SidecarSceneBuffers() }
+          : {}),
       });
 
       try {
@@ -1311,12 +1391,32 @@ export class SidecarClient {
     if (!pending) {
       return;
     }
+    if (envelope.ok && envelope.sceneBuffer !== undefined) {
+      try {
+        if (!pending.sceneBuffers) {
+          throw new Error('Unexpected scene geometry frame.');
+        }
+        pending.sceneBuffers.accept(envelope.sceneBuffer);
+      } catch (error) {
+        this.failChannel(sourceChannel, error);
+      }
+      return;
+    }
+    let result = envelope.result;
+    if (envelope.ok && pending.sceneBuffers) {
+      try {
+        result = pending.sceneBuffers.decode(envelope.result);
+      } catch (error) {
+        this.failChannel(sourceChannel, error);
+        return;
+      }
+    }
     this.pending.delete(envelope.id);
     clearTimeout(pending.timer);
 
     if (envelope.ok) {
       this.consecutiveFailures = 0;
-      pending.resolve(envelope.result);
+      pending.resolve(result);
     } else {
       // Deliberately does not call recordFailure(). `consecutiveFailures` gates
       // ensureChannel(), whose ceiling refuses to create a channel and reports
@@ -1339,7 +1439,7 @@ export class SidecarClient {
 
   private handleClose(
     closedChannel: SidecarChannel,
-    info: { code: number | null },
+    info: { code: number | null; error?: Error },
   ): void {
     if (this.terminatingChannel === closedChannel) {
       const terminationError =
@@ -1367,11 +1467,22 @@ export class SidecarClient {
     if (this.pending.size > 0) {
       this.recordFailure();
       this.rejectAllPending(
-        new Error(
-          `sidecar exited (code ${info.code ?? 'unknown'}) with requests in flight`,
-        ),
+        info.error ??
+          new Error(
+            `sidecar exited (code ${info.code ?? 'unknown'}) with requests in flight`,
+          ),
       );
     }
+  }
+
+  private failChannel(channel: SidecarChannel, error: unknown): void {
+    // Detach before killing: process closure is asynchronous, but a retry must
+    // not write to the dying process or accept its remaining buffered frames.
+    this.handleClose(channel, {
+      code: null,
+      error: error instanceof Error ? error : new Error(String(error)),
+    });
+    channel.close();
   }
 
   private recordFailure(): void {
@@ -1510,23 +1621,27 @@ export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
     windowsHide: true,
   });
 
-  let buffer = '';
   let messageHandler: ((line: string) => void) | null = null;
-  let closeHandler: ((info: { code: number | null }) => void) | null = null;
+  let closeHandler:
+    ((info: { code: number | null; error?: Error }) => void) | null = null;
+  let closeInfo: { code: number | null; error?: Error } | null = null;
+  const emitClose = (code: number | null, error?: Error): void => {
+    if (closeInfo) return;
+    closeInfo = { code, ...(error ? { error } : {}) };
+    closeHandler?.(closeInfo);
+  };
 
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
-    let newlineIndex = buffer.indexOf('\n');
-    while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
-      if (messageHandler) {
-        messageHandler(line);
-      }
-      newlineIndex = buffer.indexOf('\n');
-    }
-  });
+  child.stdout.on(
+    'data',
+    createSidecarLineFramer(
+      (line) => messageHandler?.(line),
+      (error) => {
+        child.kill();
+        emitClose(null, error);
+      },
+    ),
+  );
 
   child.stderr.setEncoding('utf8');
   // Forwarded verbatim to the parent's stderr rather than turned into a
@@ -1541,11 +1656,6 @@ export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
     process.stderr.write(`${chunk.trimEnd()}\n`);
   });
 
-  const emitClose = (code: number | null): void => {
-    if (closeHandler) {
-      closeHandler({ code });
-    }
-  };
   child.on('close', (code) => emitClose(code));
   child.on('error', () => {
     emitCalibrationLog({
@@ -1564,8 +1674,11 @@ export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
     onMessage(handler: (line: string) => void): void {
       messageHandler = handler;
     },
-    onClose(handler: (info: { code: number | null }) => void): void {
+    onClose(
+      handler: (info: { code: number | null; error?: Error }) => void,
+    ): void {
       closeHandler = handler;
+      if (closeInfo) handler(closeInfo);
     },
     close(): void {
       child.kill();

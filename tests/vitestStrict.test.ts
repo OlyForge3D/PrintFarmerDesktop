@@ -318,9 +318,16 @@ describe("main's own defaults are executed, not just its injected doubles", () =
     // The `run` default is the one binding the two arms above still stub. This
     // reaches it the only way a test can without recursion: as a subprocess,
     // against a small unrelated file. Naming this file here would recurse.
+    // Vitest's default reporter can omit passing filenames in non-TTY runs;
+    // verbose output lets the assertion prove the selected file actually ran.
     const result = spawnSync(
       process.execPath,
-      ['scripts/vitest-strict.mjs', 'run', 'tests/viewer.types.test.ts'],
+      [
+        'scripts/vitest-strict.mjs',
+        'run',
+        'tests/viewer.types.test.ts',
+        '--reporter=verbose',
+      ],
       { encoding: 'utf8' },
     );
     expect(result.status).toBe(0);

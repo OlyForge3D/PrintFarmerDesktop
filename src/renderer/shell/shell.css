@@ -380,3 +380,323 @@
     transition-duration: 1ms;
   }
 }
+
+/* Tags & Collections service ------------------------------------------ */
+
+.organization-kinds {
+  display: inline-flex;
+  flex: none;
+  align-self: flex-start;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--sidebar);
+}
+
+.organization-kinds label {
+  position: relative;
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.organization-kinds input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.organization-kinds label:hover {
+  color: var(--text);
+}
+
+.organization-kinds label.active {
+  background: var(--surface-hover);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.organization-kinds label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.organization-kind-count {
+  color: var(--quiet);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.organization-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.organization-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.organization-toolbar h2 {
+  margin: 0 auto 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.organization-search {
+  display: flex;
+  width: min(320px, 40vw);
+  height: 30px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--sidebar);
+  color: var(--quiet);
+}
+
+.organization-search:focus-within {
+  border-color: var(--focus);
+}
+
+.organization-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.organization-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.organization-usage select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.organization-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--surface), transparent 30%);
+}
+
+.organization-selection-count {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.organization-selection-bar button,
+.organization-actions button,
+.organization-rename button,
+.organization-create button,
+.organization-more {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.organization-selection-bar button:hover:not(:disabled),
+.organization-actions button:hover:not(:disabled),
+.organization-rename button:hover:not(:disabled),
+.organization-create button:hover:not(:disabled),
+.organization-more:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.organization-panel button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.organization-selection-bar .organization-delete-trigger {
+  border-color: color-mix(in srgb, var(--danger), var(--border) 35%);
+  background: transparent;
+  color: #f09ca1;
+}
+
+.organization-selection-bar .organization-delete-trigger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger), transparent 90%);
+}
+
+.organization-hint {
+  margin: 0;
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.organization-review-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.organization-review-list span {
+  color: var(--quiet);
+}
+
+.organization-table {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  table-layout: fixed;
+}
+
+.organization-table th {
+  height: 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.organization-table td {
+  height: 36px;
+  padding: 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border), transparent 40%);
+}
+
+.organization-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.organization-table tbody tr:hover {
+  background: color-mix(in srgb, var(--surface-hover), transparent 40%);
+}
+
+.organization-table tbody tr.selected {
+  background: color-mix(in srgb, var(--accent-soft), transparent 35%);
+}
+
+.organization-table .organization-check {
+  width: 36px;
+  padding-right: 0;
+}
+
+.organization-table th:nth-child(3) {
+  width: 96px;
+}
+
+.organization-table th:nth-child(4) {
+  width: 150px;
+}
+
+.organization-table th:nth-child(5) {
+  width: 90px;
+}
+
+.organization-name > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.organization-number {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.organization-table th.organization-number {
+  text-align: right;
+}
+
+.organization-number.unused {
+  color: var(--warning);
+}
+
+.organization-scope {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.organization-scope.sync {
+  color: var(--accent);
+}
+
+.organization-scope.readOnly {
+  color: var(--quiet);
+}
+
+.organization-actions {
+  text-align: right;
+}
+
+.organization-rename {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.organization-rename input,
+.organization-create input {
+  min-width: 0;
+  flex: 1;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--sidebar);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.organization-create {
+  display: flex;
+  max-width: 420px;
+  gap: 8px;
+}
+
+.organization-more {
+  justify-self: center;
+}

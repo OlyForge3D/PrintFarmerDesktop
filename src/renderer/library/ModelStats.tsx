@@ -13,6 +13,7 @@ const FORMAT_LABELS: Record<SceneStats['format'], string> = {
   stl: 'STL',
   threeMf: '3MF',
   obj: 'OBJ',
+  step: 'STEP',
 };
 
 /** A compact read-only summary of the loaded scene's geometry. */

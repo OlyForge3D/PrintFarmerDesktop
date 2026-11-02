@@ -84,19 +84,21 @@ const createMainWindow = (): void => {
     },
   });
 
-  hardenWindow(mainWindow);
+  hardenWindow(mainWindow, MAIN_WINDOW_VITE_DEV_SERVER_URL);
   mainWindow.setMenuBarVisibility(false);
 
   // Surface renderer-side failures in the main process log. Without this a
   // crashing renderer just shows a blank window with no diagnostics.
-  mainWindow.webContents.on(
-    'console-message',
-    (_event, level, message, line, sourceId) => {
-      if (level >= 2) {
-        console.error(`[renderer:${level}] ${message} (${sourceId}:${line})`);
-      }
-    },
-  );
+  mainWindow.webContents.on('console-message', (details) => {
+    if (details.level === 'error' || details.level === 'warning') {
+      console.error(
+        `[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`,
+      );
+    }
+  });
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error(`[preload] failed to load ${preloadPath}`, error);
+  });
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
     console.error(`[renderer] did-fail-load ${code} ${desc} ${url}`);
   });

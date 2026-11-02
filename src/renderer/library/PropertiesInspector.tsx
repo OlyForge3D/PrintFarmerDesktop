@@ -163,15 +163,7 @@ function SelectedModelInspector({
             monospace
           />
         </dl>
-      </InspectorSection>
-
-      {vendorMetadata ? (
-        <InspectorSection title="Slicer project">
-          <VendorPanel metadata={vendorMetadata} />
-        </InspectorSection>
-      ) : null}
-
-      <InspectorSection title="Locations">
+        <h4 className="inspector-subheading">Locations</h4>
         <ul className="location-list">
           {visibleLocations.map((location) => (
             <li key={`${location.rootId}:${location.path}`}>
@@ -184,9 +176,7 @@ function SelectedModelInspector({
               >
                 {location.available ? 'Available' : 'Missing'}
               </span>
-              <span className="location-path" title={location.path}>
-                {location.path}
-              </span>
+              <span className="location-path">{location.path}</span>
             </li>
           ))}
           {hiddenLocationCount > 0 ? (
@@ -198,16 +188,18 @@ function SelectedModelInspector({
         </ul>
       </InspectorSection>
 
+      {vendorMetadata ? (
+        <InspectorSection title="Slicer project">
+          <VendorPanel metadata={vendorMetadata} />
+        </InspectorSection>
+      ) : null}
+
       <InspectorSection title="Geometry">
         {stats ? (
           <SceneStatsDisplay stats={stats} />
         ) : (
           <p className="inspector-hint">Preview to inspect model geometry.</p>
         )}
-      </InspectorSection>
-
-      <InspectorSection title="Tags">
-        <TagEditor tags={tags} onAdd={onAddTag} onRemove={onRemoveTag} />
       </InspectorSection>
 
       <InspectorSection title="Collections">
@@ -217,6 +209,10 @@ function SelectedModelInspector({
           onToggle={onToggleCollection}
           onCreate={onCreateCollection}
         />
+      </InspectorSection>
+
+      <InspectorSection title="Tags">
+        <TagEditor tags={tags} onAdd={onAddTag} onRemove={onRemoveTag} />
       </InspectorSection>
 
       {organizationError ? (

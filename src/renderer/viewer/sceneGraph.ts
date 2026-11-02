@@ -287,14 +287,23 @@ function applyRowMajorMatrix(
 
 function createObjectGeometry(
   objectMesh: SceneObjectMesh,
-  faceColors?: readonly number[] | null,
+  faceColors?: readonly number[] | Uint8Array | null,
 ): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute(
     'position',
-    new THREE.BufferAttribute(Float32Array.from(objectMesh.positions), 3),
+    new THREE.BufferAttribute(
+      objectMesh.positions instanceof Float32Array
+        ? objectMesh.positions
+        : Float32Array.from(objectMesh.positions),
+      3,
+    ),
   );
-  geometry.setIndex(Array.from(objectMesh.indices));
+  geometry.setIndex(
+    objectMesh.indices instanceof Uint32Array
+      ? new THREE.BufferAttribute(objectMesh.indices, 1)
+      : Array.from(objectMesh.indices),
+  );
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   applyFaceColors(geometry, objectMesh, faceColors);
@@ -324,7 +333,7 @@ function createObjectMaterial(
 function applyFaceColors(
   geometry: THREE.BufferGeometry,
   objectMesh: SceneObjectMesh,
-  faceColors?: readonly number[] | null,
+  faceColors?: readonly number[] | Uint8Array | null,
 ): void {
   if (!faceColors || faceColors.length === 0) return;
   const triangleCount = objectMesh.indices.length / 3;

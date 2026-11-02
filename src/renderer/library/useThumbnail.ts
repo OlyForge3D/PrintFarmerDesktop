@@ -11,7 +11,11 @@ import { preferredPath } from './model';
  * everything cached under the previous one.
  */
 const cache = new Map<string, string>();
-const inFlight = new Map<string, Promise<string>>();
+const inFlight = new Map<
+  string,
+  { promise: Promise<string>; consumers: Set<() => boolean> }
+>();
+const MAX_CACHED_THUMBNAILS = 256;
 const thumbnailQueue: Array<() => void> = [];
 const MAX_CONCURRENT_THUMBNAILS = 3;
 let activeThumbnails = 0;
@@ -80,7 +84,8 @@ function scheduleThumbnail<T>(task: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const start = (): void => {
       activeThumbnails += 1;
-      void task()
+      void Promise.resolve()
+        .then(task)
         .then(resolve, reject)
         .finally(() => {
           activeThumbnails -= 1;
@@ -101,15 +106,23 @@ function requestThumbnail(
   render: () => Promise<
     Pick<RenderThumbnailResponse, 'pngBase64' | 'cacheRecipe'>
   >,
+  isActive: () => boolean,
 ): Promise<string> {
   const requestKey = `${cacheKey(activeRecipe, hash)}\u0000${path}`;
   const pending = inFlight.get(requestKey);
   if (pending) {
-    return pending;
+    pending.consumers.add(isActive);
+    return pending.promise;
   }
 
   const generation = cacheGeneration;
-  const request = scheduleThumbnail(render)
+  const consumers = new Set([isActive]);
+  const request = scheduleThumbnail(() => {
+    if (![...consumers].some((active) => active())) {
+      throw new DOMException('Thumbnail is no longer visible.', 'AbortError');
+    }
+    return render();
+  })
     .then((result) => {
       const src = `data:image/png;base64,${result.pngBase64}`;
       if (generation === cacheGeneration) {
@@ -120,15 +133,20 @@ function requestThumbnail(
         const recipe = result.cacheRecipe ?? null;
         adoptRecipe(recipe);
         cache.set(cacheKey(recipe, hash), src);
+        while (cache.size > MAX_CACHED_THUMBNAILS) {
+          const oldest = cache.keys().next().value;
+          if (oldest === undefined) break;
+          cache.delete(oldest);
+        }
       }
       return src;
     })
     .finally(() => {
-      if (inFlight.get(requestKey) === request) {
+      if (inFlight.get(requestKey)?.promise === request) {
         inFlight.delete(requestKey);
       }
     });
-  inFlight.set(requestKey, request);
+  inFlight.set(requestKey, { promise: request, consumers });
   return request;
 }
 
@@ -137,7 +155,10 @@ function requestThumbnail(
  * sidecar. Falls back to an error state when the model has no readable location
  * or the sidecar cannot render it.
  */
-export function useThumbnail(model: LogicalModel): ThumbnailState {
+export function useThumbnail(
+  model: LogicalModel,
+  enabled = true,
+): ThumbnailState {
   const hash = model.hash;
   const path = preferredPath(model);
   const cached = cache.get(cacheKey(activeRecipe, hash)) ?? null;
@@ -148,6 +169,7 @@ export function useThumbnail(model: LogicalModel): ThumbnailState {
   );
 
   useEffect(() => {
+    if (!enabled) return;
     const existing = cache.get(cacheKey(activeRecipe, hash));
     if (existing) {
       setState({ src: existing, status: 'ready' });
@@ -162,8 +184,11 @@ export function useThumbnail(model: LogicalModel): ThumbnailState {
 
     let cancelled = false;
     setState({ src: null, status: 'loading' });
-    requestThumbnail(hash, path, () =>
-      api.renderThumbnail({ path, size: THUMBNAIL_SIZE }),
+    requestThumbnail(
+      hash,
+      path,
+      () => api.renderThumbnail({ path, size: THUMBNAIL_SIZE }),
+      () => !cancelled,
     )
       .then((src) => {
         if (cancelled) {
@@ -180,7 +205,7 @@ export function useThumbnail(model: LogicalModel): ThumbnailState {
     return () => {
       cancelled = true;
     };
-  }, [hash, path]);
+  }, [hash, path, enabled]);
 
   return state;
 }

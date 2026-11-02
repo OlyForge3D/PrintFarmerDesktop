@@ -71,24 +71,24 @@ pub struct SceneTransformDto {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SceneMaterialDto {
+pub struct SceneMaterialDto<C = Vec<u8>> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_color: Option<[u8; 3]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub face_colors: Option<Vec<u8>>,
+    pub face_colors: Option<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SceneObjectMeshDto {
-    pub positions: Vec<f32>,
-    pub indices: Vec<u32>,
+pub struct SceneObjectMeshDto<P = Vec<f32>, I = Vec<u32>> {
+    pub positions: P,
+    pub indices: I,
     pub bounds: BoundsDto,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SceneObjectDto {
+pub struct SceneObjectDto<P = Vec<f32>, I = Vec<u32>, C = Vec<u8>> {
     pub id: String,
     pub source_id: String,
     pub name: String,
@@ -97,8 +97,8 @@ pub struct SceneObjectDto {
     pub children: Vec<String>,
     pub transform: SceneTransformDto,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mesh: Option<SceneObjectMeshDto>,
-    pub material: SceneMaterialDto,
+    pub mesh: Option<SceneObjectMeshDto<P, I>>,
+    pub material: SceneMaterialDto<C>,
     pub plate_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_item_index: Option<usize>,
@@ -117,20 +117,20 @@ pub struct ScenePlateDto {
 /// mesh. Mirrors the `SceneMesh` Zod schema field-for-field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SceneMeshDto {
+pub struct SceneMeshDto<P = Vec<f32>, I = Vec<u32>, C = Vec<u8>> {
     /// Independent schema version for the scene payload carried over JSON-RPC.
     pub scene_version: u32,
     /// Vertex positions, xyz-interleaved (`len % 3 == 0`).
-    pub positions: Vec<f32>,
+    pub positions: P,
     /// Triangle vertex indices, triple-packed (`len % 3 == 0`).
-    pub indices: Vec<u32>,
+    pub indices: I,
     pub bounds: BoundsDto,
     /// `"stl"` or `"threeMf"` (from `ModelFormat`'s camelCase serde names).
     pub source_format: ModelFormat,
     /// One rgb triple per triangle, rgb-interleaved, when the source carried
     /// per-facet colors. Omitted from JSON when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub face_colors: Option<Vec<u8>>,
+    pub face_colors: Option<C>,
     pub status: SceneLoadStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status_messages: Vec<String>,
@@ -138,7 +138,7 @@ pub struct SceneMeshDto {
     pub parts: Vec<ScenePartDto>,
     /// Hierarchical object instances. Each object owns its local transform and,
     /// when renderable, its local mesh/material payload.
-    pub objects: Vec<SceneObjectDto>,
+    pub objects: Vec<SceneObjectDto<P, I, C>>,
     /// Stable ids of the scene graph roots, in display order.
     pub root_object_ids: Vec<String>,
     /// Plate groupings for root objects.
@@ -560,6 +560,7 @@ pub struct ImportFormatCountsDto {
     pub stl: usize,
     pub three_mf: usize,
     pub obj: usize,
+    pub step: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +595,7 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
                 stl: preview.formats.stl,
                 three_mf: preview.formats.three_mf,
                 obj: preview.formats.obj,
+                step: preview.formats.step,
             },
             folders: preview
                 .folders

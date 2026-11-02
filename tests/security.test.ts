@@ -225,18 +225,47 @@ describe('hardenWindow', () => {
     expect(electronState.openedExternally).toEqual([]);
   });
 
-  it('permits navigation to the dev-server origin only while ELECTRON_RENDERER_URL names it', () => {
-    process.env['ELECTRON_RENDERER_URL'] = 'http://localhost:5173';
+  it('permits reloads and navigation within the explicitly configured dev-server origin', () => {
     const window = fakeWindow();
-    hardenWindow(window as never);
+    hardenWindow(window as never, 'http://localhost:5173/');
 
+    expect(navigate(window, 'http://localhost:5173/').prevented).toBe(false);
     expect(navigate(window, 'http://localhost:5173/index.html').prevented).toBe(
       false,
     );
-    // Same scheme and host shape, different port: not the configured origin.
-    expect(navigate(window, 'http://localhost:9999/index.html').prevented).toBe(
-      true,
-    );
+    expect(electronState.openedExternally).toEqual([]);
+  });
+
+  it.each([
+    'http://localhost:9999/index.html',
+    'http://localhost:51730/index.html',
+    'http://localhost:5173@evil.example/index.html',
+    'https://localhost:5173/index.html',
+    'http://localhost.evil.example:5173/index.html',
+  ])(
+    'rejects off-origin navigation to %s with a dev server configured',
+    (url) => {
+      const window = fakeWindow();
+      hardenWindow(window as never, 'http://localhost:5173');
+
+      expect(navigate(window, url).prevented).toBe(true);
+      expect(electronState.openedExternally).toEqual([url]);
+    },
+  );
+
+  it('does not trust a legacy renderer environment variable without an explicit dev server', () => {
+    vi.stubEnv('ELECTRON_RENDERER_URL', 'http://localhost:5173');
+    try {
+      const window = fakeWindow();
+      hardenWindow(window as never);
+
+      expect(navigate(window, 'http://localhost:5173/').prevented).toBe(true);
+      expect(electronState.openedExternally).toEqual([
+        'http://localhost:5173/',
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('denies every window-open request regardless of scheme', () => {

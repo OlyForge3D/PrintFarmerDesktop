@@ -131,6 +131,28 @@ export function createEditableRetargetFixture(directory: string): {
   };
 }
 
+/**
+ * Resolves the sidecar shipped inside a packaged app from its executable.
+ * macOS bundles keep resources in `Contents/Resources`, beside
+ * `Contents/MacOS`; Windows and Linux keep `resources` next to the executable.
+ */
+export function packagedSidecarPath(
+  executablePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const dialect = platform === 'win32' ? path.win32 : path.posix;
+  const executableDirectory = dialect.dirname(executablePath);
+  const resources =
+    platform === 'darwin'
+      ? dialect.join(dialect.dirname(executableDirectory), 'Resources')
+      : dialect.join(executableDirectory, 'resources');
+  return dialect.join(
+    resources,
+    'sidecar',
+    platform === 'win32' ? 'model-core.exe' : 'model-core',
+  );
+}
+
 export function findPackagedExecutable(repoRoot: string): string {
   const out = path.join(repoRoot, 'out');
   const expected =

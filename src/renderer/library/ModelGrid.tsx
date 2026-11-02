@@ -3,6 +3,7 @@ import { ModelCard } from './ModelCard';
 
 export interface ModelGridProps {
   models: LogicalModel[];
+  thumbnailsEnabled?: boolean;
   selectedHashes?: ReadonlySet<string>;
   /** @deprecated Compatibility for single-selection callers. */
   selectedHash?: string | null;
@@ -20,6 +21,7 @@ export interface ModelGridProps {
 /** Renders the catalog as a grid of selectable model cards. */
 export function ModelGrid({
   models,
+  thumbnailsEnabled = true,
   selectedHashes,
   selectedHash,
   onSelect,
@@ -50,6 +52,7 @@ export function ModelGrid({
         <ModelCard
           key={model.hash}
           model={model}
+          thumbnailEnabled={thumbnailsEnabled}
           selected={selection.has(model.hash)}
           onSelect={onSelect}
           {...(onPreview ? { onPreview } : {})}
