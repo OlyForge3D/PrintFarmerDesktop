@@ -54,6 +54,17 @@ describe('signed release workflow', () => {
     expect(workflow).toContain('APPLE_APP_SPECIFIC_PASSWORD');
     expect(workflow).toContain('UPDATE_SIGNING_PRIVATE_KEY_BASE64');
     expect(workflow).toContain('UPDATE_SIGNING_PUBLIC_KEY_BASE64');
+
+    const notarize = step('Notarize macOS application');
+    for (const secret of [
+      'APPLE_ID',
+      'APPLE_APP_SPECIFIC_PASSWORD',
+      'APPLE_TEAM_ID',
+    ]) {
+      expect(notarize).toContain(`[[ -n "$${secret}" ]]`);
+    }
+    expect(notarize).toContain('missing=()');
+    expect(notarize).toContain('Tagged releases require GitHub secrets:');
   });
 
   it('verifies platform signatures before signing update metadata', () => {

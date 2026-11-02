@@ -168,6 +168,14 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          missing=()
+          [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
+          [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          if (( ${#missing[@]} )); then
+            printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
           node scripts/release-environment.mjs \
             --allow APPLE_ID \
             --allow APPLE_APP_SPECIFIC_PASSWORD \
