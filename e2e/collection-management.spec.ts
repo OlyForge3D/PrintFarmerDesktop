@@ -17,7 +17,10 @@ import {
   modelFixtureDirectory,
   modelFixtureName,
 } from './helpers/modelLibrary';
-import { findPackagedExecutable } from './helpers/retargetFixture';
+import {
+  findPackagedExecutable,
+  packagedSidecarPath,
+} from './helpers/retargetFixture';
 import { RootApprovalStore } from '../src/main/rootApprovals';
 
 const repoRoot = path.resolve(
@@ -51,12 +54,7 @@ test('packaged collection management preserves models and source files', async (
       const approved = await new RootApprovalStore({
         userDataPath,
       }).approveFromPicker(modelFixtureDirectory);
-      const sidecar = path.join(
-        path.dirname(executablePath),
-        'resources',
-        'sidecar',
-        process.platform === 'win32' ? 'model-core.exe' : 'model-core',
-      );
+      const sidecar = packagedSidecarPath(executablePath);
       const seed = spawnSync(sidecar, ['--catalog-db', catalogDb], {
         input: `${JSON.stringify({
           id: 1,
@@ -77,6 +75,11 @@ test('packaged collection management preserves models and source files', async (
         encoding: 'utf8',
         timeout: 60_000,
       });
+      if (seed.error) {
+        throw new Error(`Failed to spawn shipped sidecar at ${sidecar}`, {
+          cause: seed.error,
+        });
+      }
       expect(seed.status, seed.stderr).toBe(0);
       expect(
         (JSON.parse(seed.stdout.trim()) as { ok?: unknown }).ok,
