@@ -15,10 +15,10 @@
 // broken reachability walk.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   EXIT_CLEAN,
@@ -52,9 +52,16 @@ function commit(cwd: string, filename: string, message: string) {
 /**
  * A real clone with a real bare "origin", the same topology the issue's own
  * repro used (`git ls-remote --heads origin`, `git branch -r --contains
- * <sha>`). Returns the clone's path; `origin` lives alongside it.
+ * <sha>`). Built ONCE per file by real `git init`/`clone`/`commit`/`push`
+ * into `templateRoot`; each test then gets a private byte copy of that pair.
+ *
+ * Measured, not assumed: building the pair is eight git processes (the clone
+ * and push each start more) and was ~510 ms of a ~900 ms test locally, while
+ * the copy is ~30 ms. On a hosted `windows-latest` runner, where process
+ * start-up is what degrades under load, the per-test rebuild is what pushed
+ * these tests through the 5 s budget (PR #832, five of them at once).
  */
-function makeRepoWithOrigin(root: string) {
+function buildRepoWithOrigin(root: string) {
   const originPath = path.join(root, 'origin.git');
   const repoPath = path.join(root, 'repo');
   execFileSync('git', ['init', '--quiet', '--bare', originPath], {
@@ -62,12 +69,33 @@ function makeRepoWithOrigin(root: string) {
   });
   execFileSync('git', ['clone', '--quiet', originPath, repoPath], {
     cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   git(['config', 'user.name', 'Stranded fixture'], repoPath);
   git(['config', 'user.email', 'fixture@example.invalid'], repoPath);
   git(['checkout', '-q', '-b', 'development'], repoPath);
   commit(repoPath, 'trunk.txt', 'trunk init');
   git(['push', '-q', '-u', 'origin', 'development'], repoPath);
+}
+
+let templateRoot: string;
+
+beforeAll(() => {
+  templateRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-stranded-template-'));
+  buildRepoWithOrigin(templateRoot);
+});
+
+afterAll(() => {
+  rmSync(templateRoot, { recursive: true, force: true });
+});
+
+/** A private copy of the template pair under `root`; returns the clone. */
+function makeRepoWithOrigin(root: string) {
+  cpSync(templateRoot, root, { recursive: true, preserveTimestamps: true });
+  const repoPath = path.join(root, 'repo');
+  // The copied clone still names the TEMPLATE's origin. Repointing it is what
+  // makes the copy private; the isolation test below holds it to that.
+  git(['remote', 'set-url', 'origin', path.join(root, 'origin.git')], repoPath);
   return repoPath;
 }
 
@@ -171,6 +199,40 @@ describe('formatting the report', () => {
 });
 
 describe('the falsifier (#543): a real repo with a real unpushed commit', () => {
+  it('FIXTURE ISOLATION — a copy pushes to its own origin, never the shared template', () => {
+    // The copies share one template. If a copy still pointed at the template's
+    // origin, one test's push would become every later test's "remote ref",
+    // and STRANDED/CLEAN would depend on test order. Push from a copy and
+    // require the copy's origin to move while the template's does not.
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-stranded-isolation-'));
+    const repoPath = makeRepoWithOrigin(tempRoot);
+    const ownOrigin = path.join(tempRoot, 'origin.git');
+    const templateOrigin = path.join(templateRoot, 'origin.git');
+
+    expect(path.resolve(git(['remote', 'get-url', 'origin'], repoPath))).toBe(
+      path.resolve(ownOrigin),
+    );
+
+    git(['checkout', '-q', '-b', 'squad/isolation'], repoPath);
+    commit(repoPath, 'isolation.txt', 'pushed from a copy');
+    git(['push', '-q', 'origin', 'squad/isolation'], repoPath);
+
+    const headsOf = (bare: string) =>
+      git(
+        [
+          '--git-dir',
+          bare,
+          'for-each-ref',
+          '--format=%(refname)',
+          'refs/heads',
+        ],
+        tempRoot ?? os.tmpdir(),
+      );
+    // Positive control first: the probe can see a pushed branch at all.
+    expect(headsOf(ownOrigin)).toContain('refs/heads/squad/isolation');
+    expect(headsOf(templateOrigin)).not.toContain('refs/heads/squad/isolation');
+  });
+
   it('THE FALSIFIER — a branch with no remote ref at all is reported STRANDED', () => {
     tempRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-stranded-falsifier-'));
     const repoPath = makeRepoWithOrigin(tempRoot);
