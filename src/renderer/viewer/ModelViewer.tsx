@@ -41,6 +41,12 @@ export interface ModelViewerProps {
 
 export const PERSPECTIVE_FOV = 45;
 export const ORTHO_FRUSTUM_MULTIPLIER = 1.2;
+/**
+ * World up for the viewer. STL, 3MF, and print-bed coordinates are Z-up, while
+ * three.js defaults to Y-up; without this, printable models render lying on
+ * their back.
+ */
+export const VIEWER_UP: readonly [number, number, number] = [0, 0, 1];
 type ViewerMesh = THREE.Mesh<
   THREE.BufferGeometry,
   THREE.Material | THREE.Material[]
@@ -92,6 +98,14 @@ export function ModelViewer({
     setError(null);
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // setSize(..., false) below sizes only the drawing buffer (CSS size ×
+    // pixel ratio). Without an explicit CSS size the canvas displays at its
+    // buffer size, so on a HiDPI display it overflows the container and the
+    // framed model lands off-screen. Pin the element to the container instead.
+    const canvasStyle = renderer.domElement.style;
+    canvasStyle.display = 'block';
+    canvasStyle.width = '100%';
+    canvasStyle.height = '100%';
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -107,10 +121,10 @@ export function ModelViewer({
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 0.9);
-    key.position.set(1, 1.4, 1.2);
+    key.position.set(1, 1.2, 1.4);
     scene.add(key);
     const fill = new THREE.DirectionalLight(0xffffff, 0.35);
-    fill.position.set(-1, -0.6, -0.8);
+    fill.position.set(-1, -0.8, -0.6);
     scene.add(fill);
 
     const center = boundsCenter(mesh.bounds);
@@ -326,12 +340,22 @@ export function createCamera(
   radius: number,
 ): THREE.PerspectiveCamera | THREE.OrthographicCamera {
   const far = radius * 100 + 1000;
+  // `up` must be set here, before framing calls lookAt() and before
+  // OrbitControls is constructed, because the controls capture it once.
   if (projection === 'orthographic') {
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, far);
+    camera.up.set(...VIEWER_UP);
     applyOrthoFrustum(camera, radius, aspect);
     return camera;
   }
-  return new THREE.PerspectiveCamera(PERSPECTIVE_FOV, aspect, 0.01, far);
+  const camera = new THREE.PerspectiveCamera(
+    PERSPECTIVE_FOV,
+    aspect,
+    0.01,
+    far,
+  );
+  camera.up.set(...VIEWER_UP);
+  return camera;
 }
 
 /**
@@ -405,14 +429,28 @@ export function frameCamera(
 const MIN_POLAR = 0.01;
 const MAX_POLAR = Math.PI - 0.01;
 
-/** Rotate the camera around the controls target by the given angular deltas. */
-function orbitCamera(
+/**
+ * Rotate the camera around the controls target by the given angular deltas.
+ * Exported for tests.
+ *
+ * `THREE.Spherical` is Y-up, so the offset is rotated into a Y-up frame for the
+ * spherical math and back afterwards - the same thing OrbitControls does - so
+ * azimuth spins around `camera.up` and polar tilts toward/away from it.
+ */
+export function orbitCamera(
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
-  controls: OrbitControls,
+  controls: Pick<OrbitControls, 'target' | 'update'>,
   dAzimuth: number,
   dPolar: number,
 ): void {
-  const offset = camera.position.clone().sub(controls.target);
+  const toYUp = new THREE.Quaternion().setFromUnitVectors(
+    camera.up,
+    new THREE.Vector3(0, 1, 0),
+  );
+  const offset = camera.position
+    .clone()
+    .sub(controls.target)
+    .applyQuaternion(toYUp);
   const spherical = new THREE.Spherical().setFromVector3(offset);
   spherical.theta += dAzimuth;
   spherical.phi = Math.min(
@@ -420,7 +458,7 @@ function orbitCamera(
     Math.max(MIN_POLAR, spherical.phi + dPolar),
   );
   spherical.makeSafe();
-  offset.setFromSpherical(spherical);
+  offset.setFromSpherical(spherical).applyQuaternion(toYUp.invert());
   camera.position.copy(controls.target).add(offset);
   camera.lookAt(controls.target);
   controls.update();
