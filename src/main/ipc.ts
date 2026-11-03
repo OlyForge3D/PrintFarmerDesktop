@@ -11,6 +11,7 @@ import {
 import { z } from 'zod';
 import {
   AppInfoResponse,
+  GetAvailableReleaseResponse,
   IPC_CONTRACT_VERSION,
   IpcChannel,
   ListModelsResponse,
@@ -378,6 +379,7 @@ function targetProfileFailure(error: unknown) {
 }
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 import { RootApprovalStore } from './rootApprovals.js';
+import { ReleaseNotifier } from './releaseNotifier.js';
 
 export function createLoadSceneHandler(
   authorizeFile: (requestedPath: string) => Promise<string>,
@@ -409,6 +411,7 @@ export function registerIpcHandlers(
   uploadJobService?: UploadJobService,
   rootApprovalStore?: RootApprovalStore,
   sharedSceneCache?: SceneCacheService,
+  sharedReleaseNotifier?: ReleaseNotifier,
 ): () => Promise<void> {
   const sidecar =
     sharedSidecar ?? new SidecarClient(channelFactory ?? spawnSidecarChannel);
@@ -1043,6 +1046,18 @@ export function registerIpcHandlers(
       electronVersion: process.versions.electron,
     };
     return ipcSchemas[IpcChannel.AppInfo].response.parse(response);
+  });
+
+  let releaseNotifier = sharedReleaseNotifier ?? null;
+  ipcMain.handle(IpcChannel.GetAvailableRelease, async () => {
+    releaseNotifier ??= new ReleaseNotifier({
+      currentVersion: app.getVersion(),
+    });
+    const response: GetAvailableReleaseResponse = {
+      currentVersion: app.getVersion(),
+      available: await releaseNotifier.getAvailableRelease(),
+    };
+    return ipcSchemas[IpcChannel.GetAvailableRelease].response.parse(response);
   });
 
   ipcMain.handle(

@@ -3,6 +3,7 @@ import {
   IpcChannel,
   ipcSchemas,
   type AppInfoResponse,
+  type GetAvailableReleaseResponse,
   type ExtractVendorMetadataRequest,
   type ExtractVendorMetadataResponse,
   type ExtractVendorPlateThumbnailsRequest,
@@ -209,6 +210,10 @@ const api: PrintFarmerApi = {
     ) as Promise<QueryModelsResponse>,
   getAppInfo: (): Promise<AppInfoResponse> =>
     ipcRenderer.invoke(IpcChannel.AppInfo) as Promise<AppInfoResponse>,
+  getAvailableRelease: (): Promise<GetAvailableReleaseResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.GetAvailableRelease,
+    ) as Promise<GetAvailableReleaseResponse>,
   pingSidecar: (request: SidecarPingRequest): Promise<SidecarPingResponse> =>
     ipcRenderer.invoke(
       IpcChannel.SidecarPing,

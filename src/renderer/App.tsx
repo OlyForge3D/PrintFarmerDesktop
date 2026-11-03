@@ -51,6 +51,7 @@ import { toViewerSceneMesh, type SceneMesh } from './viewer/types';
 import { Icon } from './ui/Icon';
 import { AuthorityBar } from './shell/AuthorityBar';
 import { StatusBar } from './shell/StatusBar';
+import { useAvailableRelease } from './shell/useAvailableRelease';
 import { WorkspaceRail, type WorkspaceBadge } from './shell/WorkspaceRail';
 import {
   DEFAULT_WORKSPACE,
@@ -95,6 +96,7 @@ export function App(): React.JSX.Element {
   const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
   const calibrationFlushRef = useRef<CalibrationWorkspaceFlush | null>(null);
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
+  const availableRelease = useAvailableRelease();
   const [appError, setAppError] = useState<string | null>(null);
   const [serverProfiles, setServerProfiles] =
     useState<ListServerProfilesResponse>({
@@ -1710,6 +1712,8 @@ export function App(): React.JSX.Element {
           uploadsInFlight={queuedUploadCount}
           sourcesNeedingAttention={sourcesNeedingAttention}
           appInfo={info}
+          availableRelease={availableRelease.release}
+          onDismissRelease={availableRelease.dismiss}
         />
       </div>
 

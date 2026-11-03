@@ -120,6 +120,7 @@ export const IpcChannel = {
   CalibrationDiscardDeviceDraft: 'calibration:discardDeviceDraft',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
+  GetAvailableRelease: 'updates:getAvailableRelease',
   SidecarPing: 'sidecar:ping',
   LoadScene: 'model:loadScene',
   OpenModelFile: 'dialog:openModelFile',
@@ -190,6 +191,37 @@ export const AppInfoResponse = z.object({
   electronVersion: z.string(),
 });
 export type AppInfoResponse = z.infer<typeof AppInfoResponse>;
+
+// --- updates:getAvailableRelease --------------------------------------------
+
+/**
+ * Notification-only: a newer published release on the running build's train
+ * (beta builds also see newer stable releases). Main owns the network check and
+ * builds `url` itself; the renderer only displays it as an external link.
+ */
+export const GetAvailableReleaseRequest = z.void();
+export type GetAvailableReleaseRequest = z.infer<
+  typeof GetAvailableReleaseRequest
+>;
+
+export const AvailableRelease = z.object({
+  version: z.string().min(1).max(128),
+  prerelease: z.boolean(),
+  url: z
+    .string()
+    .url()
+    .startsWith('https://github.com/OlyForge3D/PrintFarmerDesktop/releases/'),
+  publishedAt: z.string().nullable(),
+});
+export type AvailableRelease = z.infer<typeof AvailableRelease>;
+
+export const GetAvailableReleaseResponse = z.object({
+  currentVersion: z.string(),
+  available: AvailableRelease.nullable(),
+});
+export type GetAvailableReleaseResponse = z.infer<
+  typeof GetAvailableReleaseResponse
+>;
 
 // --- sidecar:ping ---------------------------------------------------------
 
@@ -7870,6 +7902,10 @@ export const ipcSchemas = {
     request: AppInfoRequest,
     response: AppInfoResponse,
   },
+  [IpcChannel.GetAvailableRelease]: {
+    request: GetAvailableReleaseRequest,
+    response: GetAvailableReleaseResponse,
+  },
   [IpcChannel.SidecarPing]: {
     request: SidecarPingRequest,
     response: SidecarPingResponse,
@@ -8247,6 +8283,7 @@ export type IpcSchemas = typeof ipcSchemas;
 /** Typed surface exposed on `window.printFarmer` by the preload bridge. */
 export interface PrintFarmerApi {
   getAppInfo(): Promise<AppInfoResponse>;
+  getAvailableRelease(): Promise<GetAvailableReleaseResponse>;
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
   loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
   openModelFile(): Promise<OpenModelFileResponse>;

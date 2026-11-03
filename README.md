@@ -251,6 +251,13 @@ installer or universal macOS ZIP before staging it. See
 [Signed releases](./docs/RELEASES.md) for credential names, release ordering,
 failure behavior, and interrupted-update recovery.
 
+Separately, every build shows a lightweight "update available" notice in the
+status bar when a newer GitHub release with an installer for its platform is
+published on its release train. Beta builds are told about newer betas and any
+newer stable release; stable builds are told only about newer stable releases.
+The notice links to the release page and can be dismissed per version. It never
+downloads or installs anything.
+
 ## License and source
 
 PrintFarmer Desktop is licensed under
