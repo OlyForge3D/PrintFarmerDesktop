@@ -24,7 +24,7 @@ A packaged Windows and macOS desktop application, run at a workstation beside ac
 
 Printer Calibration walks one printer, toolhead, nozzle, and filament through nine stages, records what the operator observed at each, and produces a deterministic OrcaSlicer filament profile from the results. Stage definitions follow upstream OrcaSlicer behaviour; the app bundles no third-party calibration models and is not a wrapper around another tool.
 
-The Snapmaker U1 workflow prepares a new review copy of an Orca-family 3MF from a pinned bundled snapshot. It is local-only: nothing is uploaded and no profile is downloaded at runtime.
+The Snapmaker U1 workflow prepares a new review copy of a Bambu-targeted Orca-family 3MF from a pinned bundled snapshot. Other or unidentified printer targets are not eligible. It is local-only: nothing is uploaded and no profile is downloaded at runtime.
 
 Drafting works offline, but offline or stale state is never presented as readiness.
 

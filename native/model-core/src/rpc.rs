@@ -322,6 +322,8 @@ impl From<&vendor::PlateSliceInfo> for PlateSliceInfoDto {
 pub struct VendorMetadataDto {
     /// Slicer identity as a camelCase string enum (e.g. `"bambuStudio"`).
     pub slicer: String,
+    /// Printer family identified from embedded project settings.
+    pub printer_target: String,
     pub core: CoreMetadataDto,
     pub plates: Vec<PlateSliceInfoDto>,
     /// ZIP part names of embedded plate thumbnails, sorted for determinism.
@@ -332,6 +334,7 @@ impl From<&vendor::VendorMetadata> for VendorMetadataDto {
     fn from(m: &vendor::VendorMetadata) -> Self {
         Self {
             slicer: m.slicer.as_str().to_string(),
+            printer_target: m.printer_target.as_str().to_string(),
             core: CoreMetadataDto::from(&m.core),
             plates: m.plates.iter().map(PlateSliceInfoDto::from).collect(),
             thumbnails: m.parts.thumbnails.clone(),
@@ -763,6 +766,7 @@ mod tests {
     fn vendor_metadata_dto_serializes_camel_case_and_omits_empty() {
         let md = vendor::VendorMetadata {
             slicer: vendor::Slicer::OrcaSlicer,
+            printer_target: vendor::PrinterTarget::Bambu,
             core: vendor::CoreMetadata {
                 title: Some("Widget".to_string()),
                 application: Some("OrcaSlicer-2.1.0".to_string()),
@@ -781,6 +785,7 @@ mod tests {
         let dto = VendorMetadataDto::from(&md);
         let json = serde_json::to_string(&dto).unwrap();
         assert!(json.contains("\"slicer\":\"orcaSlicer\""));
+        assert!(json.contains("\"printerTarget\":\"bambu\""));
         assert!(json.contains("\"predictionSeconds\":3600"));
         assert!(json.contains("\"weightGrams\":12.5"));
         assert!(json.contains("\"filamentTypes\":[\"PLA\"]"));

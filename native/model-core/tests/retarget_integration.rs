@@ -810,6 +810,46 @@ fn missing_sources_use_stable_source_not_found_code() {
 }
 
 #[test]
+fn preflight_uses_valid_fallback_when_primary_printer_identity_is_unusable() {
+    let engine = engine();
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("fallback-printer.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    for primary in [
+        json!(""),
+        json!(" \t "),
+        Value::Null,
+        json!([]),
+        json!([""]),
+        json!([null]),
+        json!(12),
+        json!(false),
+        json!({}),
+    ] {
+        mutate_project_settings(&source, |settings| {
+            settings["printer_model"] = primary.clone();
+            settings["printer_settings_id"] = json!(["Bambu Lab P1S 0.4 nozzle"]);
+        });
+        let report = engine
+            .preflight(&source, RetargetOptions::default())
+            .unwrap();
+        assert!(report.accepted, "primary: {primary}; {:?}", report.blockers);
+    }
+
+    mutate_project_settings(&source, |settings| {
+        settings["printer_model"] = Value::Null;
+        settings["printer_settings_id"] = json!([]);
+    });
+    let report = engine
+        .preflight(&source, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|issue| issue.title == "Missing source machine identity"));
+}
+
+#[test]
 fn preflight_blocks_inconsistent_per_filament_arrays() {
     let engine = engine();
     let target = target_id(&engine);

@@ -149,6 +149,85 @@ describe('catalog multi-selection and upload queue UI', () => {
     expect(reset).toHaveBeenCalledOnce();
   });
 
+  it('reports uploading and paused work instead of calling the queue empty', () => {
+    const job = uploadJob();
+    job.items[0]!.state = 'uploading';
+    job.items[0]!.bytesSent = 42;
+    job.summary = {
+      queued: 0,
+      uploading: 1,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      uncertain: 0,
+    };
+    const { rerender } = render(
+      <UploadsWorkspace
+        jobs={[job]}
+        busy={false}
+        error={null}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onConfirmLegacyRetry={vi.fn()}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onGoToLibrary={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('1 uploading.');
+    expect(
+      screen.getByText('1 model remaining to transfer to PrintFarmer.'),
+    ).toBeVisible();
+
+    job.paused = true;
+    job.state = 'paused';
+    rerender(
+      <UploadsWorkspace
+        jobs={[job]}
+        busy={false}
+        error={null}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onConfirmLegacyRetry={vi.fn()}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onGoToLibrary={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('1 paused.');
+    expect(
+      screen.getByText('1 model remaining to transfer to PrintFarmer.'),
+    ).toBeVisible();
+  });
+
+  it('shows the same remaining upload count in navigation and system status', async () => {
+    const job = uploadJob();
+    job.items[0]!.state = 'uploading';
+    job.summary = {
+      queued: 1,
+      uploading: 1,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      uncertain: 0,
+    };
+    installApi({ listUploadJobs: vi.fn().mockResolvedValue([job]) });
+    render(<App />);
+
+    expect(
+      await screen.findByRole('button', {
+        name: 'Uploads 2 uploads remaining',
+      }),
+    ).toBeVisible();
+    expect(screen.getByLabelText('Application status')).toHaveTextContent(
+      '2 uploads remaining',
+    );
+  });
+
   it('manages source folders in their own place and confirms catalog reset inline', async () => {
     const resetCatalog = vi.fn().mockResolvedValue({
       reset: true,

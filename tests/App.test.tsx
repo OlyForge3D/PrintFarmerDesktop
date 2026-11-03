@@ -620,6 +620,32 @@ describe('<App />', () => {
     expect(addFolder).toHaveFocus();
   });
 
+  it('uses plain-language setup guidance that preserves the source files', () => {
+    render(
+      <LibraryOnboarding
+        busy={false}
+        onAddFolder={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'Set up your model library',
+    });
+    expect(dialog).toHaveTextContent(
+      'Choose a folder that contains your models. Your original files stay where they are.',
+    );
+    expect(dialog).toHaveTextContent(
+      'Choose how subfolders should organize your models as collections or tags before scanning.',
+    );
+    expect(dialog).toHaveTextContent(
+      'You can add or remove folders from the sidebar whenever you need.',
+    );
+    expect(dialog).not.toHaveTextContent(
+      /source root|keep roots healthy|remove roots/i,
+    );
+  });
+
   it('opens server profiles from the sidebar and excludes the workspace', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
@@ -1504,62 +1530,99 @@ describe('<App />', () => {
     );
   });
 
-  it('shows detected slicer metadata after selecting a 3MF model', async () => {
-    const project: LogicalModel = {
-      hash: 'project',
-      format: 'threeMf',
-      size: 4096,
-      locations: [
-        {
-          rootId: 'root',
-          path: 'C:\\models\\project.3mf',
-          rootRelative: 'project.3mf',
-          size: 4096,
-          available: true,
-        },
-      ],
-    };
-    const extractVendorMetadata = vi.fn().mockResolvedValue({
-      slicer: 'orcaSlicer',
-      core: { application: 'OrcaSlicer-2.3.0' },
-      plates: [],
-      thumbnails: [],
-    });
-    const loadScene = vi.fn();
-    installApi({
-      getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 2,
-        appVersion: '0.1.0',
-        platform: 'win32',
-        electronVersion: '33.0.0',
-      }),
-      listModels: vi.fn().mockResolvedValue([project]),
-      renderThumbnail: vi.fn().mockResolvedValue({
-        width: 256,
-        height: 256,
-        pngBase64: 'AAAA',
-      }),
-      tagsForModel: vi.fn().mockResolvedValue([]),
-      listCollections: vi.fn().mockResolvedValue([]),
-      collectionsForModel: vi.fn().mockResolvedValue([]),
-      extractVendorMetadata,
-      loadScene,
-    });
+  it.each([
+    ['bambu', 'orcaSlicer', true, false],
+    ['other', 'bambuStudio', false, false],
+    ['unknown', 'bambuStudio', false, false],
+    ['unknown', 'bambuStudio', false, true],
+  ] as const)(
+    'gates Snapmaker preparation on printer target (%s), not slicer (%s)',
+    async (printerTarget, slicer, retargetEligible, metadataFails) => {
+      const project: LogicalModel = {
+        hash: 'project',
+        format: 'threeMf',
+        size: 4096,
+        locations: [
+          {
+            rootId: 'root',
+            path: 'C:\\models\\project.3mf',
+            rootRelative: 'project.3mf',
+            size: 4096,
+            available: true,
+          },
+        ],
+      };
+      const extractVendorMetadata = vi.fn().mockResolvedValue({
+        slicer,
+        printerTarget,
+        core: { application: `${slicer}-2.3.0` },
+        plates: [],
+        thumbnails: [],
+      });
+      if (metadataFails) {
+        extractVendorMetadata.mockRejectedValue(
+          new Error('Project settings are unreadable'),
+        );
+      }
+      const loadScene = vi.fn();
+      installApi({
+        getAppInfo: vi.fn().mockResolvedValue({
+          contractVersion: 2,
+          appVersion: '0.1.0',
+          platform: 'win32',
+          electronVersion: '33.0.0',
+        }),
+        listModels: vi.fn().mockResolvedValue([project]),
+        renderThumbnail: vi.fn().mockResolvedValue({
+          width: 256,
+          height: 256,
+          pngBase64: 'AAAA',
+        }),
+        tagsForModel: vi.fn().mockResolvedValue([]),
+        listCollections: vi.fn().mockResolvedValue([]),
+        collectionsForModel: vi.fn().mockResolvedValue([]),
+        extractVendorMetadata,
+        loadScene,
+      });
 
-    render(<App />);
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Select project.3mf' }),
-    );
+      render(<App />);
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Select project.3mf' }),
+      );
 
-    const inspector = screen.getByLabelText('Model properties');
-    await waitFor(() =>
-      expect(within(inspector).getByText('OrcaSlicer')).toBeVisible(),
-    );
-    expect(extractVendorMetadata).toHaveBeenCalledWith({
-      path: 'C:\\models\\project.3mf',
-    });
-    expect(loadScene).not.toHaveBeenCalled();
-  });
+      const inspector = screen.getByLabelText('Model properties');
+      if (metadataFails) {
+        expect(await within(inspector).findByRole('alert')).toHaveTextContent(
+          'Project metadata could not be read: Project settings are unreadable',
+        );
+      } else {
+        await waitFor(() =>
+          expect(
+            within(inspector).getByText(
+              slicer === 'orcaSlicer' ? 'OrcaSlicer' : 'Bambu Studio',
+            ),
+          ).toBeVisible(),
+        );
+      }
+      if (retargetEligible) {
+        expect(
+          within(inspector).getByRole('button', {
+            name: 'Prepare for Snapmaker U1',
+          }),
+        ).toBeVisible();
+      } else {
+        expect(
+          within(inspector).queryByRole('button', {
+            name: 'Prepare for Snapmaker U1',
+          }),
+        ).not.toBeInTheDocument();
+      }
+      expect(extractVendorMetadata).toHaveBeenCalledWith({
+        path: 'C:\\models\\project.3mf',
+      });
+      expect(loadScene).not.toHaveBeenCalled();
+    },
+  );
 
   it('previews folder rules before confirming a smart import', async () => {
     const selectedPath = 'C:\\SmartImportRoot';

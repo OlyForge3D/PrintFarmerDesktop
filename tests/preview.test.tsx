@@ -111,6 +111,22 @@ function baseProps(): PreviewWorkspaceProps {
 }
 
 describe('<PreviewWorkspace />', () => {
+  it('only shows Snapmaker preparation when the selected project is eligible', () => {
+    const props = baseProps();
+    const { rerender } = render(
+      <PreviewWorkspace {...props} retargetEligible={false} />,
+    );
+
+    expect(
+      screen.queryByRole('button', { name: 'Prepare for Snapmaker U1' }),
+    ).not.toBeInTheDocument();
+
+    rerender(<PreviewWorkspace {...props} retargetEligible />);
+    expect(
+      screen.getByRole('button', { name: 'Prepare for Snapmaker U1' }),
+    ).toBeVisible();
+  });
+
   it('contains focus, cycles Tab, and closes on Escape', () => {
     const onClose = vi.fn();
     const props: PreviewWorkspaceProps = {

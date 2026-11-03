@@ -65,6 +65,7 @@ import {
   type CollectionTargetKind,
 } from './library/CollectionManager';
 import { UploadsWorkspace } from './uploads/UploadsWorkspace';
+import { summarizeUploadJobs } from './uploads/uploadSummary';
 import { OrganizationWorkspace } from './library/OrganizationWorkspace';
 import { RetargetWorkflow } from './retarget/RetargetWorkflow';
 import type { RetargetTarget } from './retarget/useRetargetWorkflow';
@@ -277,27 +278,6 @@ export function App(): React.JSX.Element {
     },
     [],
   );
-  const openRetarget = useCallback(
-    (model: LogicalModel, fromPreview = false): void => {
-      const target = retargetIdentity(model);
-      if (!target) return;
-      retargetReturnFocusRef.current =
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null;
-      if (fromPreview) {
-        setPreviewOpen(false);
-        setReturnToPreview(true);
-        setModalOwner('retarget');
-      } else {
-        if (reserveModal('retargetPreparation') === null) return;
-        setModalOwner('retarget');
-        setReturnToPreview(false);
-      }
-      setRetargetTarget(target);
-    },
-    [reserveModal, retargetIdentity, setModalOwner],
-  );
   const closeRetarget = useCallback((): void => {
     setRetargetTarget(null);
     if (returnToPreview) {
@@ -350,6 +330,43 @@ export function App(): React.JSX.Element {
       : previewTarget && previewVendorState.sourcePath === previewTarget.path
         ? previewVendorState.metadata
         : null;
+  const selectedRetargetEligible =
+    selectedModel !== null &&
+    retargetIdentity(selectedModel) !== null &&
+    selectedVendor?.printerTarget === 'bambu';
+  const openRetarget = useCallback(
+    (model: LogicalModel, fromPreview = false): void => {
+      const target = retargetIdentity(model);
+      if (
+        !target ||
+        model.hash !== selectedModel?.hash ||
+        selectedVendor?.printerTarget !== 'bambu'
+      ) {
+        return;
+      }
+      retargetReturnFocusRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      if (fromPreview) {
+        setPreviewOpen(false);
+        setReturnToPreview(true);
+        setModalOwner('retarget');
+      } else {
+        if (reserveModal('retargetPreparation') === null) return;
+        setModalOwner('retarget');
+        setReturnToPreview(false);
+      }
+      setRetargetTarget(target);
+    },
+    [
+      reserveModal,
+      retargetIdentity,
+      selectedModel,
+      selectedVendor?.printerTarget,
+      setModalOwner,
+    ],
+  );
 
   useEffect(() => {
     if (selectedModel && selectedVendor) {
@@ -1113,10 +1130,7 @@ export function App(): React.JSX.Element {
       )
       .finally(() => setUploadBusy(false));
   };
-  const queuedUploadCount = uploadJobs.reduce(
-    (count, job) => count + job.summary.queued + job.summary.uploading,
-    0,
-  );
+  const uploadSummary = summarizeUploadJobs(uploadJobs);
 
   const dismissOnboarding = useCallback(() => {
     setOnboardingDismissed(true);
@@ -1191,11 +1205,11 @@ export function App(): React.JSX.Element {
               : 'Ready';
   const workspaceBadges: Partial<Record<WorkspaceId, WorkspaceBadge>> = {
     uploads: {
-      count: queuedUploadCount,
+      count: uploadSummary.remaining,
       tone: 'neutral',
-      description: `${queuedUploadCount} ${
-        queuedUploadCount === 1 ? 'upload' : 'uploads'
-      } in progress`,
+      description: `${uploadSummary.remaining} ${
+        uploadSummary.remaining === 1 ? 'upload' : 'uploads'
+      } remaining`,
     },
     sources: {
       count: sourcesNeedingAttention,
@@ -1550,16 +1564,18 @@ export function App(): React.JSX.Element {
                   }
                   stats={inspectedStats}
                   vendorMetadata={inspectedVendor}
+                  vendorMetadataError={
+                    selectedPath &&
+                    selectedVendorState.sourcePath === selectedPath
+                      ? selectedVendorState.error
+                      : null
+                  }
                   tags={modelTags.tags}
                   collections={modelCollections.all}
                   collectionMembership={modelCollections.membership}
                   organizationError={organizationError}
                   previewDisabled={workspaceActionsDisabled}
-                  retargetEligible={
-                    selectedModel
-                      ? retargetIdentity(selectedModel) !== null
-                      : false
-                  }
+                  retargetEligible={selectedRetargetEligible}
                   onToggleFavorite={() => {
                     if (selectedModel) {
                       void toggleFavorite(selectedModel.hash);
@@ -1707,7 +1723,7 @@ export function App(): React.JSX.Element {
           busy={busy || uploadBusy}
           error={appError}
           serverProfile={activeServer}
-          uploadsInFlight={queuedUploadCount}
+          uploadsRemaining={uploadSummary.remaining}
           sourcesNeedingAttention={sourcesNeedingAttention}
           appInfo={info}
         />
@@ -1762,9 +1778,7 @@ export function App(): React.JSX.Element {
           retargetEligible={
             previewTarget.hash !== null &&
             previewTarget.hash === selectedModel?.hash &&
-            selectedModel
-              ? retargetIdentity(selectedModel) !== null
-              : false
+            selectedRetargetEligible
           }
           onRetarget={() => {
             if (selectedModel) openRetarget(selectedModel, true);

@@ -17,6 +17,7 @@ import { modelPage, withModelPaging } from './helpers/libraryPage';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { PropertiesInspector } from '../src/renderer/library/PropertiesInspector.js';
+import { LibrarySidebar } from '../src/renderer/library/LibrarySidebar.js';
 import { TagEditor } from '../src/renderer/library/TagEditor.js';
 import { CollectionEditor } from '../src/renderer/library/CollectionEditor.js';
 import { ModelStats } from '../src/renderer/library/ModelStats.js';
@@ -1505,6 +1506,77 @@ describe('<ModelGrid />', () => {
 });
 
 describe('<PropertiesInspector />', () => {
+  it('makes preview primary and hides U1 preparation when ineligible', () => {
+    installApi({
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('no renderer')),
+    });
+    render(
+      <PropertiesInspector
+        model={model()}
+        favorite={false}
+        stats={null}
+        vendorMetadata={null}
+        tags={[]}
+        collections={[]}
+        collectionMembership={new Set()}
+        organizationError={null}
+        previewDisabled={false}
+        retargetEligible={false}
+        onToggleFavorite={vi.fn()}
+        onPreview={vi.fn()}
+        onRetarget={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onToggleCollection={vi.fn()}
+        onCreateCollection={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Preview in 3D' })).toHaveClass(
+      'primary',
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Prepare for Snapmaker U1' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Requires an available cataloged editable 3MF.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps eligible U1 preparation visible but disabled while busy', () => {
+    installApi({
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('no renderer')),
+    });
+    render(
+      <PropertiesInspector
+        model={model()}
+        favorite={false}
+        stats={null}
+        vendorMetadata={null}
+        tags={[]}
+        collections={[]}
+        collectionMembership={new Set()}
+        organizationError={null}
+        previewDisabled
+        retargetEligible
+        onToggleFavorite={vi.fn()}
+        onPreview={vi.fn()}
+        onRetarget={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onToggleCollection={vi.fn()}
+        onCreateCollection={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Prepare for Snapmaker U1' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText('Unavailable while another operation is in progress.'),
+    ).toBeVisible();
+  });
+
   it('bounds the rendered duplicate-location list', () => {
     installApi({
       renderThumbnail: vi.fn().mockRejectedValue(new Error('no renderer')),
@@ -1606,6 +1678,64 @@ describe('<PropertiesInspector />', () => {
     expect(sections.indexOf('Collections')).toBeLessThan(
       sections.indexOf('Tags'),
     );
+  });
+});
+
+describe('<LibrarySidebar /> organization filters', () => {
+  it('keeps selected scopes visible and exposes full names without changing OR semantics', () => {
+    const onCollectionsChange = vi.fn();
+    const collectionName =
+      'Very long collection name that should remain discoverable';
+    render(
+      <LibrarySidebar
+        query=""
+        filter="all"
+        counts={{
+          all: 0,
+          favorites: 0,
+          stl: 0,
+          threeMf: 0,
+          obj: 0,
+          step: 0,
+          duplicates: 0,
+          missing: 0,
+        }}
+        scanningFolder={null}
+        busy={false}
+        sourceRoots={[]}
+        onQueryChange={vi.fn()}
+        onFilterChange={vi.fn()}
+        onAddFolder={vi.fn()}
+        collections={[
+          {
+            id: 'collection-1',
+            name: collectionName,
+            sharedToFarm: false,
+            memberCount: 3,
+          },
+        ]}
+        selectedCollections={['collection-1']}
+        onCollectionsChange={onCollectionsChange}
+        tags={[{ id: 'tag-1', name: 'Miniatures' }]}
+        selectedTags={['tag-1']}
+        onTagsChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText('Tag and collection scopes are combined.'),
+    ).toBeVisible();
+    expect(screen.getByText(collectionName)).toHaveAttribute(
+      'title',
+      collectionName,
+    );
+    const collectionFilter = screen.getByRole('group', {
+      name: 'Collections filter',
+    });
+    const collectionCheckbox = within(collectionFilter).getByRole('checkbox');
+    expect(collectionCheckbox).toBeChecked();
+    fireEvent.click(collectionCheckbox);
+    expect(onCollectionsChange).toHaveBeenCalledWith([]);
   });
 });
 
@@ -1980,6 +2110,28 @@ describe('useVendorMetadata', () => {
     const none = renderHook(() => useVendorMetadata(null, null));
     expect(none.result.current.metadata).toBeNull();
     expect(extractVendorMetadata).not.toHaveBeenCalled();
+  });
+
+  it('associates extraction errors with their source and clears them on selection change', async () => {
+    installApi({
+      extractVendorMetadata: vi
+        .fn()
+        .mockRejectedValue(new Error('Invalid 3MF')),
+    });
+    const { result, rerender } = renderHook(
+      ({ path }) => useVendorMetadata(path, 'threeMf'),
+      { initialProps: { path: 'C:\\models\\broken.3mf' } },
+    );
+    await waitFor(() => expect(result.current.error).toBe('Invalid 3MF'));
+    expect(result.current.metadata).toBeNull();
+    expect(result.current.sourcePath).toBe('C:\\models\\broken.3mf');
+
+    rerender({ path: 'C:\\models\\other.3mf' });
+    expect(result.current.error).toBeNull();
+    expect(result.current.sourcePath).toBeNull();
+    await waitFor(() =>
+      expect(result.current.sourcePath).toBe('C:\\models\\other.3mf'),
+    );
   });
 });
 

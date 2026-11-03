@@ -162,11 +162,14 @@ impl ProjectInspection {
                 match parse_project_settings(&part.bytes, limits.max_settings) {
                     Ok(parsed) => {
                         settings = parsed;
-                        machine_id = settings
-                            .get("printer_settings_id")
-                            .or_else(|| settings.get("printer_model"))
-                            .and_then(SettingValue::first)
-                            .filter(|value| !value.trim().is_empty())
+                        machine_id = ["printer_settings_id", "printer_model"]
+                            .iter()
+                            .find_map(|key| {
+                                settings
+                                    .get(*key)
+                                    .and_then(SettingValue::first)
+                                    .filter(|value| !value.trim().is_empty())
+                            })
                             .map(str::to_string);
                         process_id = settings
                             .get("print_settings_id")
@@ -323,6 +326,10 @@ fn parse_project_settings(
     }
     object
         .iter()
+        .filter(|(key, value)| {
+            !matches!(key.as_str(), "printer_model" | "printer_settings_id")
+                || vendor::printer_setting_text(value).is_some()
+        })
         .map(|(key, value)| {
             normalize_source_value(value)
                 .map(|value| (key.clone(), value))
@@ -375,12 +382,12 @@ fn validate_required_settings(
     layer_height: Option<f64>,
     blockers: &mut Vec<RetargetIssue>,
 ) {
-    if settings
-        .get("printer_model")
-        .or_else(|| settings.get("printer_settings_id"))
-        .and_then(SettingValue::first)
-        .is_none_or(|value| value.trim().is_empty())
-    {
+    if !["printer_model", "printer_settings_id"].iter().any(|key| {
+        settings
+            .get(*key)
+            .and_then(SettingValue::first)
+            .is_some_and(|value| !value.trim().is_empty())
+    }) {
         blockers.push(
             RetargetIssue::blocker(
                 IssueCode::IncompleteProject,
