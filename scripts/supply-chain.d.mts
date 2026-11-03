@@ -40,6 +40,9 @@ export interface NpmReconciliation {
 export interface ShippedCargoFeatures {
   fromStagingScript: string[] | null;
   fromReleaseWorkflow: string[] | null;
+  fromUniversalScript: string[] | null;
+  fromPackageWorkflow: string[] | null;
+  fromQualificationWorkflow: string[] | null;
 }
 
 export function compareByCodeUnit(a: string, b: string): number;

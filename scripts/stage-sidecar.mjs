@@ -12,7 +12,7 @@
 // Set PRINTFARMER_SIDECAR_SOURCE to stage a different prebuilt binary, such as
 // the lipo-combined universal macOS release sidecar.
 //
-// The build enables the `sqlite` feature so the shipped sidecar can persist the
+// The build enables `step` for experimental STEP import and `sqlite` to persist the
 // model catalog on disk (the bundled SQLite driver needs a C toolchain, which CI
 // runners and developer machines with a platform C compiler already have). This
 // script does not yet stage native `lib3mf` shared libraries, so packaged builds
@@ -41,7 +41,7 @@ export const SIDECAR_BUILD_ARGS = Object.freeze([
   '-p',
   'model-core',
   '--features',
-  'sqlite',
+  'sqlite,step',
 ]);
 
 function buildSidecar() {

@@ -143,8 +143,10 @@ lockfiles as supply-chain surface; §10's re-read trigger names the lockfiles fo
 since a transitive decoder can arrive through a version bump that touches no manifest.
 
 1. **Rust decoders, from `native/model-core/Cargo.toml`.** The shipped build is
-   `--features sqlite` (`scripts/stage-sidecar.mjs:38`, `.github/workflows/release.yml:47`),
-   which excludes `truck-*` (STEP) and `lib3mf-ffi`. What remains that can consume bytes:
+   `--features sqlite,step` (local staging, universal macOS, release, CI package and
+   GPU qualification builds), which excludes `lib3mf-ffi` but includes the experimental
+   STEP decoder: `truck-stepio` / `ruststep`, `truck-meshalgo`, `truck-topology` and
+   their CAD-kernel dependencies. Other byte consumers include
    `zip`, `quick-xml`, `serde_json`, `png`, `base64`, `rusqlite`. Everything else in the
    manifest — `sha2`, `walkdir`, `notify`, `same-file`, `thiserror`, `serde`, `tempfile`,
    `libloading` — either does not decode untrusted bytes or, in `libloading`'s case, belongs to
@@ -534,8 +536,10 @@ outcomes are denial of service, resource exhaustion, and logic corruption rather
 corruption. `unsafe` appears in exactly one module, `native/model-core/src/threemf_lib3mf.rs`,
 which is the optional `lib3mf` FFI path. That module is not merely off by default: the feature
 is `optional` with no `default` feature set, and both `scripts/stage-sidecar.mjs:38` and
-`.github/workflows/release.yml:47` build `--features sqlite`, so **no `unsafe` code ships at
-all**. (Beware the synonym trap when checking this: `retarget/{archive,guardrails,profile}.rs`
+`.github/workflows/release.yml` build `--features sqlite,step`, so the application's
+optional unsafe lib3mf module does not ship. This does not claim that third-party
+Rust dependencies or bundled C SQLite contain no unsafe code.
+(Beware the synonym trap when checking this: `retarget/{archive,guardrails,profile}.rs`
 match a search for `unsafe` because they use the identifiers `unsafe_path_error` and
 `unsafe_value`, which are error constructors, not unsafe blocks.)
 
@@ -625,13 +629,20 @@ That commit is pre-squash, so no branch reaches it; fetch it with
 **Controls.** The limits bound the obvious cases. Beyond them, correctness rests entirely on
 hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, and `vendor.rs`.
 
-`step.rs` is the exception on two counts, and both narrow the fuzzing scope. It is gated behind
-`#[cfg(feature = "step")]` (`native/model-core/src/lib.rs:25`), and neither
-`scripts/stage-sidecar.mjs:38` nor `.github/workflows/release.yml:47` enables that feature — so
-the **shipped** sidecar exposes four hand-written byte entry points, not five. It is also not
-hand-written: it delegates to the `truck-*` CAD kernel, which makes STEP primarily an A5
-supply-chain surface (T4.1) rather than an A1 parsing surface. Fuzzing a module that does not
-ship, to exercise a third-party kernel, is the wrong place to spend the effort first.
+`step.rs` now ships behind the enabled `step` feature and delegates parsing and
+tessellation to the `truck-*` CAD kernel. It is both an A1 untrusted-input decoder
+and an A5 supply-chain surface (T4.1), and belongs in the fuzzing scope.
+Existing guards reject empty DATA sections, non-finite or greater-than-1-km shell
+extents before tessellation, and output above 20 million vertices / 40 million
+triangles. **Residual risk:** unlike the guarded STL/3MF paths, STEP reads the
+entire input without a byte cap and does not apply `limits.rs` deadlines or
+cancellation inside upstream parsing/conversion/tessellation. Output caps run
+after tessellation allocates its mesh; extent checks do not bound CAD complexity.
+A hostile STEP file can therefore exhaust sidecar memory/CPU or trigger an
+upstream panic before those caps apply. Enabling STEP accepts this denial-of-service
+exposure; existing sidecar process isolation is not a hard resource budget.
+Support is experimental: raw shells only, with no assembly transforms or product
+structure reconstruction.
 
 **Coverage. This is the real gap.** Coverage is example-based: fixtures encode the shapes their
 authors imagined. There is no fuzzing anywhere in the tree. The recorded lesson from #69 is
@@ -938,7 +949,7 @@ filtered by manifest section:
 1. **npm under-claims.** `electron` is a `devDependency` and ships as the entire Chromium/Node
    runtime. Any "production dependencies" filter omits the largest shipped component.
 2. **cargo over-claims.** `rusqlite`, `truck-*` and `lib3mf-ffi` are optional; the shipped
-   build enables `--features sqlite` only. Resolving with `--all-features` would list crates
+   build enables `--features sqlite,step`, not `lib3mf`. Resolving with `--all-features` would list crates
    the release binary does not contain.
 3. **Both miss a category entirely.** `rusqlite`'s `bundled` feature vendors C SQLite, which is
    a component of neither package graph. It is derived from cargo's own `links` metadata rather

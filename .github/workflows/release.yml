@@ -96,7 +96,7 @@ jobs:
       - name: Build Windows sidecar (release)
         if: runner.os == 'Windows'
         working-directory: native
-        run: cargo build --locked --release -p model-core --features sqlite
+        run: cargo build --locked --release -p model-core --features sqlite,step
 
       - name: Add universal macOS Rust targets
         if: runner.os == 'macOS'

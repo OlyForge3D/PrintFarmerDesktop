@@ -74,7 +74,7 @@ jobs:
           retention-days: 90
 
       - name: Build release sidecar
-        run: cargo build --manifest-path native/Cargo.toml --locked --release -p model-core --features sqlite
+        run: cargo build --manifest-path native/Cargo.toml --locked --release -p model-core --features sqlite,step
 
       - name: Package hardware-test application
         env:

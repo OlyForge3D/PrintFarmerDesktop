@@ -9,16 +9,24 @@
 //
 //   * `electron` is declared under `devDependencies` and ships as the entire
 //     Chromium/Node runtime. Filtering by manifest section UNDER-claims.
-//   * `truck-*` and `lib3mf-ffi` are ordinary cargo dependencies that the
+//   * `lib3mf-ffi` is an ordinary cargo dependency that the
 //     shipped feature set never enables. Resolving `--all-features`
 //     OVER-claims.
 //
 // Names below state the axis each test varies, not the risk it has in mind.
 
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { resolveShippedFeatures } from '../scripts/generate-sbom.mjs';
 import {
   buildSbom,
   compareByCodeUnit,
@@ -241,12 +249,59 @@ describe('two independent enumerations of the production tree agree', () => {
 
 describe('the cargo set is bound to the feature set that actually ships', () => {
   it('builds the same cargo features when packaging as when releasing', () => {
-    const { fromStagingScript, fromReleaseWorkflow } =
-      readShippedCargoFeatures(repoRoot);
-    expect(fromStagingScript).not.toBeNull();
-    expect(fromReleaseWorkflow).not.toBeNull();
-    expect(fromStagingScript).toEqual(fromReleaseWorkflow);
+    const builds = readShippedCargoFeatures(repoRoot);
+    for (const features of Object.values(builds)) {
+      expect(features).toEqual(['sqlite', 'step']);
+    }
   });
+
+  it.each([
+    'scripts/stage-sidecar.mjs',
+    'scripts/build-universal-sidecar.mjs',
+    '.github/workflows/release.yml',
+    '.github/workflows/ci.yml',
+    '.github/workflows/release-gpu-qualification.yml',
+  ])(
+    'rejects feature drift or an unreadable feature flag in %s',
+    (changedPath) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'shipped-features-'));
+      try {
+        for (const filename of [
+          'scripts/stage-sidecar.mjs',
+          'scripts/build-universal-sidecar.mjs',
+          '.github/workflows/release.yml',
+          '.github/workflows/ci.yml',
+          '.github/workflows/release-gpu-qualification.yml',
+        ]) {
+          const destination = path.join(root, filename);
+          mkdirSync(path.dirname(destination), { recursive: true });
+          writeFileSync(
+            destination,
+            readFileSync(path.join(repoRoot, filename)),
+          );
+        }
+        expect(resolveShippedFeatures(root)).toEqual(['sqlite', 'step']);
+        const original = readFileSync(path.join(root, changedPath), 'utf8');
+        expect(original).toContain('sqlite,step');
+        writeFileSync(
+          path.join(root, changedPath),
+          original.replaceAll('sqlite,step', 'sqlite'),
+        );
+        expect(() => resolveShippedFeatures(root)).toThrow(
+          'one SBOM cannot describe both',
+        );
+        writeFileSync(
+          path.join(root, changedPath),
+          original.replaceAll('--features', '--missing-features'),
+        );
+        expect(() => resolveShippedFeatures(root)).toThrow(
+          'could not read the shipped cargo feature set',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('follows normal edges while excluding dev-only and build-only ones', () => {
     const { components } = deriveShippedCargoComponents(cargoMetadataFixture());

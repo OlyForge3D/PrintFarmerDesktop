@@ -343,13 +343,13 @@ export function reconcileNpmProduction(lock, npmLsTree) {
 }
 
 /**
- * The cargo feature set that reaches a release, read from the two places that
+ * The cargo feature set that reaches a release, read from the places that
  * actually build it rather than restated here.
  *
  * `scripts/stage-sidecar.mjs` builds the sidecar that `electron-forge package`
  * stages, and `.github/workflows/release.yml` builds the one published on a
- * tag. If those two ever disagree, the SBOM would describe a configuration that
- * nothing ships, so the caller compares them instead of picking one.
+ * tag. Universal macOS, CI packaging and GPU qualification must agree too:
+ * the caller compares them instead of picking one.
  */
 export function readShippedCargoFeatures(repoRoot) {
   const stageText = readFileSync(
@@ -365,6 +365,18 @@ export function readShippedCargoFeatures(repoRoot) {
   const releaseMatch = /cargo build[^\n]*?--features\s+([A-Za-z0-9_,-]+)/.exec(
     releaseText,
   );
+  const universalText = readFileSync(
+    path.join(repoRoot, 'scripts', 'build-universal-sidecar.mjs'),
+    'utf8',
+  );
+  const universalMatch = /'--features'\s*,\s*'([^']+)'/.exec(universalText);
+  const workflowFeatures = (filename) =>
+    /cargo build[^\n]*?--release[^\n]*?--features\s+([A-Za-z0-9_,-]+)/.exec(
+      readFileSync(
+        path.join(repoRoot, '.github', 'workflows', filename),
+        'utf8',
+      ),
+    );
 
   const split = (value) =>
     value
@@ -378,6 +390,11 @@ export function readShippedCargoFeatures(repoRoot) {
   return {
     fromStagingScript: split(stageMatch?.[1]),
     fromReleaseWorkflow: split(releaseMatch?.[1]),
+    fromUniversalScript: split(universalMatch?.[1]),
+    fromPackageWorkflow: split(workflowFeatures('ci.yml')?.[1]),
+    fromQualificationWorkflow: split(
+      workflowFeatures('release-gpu-qualification.yml')?.[1],
+    ),
   };
 }
 
@@ -388,8 +405,8 @@ export function readShippedCargoFeatures(repoRoot) {
  * Only `normal` dependency edges are followed. `dev` edges are test-only, and
  * `build` edges run on the build machine rather than shipping inside the
  * binary — six crates in this tree are build-only. Optional crates that the
- * shipped feature set does not enable (`truck-*` behind `step`, `lib3mf-ffi`
- * behind `lib3mf`) never appear, which is the point: resolving with
+ * shipped feature set does not enable (`lib3mf-ffi` behind `lib3mf`)
+ * never appear, which is the point: resolving with
  * `--all-features` would list crates the release binary does not contain.
  *
  * Proc-macro crates ARE included even though their own code runs at compile
