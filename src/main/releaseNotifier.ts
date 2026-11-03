@@ -1,3 +1,4 @@
+import { promises as fs } from 'node:fs';
 import { z } from 'zod';
 import { compareVersions } from './updateMetadata.js';
 import { fetchBoundedText } from './updates.js';
@@ -9,7 +10,14 @@ import { fetchBoundedText } from './updates.js';
  */
 
 export const RELEASES_API_URL =
-  'https://api.github.com/repos/OlyForge3D/PrintFarmerDesktop/releases?per_page=30';
+  'https://api.github.com/repos/OlyForge3D/PrintFarmerDesktop/releases?per_page=100';
+/**
+ * The newest stable release, fetched alongside the list so a stable release
+ * cannot fall off the first page behind a long run of prereleases. GitHub
+ * answers 404 while no stable release exists.
+ */
+export const LATEST_RELEASE_API_URL =
+  'https://api.github.com/repos/OlyForge3D/PrintFarmerDesktop/releases/latest';
 const RELEASE_PAGE_BASE =
   'https://github.com/OlyForge3D/PrintFarmerDesktop/releases/tag/';
 const MAX_RELEASES_BYTES = 4 * 1024 * 1024;
@@ -62,7 +70,9 @@ export function hasInstallerForPlatform(
 ): boolean {
   const lowered = assetNames.map((name) => name.toLowerCase());
   if (platform === 'win32') {
-    return lowered.some((name) => name.endsWith('.setup.exe'));
+    // Squirrel names it `<product>-<version> Setup.exe`; GitHub stores
+    // uploaded asset names with the space replaced by a dot.
+    return lowered.some((name) => name.endsWith('setup.exe'));
   }
   if (platform === 'darwin') {
     return lowered.some((name) => name.endsWith('.dmg'));
@@ -130,12 +140,30 @@ export function parseGitHubReleases(payload: string): GitHubRelease[] {
   return releases;
 }
 
+const PersistedCheck = z.object({
+  currentVersion: z.string(),
+  checkedAt: z.number(),
+  result: z
+    .object({
+      version: z.string(),
+      prerelease: z.boolean(),
+      url: z.string(),
+      publishedAt: z.string().nullable(),
+    })
+    .nullable(),
+});
+
 export interface ReleaseNotifierOptions {
   currentVersion: string;
   platform?: NodeJS.Platform;
   fetchImplementation?: typeof fetch;
   now?: () => number;
   checkIntervalMs?: number;
+  /**
+   * Where the last check is remembered across restarts, so relaunching the app
+   * does not re-query the unauthenticated (60 requests/hour/IP) GitHub API.
+   */
+  cacheFilePath?: string;
   onError?: (error: unknown) => void;
 }
 
@@ -151,6 +179,8 @@ export class ReleaseNotifier {
   private readonly now: () => number;
   private readonly checkIntervalMs: number;
   private readonly onError: (error: unknown) => void;
+  private readonly cacheFilePath: string | null;
+  private cacheLoaded = false;
   private lastCheckedAt: number | null = null;
   private lastResult: AvailableRelease | null = null;
   private inFlight: Promise<AvailableRelease | null> | null = null;
@@ -164,9 +194,11 @@ export class ReleaseNotifier {
     this.onError =
       options.onError ??
       ((error) => console.error('[releases] release check failed', error));
+    this.cacheFilePath = options.cacheFilePath ?? null;
   }
 
   async getAvailableRelease(): Promise<AvailableRelease | null> {
+    await this.loadPersistedCheck();
     if (
       this.lastCheckedAt !== null &&
       this.now() - this.lastCheckedAt < this.checkIntervalMs
@@ -179,22 +211,80 @@ export class ReleaseNotifier {
     return this.inFlight;
   }
 
+  private async loadPersistedCheck(): Promise<void> {
+    if (this.cacheLoaded || this.cacheFilePath === null) return;
+    this.cacheLoaded = true;
+    try {
+      const parsed = PersistedCheck.safeParse(
+        JSON.parse(await fs.readFile(this.cacheFilePath, 'utf8')),
+      );
+      if (
+        !parsed.success ||
+        parsed.data.currentVersion !== this.currentVersion ||
+        parsed.data.checkedAt > this.now()
+      ) {
+        return;
+      }
+      const cached = parsed.data.result;
+      // Re-derive rather than trust the file: only a release this build would
+      // still be offered survives.
+      this.lastResult =
+        cached &&
+        cached.url.startsWith(RELEASE_PAGE_BASE) &&
+        isEligibleRelease(this.currentVersion, cached.version)
+          ? cached
+          : null;
+      this.lastCheckedAt = parsed.data.checkedAt;
+    } catch {
+      // Missing or unreadable cache: check the network instead.
+    }
+  }
+
   private async check(): Promise<AvailableRelease | null> {
     try {
-      const payload = await fetchBoundedText(
-        this.fetchImplementation,
-        RELEASES_API_URL,
-        MAX_RELEASES_BYTES,
-      );
+      const [list, latest] = await Promise.allSettled([
+        fetchBoundedText(
+          this.fetchImplementation,
+          RELEASES_API_URL,
+          MAX_RELEASES_BYTES,
+        ),
+        fetchBoundedText(
+          this.fetchImplementation,
+          LATEST_RELEASE_API_URL,
+          MAX_RELEASES_BYTES,
+        ),
+      ]);
+      if (list.status === 'rejected') throw list.reason;
+      const releases = parseGitHubReleases(list.value);
+      if (latest.status === 'fulfilled') {
+        releases.push(...parseGitHubReleases(`[${latest.value}]`));
+      }
       this.lastResult = selectAvailableRelease(
         this.currentVersion,
-        parseGitHubReleases(payload),
+        releases,
         this.platform,
       );
     } catch (error) {
       this.onError(error);
     }
     this.lastCheckedAt = this.now();
+    await this.persistCheck();
     return this.lastResult;
+  }
+
+  private async persistCheck(): Promise<void> {
+    if (this.cacheFilePath === null || this.lastCheckedAt === null) return;
+    try {
+      await fs.writeFile(
+        this.cacheFilePath,
+        JSON.stringify({
+          currentVersion: this.currentVersion,
+          checkedAt: this.lastCheckedAt,
+          result: this.lastResult,
+        }),
+      );
+    } catch (error) {
+      this.onError(error);
+    }
   }
 }

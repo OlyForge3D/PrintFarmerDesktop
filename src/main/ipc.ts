@@ -1050,12 +1050,19 @@ export function registerIpcHandlers(
 
   let releaseNotifier = sharedReleaseNotifier ?? null;
   ipcMain.handle(IpcChannel.GetAvailableRelease, async () => {
-    releaseNotifier ??= new ReleaseNotifier({
-      currentVersion: app.getVersion(),
-    });
+    // Development runs (`npm start`) carry the package version but are not an
+    // installed build, so they never query or announce production releases.
+    if (!releaseNotifier && app.isPackaged) {
+      releaseNotifier = new ReleaseNotifier({
+        currentVersion: app.getVersion(),
+        cacheFilePath: path.join(app.getPath('userData'), 'release-check.json'),
+      });
+    }
     const response: GetAvailableReleaseResponse = {
       currentVersion: app.getVersion(),
-      available: await releaseNotifier.getAvailableRelease(),
+      available: releaseNotifier
+        ? await releaseNotifier.getAvailableRelease()
+        : null,
     };
     return ipcSchemas[IpcChannel.GetAvailableRelease].response.parse(response);
   });
