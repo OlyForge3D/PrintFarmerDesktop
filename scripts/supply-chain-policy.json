@@ -17,6 +17,18 @@
       {
         "purl": "pkg:generic/sqlite3",
         "reason": "SQLite is dedicated to the public domain (the SQLite Blessing) and carries no SPDX identifier, so cargo/libsqlite3-sys records no licence and the SBOM has no licence node. Public-domain is compatible with the AGPL-3.0-only outbound licence. Keyed by the version-independent purl because the public-domain status is invariant across libsqlite3-sys versions."
+      },
+      {
+        "purl": "pkg:generic/lzma",
+        "reason": "lzma-sys 0.1.20 (MIT OR Apache-2.0) bundles xz 5.2; its xz-5.2/COPYING states that liblzma is in the public domain, compatible with AGPL-3.0-only. Later upstream xz uses the allowed 0BSD licence. This version-independent purl covers liblzma's public-domain/0BSD licensing, not the differently licensed xz command-line tools."
+      },
+      {
+        "purl": "pkg:generic/rayon-core",
+        "reason": "rayon-core 1.13.0 (MIT OR Apache-2.0) declares links = \"rayon-core\" solely as a single-version marker; it compiles no native library. The derived native component has no separate licence beyond the crate's MIT OR Apache-2.0 licence, compatible with AGPL-3.0-only. Keyed by the version-independent purl to match the SBOM's links-derived identity."
+      },
+      {
+        "purl": "pkg:generic/wasm_bindgen",
+        "reason": "wasm-bindgen-shared 0.2.126 (MIT OR Apache-2.0) declares links = \"wasm_bindgen\" solely as a single-version marker and ships no C sources. The derived native component has no separate licence beyond the crate's MIT OR Apache-2.0 licence, compatible with AGPL-3.0-only. Keyed by the version-independent purl to match the SBOM's links-derived identity."
       }
     ]
   },

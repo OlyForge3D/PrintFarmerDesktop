@@ -51,7 +51,7 @@ function main() {
         '-p',
         'model-core',
         '--features',
-        'sqlite',
+        'sqlite,step',
         '--target',
         target,
       ],

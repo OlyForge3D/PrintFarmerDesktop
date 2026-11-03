@@ -278,6 +278,7 @@ describe('the shipped supply-chain policy is the validated source of truth', () 
       cargoMetadata: linkedNativeCargoMetadata('sqlite3'),
       features: ['sqlite'],
     });
+
     const sqlite = sbom.components.find(
       (component) =>
         component.properties.some(
@@ -302,9 +303,44 @@ describe('the shipped supply-chain policy is the validated source of truth', () 
     expect(sqliteException).toBeDefined();
     expect(sqliteException?.purl).toBe(sqlite?.purl);
     expect(
-      evaluateLicensePolicy(sbom, shippedPolicy.licenses).violations,
+      evaluateLicensePolicy(sbom, {
+        ...shippedPolicy.licenses,
+        componentExceptions: sqliteException ? [sqliteException] : [],
+      }).violations,
     ).toEqual([]);
   });
+
+  it.each(['lzma', 'rayon-core', 'wasm_bindgen'])(
+    'admits the reviewed STEP native identity %s only through its documented exception',
+    (name) => {
+      const sbom = buildSbom({
+        lock: readLock(),
+        repoRoot,
+        cargoMetadata: linkedNativeCargoMetadata(name),
+        features: ['sqlite', 'step'],
+      });
+      const purl = `pkg:generic/${name}`;
+      const component = sbom.components.find((entry) => entry.purl === purl);
+      expect(component).toBeDefined();
+      expect(component?.licenses).toBeUndefined();
+      const exceptions = shippedPolicy.licenses.componentExceptions ?? [];
+      expect(exceptions.find((entry) => entry.purl === purl)?.reason).toContain(
+        'AGPL-3.0-only',
+      );
+      const policy = {
+        ...shippedPolicy.licenses,
+        componentExceptions: exceptions.filter((entry) => entry.purl === purl),
+      };
+      expect(evaluateLicensePolicy(sbom, policy).violations).toEqual([]);
+      const withoutException = {
+        ...policy,
+        componentExceptions: [],
+      };
+      expect(evaluateLicensePolicy(sbom, withoutException).violations).toEqual([
+        expect.objectContaining({ name, reason: 'missing' }),
+      ]);
+    },
+  );
 
   it.each([undefined, null, 'warn', 'REPORT'])(
     'rejects malformed runtime advisory enforcement %s',
@@ -500,7 +536,7 @@ describe('the release workflow enforces compliance before publication', () => {
   });
 
   it('pins locked Cargo metadata and sidecar staging arguments', () => {
-    expect(cargoMetadataArgs(['sqlite'], repoRoot)).toEqual([
+    expect(cargoMetadataArgs(['sqlite', 'step'], repoRoot)).toEqual([
       'metadata',
       '--format-version',
       '1',
@@ -508,7 +544,7 @@ describe('the release workflow enforces compliance before publication', () => {
       path.join(repoRoot, 'native', 'model-core', 'Cargo.toml'),
       '--locked',
       '--features',
-      'sqlite',
+      'sqlite,step',
     ]);
     expect(SIDECAR_BUILD_ARGS).toEqual([
       'build',
@@ -517,7 +553,7 @@ describe('the release workflow enforces compliance before publication', () => {
       '-p',
       'model-core',
       '--features',
-      'sqlite',
+      'sqlite,step',
     ]);
   });
 });

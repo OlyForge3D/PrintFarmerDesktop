@@ -439,7 +439,7 @@ jobs:
       - name: Build sidecar (release)
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         working-directory: native
-        run: cargo build --locked --release -p model-core --features sqlite
+        run: cargo build --locked --release -p model-core --features sqlite,step
 
       - name: Package app (bundles the prebuilt sidecar)
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'

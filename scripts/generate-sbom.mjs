@@ -53,22 +53,24 @@ function parseArgs(argv) {
 }
 
 /**
- * The cargo features that reach a release, taken from the two places that build
+ * The cargo features that reach a release, taken from the places that build
  * it. They are compared rather than merged: if packaging and release ever build
  * different features, one SBOM cannot honestly describe both artifacts.
  */
 export function resolveShippedFeatures(root = repoRoot) {
-  const { fromStagingScript, fromReleaseWorkflow } =
-    readShippedCargoFeatures(root);
-  if (!fromStagingScript || !fromReleaseWorkflow) {
-    throw new Error(
-      `generate-sbom: could not read the shipped cargo feature set (staging=${String(fromStagingScript)}, release=${String(fromReleaseWorkflow)})`,
-    );
-  }
-  if (fromStagingScript.join(',') !== fromReleaseWorkflow.join(',')) {
-    throw new Error(
-      `generate-sbom: packaging builds [${fromStagingScript}] but release builds [${fromReleaseWorkflow}]; one SBOM cannot describe both`,
-    );
+  const builds = readShippedCargoFeatures(root);
+  const { fromStagingScript } = builds;
+  for (const [source, features] of Object.entries(builds)) {
+    if (!features || !fromStagingScript) {
+      throw new Error(
+        `generate-sbom: could not read the shipped cargo feature set (${source}=${String(features)})`,
+      );
+    }
+    if (features.join(',') !== fromStagingScript.join(',')) {
+      throw new Error(
+        `generate-sbom: staging builds [${fromStagingScript}] but ${source} builds [${features}]; one SBOM cannot describe both`,
+      );
+    }
   }
   return fromStagingScript;
 }

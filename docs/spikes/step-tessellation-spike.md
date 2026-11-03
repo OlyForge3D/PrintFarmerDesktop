@@ -2,6 +2,12 @@
 
 ## Goal
 
+**Shipping update (#825):** Release sidecars now enable `sqlite,step` after
+successful local thumbnail and viewer testing. STEP remains experimental and
+supports raw shells only, without assembly transforms or product structure.
+The no-go recommendation below records the original spike conclusion, not the
+current shipped feature set; its fidelity and resource-limit caveats still apply.
+
 Evaluate whether the pure-Rust `truck` stack is sufficient to import STEP (`.step`/`.stp`) into `native/model-core` and tessellate it into the existing `SceneMesh` pipeline.
 
 ## What landed in this spike
