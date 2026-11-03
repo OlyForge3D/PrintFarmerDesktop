@@ -112,8 +112,8 @@ fn editable_project(path: &Path, application: &str, stale: bool) {
 </model>"#
     );
     let settings = json!({
-        "printer_model": "Source Printer",
-        "printer_settings_id": "Source 0.4",
+        "printer_model": "Bambu Lab P1S",
+        "printer_settings_id": "Bambu Lab P1S 0.4 nozzle",
         "print_settings_id": "0.20 Standard",
         "layer_height": 0.2,
         "filament_type": ["PLA", "PETG"],
@@ -186,7 +186,7 @@ fn simple_archive(path: &Path, include_configs: bool) {
                 .start_file("Metadata/project_settings.config", options)
                 .unwrap();
             writer
-                .write_all(br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA"]}"#)
+                .write_all(br#"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA"]}"#)
                 .unwrap();
             writer
                 .start_file("Metadata/model_settings.config", options)
@@ -340,7 +340,7 @@ fn independent_projects_preserve_single_material_and_multi_tool_placement() {
     replace_zip_part(
         &single,
         "Metadata/project_settings.config",
-        br##"{"printer_model":"Independent source","layer_height":"0.2","filament_type":["PLA"],"filament_colour":["#112233"]}"##,
+        br##"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA"],"filament_colour":["#112233"]}"##,
     );
     replace_zip_part(
         &single,
@@ -414,7 +414,7 @@ fn every_mandatory_global_and_object_motion_setting_is_clamped() {
     editable_project(&source, "OrcaSlicer-2.3.5", true);
 
     let mut settings = serde_json::Map::from_iter([
-        ("printer_model".to_string(), json!("Independent source")),
+        ("printer_model".to_string(), json!("Bambu Lab P1S")),
         ("layer_height".to_string(), json!("0.2")),
         ("filament_type".to_string(), json!(["PLA", "PETG"])),
         ("filament_colour".to_string(), json!(["#112233", "#AABBCC"])),
@@ -550,7 +550,7 @@ fn classifies_slicers_and_blocks_invalid_material_configurations() {
     replace_zip_part(
         &unsupported,
         "Metadata/project_settings.config",
-        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PC"]}"#,
+        br#"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PC"]}"#,
     );
     let report = engine
         .preflight(&unsupported, RetargetOptions::default())
@@ -565,7 +565,7 @@ fn classifies_slicers_and_blocks_invalid_material_configurations() {
     replace_zip_part(
         &five,
         "Metadata/project_settings.config",
-        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PLA","PLA","PLA","PLA"]}"#,
+        br#"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA","PLA","PLA","PLA","PLA"]}"#,
     );
     let report = engine.preflight(&five, RetargetOptions::default()).unwrap();
     assert!(report
@@ -810,6 +810,56 @@ fn missing_sources_use_stable_source_not_found_code() {
 }
 
 #[test]
+fn preflight_and_build_require_bambu_target_independently_of_authoring_slicer() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("printer-target.3mf");
+    let output = temp.path().join("retargeted.3mf");
+
+    for application in ["BambuStudio-2.0", "OrcaSlicer-2.3"] {
+        for printer in [json!("Creality K1"), Value::Null] {
+            editable_project(&source, application, true);
+            mutate_project_settings(&source, |settings| {
+                settings["printer_model"] = printer.clone();
+                settings["printer_settings_id"] = Value::Null;
+            });
+            let source_hash = hash_file(&source).unwrap();
+            for report in [
+                engine
+                    .preflight(&source, RetargetOptions::default())
+                    .unwrap(),
+                engine
+                    .preflight_target(&source, target.as_str(), RetargetOptions::default())
+                    .unwrap(),
+            ] {
+                assert!(!report.accepted, "{application}: {printer}");
+                assert!(report
+                    .blockers
+                    .iter()
+                    .any(|issue| issue.code == IssueCode::UnsupportedSourcePrinter));
+            }
+            assert!(engine
+                .build(&source, &output, &target, RetargetOptions::default())
+                .is_err());
+            assert!(!output.exists());
+            assert_eq!(source_hash, hash_file(&source).unwrap());
+        }
+
+        editable_project(&source, application, true);
+        let report = engine
+            .preflight(&source, RetargetOptions::default())
+            .unwrap();
+        assert!(report.accepted, "{application}: {:?}", report.blockers);
+        let report = engine
+            .build(&source, &output, &target, RetargetOptions::default())
+            .unwrap();
+        assert!(report.validation.valid, "{:?}", report.validation.errors);
+        fs::remove_file(&output).unwrap();
+    }
+}
+
+#[test]
 fn preflight_uses_valid_fallback_when_primary_printer_identity_is_unusable() {
     let engine = engine();
     let temp = TempDir::new().unwrap();
@@ -859,7 +909,7 @@ fn preflight_blocks_inconsistent_per_filament_arrays() {
     replace_zip_part(
         &source,
         "Metadata/project_settings.config",
-        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG"],"additional_cooling_fan_speed":["0","0","0"]}"#,
+        br#"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA","PETG"],"additional_cooling_fan_speed":["0","0","0"]}"#,
     );
 
     let report = engine
@@ -917,7 +967,7 @@ fn preflight_blocks_inconsistent_per_filament_arrays() {
     replace_zip_part(
         &empty_source,
         "Metadata/project_settings.config",
-        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG"],"pressure_advance":[]}"#,
+        br#"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA","PETG"],"pressure_advance":[]}"#,
     );
     let empty_report = engine
         .preflight(&empty_source, RetargetOptions::default())
@@ -932,7 +982,7 @@ fn preflight_blocks_inconsistent_per_filament_arrays() {
     replace_zip_part(
         &scalar_source,
         "Metadata/project_settings.config",
-        br##"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG"],"filament_colour":"#112233"}"##,
+        br##"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA","PETG"],"filament_colour":"#112233"}"##,
     );
     let scalar_report = engine
         .preflight(&scalar_source, RetargetOptions::default())
@@ -983,7 +1033,7 @@ fn filament_profile_compatibility_metadata_is_not_slot_merged() {
     replace_zip_part(
         &source,
         "Metadata/project_settings.config",
-        br##"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG","PLA","PETG"],"filament_colour":["#111111","#222222","#333333","#444444"],"compatible_printers":["Source Printer"]}"##,
+        br##"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["PLA","PETG","PLA","PETG"],"filament_colour":["#111111","#222222","#333333","#444444"],"compatible_printers":["Source Printer"]}"##,
     );
 
     let preflight = engine
@@ -1011,7 +1061,7 @@ fn filament_profile_compatibility_metadata_is_not_slot_merged() {
     replace_zip_part(
         &ambiguous,
         "Metadata/project_settings.config",
-        br##"{"printer_model":"x","layer_height":"0.2","filament_type":["TPU","TPU-95A","PA-CF","PLA"],"filament_colour":["#111111","#222222","#333333","#444444"]}"##,
+        br##"{"printer_model":"Bambu Lab P1S","layer_height":"0.2","filament_type":["TPU","TPU-95A","PA-CF","PLA"],"filament_colour":["#111111","#222222","#333333","#444444"]}"##,
     );
     let preflight = engine
         .preflight(&ambiguous, RetargetOptions::default())

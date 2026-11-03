@@ -11,7 +11,7 @@ use super::profile::SettingValue;
 use super::report::{IssueCode, RetargetIssue};
 use super::{RetargetError, RetargetLimits};
 use crate::threemf::{self, ThreeMfError, ThreeMfMesh};
-use crate::vendor::{self, Slicer};
+use crate::vendor::{self, PrinterTarget, Slicer};
 
 #[derive(Debug)]
 pub(crate) struct ProjectInspection {
@@ -22,6 +22,7 @@ pub(crate) struct ProjectInspection {
     pub machine_id: Option<String>,
     pub process_id: Option<String>,
     pub producer: String,
+    pub printer_target: PrinterTarget,
     pub mesh: ThreeMfMesh,
     pub plate_count: usize,
     pub has_paint_metadata: bool,
@@ -283,6 +284,7 @@ impl ProjectInspection {
             machine_id,
             process_id,
             producer: application.unwrap_or_else(|| metadata.slicer.as_str().to_string()),
+            printer_target: metadata.printer_target,
             mesh,
             plate_count,
             has_paint_metadata,

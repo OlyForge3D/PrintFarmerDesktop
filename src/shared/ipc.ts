@@ -5645,6 +5645,7 @@ const IssueCode = z.enum([
   'unsupportedPrusa',
   'unsupportedCura',
   'unsupportedSlicer',
+  'unsupportedSourcePrinter',
   'unknownOrcaFamilyProducer',
   'missingProjectSettings',
   'invalidProjectSettings',

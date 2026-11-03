@@ -8,6 +8,10 @@ import type {
 } from '@shared/ipc';
 import { App } from '../src/renderer/App.js';
 import { UploadsWorkspace } from '../src/renderer/uploads/UploadsWorkspace.js';
+import {
+  describeUploadQueue,
+  summarizeUploadJobs,
+} from '../src/renderer/uploads/uploadSummary.js';
 
 const models: LogicalModel[] = ['a', 'b', 'c'].map((name, index) => ({
   hash: String(index + 1).repeat(64),
@@ -25,6 +29,25 @@ const models: LogicalModel[] = ['a', 'b', 'c'].map((name, index) => ({
 }));
 
 describe('catalog multi-selection and upload queue UI', () => {
+  it('counts queued-only work and keeps paused queued work in the remaining total', () => {
+    const queued = uploadJob();
+    queued.summary.queued = 3;
+    const paused = uploadJob();
+    paused.paused = true;
+    paused.summary.queued = 2;
+    const summary = summarizeUploadJobs([queued, paused]);
+
+    expect(summary).toMatchObject({
+      queued: 3,
+      uploading: 0,
+      paused: 2,
+      remaining: 5,
+    });
+    expect(describeUploadQueue([queued, paused], summary)).toBe(
+      '3 queued, 2 paused.',
+    );
+  });
+
   it('supports normal, modifier, visible-range, select-all, and clear selection', async () => {
     installApi({});
     render(<App />);
