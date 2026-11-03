@@ -878,16 +878,44 @@ describe('the tip and its ancestors are told apart, which ancestry alone cannot 
     root = mkdtempSync(path.join(os.tmpdir(), 'sha-status-tip-'));
     const remote = path.join(root, 'remote.git');
     work = path.join(root, 'work');
+    // The same history `configure` + `commit` would build, in ~13 git
+    // processes instead of ~33: identity set by the clone, one `add` for the
+    // first commit then `commit -a`, and one `rev-parse` for all three names.
+    // This hook timed out at 10 s on a loaded hosted Windows runner (PR #832)
+    // where process start-up, not git's work, is what degrades.
     git(['init', '-q', '--bare', '--initial-branch=development', remote], root);
-    git(['clone', '-q', remote, work], root);
-    configure(work);
-    for (let i = 0; i <= BEHIND; i += 1) commit(work, `commit ${i}`);
+    git(
+      [
+        'clone',
+        '-q',
+        '-c',
+        'user.email=squad@example.test',
+        '-c',
+        'user.name=Squad',
+        '-c',
+        'commit.gpgsign=false',
+        remote,
+        work,
+      ],
+      root,
+    );
+    for (let i = 0; i <= BEHIND; i += 1) {
+      writeFileSync(path.join(work, 'f.txt'), `commit ${i}\n`, 'utf8');
+      if (i === 0) git(['add', 'f.txt'], work);
+      git(['commit', '-q', '-a', '-m', `commit ${i}`], work);
+    }
     git(['push', '-q', '--no-verify', '-u', 'origin', 'development'], work);
     git(['fetch', '-q', 'origin'], work);
 
-    tip = git(['rev-parse', 'origin/development'], work);
-    mid = git(['rev-parse', `origin/development~${BEHIND - 1}`], work);
-    old = git(['rev-parse', `origin/development~${BEHIND}`], work);
+    [tip, mid, old] = git(
+      [
+        'rev-parse',
+        'origin/development',
+        `origin/development~${BEHIND - 1}`,
+        `origin/development~${BEHIND}`,
+      ],
+      work,
+    ).split(/\r?\n/) as [string, string, string];
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));

@@ -497,7 +497,7 @@ describe('the fixture, against real git', () => {
         COMMITTED_BYTES,
       );
     }
-  });
+  }, 15_000);
 
   it('refuses an unknown arm rather than returning an empty case list', () => {
     expect(() => readArm(fresh(), 'zzq-no-such-arm')).toThrow(/unknown arm/);
