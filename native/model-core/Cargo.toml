@@ -37,7 +37,11 @@ base64 = "0.22"
 # C-backed bundled SQLite, compiled only where a C toolchain is available.
 # Gated behind the `sqlite` feature so the default build stays pure-Rust.
 rusqlite = { version = "0.32", features = ["bundled", "functions", "collation"], optional = true }
-truck-meshalgo = { version = "0.4", optional = true }
+# Default features include "vtk" (vtkio -> xz2 -> lzma-sys), which links the
+# host's dynamic liblzma via pkg-config. On macOS that resolves to Homebrew's
+# dylib, which the hardened runtime refuses to load (#828). STEP only needs
+# tessellation (which implies filters).
+truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation"], optional = true }
 truck-stepio = { version = "0.3", optional = true }
 truck-topology = { version = "0.6", optional = true }
 # Official ACT-generated Rust bindings for the native lib3mf shared library.

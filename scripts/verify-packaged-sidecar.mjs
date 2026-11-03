@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkSidecarDylibs } from './check-sidecar-dylibs.mjs';
 import { verifyBundleDirectory } from './target-profile-tools.mjs';
 
 const repoRoot = path.resolve(
@@ -49,6 +50,19 @@ if (!found) {
   process.exit(1);
 }
 console.log(`[verify-packaged-sidecar] OK: bundled sidecar at ${found}`);
+
+if (process.platform === 'darwin') {
+  const violations = checkSidecarDylibs(found);
+  if (violations.length > 0) {
+    for (const violation of violations) {
+      console.error(`[verify-packaged-sidecar] FAILED: ${violation}`);
+    }
+    process.exit(1);
+  }
+  console.log(
+    '[verify-packaged-sidecar] OK: bundled sidecar links only system libraries',
+  );
+}
 
 const packagedResources = path.dirname(path.dirname(found));
 const packagedProfiles = path.join(
