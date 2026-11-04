@@ -20,6 +20,7 @@
 /scripts/audit-advisories.* @jpapiez
 /scripts/generate-sbom.* @jpapiez
 /scripts/generate-notices.mjs @jpapiez
+/scripts/prepare-release.mjs @jpapiez
 /scripts/release-gpu-* @jpapiez
 /scripts/supply-chain.* @jpapiez
 /scripts/supply-chain-policy.* @jpapiez

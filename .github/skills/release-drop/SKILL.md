@@ -64,8 +64,12 @@ gh run watch <dispatch-run-id> --exit-status --interval 30
 ```
 
 Watch the dispatch run, not the suppressed tag run. Windows x64 and macOS
-universal typically take 20-40 minutes. A pending request can be replaced by
-GitHub's concurrency scheduler; verify the intended run actually starts.
+universal typically take 20-40 minutes. The shared `queue: max` concurrency
+group retains up to 100 pending runs without replacing them; additional runs
+are cancelled when full. Dispatch order is not guaranteed. Verify the intended
+run actually starts. A queued manual publication still fails if development
+has moved since dispatch; start a fresh run against the new head rather than
+assuming the queue rebases it.
 
 If preparation fails before its atomic push, no remote version change landed.
 If builds fail afterward, rerun failed jobs of the original dispatch. Its

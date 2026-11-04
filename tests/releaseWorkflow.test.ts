@@ -129,9 +129,31 @@ describe('signed release workflow', () => {
     expect(workflow).not.toContain('$GITHUB_REF_NAME');
   });
 
-  it('uses one non-cancelling release group and creates releases without overwriting', () => {
-    expect(workflow).toContain('group: release-publication');
-    expect(workflow).toContain('cancel-in-progress: false');
+  it('retains pending dispatch and tag runs in one non-cancelling publication group', () => {
+    // Omitting queue: max restores GitHub's replace-the-pending-run default.
+    const concurrency = workflow.match(/^concurrency:\n((?:[ \t]+.*\n)+)/m);
+    expect(
+      concurrency?.[1]
+        ?.trim()
+        .split('\n')
+        .map((line) => line.trim()),
+    ).toEqual([
+      'group: release-publication',
+      'queue: max',
+      'cancel-in-progress: false',
+    ]);
+  });
+
+  it('keeps release preparation under the release workflow code owner', () => {
+    const owners = readFileSync(
+      path.resolve(import.meta.dirname, '..', '.github', 'CODEOWNERS'),
+      'utf8',
+    );
+    expect(owners).toMatch(/^\/\.github\/workflows\/release\.yml @jpapiez$/m);
+    expect(owners).toMatch(/^\/scripts\/prepare-release\.mjs @jpapiez$/m);
+  });
+
+  it('creates releases without overwriting', () => {
     expect(workflow).toContain(
       'gh release create "$RELEASE_TAG" dist/* --verify-tag --target "$RELEASE_SHA"',
     );

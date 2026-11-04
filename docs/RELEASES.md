@@ -42,9 +42,15 @@ do trigger a second tag run, but its preparation recognizes the annotated
 `Release-Workflow-Run` marker and suppresses its build/publication. Manually
 pushed, unmarked tags still follow the existing release path and must exactly
 match the tracked package version. All release runs share a non-cancelling
-concurrency group; a running release is never cancelled by a later request.
-GitHub may replace a pending request, so check that the intended dispatch
-actually starts. Do not start a competing release while another is in flight.
+concurrency group with `queue: max`: one run executes at a time and up to 100
+pending runs are retained rather than replaced by later requests. Additional
+runs are cancelled when that queue is full. Dispatch order is not guaranteed;
+this is not a FIFO release-request contract. See
+[GitHub's concurrency semantics](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Check that the intended dispatch actually starts. Queued manual publications
+still fail if development has moved since dispatch; queueing does not rebase
+them or bypass the stale-head check. Do not start a competing release while
+another is in flight.
 
 For packaging only, leave **dry_run on** and the version input blank. This uses
 the checked-out tracked version, never commits or tags, and never needs the
