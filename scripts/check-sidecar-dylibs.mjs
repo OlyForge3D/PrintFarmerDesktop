@@ -61,7 +61,15 @@ export function findDisallowedDylibs(slices) {
       continue;
     }
     for (const dylib of slice.dylibs) {
-      if (!ALLOWED_DYLIB_PREFIXES.some((prefix) => dylib.startsWith(prefix))) {
+      // A prefix match alone would accept /usr/lib/../../opt/homebrew/...,
+      // so any relative path component disqualifies the entry outright.
+      const hasRelativeComponent = dylib
+        .split('/')
+        .some((part) => part === '.' || part === '..');
+      if (
+        hasRelativeComponent ||
+        !ALLOWED_DYLIB_PREFIXES.some((prefix) => dylib.startsWith(prefix))
+      ) {
         violations.push(`${label}: links non-system dylib ${dylib}`);
       }
     }

@@ -60,6 +60,9 @@ describe('check-sidecar-dylibs', () => {
     '@executable_path/../Frameworks/liblzma.5.dylib',
     '/usr/local/lib/liblzma.5.dylib',
     '/opt/homebrew/lib/liblzma.5.dylib',
+    '/usr/lib/../../opt/homebrew/lib/liblzma.5.dylib',
+    '/System/Library/../../usr/local/lib/liblzma.5.dylib',
+    '/usr/lib/./liblzma.5.dylib',
   ])('rejects %s', (dylib) => {
     expect(
       findDisallowedDylibs([
