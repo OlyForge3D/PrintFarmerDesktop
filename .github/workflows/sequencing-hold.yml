@@ -48,8 +48,8 @@ name: Sequencing hold
 # Note that `types:` REPLACES the default set rather than extending it, so the
 # three defaults are listed explicitly alongside the two that matter.
 #
-# `merge_group:` is left on its default configuration deliberately, matching
-# closing-reference-declaration.yml: a merge-queue entry carries no label to
+# `merge_group:` is left on its default configuration deliberately:
+# a merge-queue entry carries no label to
 # check (the queue's own ref has none), but check-sequencing-hold.mjs does not
 # need one either — it reads the PR's labels via the REST API, keyed off the
 # PR number resolvePullRequestNumber() recovers from the queue's

@@ -1,6 +1,12 @@
 // @vitest-environment node
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
@@ -24,7 +30,6 @@ import {
   resolveRepository,
 } from '../scripts/check-pr-closure-scope.mjs';
 import type { ClosingIssue } from '../scripts/check-pr-closure-scope.mjs';
-import { invokedScripts } from '../scripts/check-body-edit-triggers.mjs';
 
 const CHILD_ISSUE: ClosingIssue = {
   number: 161,
@@ -529,7 +534,7 @@ describe("reportClosureScopeCliOutcome: the CLI entry point's own rejection hand
   });
 });
 
-describe('the two closure checks publish independent contexts', () => {
+describe('the gate issue closure check remains advisory', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   // Normalised because triggersOf/typesOf below anchor on '\n'. A workflow
   // written on Windows can be CRLF throughout, and an un-normalized read
@@ -540,22 +545,29 @@ describe('the two closure checks publish independent contexts', () => {
     path.join(repositoryRoot, '.github', 'workflows', 'pr-closure-scope.yml'),
     'utf8',
   ).replace(/\r\n/g, '\n');
-  const generalWorkflow = readFileSync(
-    path.join(
-      repositoryRoot,
-      '.github',
-      'workflows',
-      'closing-reference-declaration.yml',
-    ),
-    'utf8',
-  ).replace(/\r\n/g, '\n');
-  const ciWorkflow = readFileSync(
-    path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
-    'utf8',
-  ).replace(/\r\n/g, '\n');
   const manifest = JSON.parse(
     readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
   ) as { scripts: Record<string, string> };
+
+  it('allows normal PR-body closing keywords without a committed declaration', () => {
+    const template = readFileSync(
+      path.join(repositoryRoot, '.github', 'pull_request_template.md'),
+      'utf8',
+    );
+    expect(template).toContain('Closes #');
+    expect(manifest.scripts).not.toHaveProperty('check:closing-references');
+    for (const retired of [
+      '.github/pr-closes',
+      '.github/PR_CLOSES.md',
+      '.github/workflows/closing-reference-declaration.yml',
+      'scripts/check-closing-references.mjs',
+      'scripts/check-closing-references.d.mts',
+    ]) {
+      expect(existsSync(path.join(repositoryRoot, retired)), retired).toBe(
+        false,
+      );
+    }
+  });
 
   function jobBlock(contents: string, job: string): string {
     const lines = contents.split(/\r?\n/);
@@ -597,14 +609,6 @@ describe('the two closure checks publish independent contexts', () => {
     expect(workflow).toContain('# merge-queue: advisory');
   });
 
-  it('runs the settled general check for both event classes a required context must cover', () => {
-    expect(triggersOf(generalWorkflow)).toEqual([
-      'merge_group',
-      'pull_request',
-    ]);
-    expect(generalWorkflow).toContain('# merge-queue: reports');
-  });
-
   /**
    * Activity types the `pull_request:` trigger subscribes to, sorted.
    */
@@ -643,7 +647,6 @@ describe('the two closure checks publish independent contexts', () => {
       'reopened',
       'synchronize',
     ]);
-    expect(typesOf(generalWorkflow)).toEqual(typesOf(workflow));
   });
 
   it('runs the npm script rather than a divergent inline command', () => {
@@ -655,28 +658,10 @@ describe('the two closure checks publish independent contexts', () => {
     );
   });
 
-  it('publishes the general and gate-only checks as accurately named independent contexts', () => {
-    // PR #456 produced opposite conclusions for these checks on one head. Keeping
-    // them as sibling jobs makes that disagreement visible without lending the
-    // narrower green to the general contract.
+  it('publishes the gate-only check with its own accurately named context', () => {
     const gateOnly = jobBlock(workflow, 'closure-scope');
     expect(gateOnly).toContain('name: Gate issue closure scope');
     expect(gateOnly).toContain('npm run check:closure-scope');
-    expect(gateOnly).not.toContain('check:closing-references');
-
-    const general = jobBlock(generalWorkflow, 'closing-references');
-    expect(general).toContain('name: Closing-reference declaration');
-    expect(general).toContain('npm run check:closing-references');
-    expect(general).not.toContain('check:closure-scope');
-  });
-
-  it('does not attribute the general PR-body contract to either Desktop platform', () => {
-    expect(invokedScripts(ciWorkflow, manifest.scripts)).not.toContain(
-      'check-closing-references.mjs',
-    );
-    expect(invokedScripts(generalWorkflow, manifest.scripts)).toContain(
-      'check-closing-references.mjs',
-    );
   });
 
   it('stays off the scarce macos runner pool', () => {

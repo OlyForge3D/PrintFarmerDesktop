@@ -67,7 +67,6 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       scripts,
       npmScripts,
     });
-    expect(guards).toContain('check-closing-references.mjs');
     expect(guards).toContain('check-pr-closure-scope.mjs');
     expect(guards).not.toContain('check-body-edit-triggers.mjs');
     expect(guards).not.toContain('check-injected-defaults.mjs');
@@ -101,19 +100,18 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     expect(uninvokedGuards).toEqual(['check-new-body-contract.mjs']);
   });
 
-  it('runs this policy through the required closing-reference context', () => {
+  it('runs trigger coverage and session trailers through the PR policy context', () => {
     const workflow = readFileSync(
-      path.join(workflowsDir, 'closing-reference-declaration.yml'),
+      path.join(workflowsDir, 'pr-policy.yml'),
       'utf8',
     );
     expect(npmScripts['check:body-edit-triggers']).toBe(
       'node scripts/check-body-edit-triggers.mjs',
     );
     expect(workflow).toContain('npm run check:body-edit-triggers');
+    expect(workflow).toContain('npm run check:copilot-session-trailers');
     expect(pullRequestTypes(workflow)).toContain(BODY_EDIT_TYPE);
-    expect(triggersOf(workflow, 'closing-reference-declaration.yml')).toContain(
-      'merge_group',
-    );
+    expect(triggersOf(workflow, 'pr-policy.yml')).toContain('merge_group');
   });
 
   // The gate itself. #436: ci.yml runs the arming guard inside the required
@@ -142,13 +140,13 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
             'jobs:',
             '  a:',
             '    steps:',
-            '      - run: npm run check:closing-references',
+            '      - run: npm run check:closure-scope',
           ].join('\n'),
         },
       ],
       scripts: [
         {
-          basename: 'check-closing-references.mjs',
+          basename: 'check-pr-closure-scope.mjs',
           contents: "gh(['pr','view','--json','body'])",
         },
       ],
@@ -174,13 +172,13 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
             'jobs:',
             '  a:',
             '    steps:',
-            '      - run: npm run check:closing-references',
+            '      - run: npm run check:closure-scope',
           ].join('\n'),
         },
       ],
       scripts: [
         {
-          basename: 'check-closing-references.mjs',
+          basename: 'check-pr-closure-scope.mjs',
           contents: "gh(['pr','view','--json','body'])",
         },
       ],
@@ -211,9 +209,8 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   });
 
   // The mirror of the workflow-citation test, and it exists because this
-  // module got it wrong first: its opening run attributed
-  // `closingIssuesReferences` to check-closing-references.mjs, which only
-  // discusses the field in prose. A guard is what a file does.
+  // module got it wrong first: its opening run attributed a field named
+  // only in prose to a body read. A guard is what a file does.
   it('does not treat a field named in a comment as a read', () => {
     expect(bodyDerivedReads('// closingIssuesReferences is derived')).toEqual(
       [],
@@ -231,7 +228,7 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   // the gate by mentioning a guard it never runs.
   it('counts only run: invocations, never citations in comments', () => {
     const cited = [
-      '# scripts/check-closing-references.mjs enforces this',
+      '# scripts/check-pr-closure-scope.mjs enforces this',
       'on:',
       '  pull_request:',
       'jobs:',
@@ -300,13 +297,12 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
       path.join(fixture, 'package.json'),
       JSON.stringify({
         scripts: {
-          'check:closing-references':
-            'node scripts/check-closing-references.mjs',
+          'check:closure-scope': 'node scripts/check-pr-closure-scope.mjs',
         },
       }),
     );
     writeFileSync(
-      path.join(fixtureScripts, 'check-closing-references.mjs'),
+      path.join(fixtureScripts, 'check-pr-closure-scope.mjs'),
       "export const currentBody = gh(['pr', 'view', '--json', 'body']);\n",
     );
 
@@ -321,14 +317,14 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
         `    types: [${types}]`,
         '  merge_group:',
         'jobs:',
-        '  closing-references:',
+        '  closure-scope:',
         '    steps:',
-        '      - run: npm run check:closing-references',
+        '      - run: npm run check:closure-scope',
       ].join('\n');
 
     try {
       writeFileSync(
-        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        path.join(workflowDirectory, 'pr-closure-scope.yml'),
         workflow('opened, synchronize, reopened'),
       );
       const red = run();
@@ -338,7 +334,7 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
       );
 
       writeFileSync(
-        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        path.join(workflowDirectory, 'pr-closure-scope.yml'),
         workflow('opened, synchronize, reopened, edited'),
       );
       const green = run();

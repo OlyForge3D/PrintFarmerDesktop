@@ -424,9 +424,7 @@ export class ClosingIssuesIndeterminateError extends Error {
 }
 
 // Measured directly against this API: an edit to a pull request body takes
-// roughly 38-45 seconds to be reflected in `closingIssuesReferences` (see the
-// comment on `readSettled` in check-closing-references.mjs, which polled the
-// same field on this same repository to get that number). A freshly created
+// roughly 38-45 seconds to be reflected in `closingIssuesReferences`. A freshly created
 // pull request exercises the same derivation path, so nothing here justifies
 // assuming the initial-population case is faster than the edit-settle case.
 // The floor is set at the measured worst case rather than the `opened`
@@ -692,14 +690,11 @@ export async function main() {
  * `ClosingIssuesIndeterminateError`: an unsettled read is not a mismatch, it
  * is the absence of a verdict, and collapsing it onto the SAME exit code as a
  * confirmed violation (`1`) would make the two indistinguishable from the
- * exit code alone -- exactly the defect #563 already fixed once in the
- * sibling check (`check-closing-references.mjs`). This follows that same
- * convention rather than inventing a third exit code no other check in this
- * repository uses: 0 = looked and nothing armed, 1 = looked and found a
+ * exit code alone. This follows the repository convention:
+ * 0 = looked and nothing armed, 1 = looked and found a
  * violation, 2 = never got far enough to compare at all.
  *
- * Exported, not inlined in the CLI guard below, for the same reason
- * `reportCliOutcome` is exported from `check-closing-references.mjs`: the
+ * Exported, not inlined in the CLI guard below, because the
  * `import.meta.url === pathToFileURL(process.argv[1]).href` guard is only
  * ever true when this file is the process entry point, which it never is
  * under the test runner, so a test has no way to exercise inline handler

@@ -191,9 +191,9 @@ describe('the parsers see the real files, not an empty string', () => {
     expect(declaredClassOf(entry!.contents, entry!.file)).toBe('reports');
   });
 
-  it('reads the general closing-reference workflow as reporting for queued entries', () => {
+  it('reads the PR policy workflow as reporting for queued entries', () => {
     const entry = workflows.find(
-      (candidate) => candidate.file === 'closing-reference-declaration.yml',
+      (candidate) => candidate.file === 'pr-policy.yml',
     );
     expect(triggersOf(entry!.contents, entry!.file)).toEqual([
       'merge_group',
@@ -244,11 +244,11 @@ describe('a required context must be emitted by a workflow that reports', () => 
     ).toEqual([]);
   });
 
-  it('accepts the general context and refuses the advisory gate-only context', () => {
+  it('accepts the PR policy context and refuses the advisory gate-only context', () => {
     expect(
       evaluateRequiredContexts({
         workflows,
-        requiredContexts: ['Closing-reference declaration'],
+        requiredContexts: ['PR policy'],
       }),
     ).toEqual([]);
     const [gateOnly] = evaluateRequiredContexts({

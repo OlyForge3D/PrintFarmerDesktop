@@ -43,7 +43,6 @@
     "check:copilot-session-trailers": "node scripts/check-copilot-session-trailers.mjs",
     "check:copilot-session-collisions": "node scripts/check-copilot-session-collisions.mjs",
     "check:body-edit-triggers": "node scripts/check-body-edit-triggers.mjs",
-    "check:closing-references": "node scripts/check-closing-references.mjs",
     "check:pr-claim-collisions": "node scripts/check-pr-claim-collisions.mjs",
     "check:setup-files": "node scripts/check-setup-files.mjs",
     "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",

@@ -1,5 +1,9 @@
 # Hicks — Recent Sessions
 
+> Policy update (2026-11-04): committed issue-closing declarations and their
+> required check have been removed. References below are historical evidence,
+> not instructions to recreate declaration files. Normal PR-body closing keywords remain.
+
 Hicks is QA and contract testing for PrintFarmer Desktop.
 
 ## SUMMARY (2026-08-21)

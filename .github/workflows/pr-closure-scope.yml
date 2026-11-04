@@ -2,9 +2,8 @@ name: Gate issue closure scope
 
 # merge-queue: advisory
 #
-# This narrow check reads closingIssuesReferences once. It does not apply the
-# settled polling used by the general declaration check, so it stays advisory
-# and MUST NOT be configured as a required context.
+# This narrow check protects gate issues, not ordinary issue closures. It
+# stays advisory and MUST NOT be configured as a required context.
 
 # Deliberately a separate workflow rather than jobs in ci.yml.
 #

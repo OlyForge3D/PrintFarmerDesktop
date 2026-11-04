@@ -77,18 +77,6 @@ npm version <X>.<Y>.<Z>-beta.<N> --no-git-tag-version
 committed: the release build runs `git diff --exit-code -- native/Cargo.lock
 package-lock.json` and fails if the lockfile drifts.
 
-`Closing-reference declaration` is a required check, so add a declaration file
-named after the slugified branch (see `.github/pr-closes/README.md`). A release
-PR closes nothing, so an empty block is the correct, meaningful declaration:
-
-````
-.github/pr-closes/dev-<user>-release-v<X>-<Y>-<Z>-beta-<N>.md
-
-```closes
-
-```
-````
-
 Run `npm run format` before pushing. The formatter runs as a `Format check` step
 inside the `Desktop` job, so a formatting failure surfaces as a failing
 `Desktop (windows-latest)` / `Desktop (macos-latest)` required check rather than
@@ -99,7 +87,7 @@ in #713, which had to re-run prettier on a file #712 had left unformatted.
 Required checks on `development`: `Desktop (windows-latest)`,
 `Desktop (macos-latest)`, `Sidecar (windows-latest)`, `Sidecar (macos-latest)`,
 `Release package (windows-latest)`, `Release package (macos-latest)`,
-`Dependency advisories`, `Closing-reference declaration`.
+`Dependency advisories`, `Sequencing hold`.
 
 ## 3. Merge, then read back the merge commit
 
@@ -195,4 +183,3 @@ _before_ opening the bump PR rather than discovering it after a 40-minute build.
 - `.github/workflows/release.yml` — the workflow itself
 - `.github/workflows/release-tagged.yml` — the scheduled guard that reports a
   bump which never became a release (`npm run check:release-tagged`)
-- `.github/pr-closes/README.md` — closing-reference declaration format

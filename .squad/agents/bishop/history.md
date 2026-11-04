@@ -1,5 +1,9 @@
 # Bishop — Calibration Dispatch Investigation (2026-08-21)
 
+> Policy update (2026-11-04): committed issue-closing declarations and their
+> required check have been removed. References below are historical evidence,
+> not instructions to recreate declaration files. Normal PR-body closing keywords remain.
+
 Bishop is the Rust/SQLite/integration developer for PrintFarmer Desktop.
 
 ## EXECUTIVE SUMMARY
