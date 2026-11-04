@@ -106,6 +106,10 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/build-universal-sidecar.mjs
 
+      - name: Verify universal sidecar links only system libraries
+        if: runner.os == 'macOS'
+        run: node scripts/check-sidecar-dylibs.mjs native/target/universal-apple-darwin/release/model-core
+
       - name: Package unsigned application
         env:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'

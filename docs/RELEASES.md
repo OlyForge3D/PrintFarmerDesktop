@@ -90,7 +90,14 @@ values to the build processes.
    those credentials are gone do secretless Forge ZIP and DMG makers run.
 4. CI verifies Windows signatures and timestamps, the universal sidecar and
    outer macOS signatures, architectures, stapled ticket, Gatekeeper
-   assessment, packaged resources, and reproducible compliance outputs.
+   assessment, packaged resources, and reproducible compliance outputs. It
+   also runs `scripts/check-sidecar-dylibs.mjs`, which rejects any sidecar
+   slice linking a dylib outside `/usr/lib` or `/System/Library`. The sidecar
+   bundles no libraries, so any other dependency resolves to whatever exists
+   on the user's machine. In beta.8 that was Homebrew's liblzma, which
+   hardened-runtime library validation rejected for its foreign signing team,
+   killing the sidecar at launch (#828). The check is deliberately stricter
+   than library validation.
 5. After both jobs pass, the publish job publishes the platform artifacts.
    Stable releases also hash the Windows installer and universal macOS ZIP into
    `latest.json`, sign those exact bytes with Ed25519, and publish

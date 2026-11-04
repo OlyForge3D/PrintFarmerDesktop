@@ -310,7 +310,7 @@ describe('the shipped supply-chain policy is the validated source of truth', () 
     ).toEqual([]);
   });
 
-  it.each(['lzma', 'rayon-core', 'wasm_bindgen'])(
+  it.each(['rayon-core', 'wasm_bindgen'])(
     'admits the reviewed STEP native identity %s only through its documented exception',
     (name) => {
       const sbom = buildSbom({

@@ -36,7 +36,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
 dependencies = [
- "memchr 2.8.3",
+ "memchr",
 ]
 
 [[package]]
@@ -83,12 +83,6 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
-name = "base64"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
@@ -151,12 +145,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc"
@@ -672,23 +660,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
-name = "lz4_flex"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05304f8e67dfc93d1b4b990137fd1a7a4c6ad44b60a9c486c8c4486f9d2027ae"
-
-[[package]]
-name = "lzma-sys"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
-]
-
-[[package]]
 name = "matext4cgmath"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -697,15 +668,6 @@ dependencies = [
  "cgmath",
  "katexit",
  "num-complex",
-]
-
-[[package]]
-name = "memchr"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "148fab2e51b4f1cfc66da2a7c32981d1d3c083a803978268bb11fe4b86925e7a"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -746,12 +708,12 @@ dependencies = [
 name = "model-core"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "lib3mf",
  "libloading",
  "notify",
  "png",
- "quick-xml 0.36.2",
+ "quick-xml",
  "rusqlite",
  "same-file",
  "serde",
@@ -768,20 +730,11 @@ dependencies = [
 
 [[package]]
 name = "nom"
-version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05aec50c70fd288702bcd93284a8444607f3292dbdf2a30de5ea5dcdbe72287b"
-dependencies = [
- "memchr 1.0.2",
-]
-
-[[package]]
-name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
- "memchr 2.8.3",
+ "memchr",
  "minimal-lexical",
 ]
 
@@ -819,17 +772,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "num-derive"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "876a53fff98e03a936a674b29568b0e605f06b29372c2489ff4de23f1949743d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -949,21 +891,11 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8533f14c8382aaad0d592c812ac3b826162128b65662331e1127b45c3d18536b"
-dependencies = [
- "memchr 2.8.3",
- "serde",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
 dependencies = [
- "memchr 2.8.3",
+ "memchr",
 ]
 
 [[package]]
@@ -1056,7 +988,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
 dependencies = [
  "aho-corasick",
- "memchr 2.8.3",
+ "memchr",
  "regex-automata",
  "regex-syntax",
 ]
@@ -1068,7 +1000,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
 dependencies = [
  "aho-corasick",
- "memchr 2.8.3",
+ "memchr",
  "regex-syntax",
 ]
 
@@ -1136,7 +1068,7 @@ dependencies = [
  "derive-new",
  "derive_more",
  "itertools 0.10.5",
- "nom 7.1.3",
+ "nom",
  "ruststep-derive",
  "serde",
  "thiserror 1.0.69",
@@ -1220,7 +1152,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
  "itoa",
- "memchr 2.8.3",
+ "memchr",
  "serde",
  "serde_core",
  "zmij",
@@ -1441,7 +1373,6 @@ dependencies = [
  "truck-geometry",
  "truck-polymesh",
  "truck-topology",
- "vtkio",
 ]
 
 [[package]]
@@ -1534,25 +1465,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vtkio"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abbe89e5b97b472d57abeb02755a06d75b28d2df7d1fe3df5baf032281a65c16"
-dependencies = [
- "base64 0.13.1",
- "bytemuck",
- "byteorder",
- "flate2",
- "lz4_flex",
- "nom 3.2.1",
- "num-derive",
- "num-traits",
- "quick-xml 0.22.0",
- "serde",
- "xz2",
-]
 
 [[package]]
 name = "walkdir"
@@ -1772,16 +1684,7 @@ version = "0.5.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f593a95398737aeed53e489c785df13f3618e41dbcd6718c6addbf1395aa6876"
 dependencies = [
- "memchr 2.8.3",
-]
-
-[[package]]
-name = "xz2"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
-dependencies = [
- "lzma-sys",
+ "memchr",
 ]
 
 [[package]]
@@ -1816,7 +1719,7 @@ dependencies = [
  "displaydoc",
  "flate2",
  "indexmap",
- "memchr 2.8.3",
+ "memchr",
  "thiserror 2.0.19",
  "zopfli",
 ]
