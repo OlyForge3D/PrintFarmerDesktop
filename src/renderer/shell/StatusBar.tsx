@@ -1,4 +1,8 @@
-import type { AppInfoResponse, ServerProfile } from '@shared/ipc';
+import type {
+  AppInfoResponse,
+  AvailableRelease,
+  ServerProfile,
+} from '@shared/ipc';
 import { serverStatusLabel } from './serverPresentation';
 
 export interface StatusBarProps {
@@ -10,6 +14,9 @@ export interface StatusBarProps {
   uploadsRemaining: number;
   sourcesNeedingAttention: number;
   appInfo: AppInfoResponse | null;
+  /** A newer build on this build's release train, if one is published. */
+  availableRelease?: AvailableRelease | null;
+  onDismissRelease?: () => void;
 }
 
 /**
@@ -25,6 +32,8 @@ export function StatusBar({
   uploadsRemaining,
   sourcesNeedingAttention,
   appInfo,
+  availableRelease = null,
+  onDismissRelease,
 }: StatusBarProps): React.JSX.Element {
   return (
     <footer className="app-statusbar" aria-label="Application status">
@@ -63,6 +72,25 @@ export function StatusBar({
         {serverStatusLabel(serverProfile)}
         {serverProfile ? ` · ${serverProfile.displayName}` : ''}
       </span>
+
+      {availableRelease ? (
+        <span className="status-item status-item--update">
+          <a href={availableRelease.url} target="_blank" rel="noreferrer">
+            {availableRelease.prerelease ? 'Beta' : 'Update'}{' '}
+            {availableRelease.version} available
+          </a>
+          {onDismissRelease ? (
+            <button
+              type="button"
+              className="status-item-dismiss"
+              onClick={onDismissRelease}
+              aria-label={`Dismiss ${availableRelease.version} update notice`}
+            >
+              Dismiss
+            </button>
+          ) : null}
+        </span>
+      ) : null}
 
       {appInfo ? (
         <span className="status-item status-item--build">
