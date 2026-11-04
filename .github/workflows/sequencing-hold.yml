@@ -13,12 +13,9 @@ name: Sequencing hold
 # that step only actually compares once a repo-admin-scoped token is
 # configured there — see that step's own comment.
 #
-# Eligible is not the same as required: `development`'s
-# required_status_checks.contexts still does not name "Sequencing hold" as of
-# this change (a branch-protection admin write, deliberately left to the
-# repository owner rather than made by this session — see #480 and
-# .squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md).
-# `npm run check:hold-gate-readiness` reports exactly that remaining gap.
+# "Sequencing hold" is now required on `development`. The retained session-
+# trailer and body-edit-trigger guards run in this existing context too, so
+# retiring the closing-declaration context does not weaken those policies.
 
 # Deliberately a separate workflow rather than a job in ci.yml, for the same
 # reason pr-closure-scope.yml is: the check needs a pull request number and a
@@ -75,12 +72,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # No `npm ci`: the check imports nothing outside node: builtins, so it
+      - name: Verify body-edit trigger coverage
+        run: npm run check:body-edit-triggers
+
+      - name: Validate Copilot session trailers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:copilot-session-trailers
+
+      # No `npm ci`: the checks import nothing outside node: builtins, so the job
       # runs against the checkout alone. That keeps it off the scarce
       # macos-latest pool and finishes in seconds rather than minutes.
       - name: Verify the pull request is not deliberately held
