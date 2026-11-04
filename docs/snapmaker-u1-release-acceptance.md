@@ -33,6 +33,12 @@ hardware result is claimed in this document.
 Create these projects from simple original geometry owned by the tester. Do not
 use MkWorld2Snap source, tests, assets, or fixtures.
 
+Configure each source project (`U1-SINGLE`, `U1-TOOLS`, `U1-PLATES`, and
+`U1-PAINT`) for a Bambu Lab printer before exporting its editable 3MF. The
+embedded printer identity must identify that Bambu Lab target; the authoring
+slicer alone does not establish eligibility. **Prepare for Snapmaker U1** is
+hidden for other or unidentified source printer targets.
+
 | Project ID  | Required contents                                                      | Source SHA-256 | Output SHA-256 |
 | ----------- | ---------------------------------------------------------------------- | -------------- | -------------- |
 | `U1-SINGLE` | One object, one PLA slot, non-origin placement                         |                |

@@ -314,6 +314,23 @@
   color: var(--warning);
 }
 
+.status-item--update a {
+  color: var(--accent);
+}
+
+.status-item-dismiss {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--quiet);
+  cursor: pointer;
+  font: inherit;
+}
+
+.status-item-dismiss:hover {
+  color: var(--muted);
+}
+
 .status-item--build {
   font-variant-numeric: tabular-nums;
 }

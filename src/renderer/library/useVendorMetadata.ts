@@ -10,8 +10,8 @@ export interface VendorMetadataState {
 /**
  * Fetches slicer-project (vendor) metadata for the loaded model. Only 3MF files
  * can carry it, so STL loads (and no selection) clear the state without a call.
- * A vendor-less standard 3MF simply resolves to a `slicer: 'unknown'` record
- * with empty plates/thumbnails, which the panel renders as "no vendor data".
+ * A vendor-less standard 3MF resolves with unknown slicer and printer-target
+ * identities plus empty plates/thumbnails, which the panel renders as no data.
  */
 export function useVendorMetadata(
   path: string | null,
@@ -44,7 +44,7 @@ export function useVendorMetadata(
         if (!cancelled) {
           setMetadata(null);
           setError(err instanceof Error ? err.message : String(err));
-          setSourcePath(null);
+          setSourcePath(path);
         }
       });
     return () => {

@@ -70,8 +70,8 @@ export function LibraryOnboarding({
           <div>
             <h2 id="library-onboarding-title">Set up your model library</h2>
             <p id="library-onboarding-description">
-              Add a source folder to index STL, 3MF, and OBJ files without
-              leaving the renderer sandbox.
+              Add a folder to index STL, 3MF, and OBJ models. Your original
+              files stay where they are.
             </p>
           </div>
           <button
@@ -92,8 +92,8 @@ export function LibraryOnboarding({
               <div>
                 <strong>Pick a folder</strong>
                 <span>
-                  Reuse the existing folder picker to choose your first source
-                  root.
+                  Choose a folder that contains your models. Your original files
+                  stay where they are.
                 </span>
               </div>
             </li>
@@ -102,17 +102,18 @@ export function LibraryOnboarding({
               <div>
                 <strong>Review import rules</strong>
                 <span>
-                  Confirm how folders should become collections and tags before
-                  scanning.
+                  Choose how subfolders should organize your models as
+                  collections or tags before scanning.
                 </span>
               </div>
             </li>
             <li>
               <Icon name="refresh" />
               <div>
-                <strong>Keep roots healthy</strong>
+                <strong>Manage your folders</strong>
                 <span>
-                  Rescan, reconnect, or remove roots later from the sidebar.
+                  You can add or remove folders from the sidebar whenever you
+                  need.
                 </span>
               </div>
             </li>

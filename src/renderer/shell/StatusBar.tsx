@@ -1,4 +1,8 @@
-import type { AppInfoResponse, ServerProfile } from '@shared/ipc';
+import type {
+  AppInfoResponse,
+  AvailableRelease,
+  ServerProfile,
+} from '@shared/ipc';
 import { serverStatusLabel } from './serverPresentation';
 
 export interface StatusBarProps {
@@ -7,9 +11,12 @@ export interface StatusBarProps {
   busy: boolean;
   error: string | null;
   serverProfile: ServerProfile | null;
-  uploadsInFlight: number;
+  uploadsRemaining: number;
   sourcesNeedingAttention: number;
   appInfo: AppInfoResponse | null;
+  /** A newer build on this build's release train, if one is published. */
+  availableRelease?: AvailableRelease | null;
+  onDismissRelease?: () => void;
 }
 
 /**
@@ -22,9 +29,11 @@ export function StatusBar({
   busy,
   error,
   serverProfile,
-  uploadsInFlight,
+  uploadsRemaining,
   sourcesNeedingAttention,
   appInfo,
+  availableRelease = null,
+  onDismissRelease,
 }: StatusBarProps): React.JSX.Element {
   return (
     <footer className="app-statusbar" aria-label="Application status">
@@ -40,10 +49,10 @@ export function StatusBar({
 
       <span className="statusbar-spacer" />
 
-      {uploadsInFlight > 0 ? (
+      {uploadsRemaining > 0 ? (
         <span className="status-item">
-          {uploadsInFlight} {uploadsInFlight === 1 ? 'upload' : 'uploads'} in
-          progress
+          {uploadsRemaining} {uploadsRemaining === 1 ? 'upload' : 'uploads'}{' '}
+          remaining
         </span>
       ) : null}
 
@@ -63,6 +72,25 @@ export function StatusBar({
         {serverStatusLabel(serverProfile)}
         {serverProfile ? ` · ${serverProfile.displayName}` : ''}
       </span>
+
+      {availableRelease ? (
+        <span className="status-item status-item--update">
+          <a href={availableRelease.url} target="_blank" rel="noreferrer">
+            {availableRelease.prerelease ? 'Beta' : 'Update'}{' '}
+            {availableRelease.version} available
+          </a>
+          {onDismissRelease ? (
+            <button
+              type="button"
+              className="status-item-dismiss"
+              onClick={onDismissRelease}
+              aria-label={`Dismiss ${availableRelease.version} update notice`}
+            >
+              Dismiss
+            </button>
+          ) : null}
+        </span>
+      ) : null}
 
       {appInfo ? (
         <span className="status-item status-item--build">

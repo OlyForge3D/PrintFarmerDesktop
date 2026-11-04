@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -355,32 +355,40 @@ describe('merge survival with incomplete history', () => {
     write(source, 'feature.txt', ['feature']);
     squashLanding = commitAll(source, 'feature lands');
 
-    for (const destination of [shallowVerdict, shallowDiff]) {
-      git(
-        [
-          'clone',
-          '-q',
-          '--depth',
-          '2',
-          '--branch',
-          'development',
-          pathToFileURL(source).href,
-          destination,
-        ],
-        root,
-      );
-      git(
-        [
-          'fetch',
-          '-q',
-          '--depth',
-          '1',
-          'origin',
-          'feature:refs/remotes/origin/feature',
-        ],
-        destination,
-      );
-    }
+    // Both destinations start byte-identical, and each test then unshallows
+    // its own. So the shallow clone is made once, by real `clone --depth` and
+    // `fetch --depth`, and copied: two clones over the file transport were
+    // the bulk of this hook, which timed out at 10 s on a loaded hosted
+    // Windows runner (PR #832). The source is only ever read, so both copies
+    // still point at it.
+    git(
+      [
+        'clone',
+        '-q',
+        '--depth',
+        '2',
+        '--branch',
+        'development',
+        pathToFileURL(source).href,
+        shallowVerdict,
+      ],
+      root,
+    );
+    git(
+      [
+        'fetch',
+        '-q',
+        '--depth',
+        '1',
+        'origin',
+        'feature:refs/remotes/origin/feature',
+      ],
+      shallowVerdict,
+    );
+    cpSync(shallowVerdict, shallowDiff, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));

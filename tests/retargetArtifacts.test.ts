@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RetargetPreflightResponse } from '@shared/ipc';
 import { RetargetArtifactService } from '../src/main/retargetArtifacts.js';
 
 const temporaryDirectories: string[] = [];
@@ -203,26 +204,32 @@ afterEach(async () => {
 });
 
 describe('RetargetArtifactService', () => {
-  it('handles a blocked preflight without a report and accepts mixed catalogs', async () => {
+  it('preserves the source-printer blocker through the strict IPC contract without a report', async () => {
+    const blocker = {
+      code: 'unsupportedSourcePrinter',
+      severity: 'blocker',
+      title: 'Source must target a Bambu Lab printer',
+      message: 'The embedded settings identify another printer.',
+      action: 'Use an editable Bambu-targeted 3MF.',
+    };
     const { service, sourceHash } = await fixture({
       preflight: () => ({
         status: 'blocked',
-        blockers: [],
+        blockers: [blocker],
         warnings: [],
         value: null,
       }),
     });
 
-    await expect(
-      service.preflight(1, {
-        modelHash: sourceHash,
-        rootId: 'root-1',
-        profileId,
-        objectExclusion: false,
-      }),
-    ).resolves.toEqual({
+    const result = await service.preflight(1, {
+      modelHash: sourceHash,
+      rootId: 'root-1',
+      profileId,
+      objectExclusion: false,
+    });
+    expect(RetargetPreflightResponse.parse(result)).toEqual({
       status: 'blocked',
-      blockers: [],
+      blockers: [{ ...blocker, part: null, setting: null }],
       warnings: [],
       value: null,
     });

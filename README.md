@@ -81,11 +81,12 @@ the accepted residual risks are documented in
 ## Prepare an editable project for Snapmaker U1
 
 PrintFarmer Desktop can create a **new review copy** of an editable Orca-family
-3MF project for the Snapmaker U1. This workflow is available on Windows and
-macOS from the selected model's inspector and 3D preview.
+3MF project targeting a Bambu Lab printer for the Snapmaker U1. This workflow is
+available on Windows and macOS from the selected model's inspector and 3D
+preview. The action is hidden for other or unidentified printer targets.
 
 1. Catalog and select an editable `.3mf` created by OrcaSlicer or another
-   Orca-compatible slicer export.
+   Orca-compatible slicer export, configured for a Bambu Lab printer.
 2. Choose **Prepare for Snapmaker U1**.
 3. Explicitly select either a bundled U1 process profile or import an editable
    U1 reference project. Imported references are copied into a
@@ -250,6 +251,14 @@ release builds verify signed metadata, reject rollback, and hash the downloaded
 installer or universal macOS ZIP before staging it. See
 [Signed releases](./docs/RELEASES.md) for credential names, release ordering,
 failure behavior, and interrupted-update recovery.
+
+Separately, installed builds show a lightweight "update available" notice in the
+status bar when a newer GitHub release with an installer for its platform is
+published on its release train. Beta builds are told about newer betas and any
+newer stable release; stable builds are told only about newer stable releases.
+The notice links to the release page and can be dismissed per version. It never
+downloads or installs anything, checks GitHub at most every six hours (the last
+result is remembered across restarts), and is disabled under `npm start`.
 
 ## License and source
 
