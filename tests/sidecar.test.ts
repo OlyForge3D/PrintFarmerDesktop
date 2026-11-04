@@ -501,6 +501,7 @@ describe('SidecarClient', () => {
           ok: true,
           result: {
             slicer: 'bambuStudio',
+            printerTarget: 'bambu',
             core: { title: 'Widget' },
             plates: [],
             thumbnails: ['Metadata/plate_1.png'],
@@ -510,7 +511,10 @@ describe('SidecarClient', () => {
     });
     const client = new SidecarClient(() => channel);
     const result = await client.extractVendorMetadata('C:/models/project.3mf');
-    expect(result).toMatchObject({ slicer: 'bambuStudio' });
+    expect(result).toMatchObject({
+      slicer: 'bambuStudio',
+      printerTarget: 'bambu',
+    });
     const request = JSON.parse(sent[0] ?? '{}') as {
       method: string;
       params: { path: string };

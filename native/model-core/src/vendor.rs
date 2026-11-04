@@ -19,7 +19,7 @@ use std::path::Path;
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use zip::ZipArchive;
+use zip::{result::ZipError, ZipArchive};
 
 use crate::limits::ParseGuard;
 use crate::threemf::{self, ThreeMfError};
@@ -30,6 +30,7 @@ const PRUSA_MODEL_CONFIG: &str = "Metadata/Slic3r_PE_model.config";
 const PRUSA_CONFIG: &str = "Metadata/Slic3r_PE.config";
 const BAMBU_PROJECT_SETTINGS: &str = "Metadata/project_settings.config";
 const BAMBU_MODEL_SETTINGS: &str = "Metadata/model_settings.config";
+const MAX_PROJECT_SETTINGS_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Guard so a hostile package cannot make us allocate unbounded plate records.
 ///
@@ -55,6 +56,25 @@ pub enum Slicer {
     OrcaSlicer,
     Cura,
     Unknown,
+}
+
+/// Target printer family identified from embedded slicer project settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrinterTarget {
+    Bambu,
+    Other,
+    Unknown,
+}
+
+impl PrinterTarget {
+    /// Stable camelCase wire value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PrinterTarget::Bambu => "bambu",
+            PrinterTarget::Other => "other",
+            PrinterTarget::Unknown => "unknown",
+        }
+    }
 }
 
 impl Slicer {
@@ -176,6 +196,7 @@ pub struct PlateThumbnail {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VendorMetadata {
     pub slicer: Slicer,
+    pub printer_target: PrinterTarget,
     pub core: CoreMetadata,
     pub plates: Vec<PlateSliceInfo>,
     pub parts: VendorParts,
@@ -192,6 +213,7 @@ pub fn extract_bytes(data: &[u8]) -> Result<VendorMetadata, ThreeMfError> {
     let mut guard = ParseGuard::default();
     let (mut archive, _index) = threemf::open_package(data, &mut guard)?;
 
+    let printer_target = extract_printer_target(&mut archive, &mut guard)?;
     let core = extract_core(&mut archive, &mut guard)?;
     let plates = extract_plates(&mut archive, &mut guard)?;
     let parts = collect_parts(&mut archive, &mut guard)?;
@@ -204,10 +226,70 @@ pub fn extract_bytes(data: &[u8]) -> Result<VendorMetadata, ThreeMfError> {
 
     Ok(VendorMetadata {
         slicer,
+        printer_target,
         core,
         plates,
         parts,
     })
+}
+
+fn extract_printer_target<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    guard: &mut ParseGuard,
+) -> Result<PrinterTarget, ThreeMfError> {
+    let settings_size = match archive.by_name(BAMBU_PROJECT_SETTINGS) {
+        Ok(settings) => settings.size(),
+        Err(ZipError::FileNotFound) => return Ok(PrinterTarget::Unknown),
+        Err(error) => return Err(error.into()),
+    };
+    if settings_size > MAX_PROJECT_SETTINGS_BYTES {
+        return Ok(PrinterTarget::Unknown);
+    }
+
+    let Some(settings) = threemf::read_entry_bytes(
+        archive,
+        BAMBU_PROJECT_SETTINGS,
+        MAX_PROJECT_SETTINGS_BYTES,
+        || ThreeMfError::DataTooLarge {
+            resource: "project settings",
+            limit: MAX_PROJECT_SETTINGS_BYTES,
+        },
+        guard,
+    )?
+    else {
+        return Ok(PrinterTarget::Unknown);
+    };
+    let Ok(settings) = serde_json::from_slice::<serde_json::Value>(&settings) else {
+        return Ok(PrinterTarget::Unknown);
+    };
+    let Some(settings) = settings.as_object() else {
+        return Ok(PrinterTarget::Unknown);
+    };
+    let printer = ["printer_model", "printer_settings_id"]
+        .iter()
+        .find_map(|key| settings.get(*key).and_then(printer_setting_text));
+
+    let Some(printer) = printer else {
+        return Ok(PrinterTarget::Unknown);
+    };
+    let normalized = printer
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect::<String>();
+    if normalized.starts_with("bambulab") {
+        Ok(PrinterTarget::Bambu)
+    } else {
+        Ok(PrinterTarget::Other)
+    }
+}
+
+pub(crate) fn printer_setting_text(value: &serde_json::Value) -> Option<&str> {
+    value
+        .as_str()
+        .or_else(|| value.as_array()?.first()?.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 /// Read the model root `<metadata>` elements into [`CoreMetadata`].
@@ -768,6 +850,135 @@ mod tests {
     }
 
     #[test]
+    fn identifies_printer_target_from_project_settings_not_authoring_slicer() {
+        let bambu_zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("OrcaSlicer-2.1.0").as_bytes(),
+            ),
+            (
+                BAMBU_PROJECT_SETTINGS,
+                br#"{"printer_model":"Bambu Lab X1 Carbon","printer_settings_id":"Bambu Lab X1 Carbon 0.4 nozzle"}"#,
+            ),
+        ]);
+        let bambu = extract_bytes(&bambu_zip).unwrap();
+        assert_eq!(bambu.slicer, Slicer::OrcaSlicer);
+        assert_eq!(bambu.printer_target, PrinterTarget::Bambu);
+
+        let fallback_zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("BambuStudio-01.08.00.55").as_bytes(),
+            ),
+            (
+                BAMBU_PROJECT_SETTINGS,
+                br#"{"printer_settings_id":"Bambu Lab A1 mini 0.4 nozzle"}"#,
+            ),
+        ]);
+        assert_eq!(
+            extract_bytes(&fallback_zip).unwrap().printer_target,
+            PrinterTarget::Bambu
+        );
+
+        let array_zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("OrcaSlicer-2.1.0").as_bytes(),
+            ),
+            (
+                BAMBU_PROJECT_SETTINGS,
+                br#"{"printer_model":["BambuLab P1S","0.4 nozzle"]}"#,
+            ),
+        ]);
+        assert_eq!(
+            extract_bytes(&array_zip).unwrap().printer_target,
+            PrinterTarget::Bambu
+        );
+
+        let other_zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("BambuStudio-01.08.00.55").as_bytes(),
+            ),
+            (
+                BAMBU_PROJECT_SETTINGS,
+                br#"{"printer_model":"Creality K1"}"#,
+            ),
+        ]);
+        let other = extract_bytes(&other_zip).unwrap();
+        assert_eq!(other.slicer, Slicer::BambuStudio);
+        assert_eq!(other.printer_target, PrinterTarget::Other);
+    }
+
+    #[test]
+    fn unknown_printer_target_does_not_make_optional_settings_fatal() {
+        let zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("BambuStudio-01.08.00.55").as_bytes(),
+            ),
+            (BAMBU_PROJECT_SETTINGS, b"not-json"),
+        ]);
+
+        let metadata = extract_bytes(&zip).unwrap();
+        assert_eq!(metadata.printer_target, PrinterTarget::Unknown);
+    }
+
+    #[test]
+    fn printer_target_falls_back_only_when_primary_identity_is_unusable() {
+        for primary in [
+            serde_json::json!(""),
+            serde_json::json!(" \t "),
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!([""]),
+            serde_json::json!([null]),
+            serde_json::json!(12),
+            serde_json::json!(false),
+            serde_json::json!({}),
+        ] {
+            let settings = serde_json::json!({
+                "printer_model": primary,
+                "printer_settings_id": ["Bambu Lab P1S 0.4 nozzle"],
+            })
+            .to_string();
+            let zip = build_zip(&[
+                ("_rels/.rels", RELS.as_bytes()),
+                (
+                    "3D/3dmodel.model",
+                    model_with_metadata("OrcaSlicer-2.1.0").as_bytes(),
+                ),
+                (BAMBU_PROJECT_SETTINGS, settings.as_bytes()),
+            ]);
+            assert_eq!(
+                extract_bytes(&zip).unwrap().printer_target,
+                PrinterTarget::Bambu,
+                "primary: {primary}"
+            );
+        }
+
+        let settings =
+            br#"{"printer_model":"Creality K1","printer_settings_id":"Bambu Lab P1S 0.4 nozzle"}"#;
+        let zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("BambuStudio-01.08.00.55").as_bytes(),
+            ),
+            (BAMBU_PROJECT_SETTINGS, settings),
+        ]);
+        assert_eq!(
+            extract_bytes(&zip).unwrap().printer_target,
+            PrinterTarget::Other
+        );
+    }
+
+    #[test]
     fn extracts_core_metadata_from_case_variant_model_part() {
         let relationships = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -1075,6 +1286,7 @@ mod tests {
 
         let md = extract_bytes(&zip).unwrap();
         assert_eq!(md.slicer, Slicer::Unknown);
+        assert_eq!(md.printer_target, PrinterTarget::Unknown);
         assert!(md.core.is_empty());
         assert!(md.plates.is_empty());
         assert!(md.parts.thumbnails.is_empty());

@@ -386,6 +386,10 @@ export const Slicer = z.enum([
 ]);
 export type Slicer = z.infer<typeof Slicer>;
 
+/** Printer family identified by the embedded slicer-project settings. */
+export const PrinterTarget = z.enum(['bambu', 'other', 'unknown']);
+export type PrinterTarget = z.infer<typeof PrinterTarget>;
+
 /** Dublin-Core-style model metadata; every field is optional. */
 export const CoreMetadata = z.object({
   title: z.string().optional(),
@@ -411,6 +415,7 @@ export type PlateSliceInfo = z.infer<typeof PlateSliceInfo>;
 /** Slicer-project (vendor) metadata extracted from a 3MF. */
 export const VendorMetadata = z.object({
   slicer: Slicer,
+  printerTarget: PrinterTarget.optional(),
   core: CoreMetadata,
   plates: z.array(PlateSliceInfo),
   thumbnails: z.array(z.string()),
@@ -5640,6 +5645,7 @@ const IssueCode = z.enum([
   'unsupportedPrusa',
   'unsupportedCura',
   'unsupportedSlicer',
+  'unsupportedSourcePrinter',
   'unknownOrcaFamilyProducer',
   'missingProjectSettings',
   'invalidProjectSettings',

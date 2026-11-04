@@ -455,6 +455,7 @@ describe('ipc contract', () => {
   it('accepts a full vendor-metadata response', () => {
     const value = ipcSchemas[IpcChannel.ExtractVendorMetadata].response.parse({
       slicer: 'bambuStudio',
+      printerTarget: 'bambu',
       core: { title: 'Widget', application: 'BambuStudio-01.08.00.55' },
       plates: [
         {
@@ -467,6 +468,7 @@ describe('ipc contract', () => {
       thumbnails: ['Metadata/plate_1.png'],
     });
     expect(value.slicer).toBe('bambuStudio');
+    expect(value.printerTarget).toBe('bambu');
     expect(value.core.title).toBe('Widget');
     expect(value.plates[0]?.filamentTypes).toEqual(['PLA']);
     expect(value.thumbnails).toEqual(['Metadata/plate_1.png']);

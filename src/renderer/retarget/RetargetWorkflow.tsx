@@ -163,6 +163,7 @@ export function RetargetWorkflow({
           <button
             ref={closeButton}
             type="button"
+            className="retarget-secondary"
             onClick={flow.close}
             disabled={flow.phase === 'building' || flow.phase === 'saving'}
           >
@@ -177,7 +178,11 @@ export function RetargetWorkflow({
         {flow.phase === 'error' ? (
           <p role="alert">
             {flow.message}
-            <button type="button" onClick={flow.close}>
+            <button
+              type="button"
+              className="retarget-secondary"
+              onClick={flow.close}
+            >
               Close
             </button>
           </p>
@@ -197,7 +202,11 @@ export function RetargetWorkflow({
                   {profile.displayName} ({profile.source})
                 </label>
               ))}
-              <button type="button" onClick={() => void flow.importProfile()}>
+              <button
+                type="button"
+                className="retarget-secondary"
+                onClick={() => void flow.importProfile()}
+              >
                 Import U1 reference
               </button>
             </fieldset>
@@ -261,11 +270,16 @@ export function RetargetWorkflow({
               </section>
             ) : null}
             <footer>
-              <button type="button" onClick={flow.close}>
+              <button
+                type="button"
+                className="retarget-secondary"
+                onClick={flow.close}
+              >
                 Cancel
               </button>
               <button
                 type="button"
+                className="retarget-primary"
                 disabled={!flow.token || flow.phase === 'blocked'}
                 onClick={() => void flow.build()}
               >
@@ -306,6 +320,7 @@ export function RetargetWorkflow({
               <button
                 type="button"
                 aria-pressed={scene === 'source'}
+                className="retarget-secondary"
                 onClick={() => setScene('source')}
               >
                 Source
@@ -313,6 +328,7 @@ export function RetargetWorkflow({
               <button
                 type="button"
                 aria-pressed={scene === 'output'}
+                className="retarget-secondary"
                 onClick={() => setScene('output')}
               >
                 Snapmaker U1 output
@@ -335,6 +351,7 @@ export function RetargetWorkflow({
                 {sceneError}{' '}
                 <button
                   type="button"
+                  className="retarget-secondary"
                   onClick={() => setSceneRetry((value) => value + 1)}
                 >
                   Retry scene
@@ -344,11 +361,16 @@ export function RetargetWorkflow({
               <p role="status">Loading comparison scene…</p>
             )}
             <footer>
-              <button type="button" onClick={flow.close}>
+              <button
+                type="button"
+                className="retarget-secondary"
+                onClick={flow.close}
+              >
                 Cancel
               </button>
               <button
                 type="button"
+                className="retarget-primary"
                 disabled={sceneLoading}
                 onClick={() => void flow.save()}
               >
@@ -360,13 +382,21 @@ export function RetargetWorkflow({
         {flow.phase === 'saved' ? (
           <p role="status">
             {flow.message}
-            <button type="button" onClick={flow.close}>
+            <button
+              type="button"
+              className="retarget-secondary"
+              onClick={flow.close}
+            >
               Close
             </button>
           </p>
         ) : null}
         {flow.phase === 'error' ? (
-          <button type="button" onClick={flow.retry}>
+          <button
+            type="button"
+            className="retarget-primary"
+            onClick={flow.retry}
+          >
             Retry
           </button>
         ) : null}

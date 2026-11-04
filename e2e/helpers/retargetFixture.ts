@@ -104,8 +104,8 @@ export function createEditableRetargetFixture(directory: string): {
       name: 'Metadata/project_settings.config',
       bytes: text(
         JSON.stringify({
-          printer_model: 'Independent source printer',
-          printer_settings_id: 'Independent 0.4',
+          printer_model: 'Bambu Lab X1 Carbon',
+          printer_settings_id: 'Bambu Lab X1 Carbon 0.4 nozzle',
           print_settings_id: 'Independent standard',
           layer_height: '0.2',
           filament_type: ['PLA'],

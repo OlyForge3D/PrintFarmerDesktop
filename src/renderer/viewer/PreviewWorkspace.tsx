@@ -160,13 +160,11 @@ export function PreviewWorkspace({
               <Icon name="reset" />
               Reset
             </button>
-            <button
-              type="button"
-              onClick={onRetarget}
-              disabled={!retargetEligible}
-            >
-              Prepare for Snapmaker U1
-            </button>
+            {retargetEligible ? (
+              <button type="button" onClick={onRetarget}>
+                Prepare for Snapmaker U1
+              </button>
+            ) : null}
           </div>
         </header>
 
