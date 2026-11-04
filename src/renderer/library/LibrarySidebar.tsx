@@ -220,6 +220,8 @@ function OrganizationFilter({
   const matching = items.filter((item) =>
     item.name.toLowerCase().includes(search.toLowerCase()),
   );
+  const countLabel =
+    items.length === 1 ? noun : `${noun}${noun.endsWith('s') ? 'es' : 's'}`;
   return (
     <fieldset
       className={
@@ -242,6 +244,12 @@ function OrganizationFilter({
               {selected.length} selected
             </span>
           ) : null}
+          <span
+            className="organization-filter-total"
+            aria-label={`${items.length} ${countLabel}`}
+          >
+            {items.length}
+          </span>
         </button>
       </legend>
       <div id={bodyId} className="organization-filter-body" hidden={!expanded}>
@@ -265,7 +273,14 @@ function OrganizationFilter({
         <p className="collection-filter-hint">Matches any selected {noun}.</p>
         <div className="collection-filter-options">
           {matching.map((item) => (
-            <label key={item.id}>
+            <label
+              key={item.id}
+              className={
+                selected.includes(item.id)
+                  ? 'organization-filter-option selected'
+                  : 'organization-filter-option'
+              }
+            >
               <input
                 type="checkbox"
                 checked={selected.includes(item.id)}
@@ -277,7 +292,7 @@ function OrganizationFilter({
                   )
                 }
               />
-              <span>{item.name}</span>
+              <span title={item.name}>{item.name}</span>
               {item.count !== undefined ? (
                 <span className="sidebar-count">{item.count}</span>
               ) : null}

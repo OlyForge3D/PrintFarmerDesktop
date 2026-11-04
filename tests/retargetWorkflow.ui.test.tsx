@@ -261,6 +261,7 @@ describe('RetargetWorkflow', () => {
     ).toBeInTheDocument();
     const build = screen.getByRole('button', { name: 'Build review copy' });
     expect(build).toBeDisabled();
+    expect(build).toHaveClass('retarget-primary');
     fireEvent.click(screen.getByRole('radio', { name: /Imported U1/ }));
     await waitFor(() => expect(api.preflightRetarget).toHaveBeenCalledTimes(1));
     expect(api.disposeRetarget).toHaveBeenCalledTimes(0);
@@ -550,9 +551,13 @@ describe('RetargetWorkflow', () => {
       name: 'Build review copy',
     });
     await waitFor(() => expect(buildButton).toBeEnabled());
+    expect(buildButton).toHaveClass('retarget-primary');
     fireEvent.click(buildButton);
     await screen.findByRole('heading', { name: 'Review changes' });
 
+    expect(screen.getByRole('button', { name: 'Save As…' })).toHaveClass(
+      'retarget-primary',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Save As…' }));
     await waitFor(() =>
       expect(

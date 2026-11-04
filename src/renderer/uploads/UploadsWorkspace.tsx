@@ -1,5 +1,6 @@
 import type { UploadJob } from '@shared/ipc';
 import { formatBytes } from '../library/model';
+import { describeUploadQueue, summarizeUploadJobs } from './uploadSummary';
 
 export interface UploadsWorkspaceProps {
   jobs: UploadJob[];
@@ -33,10 +34,7 @@ export function UploadsWorkspace({
   onReset,
   onGoToLibrary,
 }: UploadsWorkspaceProps): React.JSX.Element {
-  const activeCount = jobs.reduce(
-    (count, job) => count + job.summary.queued + job.summary.uploading,
-    0,
-  );
+  const summary = summarizeUploadJobs(jobs);
 
   return (
     <main id="uploads-main" className="uploads-pane" aria-label="Upload queue">
@@ -46,17 +44,15 @@ export function UploadsWorkspace({
             Uploads
           </h1>
           <p>
-            {activeCount > 0
-              ? `${activeCount} model${activeCount === 1 ? '' : 's'} still transferring to PrintFarmer.`
-              : 'Transfers to PrintFarmer, with the server outcome recorded for every model.'}
+            {summary.remaining > 0
+              ? `${summary.remaining} model${summary.remaining === 1 ? '' : 's'} remaining to transfer to PrintFarmer.`
+              : 'No models are waiting to transfer.'}
           </p>
         </div>
       </header>
 
       <p className="upload-live-status" role="status" aria-live="polite">
-        {busy
-          ? 'Updating upload queue.'
-          : summarizeJobs(jobs) || 'Upload queue is empty.'}
+        {busy ? 'Updating upload queue.' : describeUploadQueue(jobs, summary)}
       </p>
 
       {error ? (
@@ -230,17 +226,4 @@ export function UploadsWorkspace({
       </div>
     </main>
   );
-}
-
-function summarizeJobs(jobs: UploadJob[]): string {
-  const summary = jobs.reduce(
-    (total, job) => ({
-      succeeded: total.succeeded + job.summary.succeeded,
-      failed: total.failed + job.summary.failed,
-      uncertain: total.uncertain + job.summary.uncertain,
-    }),
-    { succeeded: 0, failed: 0, uncertain: 0 },
-  );
-  if (summary.succeeded + summary.failed + summary.uncertain === 0) return '';
-  return `${summary.succeeded} uploads succeeded, ${summary.failed} failed, and ${summary.uncertain} have uncertain server status.`;
 }

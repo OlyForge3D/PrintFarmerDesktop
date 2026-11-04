@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import type {
   Collection,
   LogicalModel,
@@ -25,6 +26,7 @@ export interface PropertiesInspectorProps {
   favorite: boolean;
   stats: SceneStats | null;
   vendorMetadata: VendorMetadata | null;
+  vendorMetadataError?: string | null;
   tags: Tag[];
   collections: Collection[];
   collectionMembership: Set<string>;
@@ -66,6 +68,7 @@ function SelectedModelInspector({
   favorite,
   stats,
   vendorMetadata,
+  vendorMetadataError = null,
   tags,
   collections,
   collectionMembership,
@@ -85,6 +88,10 @@ function SelectedModelInspector({
   const name = modelDisplayName(model);
   const available = isAvailable(model);
   const thumbnail = useThumbnail(model);
+  const retargetHelpId = useId();
+  const retargetDisabledReason = previewDisabled
+    ? 'Unavailable while another operation is in progress.'
+    : null;
   const visibleLocations = model.locations.slice(0, MAX_VISIBLE_LOCATIONS);
   const hiddenLocationCount = model.locations.length - visibleLocations.length;
 
@@ -119,20 +126,7 @@ function SelectedModelInspector({
         </button>
         <button
           type="button"
-          className="inspector-preview-button"
-          onClick={onRetarget}
-          disabled={!retargetEligible || previewDisabled}
-          title={
-            retargetEligible
-              ? 'Prepare this editable 3MF for Snapmaker U1'
-              : 'Available cataloged editable 3MF required'
-          }
-        >
-          <span>Prepare for Snapmaker U1</span>
-        </button>
-        <button
-          type="button"
-          className="inspector-preview-button"
+          className="inspector-preview-button primary"
           onClick={onPreview}
           disabled={!available || previewDisabled}
           title={
@@ -146,6 +140,25 @@ function SelectedModelInspector({
           <Icon name="preview" />
           <span>Preview in 3D</span>
         </button>
+        {retargetEligible ? (
+          <button
+            type="button"
+            className="inspector-preview-button secondary"
+            onClick={onRetarget}
+            disabled={previewDisabled}
+            aria-describedby={
+              retargetDisabledReason ? retargetHelpId : undefined
+            }
+            title="Prepare this Bambu-targeted 3MF for Snapmaker U1"
+          >
+            <span>Prepare for Snapmaker U1</span>
+          </button>
+        ) : null}
+        {retargetDisabledReason ? (
+          <span className="inspector-action-help" id={retargetHelpId}>
+            {retargetDisabledReason}
+          </span>
+        ) : null}
       </section>
 
       <InspectorSection title="File">
@@ -188,9 +201,15 @@ function SelectedModelInspector({
         </ul>
       </InspectorSection>
 
-      {vendorMetadata ? (
+      {vendorMetadata || vendorMetadataError ? (
         <InspectorSection title="Slicer project">
-          <VendorPanel metadata={vendorMetadata} />
+          {vendorMetadataError ? (
+            <p role="alert" className="inline-error">
+              Project metadata could not be read: {vendorMetadataError}
+            </p>
+          ) : vendorMetadata ? (
+            <VendorPanel metadata={vendorMetadata} />
+          ) : null}
         </InspectorSection>
       ) : null}
 

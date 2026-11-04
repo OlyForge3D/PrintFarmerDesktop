@@ -11,6 +11,7 @@ use super::{RetargetError, RetargetLimits, RetargetOptions};
 use crate::hash::hash_reader;
 use crate::rpc::SceneMeshDto;
 use crate::scene::SceneMesh;
+use crate::vendor::PrinterTarget;
 
 pub(crate) fn run(
     bundle: &Bundle,
@@ -125,6 +126,14 @@ fn report_from_inspection(
 ) -> Result<PreflightReport, RetargetError> {
     let mut blockers = project.blockers.clone();
     let mut warnings = project.warnings.clone();
+    if project.printer_target != PrinterTarget::Bambu {
+        blockers.push(RetargetIssue::blocker(
+            IssueCode::UnsupportedSourcePrinter,
+            "Source must target a Bambu Lab printer",
+            "The embedded project settings do not identify a Bambu Lab printer target.",
+            "Use an editable 3MF configured for a Bambu Lab printer.",
+        ));
+    }
     let material_result = match target {
         TargetContext::Bundle(bundle) => bundle.map_materials(&project.materials),
         TargetContext::Resolved(target) => target.map_materials(&project.materials),

@@ -22,7 +22,7 @@ function Harness(): React.JSX.Element {
       busy={false}
       error={null}
       serverProfile={null}
-      uploadsInFlight={0}
+      uploadsRemaining={0}
       sourcesNeedingAttention={0}
       appInfo={null}
       availableRelease={release}

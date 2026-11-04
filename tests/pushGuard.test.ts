@@ -673,12 +673,71 @@ describe('the guard is installed rather than merely available', () => {
 // Everything above is a decision over supplied facts. This block proves the
 // decision is reached by git, over a real remote, and that it changes the
 // outcome — the same push without the hook destroys the commits.
+//
+// The real hook's #184 lookup (`readAssociatedPullRequest`) shells out to
+// `gh auth token`, then `gh repo view` / `gh pr list` when a credential is
+// found. None of these fixtures is about a PR's state: their branches exist on
+// no GitHub repository, so the only answer the lookup can give them is
+// "absent", which is the answer this environment produces directly. Left to
+// discover credentials, the same answer cost an external process per push,
+// a live API call on any logged-in developer machine, and, measured on a
+// hosted `windows-latest` runner, a single `gh auth token` that stalled for
+// 20.6 s (median 123 ms) and timed out "lets an ordinary fast-forward through"
+// at 15 s. The #184 lookup itself is exercised against an injected runner in
+// `describe('readAssociatedPullRequest')` above.
+const HERMETIC_HOOK_ENV: NodeJS.ProcessEnv = {
+  GITHUB_TOKEN: '',
+  GH_TOKEN: '',
+  SKIP_CREDENTIAL_DISCOVERY: '1',
+};
+
+describe('the integration fixtures keep the real hook off the network', () => {
+  // Exactly the env the hook inherits below: this process's, overlaid. A
+  // runner or shell that exports GITHUB_TOKEN must not reopen the lookup, so
+  // the overlay is applied on top of a token, not on top of a clean slate.
+  const inherited = {
+    ...process.env,
+    GITHUB_TOKEN: 'ghs_exported_by_the_runner',
+    ...HERMETIC_HOOK_ENV,
+  };
+
+  it('answers the #184 lookup without starting any process', () => {
+    const spawned: string[] = [];
+    const result = readAssociatedPullRequest(
+      'feature',
+      inherited,
+      (command: string, args: string[]) => {
+        spawned.push(`${command} ${args.join(' ')}`);
+        return { status: 1, stdout: '', stderr: '' };
+      },
+    );
+
+    expect(spawned).toEqual([]);
+    expect(result).toEqual({ state: null, number: null });
+  });
+
+  it('CONTROL — the same probe does see gh started when discovery is left on', () => {
+    // Without this the assertion above could pass on a recorder that never
+    // records. Same probe, same branch, only the overlay withdrawn.
+    const spawned: string[] = [];
+    readAssociatedPullRequest(
+      'feature',
+      { GITHUB_TOKEN: undefined, GH_TOKEN: undefined },
+      (command: string, args: string[]) => {
+        spawned.push(`${command} ${args.join(' ')}`);
+        return { status: 1, stdout: '', stderr: '' };
+      },
+    );
+
+    expect(spawned.some((call) => call.includes('auth token'))).toBe(true);
+  });
+});
 
 const git = (args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) =>
   execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...HERMETIC_HOOK_ENV, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 
@@ -703,7 +762,7 @@ function pushExpectingSuccess(
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...HERMETIC_HOOK_ENV, ...env },
   });
   if (result.status !== 0) {
     throw new Error(
@@ -3481,7 +3540,7 @@ describe('the remedy the guard prints is itself exercised', () => {
     spawnSync(process.execPath, [script, ...args], {
       cwd,
       encoding: 'utf8',
-      env: { ...process.env },
+      env: { ...process.env, ...HERMETIC_HOOK_ENV },
     });
 
   const remoteTip = () =>

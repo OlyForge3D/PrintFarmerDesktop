@@ -21,6 +21,7 @@ pub enum IssueCode {
     UnsupportedPrusa,
     UnsupportedCura,
     UnsupportedSlicer,
+    UnsupportedSourcePrinter,
     UnknownOrcaFamilyProducer,
     MissingProjectSettings,
     InvalidProjectSettings,

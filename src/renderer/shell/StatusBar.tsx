@@ -11,7 +11,7 @@ export interface StatusBarProps {
   busy: boolean;
   error: string | null;
   serverProfile: ServerProfile | null;
-  uploadsInFlight: number;
+  uploadsRemaining: number;
   sourcesNeedingAttention: number;
   appInfo: AppInfoResponse | null;
   /** A newer build on this build's release train, if one is published. */
@@ -29,7 +29,7 @@ export function StatusBar({
   busy,
   error,
   serverProfile,
-  uploadsInFlight,
+  uploadsRemaining,
   sourcesNeedingAttention,
   appInfo,
   availableRelease = null,
@@ -49,10 +49,10 @@ export function StatusBar({
 
       <span className="statusbar-spacer" />
 
-      {uploadsInFlight > 0 ? (
+      {uploadsRemaining > 0 ? (
         <span className="status-item">
-          {uploadsInFlight} {uploadsInFlight === 1 ? 'upload' : 'uploads'} in
-          progress
+          {uploadsRemaining} {uploadsRemaining === 1 ? 'upload' : 'uploads'}{' '}
+          remaining
         </span>
       ) : null}
 
