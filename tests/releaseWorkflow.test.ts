@@ -112,7 +112,43 @@ describe('signed release workflow', () => {
       expect(step(name)).not.toContain('continue-on-error');
       expect(step(name)).toContain('set -euo pipefail');
     }
-    expect(workflow).toContain('    needs: make');
+    expect(workflow).toContain('    needs: [prepare, make]');
+  });
+
+  it('builds and publishes the prepared version commit, not the dispatch SHA', () => {
+    expect(
+      workflow.match(/ref: \$\{\{ needs.prepare.outputs.sha \}\}/g),
+    ).toHaveLength(2);
+    expect(workflow).toContain('Verify prepared release tree');
+    expect(workflow).toContain('Verify prepared publication tree');
+    expect(workflow).toContain('RELEASE_SHA: ${{ needs.prepare.outputs.sha }}');
+    expect(workflow).toContain('RELEASE_TAG: ${{ needs.prepare.outputs.tag }}');
+    expect(workflow).toContain('--tag "$RELEASE_TAG"');
+    expect(workflow).toContain('git show -s --format=%cI "$RELEASE_SHA"');
+    expect(workflow).not.toContain('startsWith(github.ref');
+    expect(workflow).not.toContain('$GITHUB_REF_NAME');
+  });
+
+  it('uses one non-cancelling release group and creates releases without overwriting', () => {
+    expect(workflow).toContain('group: release-publication');
+    expect(workflow).toContain('cancel-in-progress: false');
+    expect(workflow).toContain(
+      'gh release create "$RELEASE_TAG" dist/* --verify-tag --target "$RELEASE_SHA"',
+    );
+    expect(workflow).not.toContain('action-gh-release');
+    expect(workflow).not.toContain('--clobber');
+    expect(workflow).toContain('Verify published release assets');
+  });
+
+  it('exposes the dedicated push token only to development manual publication preparation', () => {
+    expect(workflow.match(/secrets.RELEASE_PUSH_TOKEN/g)).toHaveLength(1);
+    expect(workflow).toContain(
+      "github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.ref == 'refs/heads/development' && secrets.RELEASE_PUSH_TOKEN",
+    );
+    const makeAndPublish = workflow.slice(workflow.indexOf('\n  make:'));
+    expect(makeAndPublish).not.toContain('RELEASE_PUSH_TOKEN');
+    expect(workflow).toContain("if: needs.prepare.outputs.build == 'true'");
+    expect(workflow).toContain("if: needs.prepare.outputs.publish == 'true'");
   });
 
   it('normalizes release asset names before signing their download URLs', () => {

@@ -7,6 +7,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { verifyUpdateKeyPair } from '../scripts/generate-update-metadata.mjs';
+import { releaseContext } from '../scripts/prepare-release.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -25,14 +26,15 @@ function stepCondition(name: string): string {
   return condition?.[1] ?? '';
 }
 
-function releaseConditions(eventName: string, ref: string, runnerOs: string) {
+function releaseConditions(
+  version: string,
+  publish: boolean,
+  runnerOs: string,
+) {
+  const prepared = releaseContext('a'.repeat(40), version, publish);
   const env: Record<string, string> = {};
   const context = {
-    github: {
-      event_name: eventName,
-      ref,
-      ref_name: ref.replace(/^refs\/(?:tags|heads)\//, ''),
-    },
+    needs: { prepare: { outputs: prepared } },
     runner: { os: runnerOs },
     env,
     startsWith: (value: string, prefix: string) => value.startsWith(prefix),
@@ -46,14 +48,8 @@ function releaseConditions(eventName: string, ref: string, runnerOs: string) {
     expect(typeof result).toBe('boolean');
     return result === true;
   };
-  for (const name of ['IS_STABLE_RELEASE', 'IS_BETA_RELEASE']) {
-    const expression = new RegExp(
-      `^  ${name}: \\$\\{\\{ (.+) \\}\\}$`,
-      'm',
-    ).exec(workflow)?.[1];
-    if (!expression) throw new Error(`release flag not found: ${name}`);
-    env[name] = String(evaluate(expression));
-  }
+  env.IS_STABLE_RELEASE = prepared.stable;
+  env.IS_BETA_RELEASE = prepared.beta;
   const publishCondition =
     /^ {2}publish:\n {4}name: Publish release\n {4}if: (.+)$/m.exec(
       workflow,
@@ -71,12 +67,12 @@ function encodePem(pem: string): string {
 }
 
 describe('beta prereleases', () => {
-  it('treats a semver prerelease tag as a beta and any other tag as stable', () => {
+  it('takes signing modes from the prepared release, not the pre-bump dispatch ref', () => {
     expect(workflow).toContain(
-      "IS_STABLE_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}",
+      'IS_STABLE_RELEASE: ${{ needs.prepare.outputs.stable }}',
     );
     expect(workflow).toContain(
-      "IS_BETA_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-') }}",
+      'IS_BETA_RELEASE: ${{ needs.prepare.outputs.beta }}',
     );
   });
 
@@ -99,7 +95,7 @@ describe('beta prereleases', () => {
 
   it('marks the beta GitHub release as a prerelease', () => {
     const publish = workflow.split('- name: Publish beta prerelease')[1];
-    expect(publish).toContain('prerelease: true');
+    expect(publish).toContain('--prerelease');
     expect(publish).toContain('Developer ID signed');
     expect(publish).toContain('notarized and stapled');
     expect(publish).toContain('no Authenticode signature');
@@ -109,30 +105,31 @@ describe('beta prereleases', () => {
   it.each(
     (
       [
-        ['push', 'refs/tags/v1.2.3', true, false],
-        ['push', 'refs/tags/v1.2.3-beta.1', false, true],
-        ['push', 'refs/tags/v1.2.3-rc.1', false, true],
-        ['push', 'refs/heads/development', false, false],
-        ['workflow_dispatch', 'refs/heads/development', false, false],
-        ['workflow_dispatch', 'refs/tags/v1.2.3', false, false],
-        ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1', false, false],
-        ['pull_request', 'refs/pull/42/merge', false, false],
+        ['tag stable', '1.2.3', true, true, false],
+        ['tag beta', '1.2.3-beta.1', true, false, true],
+        ['tag rc', '1.2.3-rc.1', true, false, true],
+        ['manual stable', '1.2.3', true, true, false],
+        ['manual beta', '1.2.3-beta.1', true, false, true],
+        ['dry stable', '1.2.3', false, false, false],
+        ['dry beta', '1.2.3-beta.1', false, false, false],
+        ['suppressed managed tag', '1.2.3-beta.1', false, false, false],
       ] as const
-    ).flatMap(([eventName, ref, stable, beta]) =>
+    ).flatMap(([mode, version, publish, stable, beta]) =>
       ['macOS', 'Windows'].map((runnerOs) => ({
-        eventName,
-        ref,
+        mode,
+        version,
+        publish,
         runnerOs,
         stable,
         beta,
       })),
     ),
   )(
-    'enforces signing and publication gates for $eventName $ref on $runnerOs',
-    ({ eventName, ref, runnerOs, stable, beta }) => {
+    'enforces signing and publication gates for $mode on $runnerOs',
+    ({ version, publish, runnerOs, stable, beta }) => {
       const { env, publishRuns, stepRuns } = releaseConditions(
-        eventName,
-        ref,
+        version,
+        publish,
         runnerOs,
       );
       expect(env.IS_STABLE_RELEASE).toBe(String(stable));

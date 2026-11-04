@@ -433,16 +433,26 @@ describe('the release workflow enforces compliance before publication', () => {
       (step) => step.name === 'Generate signed update metadata',
     );
     const publish = publishSteps.findIndex(
-      (step) => step.uses === 'softprops/action-gh-release@v2',
+      (step) => step.name === 'Publish signed release',
     );
-    expect([download, metadata, publish].every((index) => index >= 0)).toBe(
-      true,
+    const verify = publishSteps.findIndex(
+      (step) => step.name === 'Verify complete publication artifacts',
     );
-    expect([download, metadata, publish]).toEqual(
-      [download, metadata, publish].toSorted((left, right) => left - right),
+    const betaPublish = publishSteps.findIndex(
+      (step) => step.name === 'Publish beta prerelease',
+    );
+    expect(
+      [download, metadata, verify, publish, betaPublish].every(
+        (index) => index >= 0,
+      ),
+    ).toBe(true);
+    expect([download, metadata, verify, publish, betaPublish]).toEqual(
+      [download, metadata, verify, publish, betaPublish].toSorted(
+        (left, right) => left - right,
+      ),
     );
     expect(releaseWorkflow).toMatch(
-      / {2}publish:\r?\n(?:.*\r?\n)*? {4}needs: make/,
+      / {2}publish:\r?\n(?:.*\r?\n)*? {4}needs: \[prepare, make\]/,
     );
 
     const commentedNotices = releaseWorkflow.replace(
