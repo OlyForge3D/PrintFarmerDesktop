@@ -161,7 +161,7 @@ describe('the docs-and-tests fast path recognises documentation and tests', () =
 describe('the docs-and-tests fast path resolves uncertainty toward the full build', () => {
   it('passes a change confined to documentation and tests (#620 shape)', () => {
     const verdict = classifyDocsAndTests([
-      '.github/PR_CLOSES.md',
+      '.github/pull_request_template.md',
       '.squad/decisions.md',
       'tests/citationReachability.test.ts',
     ]);
@@ -348,10 +348,10 @@ describe('the rust-untouched tier resolves uncertainty toward the full cargo mat
   });
 
   it('passes a documentation-only change, which reaches cargo even less', () => {
-    // PR #703's exact file list: three markdown files, a full two-platform cargo matrix.
+    // Three markdown files cannot affect the two-platform cargo matrix.
     expect(
       classifyRustUntouched([
-        '.github/pr-closes/dev-jpapiez-squad-268-relay-attribution.md',
+        '.github/pull_request_template.md',
         '.squad/decisions.md',
         '.squad/skills/agent-collaboration/SKILL.md',
       ]).rustUntouched,

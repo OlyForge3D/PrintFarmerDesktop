@@ -74,7 +74,7 @@
 //
 // NOT WIRED AS A REQUIRED CI CONTEXT, AND DELIBERATELY NOT ADDED TO ci.yml AT
 // ALL (round 10, Ripley's reachability finding). Per the issue's explicit
-// acceptance criterion: a step beside `Closing-reference declaration` lands
+// acceptance criterion: a step in the platform CI workflow lands
 // inside `Desktop (matrix)`, two of the seven required contexts -- a false
 // positive there blocks every queued PR entry, reproducing #122's deadlock
 // shape. This gate's false-positive rate has not been measured, so it ships

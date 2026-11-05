@@ -1,5 +1,11 @@
 # #526 verified already resolved: the guarded step it names no longer exists, and its replacement already reports under `merge_group`
 
+> Superseded policy (2026-11-04): the committed issue-closing declaration
+> mechanism and its required check have been removed at the user's direction.
+> Everything below is historical evidence, not a requirement or a trigger to
+> restore that mechanism. Normal PR-body closing keywords and the separate
+> gate-issue scope check remain.
+
 **By:** Hicks, QA/contract-testing review dispatched for #526 ("The closing-reference contract is
 unenforceable for `merge_group` entries, and the obvious remedy is #122's deadlock").
 

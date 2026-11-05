@@ -3,11 +3,10 @@ name: Release tagged
 # merge-queue: publication
 #
 # This workflow never runs on `pull_request`, and that is the finding rather
-# than an omission. The subject is the state of `development` BETWEEN two
-# events — the version bump merging and the tag being pushed — and at the
-# moment the bump PR merges there is legitimately no tag. A pull_request run
-# would therefore be green and correct and useless, exactly as in #391's
-# merge-landed.yml.
+# than an omission. The subject is the state of `development` after a release
+# starts: even the atomic version/tag preparation cannot prove that building
+# and publication succeeded. A pull_request run cannot observe that later
+# outcome, exactly as in #391's merge-landed.yml.
 #
 # THE UNIT OF ASSERTION IS THE BRANCH AS IT STANDS NOW, NOT A PULL REQUEST.
 # Its context must never be added to a ruleset's required list — a required
@@ -19,8 +18,8 @@ name: Release tagged
 # person asking where the beta had gone.
 
 on:
-  # Every four hours. The tag legitimately trails the merge by however long it
-  # takes someone to push it, so the check carries a grace window and the
+  # Every four hours. Legacy hand-created tags can trail a version commit,
+  # and platform builds need time, so the check carries a grace window and the
   # cadence only has to be short enough that the report is fresh once that
   # window closes. Daily would let a stranded bump sit most of a day past the
   # deadline it already missed.

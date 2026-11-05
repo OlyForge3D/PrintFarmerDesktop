@@ -47,12 +47,12 @@ import { resolveRepository } from './check-pr-closure-scope.mjs';
 // exactly like the right one. Pinning the names rather than the count means a
 // swap of one context for another cannot pass as unchanged.
 export const REQUIRED_CONTEXT_NAMES = Object.freeze([
-  'Closing-reference declaration',
   'Dependency advisories',
   'Desktop (macos-latest)',
   'Desktop (windows-latest)',
   'Release package (macos-latest)',
   'Release package (windows-latest)',
+  'Sequencing hold',
   'Sidecar (macos-latest)',
   'Sidecar (windows-latest)',
 ]);

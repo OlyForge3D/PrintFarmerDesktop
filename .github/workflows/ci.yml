@@ -145,7 +145,7 @@ permissions:
 # `Desktop`'s `Test` step is a documentation check in its own right, see the
 # comment on the `Format check` / `Test` steps below -- but it cannot affect
 # the sidecar, the packaged release build, or the dependency set. PR #620
-# changed one PR_CLOSES.md line, one decisions.md entry and added a 192-line
+# changed two documentation lines and added a 192-line
 # test file, and ran the full matrix anyway: ~30 minutes of `Sidecar`,
 # `Release package` and `Dependency advisories` compute with no signal.
 #

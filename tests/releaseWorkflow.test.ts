@@ -112,7 +112,65 @@ describe('signed release workflow', () => {
       expect(step(name)).not.toContain('continue-on-error');
       expect(step(name)).toContain('set -euo pipefail');
     }
-    expect(workflow).toContain('    needs: make');
+    expect(workflow).toContain('    needs: [prepare, make]');
+  });
+
+  it('builds and publishes the prepared version commit, not the dispatch SHA', () => {
+    expect(
+      workflow.match(/ref: \$\{\{ needs.prepare.outputs.sha \}\}/g),
+    ).toHaveLength(2);
+    expect(workflow).toContain('Verify prepared release tree');
+    expect(workflow).toContain('Verify prepared publication tree');
+    expect(workflow).toContain('RELEASE_SHA: ${{ needs.prepare.outputs.sha }}');
+    expect(workflow).toContain('RELEASE_TAG: ${{ needs.prepare.outputs.tag }}');
+    expect(workflow).toContain('--tag "$RELEASE_TAG"');
+    expect(workflow).toContain('git show -s --format=%cI "$RELEASE_SHA"');
+    expect(workflow).not.toContain('startsWith(github.ref');
+    expect(workflow).not.toContain('$GITHUB_REF_NAME');
+  });
+
+  it('retains pending dispatch and tag runs in one non-cancelling publication group', () => {
+    // Omitting queue: max restores GitHub's replace-the-pending-run default.
+    const concurrency = workflow.match(/^concurrency:\n((?:[ \t]+.*\n)+)/m);
+    expect(
+      concurrency?.[1]
+        ?.trim()
+        .split('\n')
+        .map((line) => line.trim()),
+    ).toEqual([
+      'group: release-publication',
+      'queue: max',
+      'cancel-in-progress: false',
+    ]);
+  });
+
+  it('keeps release preparation under the release workflow code owner', () => {
+    const owners = readFileSync(
+      path.resolve(import.meta.dirname, '..', '.github', 'CODEOWNERS'),
+      'utf8',
+    );
+    expect(owners).toMatch(/^\/\.github\/workflows\/release\.yml @jpapiez$/m);
+    expect(owners).toMatch(/^\/scripts\/prepare-release\.mjs @jpapiez$/m);
+  });
+
+  it('creates releases without overwriting', () => {
+    expect(workflow).toContain(
+      'gh release create "$RELEASE_TAG" dist/* --verify-tag --target "$RELEASE_SHA"',
+    );
+    expect(workflow).not.toContain('action-gh-release');
+    expect(workflow).not.toContain('--clobber');
+    expect(workflow).toContain('Verify published release assets');
+  });
+
+  it('exposes the dedicated push token only to development manual publication preparation', () => {
+    expect(workflow.match(/secrets.RELEASE_PUSH_TOKEN/g)).toHaveLength(1);
+    expect(workflow).toContain(
+      "github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.ref == 'refs/heads/development' && secrets.RELEASE_PUSH_TOKEN",
+    );
+    const makeAndPublish = workflow.slice(workflow.indexOf('\n  make:'));
+    expect(makeAndPublish).not.toContain('RELEASE_PUSH_TOKEN');
+    expect(workflow).toContain("if: needs.prepare.outputs.build == 'true'");
+    expect(workflow).toContain("if: needs.prepare.outputs.publish == 'true'");
   });
 
   it('normalizes release asset names before signing their download URLs', () => {

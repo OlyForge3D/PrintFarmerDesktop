@@ -5,12 +5,10 @@
 // way node does. Nothing executes it as `./check-release-tagged.mjs` — the
 // workflow and package.json both spell it `node scripts/...`.
 //
-// `.github/workflows/release.yml` triggers on `push: tags: ['v*']` and nothing
-// else. The version bump and the tag are two separate acts, and only the second
-// one publishes. Between them sits a state nothing observes: `package.json` on
-// development names a version, no tag names it, and every check in the
-// repository is green because nothing is broken -- the release simply never
-// happened.
+// `.github/workflows/release.yml` now prepares the persisted version and tag
+// atomically during manual publication, then builds that exact commit. Legacy
+// hand-created tags remain supported. A version or tag alone still does not
+// prove that the build and publication completed.
 //
 //   A VERSION IS NOT EVIDENCE THAT A RELEASE SHIPPED.
 //
@@ -20,24 +18,20 @@
 //   0.1.0-beta.4   #727 merged 2026-08-12, tagged by hand 2026-08-15 (3 days)
 //
 // Both were noticed by a person asking "what happened to the beta?", which is
-// the detection mechanism this replaces. `.github/skills/release-drop/SKILL.md`
-// already wrote the rule down after the first occurrence -- "Merging the
-// version-bump PR publishes nothing" -- and the second occurrence happened
-// anyway. A documented step is a convention, not a control, until something
-// runs it for you.
+// the detection mechanism this replaces. The automated release flow closes the
+// old bump/tag gap, but a failed build or partial publication still needs this
+// independent scheduled backstop.
 //
 // WHY THIS CANNOT RUN ON pull_request
 //
-// The subject is the state of development BETWEEN two events, and the interval
-// is open-ended. At the moment the bump PR merges there is legitimately no tag,
-// so a per-PR run would be green and correct and useless -- the same shape as
-// `# merge-queue: publication` in merge-landed.yml (#391). The unit of
-// assertion is the branch as it stands now, so this runs on a schedule.
+// The subject is the state of development after release initiation, and a
+// build/publication can fail after the version has persisted. The unit of
+// assertion is the branch as it stands now, not a PR, so this runs on a schedule.
 //
 // WHY A GRACE WINDOW, AND WHY IT IS NOT A SILENCER
 //
-// The tag legitimately trails the merge by the time it takes a human to push
-// it, and the matrix build itself takes 20-40 minutes. Reporting instantly
+// Legacy manual tags can trail a version commit, and the matrix build itself
+// takes 20-40 minutes. Reporting instantly
 // would make the ordinary release procedure red for its whole duration, and a
 // check that is red during correct conduct is one whose remedy is to switch it
 // off. So an untagged bump inside the window is PENDING, which is a distinct
@@ -220,7 +214,7 @@ export function classifyTagPresence({
   return {
     verdict: VERDICT_UNTAGGED,
     tagName,
-    reason: `${tagName} does not exist, yet the target has claimed version ${version} for ${bumpAgeHours.toFixed(1)}h; merging the version-bump PR publishes nothing, so nothing has shipped`,
+    reason: `${tagName} does not exist, yet the target has claimed version ${version} for ${bumpAgeHours.toFixed(1)}h; a version commit alone does not publish a release`,
   };
 }
 

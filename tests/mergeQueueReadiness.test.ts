@@ -179,9 +179,8 @@ describe('the parsers see the real files, not an empty string', () => {
   it('reads sequencing-hold.yml as reporting for queued entries (#480)', () => {
     // #480: this workflow moved from "advisory" to "reports" once its `on:`
     // block gained `merge_group:`, making its context eligible to be a
-    // required one. See .squad/holds.md's #480 follow-up section for the
-    // measured steps that landed it, and check-hold-gate-readiness.mjs for
-    // the remaining (owner-only) prerequisite before it is actually required.
+    // required one. It now also carries the retained trailer/trigger guards,
+    // which must stay in this existing required context.
     const entry = workflows.find(
       (candidate) => candidate.file === 'sequencing-hold.yml',
     );
@@ -189,16 +188,10 @@ describe('the parsers see the real files, not an empty string', () => {
     expect(triggers).toContain('pull_request');
     expect(triggers).toContain('merge_group');
     expect(declaredClassOf(entry!.contents, entry!.file)).toBe('reports');
-  });
-
-  it('reads the general closing-reference workflow as reporting for queued entries', () => {
-    const entry = workflows.find(
-      (candidate) => candidate.file === 'closing-reference-declaration.yml',
-    );
-    expect(triggersOf(entry!.contents, entry!.file)).toEqual([
-      'merge_group',
-      'pull_request',
+    expect(renderedContexts(entry!.contents, entry!.file)).toEqual([
+      'Sequencing hold',
     ]);
+    expect(REQUIRED_CONTEXT_NAMES).toContain('Sequencing hold');
   });
 
   it('expands matrix jobs into the strings a ruleset actually pins', () => {
@@ -244,11 +237,11 @@ describe('a required context must be emitted by a workflow that reports', () => 
     ).toEqual([]);
   });
 
-  it('accepts the general context and refuses the advisory gate-only context', () => {
+  it('accepts the required Sequencing hold context and refuses the advisory gate-only context', () => {
     expect(
       evaluateRequiredContexts({
         workflows,
-        requiredContexts: ['Closing-reference declaration'],
+        requiredContexts: ['Sequencing hold'],
       }),
     ).toEqual([]);
     const [gateOnly] = evaluateRequiredContexts({

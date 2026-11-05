@@ -245,9 +245,7 @@ export function formatResult(result, { repo, number } = {}) {
 
 /**
  * The citation format this file expects a report to use: a fenced block whose
- * info string is exactly `measured`, containing `key: value` lines. Modelled
- * on the existing `closes` fenced-block convention (.github/PR_CLOSES.md) so
- * a reader already knows how to spot one.
+ * info string is exactly `measured`, containing `key: value` lines.
  *
  *   ```measured
  *   repo: OlyForge3D/PrintFarmerDesktop

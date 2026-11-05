@@ -1,26 +1,116 @@
 # Signed releases
 
-Official `v*` tag pushes run `.github/workflows/release.yml`. Both stable and
+Manual publication and official `v*` tag pushes run `.github/workflows/release.yml`. Both stable and
 beta releases require Developer ID signing and notarization for macOS. Stable
 releases additionally require Windows Authenticode and update-metadata signing.
 Each release fails closed if a credential required for its channel is missing.
-Manual workflow runs remain unsigned dry runs, even when dispatched on a tag,
-so contributors can exercise packaging without production credentials.
+Manual runs default to unsigned, non-mutating dry runs. Set `dry_run=false` and
+select a version to persist, tag, build, and publish a release directly from
+`development`, without a version-bump PR.
+
+## Manual release initiation
+
+After confirming `development` is ready to ship, dispatch the release workflow
+from **development**, enter the full version (for example `0.1.0-beta.10`), and
+turn **dry_run off**:
+
+```sh
+gh workflow run release.yml --ref development -f dry_run=false -f version=0.1.0-beta.10
+```
+
+The preparation job validates canonical SemVer (no build metadata; core fields
+at most 65535), refuses reused or older versions, and updates `package.json`
+plus both root application-version fields in `package-lock.json`. It verifies
+that no other manifest/lockfile content changed, commits those two tracked
+files, and atomically pushes `development` plus a new annotated `v<version>`
+tag on that exact commit. No force pushes, tag moves, dependency changes,
+version-bump PRs, or build-only version stamps are used. The Rust workspace and
+its lockfile have an independent sidecar version and are not changed. SBOM and
+dependency-license outputs are generated during packaging, not versioned source.
+
+If development moves after dispatch or before the atomic push, preparation
+fails rather than silently releasing a different tree. Start a fresh run against
+the new head. A simultaneous branch/tag update rejects the entire push.
+The existing branch protections remain enabled and unchanged. The version-only
+write deliberately uses the administrator exemption described below; normal PR
+checks do not run before that direct commit is persisted.
+
+Make and publish check out the **prepared commit SHA**, not the dispatch SHA.
+The same run owns building, signing, and publication; it never relies on a
+token-created tag triggering another workflow. Administrator-token tag pushes
+do trigger a second tag run, but its preparation recognizes the annotated
+`Release-Workflow-Run` marker and suppresses its build/publication. Manually
+pushed, unmarked tags still follow the existing release path and must exactly
+match the tracked package version. All release runs share a non-cancelling
+concurrency group with `queue: max`: one run executes at a time and up to 100
+pending runs are retained rather than replaced by later requests. Additional
+runs are cancelled when that queue is full. Dispatch order is not guaranteed;
+this is not a FIFO release-request contract. See
+[GitHub's concurrency semantics](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Check that the intended dispatch actually starts. Queued manual publications
+still fail if development has moved since dispatch; queueing does not rebase
+them or bypass the stale-head check. Do not start a competing release while
+another is in flight.
+
+For packaging only, leave **dry_run on** and the version input blank. This uses
+the checked-out tracked version, never commits or tags, and never needs the
+administrator credential. A different version input is rejected rather than
+silently ignored or stamped into uncommitted build files.
+
+### User-managed release-push credential
+
+Before the first manual publication, a repository administrator must create
+and configure the dedicated Actions secret **`RELEASE_PUSH_TOKEN`**. No token
+is provisioned by this change. Prefer an expiring fine-grained PAT restricted
+to **OlyForge3D/PrintFarmerDesktop only**, with **Contents: read and write**
+and the automatically required **Metadata: read**. Its owner must be an
+administrator of this repository, with the existing administrator exemption
+under current classic protection (`enforce_admins=false`). A normal write token
+or `GITHUB_TOKEN` is not a substitute for that bypass capability. Organization
+approval/SSO authorization may also be necessary.
+
+Do not grant extra repository permissions or create a new protection bypass.
+The fine-grained repository/Contents scope is the least privilege for this
+version-only push, but the administrator identity can still bypass branch
+checks: the credential itself is more powerful than the workflow's two-file
+allowlist. Keep it dedicated, rotate it, and do not share an interactive
+session token. The workflow exposes it only to trusted development manual
+publication preparation, uses it only for the atomic push, never stores it in
+Git configuration/remotes, and strips it before npm/git child operations other
+than that push. Build, signing, and publication jobs never receive it.
+
+### Failed builds and retries
+
+Before the atomic push, failure leaves the remote branch and tag unchanged.
+Afterward, the persisted version commit/tag are immutable even if a build fails.
+Rerun the failed jobs of the **original dispatch run**; rerunning its preparation
+also recognizes and validates its own tag, version, original parent, and run ID
+instead of creating another commit. A fresh dispatch cannot reuse that version.
+If a newer release has already published, the old run refuses to publish a
+downgrade.
+
+Publication uses create-only GitHub release operations, never edits an existing
+release or replaces assets. If an upload partially succeeds, the remaining
+release is reported as an error, not overwritten by an automatic retry. An
+administrator must inspect that partial publication and choose explicit recovery
+or a new version. Never move a tag or replace published artifacts to recover.
+The scheduled `check:release-tagged` guard still reports an unpublished version.
 
 ## Required GitHub Actions secrets
 
-| Secret                              | Purpose                                                     |
-| ----------------------------------- | ----------------------------------------------------------- |
-| `WINDOWS_CERTIFICATE_P12_BASE64`    | Base64-encoded Authenticode PKCS#12 certificate             |
-| `WINDOWS_CERTIFICATE_PASSWORD`      | Password for the Windows PKCS#12 certificate                |
-| `APPLE_CERTIFICATE_P12_BASE64`      | Base64-encoded Developer ID Application PKCS#12 certificate |
-| `APPLE_CERTIFICATE_PASSWORD`        | Password for the Apple PKCS#12 certificate                  |
-| `APPLE_SIGNING_IDENTITY`            | Full Developer ID Application identity                      |
-| `APPLE_ID`                          | Apple account used by the notarization service              |
-| `APPLE_APP_SPECIFIC_PASSWORD`       | App-specific password for notarization                      |
-| `APPLE_TEAM_ID`                     | Apple Developer team identifier                             |
-| `UPDATE_SIGNING_PRIVATE_KEY_BASE64` | Base64-encoded Ed25519 PKCS#8 private key                   |
-| `UPDATE_SIGNING_PUBLIC_KEY_BASE64`  | Base64-encoded Ed25519 SPKI public key                      |
+| Secret                              | Purpose                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------ |
+| `RELEASE_PUSH_TOKEN`                | Dedicated administrator Contents-write token for manual preparation only |
+| `WINDOWS_CERTIFICATE_P12_BASE64`    | Base64-encoded Authenticode PKCS#12 certificate                          |
+| `WINDOWS_CERTIFICATE_PASSWORD`      | Password for the Windows PKCS#12 certificate                             |
+| `APPLE_CERTIFICATE_P12_BASE64`      | Base64-encoded Developer ID Application PKCS#12 certificate              |
+| `APPLE_CERTIFICATE_PASSWORD`        | Password for the Apple PKCS#12 certificate                               |
+| `APPLE_SIGNING_IDENTITY`            | Full Developer ID Application identity                                   |
+| `APPLE_ID`                          | Apple account used by the notarization service                           |
+| `APPLE_APP_SPECIFIC_PASSWORD`       | App-specific password for notarization                                   |
+| `APPLE_TEAM_ID`                     | Apple Developer team identifier                                          |
+| `UPDATE_SIGNING_PRIVATE_KEY_BASE64` | Base64-encoded Ed25519 PKCS#8 private key                                |
+| `UPDATE_SIGNING_PUBLIC_KEY_BASE64`  | Base64-encoded Ed25519 SPKI public key                                   |
 
 The workflow installs dependencies, builds Rust sidecars, runs Vite and Forge
 packaging hooks, and generates compliance resources before any private
