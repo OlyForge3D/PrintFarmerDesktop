@@ -1,5 +1,0 @@
-# Camera alignment
-
-```closes
-
-```
