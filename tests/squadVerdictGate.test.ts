@@ -1034,7 +1034,7 @@ describe('documentation-only classification', () => {
     for (const carveOut of [
       '.github/workflows/ci.yml',
       '.github/copilot-instructions.md',
-      '.github/pr-closes/README.md',
+      '.github/pull_request_template.md',
       '.github/instructions/a11y.instructions.md',
       '.githooks/pre-push',
       '.squad/agents/ralph/loop.md',

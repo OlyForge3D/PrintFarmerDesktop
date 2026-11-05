@@ -4,7 +4,7 @@
 // #369: `vitest run <a> <b>` where <b> matches nothing exits 0 and reports
 // success. Measured at v2.1.9 in this repository:
 //
-//   vitest run tests/closingReferences.test.ts tests/thisFileDoesNotExist.test.ts
+//   vitest run tests/prClosureScope.test.ts tests/thisFileDoesNotExist.test.ts
 //     Test Files  1 passed (1)
 //     exit=0
 //
@@ -42,7 +42,7 @@
 // to vitest itself via `vitest list --filesOnly`, whose whole job is to say
 // which files a filter selects. Measured:
 //
-//   list --filesOnly tests/closingReferences.test.ts  ->  1 line,  exit 0
+//   list --filesOnly tests/prClosureScope.test.ts  ->  1 line,  exit 0
 //   list --filesOnly tests/thisFileDoesNotExist.ts    ->  0 lines, exit 0
 //
 // Note the discriminator is the LINE COUNT, not the exit code: both exit 0.

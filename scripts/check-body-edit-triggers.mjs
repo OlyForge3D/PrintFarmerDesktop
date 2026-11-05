@@ -1,12 +1,5 @@
 // A guard that reads a pull request body must re-run when the body changes.
 //
-// The defect (#436). Two guards read body-derived metadata, and their trigger
-// sets are opposites of their enforceability:
-//
-//   check-closing-references.mjs  reads `gh pr view --json body`
-//                                runs in pr-closure-scope.yml (NOT required)
-//                                pull_request: types include `edited`
-//
 //   check-pr-closure-scope.mjs   reads `closingIssuesReferences`, which GitHub
 //                                derives from the body
 //                                runs in pr-closure-scope.yml (NOT required)
@@ -78,10 +71,8 @@ export const BODY_DERIVED_READS = [
 /**
  * Source with line and block comments removed.
  *
- * Written after this module's own first run attributed
- * `closingIssuesReferences` to check-closing-references.mjs, which only
- * mentions the field in prose. That is the citation-vs-invocation error this
- * module tests for in workflows, committed in the script scan — a guard is
+ * A field mentioned only in prose is not a read. Treating it as one is the
+ * citation-vs-invocation error this module tests for in workflows — a guard is
  * what a file DOES, and a comment does not read anything.
  */
 export function stripComments(contents) {

@@ -14,23 +14,96 @@ on:
         description: 'Build unsigned artifacts without creating a GitHub Release'
         type: boolean
         default: true
+      version:
+        description: 'Version to commit and publish (required when dry_run is false)'
+        type: string
+        required: false
 
 permissions:
-  contents: write
+  contents: read
 
-# All release tag pushes sign and notarize macOS artifacts. Only stable tags
-# additionally sign Windows artifacts and publish signed update metadata.
-# Manual runs stay unsigned, including when a tag is selected.
-env:
-  IS_STABLE_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
-  IS_BETA_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-') }}
+concurrency:
+  group: release-publication
+  queue: max
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.context.outputs.sha }}
+      tag: ${{ steps.context.outputs.tag }}
+      version: ${{ steps.context.outputs.version }}
+      publish: ${{ steps.context.outputs.publish }}
+      build: ${{ steps.context.outputs.build }}
+      stable: ${{ steps.context.outputs.stable }}
+      beta: ${{ steps.context.outputs.beta }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Preflight manual publication credentials
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.ref == 'refs/heads/development'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE_P12_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_P12_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          UPDATE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_BASE64 }}
+          UPDATE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$APPLE_CERTIFICATE_P12_BASE64" ]] || missing+=(APPLE_CERTIFICATE_P12_BASE64)
+          [[ -n "$APPLE_CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
+          [[ -n "$APPLE_SIGNING_IDENTITY" ]] || missing+=(APPLE_SIGNING_IDENTITY)
+          [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
+          [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          if [[ "$RELEASE_VERSION" != *-* ]]; then
+            [[ -n "$WINDOWS_CERTIFICATE_P12_BASE64" ]] || missing+=(WINDOWS_CERTIFICATE_P12_BASE64)
+            [[ -n "$WINDOWS_CERTIFICATE_PASSWORD" ]] || missing+=(WINDOWS_CERTIFICATE_PASSWORD)
+            [[ -n "$UPDATE_SIGNING_PRIVATE_KEY_BASE64" ]] || missing+=(UPDATE_SIGNING_PRIVATE_KEY_BASE64)
+            [[ -n "$UPDATE_SIGNING_PUBLIC_KEY_BASE64" ]] || missing+=(UPDATE_SIGNING_PUBLIC_KEY_BASE64)
+          fi
+          if (( ${#missing[@]} )); then
+            printf 'Publication requires GitHub secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Prepare immutable release context
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUSH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.ref == 'refs/heads/development' && secrets.RELEASE_PUSH_TOKEN || '' }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+        run: node scripts/prepare-release.mjs
+
   make:
     name: Make (${{ matrix.os }})
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+    env:
+      IS_STABLE_RELEASE: ${{ needs.prepare.outputs.stable }}
+      IS_BETA_RELEASE: ${{ needs.prepare.outputs.beta }}
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +117,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
+
+      - name: Verify prepared release tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERIFY: 'true'
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PUBLISH: ${{ needs.prepare.outputs.publish }}
+        run: node scripts/prepare-release.mjs
 
       - name: Preflight macOS release credentials
         if: (env.IS_STABLE_RELEASE == 'true' || env.IS_BETA_RELEASE == 'true') && runner.os == 'macOS'
@@ -114,7 +197,7 @@ jobs:
         env:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
           PRINTFARMER_SIDECAR_SOURCE: ${{ matrix.platform == 'darwin' && format('{0}/native/target/universal-apple-darwin/release/model-core', github.workspace) || '' }}
-          PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64: ${{ startsWith(github.ref, 'refs/tags/') && secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 || '' }}
+          PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64: ${{ needs.prepare.outputs.publish == 'true' && secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 || '' }}
         run: npm run package -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
 
       - name: Sign Windows package and build Squirrel installer
@@ -289,15 +372,29 @@ jobs:
 
   publish:
     name: Publish release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: make
+    if: needs.prepare.outputs.publish == 'true'
+    needs: [prepare, make]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      IS_STABLE_RELEASE: ${{ needs.prepare.outputs.stable }}
+      IS_BETA_RELEASE: ${{ needs.prepare.outputs.beta }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
+
+      - name: Verify prepared publication tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERIFY: 'true'
+          RELEASE_PUBLISH: 'true'
+        run: node scripts/prepare-release.mjs
 
       - uses: actions/setup-node@v4
         with:
@@ -331,8 +428,8 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          [[ "$GITHUB_REF_NAME" == "v$version" ]] || {
-            echo "Release tag $GITHUB_REF_NAME does not match package version $version" >&2
+          [[ "$RELEASE_TAG" == "v$version" ]] || {
+            echo "Release tag $RELEASE_TAG does not match package version $version" >&2
             exit 1
           }
 
@@ -347,14 +444,14 @@ jobs:
           [[ -n "$UPDATE_SIGNING_PRIVATE_KEY_BASE64" ]] || { echo 'UPDATE_SIGNING_PRIVATE_KEY_BASE64 is required' >&2; exit 1; }
           [[ -n "$PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64" ]] || { echo 'UPDATE_SIGNING_PUBLIC_KEY_BASE64 is required' >&2; exit 1; }
           version="$(node -p "require('./package.json').version")"
-          published_at="$(git show -s --format=%cI "$GITHUB_SHA")"
+          published_at="$(git show -s --format=%cI "$RELEASE_SHA")"
           node scripts/release-environment.mjs \
             --allow UPDATE_SIGNING_PRIVATE_KEY_BASE64 \
             --allow PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64 \
             -- node scripts/generate-update-metadata.mjs \
               --artifacts dist \
               --version "$version" \
-              --tag "$GITHUB_REF_NAME" \
+              --tag "$RELEASE_TAG" \
               --published-at "$published_at" \
               --output dist
 
@@ -388,27 +485,42 @@ jobs:
             exit 1
           fi
 
+      - name: Verify complete publication artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERIFY_ARTIFACTS: 'true'
+          RELEASE_PUBLISH: 'true'
+        run: node scripts/prepare-release.mjs
+
       - name: Publish signed release
         if: env.IS_STABLE_RELEASE == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          fail_on_unmatched_files: true
-          body: |
-            Signed release:
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --target "$RELEASE_SHA" \
+            --title "$RELEASE_TAG" --notes 'Signed release:
             - Windows app and installer carry Authenticode signatures.
             - The universal macOS app and nested Rust sidecar are signed, notarized, and stapled.
-            - `latest.json` is signed by `latest.json.sig`; the app verifies it before staging an update.
+            - `latest.json` is signed by `latest.json.sig`; the app verifies it before staging an update.'
 
       - name: Publish beta prerelease
         if: env.IS_BETA_RELEASE == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          fail_on_unmatched_files: true
-          prerelease: true
-          body: |
-            Beta prerelease. Not for production use.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --target "$RELEASE_SHA" \
+            --title "$RELEASE_TAG" --prerelease --notes 'Beta prerelease. Not for production use.
             - Windows artifacts carry no Authenticode signature, so SmartScreen warns before the installer runs.
             - The universal macOS app and nested Rust sidecar are Developer ID signed; the app is notarized and stapled.
-            - No `latest.json` is published, so this build is never offered as an automatic update.
+            - No `latest.json` is published, so this build is never offered as an automatic update.'
+
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERIFY_PUBLISHED: 'true'
+          RELEASE_PUBLISH: 'true'
+        run: node scripts/prepare-release.mjs

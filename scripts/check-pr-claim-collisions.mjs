@@ -1,7 +1,5 @@
 // Reports when multiple open pull requests claim the same issue.
 //
-// This is deliberately separate from check-closing-references.mjs. That guard
-// compares one PR's declarations with the closures GitHub armed for that PR.
 // This advisory reads the whole open-PR population and asks a different
 // question: whether two or more PRs claim the same issue.
 

@@ -197,9 +197,8 @@ function defaultRun(args) {
  * pull requests that GitHub's `/issues` endpoint mixes into the same list.
  *
  * Keeping the page boundary in the response (an array of arrays) rather than
- * flattening at the `gh` layer makes truncation visible to a test the same
- * way `check-closing-references.mjs`'s `parsePullRequestCommitResponse` does
- * for PR commits -- a `--limit`-style cap here would silently miss issue 501
+ * flattening at the `gh` layer makes truncation visible to a test.
+ * A `--limit`-style cap here would silently miss issue 501
  * onward the moment the open-issue count crosses it, which is precisely the
  * "undiscoverable, and now undetectably so" failure #410 exists to prevent.
  */

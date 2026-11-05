@@ -753,7 +753,7 @@ describe('the testing skill transcribes the contexts ci.yml emits', () => {
 
   it('names exactly those contexts, with no fictional and no omitted entry', () => {
     expect(documentedCiContexts(skillDoc)).toEqual(
-      [...renderedContexts(ciWorkflow), 'Closing-reference declaration'].sort(),
+      renderedContexts(ciWorkflow).sort(),
     );
   });
 

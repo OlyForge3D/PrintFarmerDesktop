@@ -6,7 +6,7 @@
 //   Desktop (windows-latest)          Sidecar (windows-latest)
 //   Desktop (macos-latest)            Sidecar (macos-latest)
 //   Release package (windows-latest)  Dependency advisories
-//   Release package (macos-latest)    Closing-reference declaration
+//   Release package (macos-latest)    Sequencing hold
 //
 // A required context that is never reported does not merge -- GitHub holds the pull request at
 // "Expected - waiting for status" indefinitely -- so `paths-ignore:` and workflow-level path

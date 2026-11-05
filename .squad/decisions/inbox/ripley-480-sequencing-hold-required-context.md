@@ -1,5 +1,10 @@
 # #480 decided: `Sequencing hold` becomes the one enforcement channel for a blocking verdict; two owner-only prerequisites remain unmet, so the gate is documented and instrumented but not yet live
 
+> Protection update (2026-11-04): the obsolete issue-closing declaration context
+> has been removed; Sequencing hold remains required. All commands below are
+> historical evidence, not current recipes. Preserve live check app IDs,
+> strictness, and unrelated contexts; never replay a hard-coded list.
+
 **By:** Ripley, per the `squad:ripley` routing on #480 and Ralph's dispatch, which asked for exactly one enforcement channel to be chosen and documented, a live demonstration on a test PR, and — because the acceptance criteria's core setting change requires repository-owner permissions this session does not have — a clear statement of exactly what remains for the owner plus as much verifiable work around that gap as possible.
 
 **Decision.** Of the two channels #480 names, only one is structurally possible in this repository: **(a) add `Sequencing hold` to `development`'s `required_status_checks.contexts`.** Channel (b) — `required_approving_review_count >= 1` — is categorically ruled out, not merely undesirable, for the same reason #111/#151/#206/#187 already found: `jpapiez` is the sole collaborator, and GitHub returns `422` on both self-approval and self-request-changes. No workflow change fixes an API refusal; only a second reviewing identity would, and that identity does not exist here. Channel (a) is adopted instead because it is content/operation-based (it reads a label a required check can evaluate) rather than identity-based (it does not need a second account to ever approve anything).

@@ -1,5 +1,10 @@
 # Holds
 
+> Protection update (2026-11-04): the obsolete issue-closing declaration context
+> has been removed; Sequencing hold remains required. Historical protection
+> commands below are evidence only, not current recipes. Preserve live check
+> app IDs, strictness, and unrelated contexts; never replay a hard-coded list.
+
 How to recognise a deliberately held pull request, and what to do about it.
 
 ## The problem this solves

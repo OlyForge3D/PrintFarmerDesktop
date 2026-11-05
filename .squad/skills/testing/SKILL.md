@@ -96,9 +96,8 @@ Disable pagers: `git --no-pager ...`.
 
 ## CI gate
 
-Eight required checks must pass:
+The platform and dependency checks emitted by `ci.yml` must pass:
 
-- Closing-reference declaration
 - Desktop (windows-latest)
 - Desktop (macos-latest)
 - Sidecar (windows-latest)
@@ -106,6 +105,8 @@ Eight required checks must pass:
 - Release package (windows-latest)
 - Release package (macos-latest)
 - Dependency advisories
+
+`Sequencing hold` is also required, emitted by its own workflow.
 
 **This list is a transcription, and the authoritative source is the branch-protection
 endpoint — not this file.** It has been wrong before (see #152: it named the packaging job by a

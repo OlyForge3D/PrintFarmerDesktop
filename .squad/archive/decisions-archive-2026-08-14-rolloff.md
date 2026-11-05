@@ -1,5 +1,12 @@
 # Decisions Log
 
+> Policy update (2026-11-04): committed issue-closing declarations, their workflow,
+> and their required status check have been removed at the user's direction.
+> Earlier entries about that mechanism (including #388 and #526) are superseded,
+> not instructions to restore it. Normal PR-body closing keywords, gate-issue
+> scope checks, and Sequencing hold remain. Historical protection commands below
+> are evidence only; never replay a hard-coded context list.
+
 > Canonical, merged decision log for the team. Scribe merges entries from `.squad/decisions/inbox/` here. Append-only; do not edit past entries except to consolidate duplicates.
 
 ## 2026-07-23: Squad Phase 2 Initialization

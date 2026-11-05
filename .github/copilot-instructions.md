@@ -55,16 +55,6 @@ cargo test --locked --features step
 cargo test --locked --features lib3mf
 ```
 
-## Every PR needs its own closing-reference declaration
-
-If a PR body contains `Closes #N`, the branch must also add
-`.github/pr-closes/<branch-name>.md` declaring that issue, in the same push.
-Without it the required **Closing-reference declaration** check fails — and it
-fails confusingly, because the run falls back to a stale shared legacy file and
-reports some unrelated issue number. Multiple PRs have been blocked by this,
-sometimes two in the same review round. See `.github/PR_CLOSES.md` and
-`.github/pr-closes/README.md`; validate with `npm run check:closing-references`.
-
 ## Read `.squad/known-lying-commands.md` before scripting git/gh checks
 
 That file catalogues twelve PowerShell + `gh` predicates that answer a

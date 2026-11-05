@@ -1,5 +1,9 @@
 <!-- Fact Checker's append-only evidence ledger. Entries are succinct — verdict + citation only, no raw source material. -->
 
+> Policy update (2026-11-04): committed issue-closing declarations and their
+> required check have been removed. References below record past observations
+> only; they do not prescribe current policy. Normal PR-body closing keywords remain.
+
 ## 2026-07-23: Squad Initialization
 
 - **Checked:** n/a — initialization only, no claims to verify.

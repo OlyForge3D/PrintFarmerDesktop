@@ -1,5 +1,9 @@
 # Decide #187: squad review is advisory; add PrintFarmer's SHA-pinned verdict evidence
 
+> Policy update (2026-11-04): the issue-closing declaration check mentioned below
+> has been removed. Its historical inclusion in required-context lists is not
+> current policy. The unrelated review-verdict policy is unchanged.
+
 ## The problem, confirmed live against this repository
 
 Every squad agent authenticates as the same GitHub account (`jpapiez`), and

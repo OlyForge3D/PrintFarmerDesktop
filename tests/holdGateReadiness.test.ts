@@ -75,7 +75,6 @@ describe('evaluateHoldGateReadiness', () => {
         'Release package (windows-latest)',
         'Release package (macos-latest)',
         'Dependency advisories',
-        'Closing-reference declaration',
       ],
       rulesets: [
         {

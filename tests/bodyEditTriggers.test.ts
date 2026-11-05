@@ -25,7 +25,11 @@ import {
   invokedScripts,
   pullRequestTypes,
 } from '../scripts/check-body-edit-triggers.mjs';
-import { triggersOf } from '../scripts/check-merge-queue-contexts.mjs';
+import {
+  renderedContexts,
+  triggersOf,
+} from '../scripts/check-merge-queue-contexts.mjs';
+import { REQUIRED_CONTEXT_NAMES } from '../scripts/check-protection-assumptions.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const workflowsDir = path.join(repoRoot, '.github', 'workflows');
@@ -67,7 +71,6 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       scripts,
       npmScripts,
     });
-    expect(guards).toContain('check-closing-references.mjs');
     expect(guards).toContain('check-pr-closure-scope.mjs');
     expect(guards).not.toContain('check-body-edit-triggers.mjs');
     expect(guards).not.toContain('check-injected-defaults.mjs');
@@ -101,18 +104,58 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     expect(uninvokedGuards).toEqual(['check-new-body-contract.mjs']);
   });
 
-  it('runs this policy through the required closing-reference context', () => {
+  it('runs trigger coverage and session trailers unconditionally in the required Sequencing hold context', () => {
     const workflow = readFileSync(
-      path.join(workflowsDir, 'closing-reference-declaration.yml'),
+      path.join(workflowsDir, 'sequencing-hold.yml'),
       'utf8',
     );
     expect(npmScripts['check:body-edit-triggers']).toBe(
       'node scripts/check-body-edit-triggers.mjs',
     );
-    expect(workflow).toContain('npm run check:body-edit-triggers');
-    expect(pullRequestTypes(workflow)).toContain(BODY_EDIT_TYPE);
-    expect(triggersOf(workflow, 'closing-reference-declaration.yml')).toContain(
+    expect(REQUIRED_CONTEXT_NAMES).toContain('Sequencing hold');
+    expect(renderedContexts(workflow, 'sequencing-hold.yml')).toEqual([
+      'Sequencing hold',
+    ]);
+    expect(workflow.match(/^ {2}[\w-]+:$/gm)).toEqual([
+      '  pull_request:',
+      '  merge_group:',
+      '  sequencing-hold:',
+    ]);
+    expect(workflow).not.toMatch(/^\s+if:/m);
+    expect(
+      [...workflow.matchAll(/^ {8}run: (.+)$/gm)].map((m) => m[1]),
+    ).toEqual([
+      'npm run check:body-edit-triggers',
+      'npm run check:copilot-session-trailers',
+      'npm run check:sequencing-hold',
+    ]);
+    expect(triggersOf(workflow, 'sequencing-hold.yml')).toEqual([
       'merge_group',
+      'pull_request',
+    ]);
+    expect(pullRequestTypes(workflow)).toEqual([
+      'opened',
+      'synchronize',
+      'reopened',
+      'labeled',
+      'unlabeled',
+    ]);
+  });
+
+  it('preserves the retained guards checkout selection, read permissions and token', () => {
+    const workflow = readFileSync(
+      path.join(workflowsDir, 'sequencing-hold.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain(
+      "          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+    );
+    expect(workflow).toContain('          persist-credentials: false');
+    expect(workflow).toContain(
+      'permissions:\n  contents: read\n  pull-requests: read\n',
+    );
+    expect(workflow).toMatch(
+      /- name: Validate Copilot session trailers\n {8}env:\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n {8}run: npm run check:copilot-session-trailers/,
     );
   });
 
@@ -142,13 +185,13 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
             'jobs:',
             '  a:',
             '    steps:',
-            '      - run: npm run check:closing-references',
+            '      - run: npm run check:closure-scope',
           ].join('\n'),
         },
       ],
       scripts: [
         {
-          basename: 'check-closing-references.mjs',
+          basename: 'check-pr-closure-scope.mjs',
           contents: "gh(['pr','view','--json','body'])",
         },
       ],
@@ -174,13 +217,13 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
             'jobs:',
             '  a:',
             '    steps:',
-            '      - run: npm run check:closing-references',
+            '      - run: npm run check:closure-scope',
           ].join('\n'),
         },
       ],
       scripts: [
         {
-          basename: 'check-closing-references.mjs',
+          basename: 'check-pr-closure-scope.mjs',
           contents: "gh(['pr','view','--json','body'])",
         },
       ],
@@ -211,9 +254,8 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   });
 
   // The mirror of the workflow-citation test, and it exists because this
-  // module got it wrong first: its opening run attributed
-  // `closingIssuesReferences` to check-closing-references.mjs, which only
-  // discusses the field in prose. A guard is what a file does.
+  // module got it wrong first: its opening run attributed a field named
+  // only in prose to a body read. A guard is what a file does.
   it('does not treat a field named in a comment as a read', () => {
     expect(bodyDerivedReads('// closingIssuesReferences is derived')).toEqual(
       [],
@@ -231,7 +273,7 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   // the gate by mentioning a guard it never runs.
   it('counts only run: invocations, never citations in comments', () => {
     const cited = [
-      '# scripts/check-closing-references.mjs enforces this',
+      '# scripts/check-pr-closure-scope.mjs enforces this',
       'on:',
       '  pull_request:',
       'jobs:',
@@ -300,13 +342,12 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
       path.join(fixture, 'package.json'),
       JSON.stringify({
         scripts: {
-          'check:closing-references':
-            'node scripts/check-closing-references.mjs',
+          'check:closure-scope': 'node scripts/check-pr-closure-scope.mjs',
         },
       }),
     );
     writeFileSync(
-      path.join(fixtureScripts, 'check-closing-references.mjs'),
+      path.join(fixtureScripts, 'check-pr-closure-scope.mjs'),
       "export const currentBody = gh(['pr', 'view', '--json', 'body']);\n",
     );
 
@@ -321,14 +362,14 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
         `    types: [${types}]`,
         '  merge_group:',
         'jobs:',
-        '  closing-references:',
+        '  closure-scope:',
         '    steps:',
-        '      - run: npm run check:closing-references',
+        '      - run: npm run check:closure-scope',
       ].join('\n');
 
     try {
       writeFileSync(
-        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        path.join(workflowDirectory, 'pr-closure-scope.yml'),
         workflow('opened, synchronize, reopened'),
       );
       const red = run();
@@ -338,7 +379,7 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
       );
 
       writeFileSync(
-        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        path.join(workflowDirectory, 'pr-closure-scope.yml'),
         workflow('opened, synchronize, reopened, edited'),
       );
       const green = run();

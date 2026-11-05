@@ -1004,8 +1004,8 @@ rather than retroactively blocking unrelated changes.
 Note also that adding a job to `.github/workflows/ci.yml` does **not** by itself make it a
 required check — that is repository configuration, applied separately (issue #111, resolved).
 `development` now has classic branch protection: `strict: true`, and all eight contexts above
-(`Desktop`, `Sidecar`, `Release package` × 2 OSes, `Dependency advisories`, `Closing-reference
-declaration`) are required — confirmed live via
+(`Desktop`, `Sidecar`, `Release package` × 2 OSes, `Dependency advisories`, `Sequencing hold`)
+are required — confirmed live via
 `gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection`. Force pushes and
 branch deletion are blocked, linear history is required, and conversation resolution is required.
 
