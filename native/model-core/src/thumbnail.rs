@@ -376,6 +376,58 @@ mod tests {
     }
 
     #[test]
+    fn camera_matches_viewer_convention() {
+        #[derive(serde::Deserialize)]
+        struct Vector {
+            x: f32,
+            y: f32,
+            z: f32,
+        }
+        impl Vector {
+            fn array(&self) -> [f32; 3] {
+                [self.x, self.y, self.z]
+            }
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Convention {
+            forward: Vector,
+            world_up: Vector,
+        }
+        let convention: Convention =
+            serde_json::from_str(include_str!("../../../src/shared/model-camera.json")).unwrap();
+        let forward = normalize(convention.forward.array());
+        let right = normalize(cross(forward, convention.world_up.array()));
+        let up = cross(right, forward);
+        let mut mesh = cube();
+        mesh.bounds.min = [2.0, -4.0, 4.0];
+        mesh.bounds.max = [4.0, -2.0, 6.0];
+        let camera = Camera::for_bounds(&mesh);
+        assert_eq!(camera.center, mesh.bounds.center());
+        for (axis, expected) in [
+            (camera.forward, forward),
+            (camera.right, right),
+            (camera.up, up),
+        ] {
+            for i in 0..3 {
+                assert!((axis[i] - expected[i]).abs() < 1e-6);
+            }
+        }
+        // Verify the projection consumes the same basis (screen Y points down).
+        for (axis, expected) in [
+            (right, [1.0, 0.0, 0.0]),
+            (up, [0.0, -1.0, 0.0]),
+            (forward, [0.0, 0.0, 1.0]),
+        ] {
+            let point = std::array::from_fn(|i| camera.center[i] + axis[i]);
+            let projected = camera.project(point);
+            for i in 0..3 {
+                assert!((projected[i] - expected[i]).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
     fn rejects_out_of_range_sizes() {
         assert!(matches!(
             render(&cube(), 4),

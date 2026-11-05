@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { describe, expect, it } from 'vitest';
 
+import modelCamera from '../src/shared/model-camera.json';
 import {
   createCamera,
   frameCamera,
@@ -34,6 +35,58 @@ function ndc(camera: THREE.Camera, point: THREE.Vector3): THREE.Vector3 {
 }
 
 describe.each(PROJECTIONS)('Z-up viewer (%s)', (projection) => {
+  it.each([0.25, 1, 16 / 9])(
+    'matches the Rust-verified thumbnail basis at aspect %s and fits the model',
+    (aspect) => {
+      const camera = createCamera(projection, aspect, RADIUS);
+      frameCamera(camera, CENTER, RADIUS, aspect);
+      const controls = new OrbitControls(camera, document.createElement('div'));
+      controls.target.set(...CENTER);
+      controls.update();
+
+      const { forward, worldUp } = modelCamera;
+      const expectedForward = new THREE.Vector3(
+        forward.x,
+        forward.y,
+        forward.z,
+      ).normalize();
+      const right = expectedForward
+        .clone()
+        .cross(new THREE.Vector3(worldUp.x, worldUp.y, worldUp.z))
+        .normalize();
+      const up = right.clone().cross(expectedForward);
+      expect(
+        camera
+          .getWorldDirection(new THREE.Vector3())
+          .distanceTo(expectedForward),
+      ).toBeLessThan(1e-6);
+      expect(
+        new THREE.Vector3(1, 0, 0)
+          .applyQuaternion(camera.quaternion)
+          .distanceTo(right),
+      ).toBeLessThan(1e-6);
+      expect(
+        new THREE.Vector3(0, 1, 0)
+          .applyQuaternion(camera.quaternion)
+          .distanceTo(up),
+      ).toBeLessThan(1e-6);
+
+      // Sample the enclosing sphere, not a symmetric cube that can hide clipping.
+      for (let polar = 0; polar <= Math.PI; polar += Math.PI / 12) {
+        for (let azimuth = 0; azimuth < 2 * Math.PI; azimuth += Math.PI / 12) {
+          const point = new THREE.Vector3()
+            .setFromSphericalCoords(RADIUS, polar, azimuth)
+            .add(new THREE.Vector3(...CENTER));
+          const projected = ndc(camera, point);
+          expect(Math.abs(projected.x)).toBeLessThan(1);
+          expect(Math.abs(projected.y)).toBeLessThan(1);
+          expect(Math.abs(projected.z)).toBeLessThan(1);
+        }
+      }
+      controls.dispose();
+    },
+  );
+
   it('builds the camera with +Z as world up', () => {
     expect(VIEWER_UP).toEqual([0, 0, 1]);
     const camera = createCamera(projection, 1, RADIUS);

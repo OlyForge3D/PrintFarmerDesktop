@@ -8,6 +8,7 @@
 
 import * as THREE from 'three';
 
+import modelCamera from '../../shared/model-camera.json';
 import type { Bounds, SceneMesh } from './types';
 
 /** Compute the axis-aligned bounds of a flat `[x, y, z, ...]` position array. */
@@ -107,9 +108,9 @@ export type FramingLens =
   | { readonly projection: 'orthographic' };
 
 /**
- * The default camera position for framing a model: placed along the (1,1,1)
- * diagonal from `center` at a distance that frames the bounding sphere. Shared
- * by the initial framing and the "reset view" action so both agree exactly.
+ * Frame from the thumbnail's front-right, slightly elevated direction. The
+ * shared convention is checked against the actual Rust thumbnail camera.
+ * Initial framing and reset both use this position.
  */
 export function defaultCameraPosition(
   center: readonly [number, number, number],
@@ -121,7 +122,14 @@ export function defaultCameraPosition(
     lens.projection === 'perspective'
       ? fitPerspectiveDistance(lens.verticalFovDeg, aspect, radius)
       : Math.max(radius, 0.001) * 4;
-  return [center[0] + distance, center[1] + distance, center[2] + distance];
+  const { forward } = modelCamera;
+  // Keep the radial distance of the previous (1,1,1) framing, not its azimuth.
+  const offset = new THREE.Vector3(
+    -forward.x,
+    -forward.y,
+    -forward.z,
+  ).setLength(distance * Math.sqrt(3));
+  return offset.add(new THREE.Vector3(...center)).toArray();
 }
 
 /**

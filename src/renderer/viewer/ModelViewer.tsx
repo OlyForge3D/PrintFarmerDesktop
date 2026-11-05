@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
+import modelCamera from '../../shared/model-camera.json';
 import {
   boundsCenter,
   boundsRadius,
@@ -46,7 +47,11 @@ export const ORTHO_FRUSTUM_MULTIPLIER = 1.2;
  * three.js defaults to Y-up; without this, printable models render lying on
  * their back.
  */
-export const VIEWER_UP: readonly [number, number, number] = [0, 0, 1];
+export const VIEWER_UP: readonly [number, number, number] = [
+  modelCamera.worldUp.x,
+  modelCamera.worldUp.y,
+  modelCamera.worldUp.z,
+];
 type ViewerMesh = THREE.Mesh<
   THREE.BufferGeometry,
   THREE.Material | THREE.Material[]
@@ -378,7 +383,7 @@ export function applyOrthoFrustum(
   radius: number,
   aspect: number,
 ): void {
-  const halfHeight = radius * ORTHO_FRUSTUM_MULTIPLIER;
+  const halfHeight = (radius * ORTHO_FRUSTUM_MULTIPLIER) / Math.min(aspect, 1);
   const halfWidth = halfHeight * aspect;
   camera.left = -halfWidth;
   camera.right = halfWidth;
