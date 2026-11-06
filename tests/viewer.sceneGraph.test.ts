@@ -22,6 +22,7 @@ import {
   boundsRadius,
   defaultCameraPosition,
   fitPerspectiveDistance,
+  unionBounds,
 } from '../src/renderer/viewer/geometry';
 import {
   ORTHO_FRUSTUM_MULTIPLIER,
@@ -127,6 +128,121 @@ function matrixFromThreeMfTransform(values: readonly number[]): number[] {
 }
 
 describe('buildViewerSceneGraph', () => {
+  it('places a bed under each plate of a multi-plate scene and leaves single plates bare', () => {
+    const base = multiObjectScene();
+    const single = buildViewerSceneGraph(base);
+    expect(single.root.getObjectByName('Plate 1:bed')).toBeUndefined();
+    single.dispose();
+
+    const scene: SceneMesh = {
+      ...base,
+      objects: base.objects.map((object) => {
+        if (object.id !== 'lid') return object;
+        const matrix = [...object.transform.matrix];
+        matrix[3] = 500;
+        matrix[11] = 5;
+        return {
+          ...object,
+          plateId: 'plate-1',
+          parentId: null,
+          transform: { matrix },
+        };
+      }),
+      rootObjectIds: ['root', 'lid'],
+      plates: [
+        { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['root'] },
+        { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: ['lid'] },
+      ],
+    };
+    const graph = buildViewerSceneGraph(scene);
+    const bedA = graph.root.getObjectByName('Plate 1:bed') as THREE.Mesh;
+    const bedB = graph.root.getObjectByName('Plate 2:bed') as THREE.Mesh;
+    expect(bedA).toBeDefined();
+    expect(bedB).toBeDefined();
+    expect(bedA.parent?.name).toBe('Plate 1');
+    expect(bedB.parent?.name).toBe('Plate 2');
+    // The lid was moved to x=500, z=5; each bed lies beneath its own parts.
+    expect(bedA.position.x).toBeLessThan(10);
+    expect(bedB.position.x).toBeCloseTo(500.5);
+    expect(bedB.position.z).toBeCloseTo(5 - 1);
+    expect(bedA.position.z).toBeLessThan(0);
+
+    // Framing must cover the beds, not just the model bounds.
+    expect(graph.bedBounds).not.toBeNull();
+    expect(graph.bedBounds!.min[2]).toBeLessThan(0);
+    expect(graph.bedBounds!.max[0]).toBeGreaterThan(500);
+
+    graph.setHidden(new Set(['lid']));
+    expect(bedA.visible).toBe(true);
+    expect(bedB.visible).toBe(false);
+    graph.setHidden(new Set());
+    expect(bedB.visible).toBe(true);
+    graph.dispose();
+  });
+
+  for (const projection of ['perspective', 'orthographic'] as const) {
+    for (const aspect of [16 / 9, 1, 0.6]) {
+      it(`frames every bed of a small multi-plate model (${projection}, aspect ${aspect.toFixed(2)})`, () => {
+        const original = multiObjectScene();
+        const scene: SceneMesh = {
+          ...original,
+          objects: original.objects.map((object) => {
+            if (object.id !== 'lid') return object;
+            const matrix = [...object.transform.matrix];
+            matrix[3] = 500;
+            return {
+              ...object,
+              plateId: 'plate-1',
+              parentId: null,
+              transform: { matrix },
+            };
+          }),
+          rootObjectIds: ['root', 'lid'],
+          plates: [
+            {
+              id: 'plate-0',
+              name: 'Plate 1',
+              index: 0,
+              rootObjectIds: ['root'],
+            },
+            {
+              id: 'plate-1',
+              name: 'Plate 2',
+              index: 1,
+              rootObjectIds: ['lid'],
+            },
+          ],
+        };
+        const graph = buildViewerSceneGraph(scene);
+        const framed = unionBounds(scene.bounds, graph.bedBounds);
+        const center = boundsCenter(framed);
+        const radius = Math.max(boundsRadius(framed), 0.001);
+        const camera = createCamera(projection, aspect, radius);
+        frameCamera(camera, center, radius, aspect);
+        camera.updateMatrixWorld(true);
+        camera.updateProjectionMatrix();
+
+        const beds = ['Plate 1:bed', 'Plate 2:bed'].map(
+          (name) => graph.root.getObjectByName(name) as THREE.Mesh,
+        );
+        graph.root.updateMatrixWorld(true);
+        for (const bed of beds) {
+          const box = new THREE.Box3().setFromObject(bed);
+          for (const x of [box.min.x, box.max.x]) {
+            for (const y of [box.min.y, box.max.y]) {
+              for (const z of [box.min.z, box.max.z]) {
+                const ndc = new THREE.Vector3(x, y, z).project(camera);
+                expect(Math.abs(ndc.x)).toBeLessThanOrEqual(1.001);
+                expect(Math.abs(ndc.y)).toBeLessThanOrEqual(1.001);
+              }
+            }
+          }
+        }
+        graph.dispose();
+      });
+    }
+  }
+
   it('uses packed geometry without copying it into number arrays and keeps full-detail rendering', () => {
     const original = multiObjectScene();
     const scene: SceneMesh = {

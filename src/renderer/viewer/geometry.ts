@@ -47,6 +47,23 @@ export function boundsCenter(bounds: Bounds): [number, number, number] {
   ];
 }
 
+/** Smallest box containing both inputs; `extra` may be absent. */
+export function unionBounds(base: Bounds, extra: Bounds | null): Bounds {
+  if (!extra) return base;
+  return {
+    min: [
+      Math.min(base.min[0], extra.min[0]),
+      Math.min(base.min[1], extra.min[1]),
+      Math.min(base.min[2], extra.min[2]),
+    ],
+    max: [
+      Math.max(base.max[0], extra.max[0]),
+      Math.max(base.max[1], extra.max[1]),
+      Math.max(base.max[2], extra.max[2]),
+    ],
+  };
+}
+
 /** Size of a bounds box along each axis. */
 export function boundsSize(bounds: Bounds): [number, number, number] {
   return [
