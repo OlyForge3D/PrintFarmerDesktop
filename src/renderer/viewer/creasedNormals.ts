@@ -100,21 +100,26 @@ export function buildCreasedMesh(
     }
     return -1;
   };
-  // Last edge seen per undirected edge; a third face on the same edge chains
-  // onto the previous one.
-  const lastEdge = new Map<number, number>();
+  // Every face seen per undirected edge, so a non-manifold edge compares each
+  // new face with all earlier ones and the result is independent of order.
+  const edgeFaces = new Map<number, number[]>();
   for (let tri = 0; tri < triangleCount; tri += 1) {
     for (let k = 0; k < 3; k += 1) {
       const u = indices[tri * 3 + k] as number;
       const v = indices[tri * 3 + ((k + 1) % 3)] as number;
       if (u === v) continue;
       const key = Math.min(u, v) * vertexCount + Math.max(u, v);
-      const previous = lastEdge.get(key);
-      lastEdge.set(key, tri);
-      if (previous === undefined) continue;
-      if (dotOfFaces(tri, previous) < creaseDot) continue;
-      union(cornerAt(tri, u), cornerAt(previous, u));
-      union(cornerAt(tri, v), cornerAt(previous, v));
+      const seen = edgeFaces.get(key);
+      if (seen === undefined) {
+        edgeFaces.set(key, [tri]);
+        continue;
+      }
+      for (const previous of seen) {
+        if (dotOfFaces(tri, previous) < creaseDot) continue;
+        union(cornerAt(tri, u), cornerAt(previous, u));
+        union(cornerAt(tri, v), cornerAt(previous, v));
+      }
+      seen.push(tri);
     }
   }
 

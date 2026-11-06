@@ -83,37 +83,41 @@ describe('buildCreasedMesh', () => {
     expect(CREASE_ANGLE).toBeGreaterThan(tilt);
   });
 
-  it('shades a chain of gently turning faces as one group, however far its ends diverge', () => {
-    // A strip of faces turning 20 degrees per step: neighbours are within the
-    // 30 degree crease, but the first and third differ by 40.
-    const step = (20 * Math.PI) / 180;
-    const positions: number[] = [];
-    // Build the strip by rotating a unit quad about the shared edges.
-    let origin = new THREE.Vector3(0, 0, 0);
-    let direction = new THREE.Vector3(1, 0, 0);
-    const rows: THREE.Vector3[][] = [
-      [origin.clone(), origin.clone().add(new THREE.Vector3(0, 1, 0))],
-    ];
-    for (let i = 0; i < 3; i += 1) {
-      origin = origin.clone().add(direction);
-      rows.push([
-        origin.clone(),
-        origin.clone().add(new THREE.Vector3(0, 1, 0)),
-      ]);
-      direction = direction
-        .clone()
-        .applyAxisAngle(new THREE.Vector3(0, 1, 0), step);
+  it('shades a fan of gently turning faces as one group, however far its ends diverge', () => {
+    // Four triangles around a hub on a shallow cone: neighbouring face normals
+    // differ by about 21 degrees (within the crease) while the first and last
+    // differ by about 61.
+    const positions: number[] = [0, 0, 0];
+    for (let i = 0; i < 5; i += 1) {
+      const angle = (i * 30 * Math.PI) / 180;
+      positions.push(Math.cos(angle), Math.sin(angle), 1);
     }
     const indices: number[] = [];
-    rows.forEach((row) =>
-      row.forEach((point) => positions.push(...point.toArray())),
-    );
-    for (let i = 0; i < 3; i += 1) {
-      const a = i * 2;
-      indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-    }
+    for (let i = 0; i < 4; i += 1) indices.push(0, i + 1, i + 2);
     const mesh = buildCreasedMesh(positions, indices);
-    expect(mesh.positions.length / 3).toBe(8);
+    const hubNormals = new Set<string>();
+    for (const vertex of mesh.indices) {
+      if (mesh.positions[vertex * 3 + 2] !== 0) continue;
+      hubNormals.add(
+        [0, 1, 2]
+          .map((c) => (mesh.normals[vertex * 3 + c] as number).toFixed(5))
+          .join(','),
+      );
+    }
+    expect(hubNormals.size).toBe(1);
+  });
+
+  it('smooths a non-manifold edge independently of triangle order', () => {
+    // Three faces on edge (0,1): normals +z, tilted 25 degrees, tilted 50.
+    const edge = [0, 0, 0, 1, 0, 0];
+    const wing = (deg: number): number[] => {
+      const r = (deg * Math.PI) / 180;
+      return [0.5, Math.cos(r), Math.sin(r)];
+    };
+    const positions = [...edge, ...wing(90), ...wing(65), ...wing(40)];
+    const forward = buildCreasedMesh(positions, [0, 1, 2, 0, 1, 3, 0, 1, 4]);
+    const reordered = buildCreasedMesh(positions, [0, 1, 2, 0, 1, 4, 0, 1, 3]);
+    expect(reordered.positions.length).toBe(forward.positions.length);
   });
 
   it('survives degenerate triangles without NaN', () => {
