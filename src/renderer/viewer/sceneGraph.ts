@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { DEFAULT_BASE_COLOR } from '../library/sceneMaterials';
+import { buildCreasedMesh } from './creasedNormals';
 import { boundsCenter } from './geometry';
 import {
   boundsRadius,
@@ -158,6 +159,13 @@ export function buildViewerSceneGraph(
     (plateGroup ?? root).add(node);
   }
 
+  const plateBeds: PlateBed[] = [];
+  if (sceneMesh.plates.length > 1) {
+    plateBeds.push(
+      ...addPlateBeds(sceneMesh, root, plateGroupMap, geometries, materials),
+    );
+  }
+
   if (plateGroupMap.size === 0) {
     for (const rootObjectId of sceneMesh.rootObjectIds) {
       const node = nodeMap.get(rootObjectId);
@@ -172,6 +180,12 @@ export function buildViewerSceneGraph(
       const node = nodeMap.get(object.id);
       if (!node) continue;
       node.visible = isObjectVisible(object, objectMap, nextHidden);
+    }
+    // A bed under a plate whose objects are all hidden would sit there empty.
+    for (const { bed, rootObjectIds } of plateBeds) {
+      bed.visible =
+        rootObjectIds.length === 0 ||
+        rootObjectIds.some((id) => nodeMap.get(id)?.visible !== false);
     }
   };
 
@@ -228,6 +242,71 @@ export function buildViewerSceneGraph(
       root.clear();
     },
   };
+}
+
+const PLATE_BED_MARGIN_RATIO = 0.15;
+const PLATE_BED_MIN_MARGIN = 10;
+const PLATE_BED_THICKNESS = 2;
+
+/**
+ * Multi-plate packages only record which plate each object belongs to, not the
+ * bed itself, so without a visible slab the plates' objects look like they float.
+ * Each bed is sized from its plate's own geometry and sits just under it.
+ */
+function addPlateBeds(
+  sceneMesh: SceneMesh,
+  root: THREE.Group,
+  plateGroupMap: ReadonlyMap<string, THREE.Group>,
+  geometries: THREE.BufferGeometry[],
+  materials: THREE.Material[],
+): PlateBed[] {
+  const beds: PlateBed[] = [];
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  for (const plate of sceneMesh.plates) {
+    const group = plateGroupMap.get(plate.id);
+    if (!group) continue;
+    box.makeEmpty();
+    box.setFromObject(group);
+    if (box.isEmpty()) continue;
+    const sizeX = box.max.x - box.min.x;
+    const sizeY = box.max.y - box.min.y;
+    const marginX = Math.max(
+      sizeX * PLATE_BED_MARGIN_RATIO,
+      PLATE_BED_MIN_MARGIN,
+    );
+    const marginY = Math.max(
+      sizeY * PLATE_BED_MARGIN_RATIO,
+      PLATE_BED_MIN_MARGIN,
+    );
+    const geometry = new THREE.BoxGeometry(
+      sizeX + marginX * 2,
+      sizeY + marginY * 2,
+      PLATE_BED_THICKNESS,
+    );
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x4a4f57,
+      roughness: 0.9,
+      metalness: 0,
+    });
+    const bed = new THREE.Mesh(geometry, material);
+    bed.name = `${plate.name}:bed`;
+    bed.position.set(
+      (box.min.x + box.max.x) / 2,
+      (box.min.y + box.max.y) / 2,
+      box.min.z - PLATE_BED_THICKNESS / 2,
+    );
+    group.add(bed);
+    geometries.push(geometry);
+    materials.push(material);
+    beds.push({ bed, rootObjectIds: plate.rootObjectIds });
+  }
+  return beds;
+}
+
+interface PlateBed {
+  readonly bed: THREE.Mesh;
+  readonly rootObjectIds: readonly string[];
 }
 
 /**
@@ -290,21 +369,36 @@ function createObjectGeometry(
   faceColors?: readonly number[] | Uint8Array | null,
 ): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    'position',
-    new THREE.BufferAttribute(
-      objectMesh.positions instanceof Float32Array
-        ? objectMesh.positions
-        : Float32Array.from(objectMesh.positions),
-      3,
-    ),
-  );
-  geometry.setIndex(
-    objectMesh.indices instanceof Uint32Array
-      ? new THREE.BufferAttribute(objectMesh.indices, 1)
-      : Array.from(objectMesh.indices),
-  );
-  geometry.computeVertexNormals();
+  const vertexCount = objectMesh.positions.length / 3;
+  if (objectMesh.indices.length === vertexCount) {
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(
+        objectMesh.positions instanceof Float32Array
+          ? objectMesh.positions
+          : Float32Array.from(objectMesh.positions),
+        3,
+      ),
+    );
+    geometry.setIndex(
+      objectMesh.indices instanceof Uint32Array
+        ? new THREE.BufferAttribute(objectMesh.indices, 1)
+        : Array.from(objectMesh.indices),
+    );
+    geometry.computeVertexNormals();
+  } else {
+    // Shared vertices would otherwise average normals across hard edges.
+    const creased = buildCreasedMesh(objectMesh.positions, objectMesh.indices);
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(creased.positions, 3),
+    );
+    geometry.setAttribute(
+      'normal',
+      new THREE.BufferAttribute(creased.normals, 3),
+    );
+    geometry.setIndex(new THREE.BufferAttribute(creased.indices, 1));
+  }
   geometry.computeBoundingSphere();
   applyFaceColors(geometry, objectMesh, faceColors);
   return geometry;
