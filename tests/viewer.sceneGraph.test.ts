@@ -166,6 +166,11 @@ describe('buildViewerSceneGraph', () => {
     expect(bedB.position.z).toBeCloseTo(5 - 1);
     expect(bedA.position.z).toBeLessThan(0);
 
+    // Framing must cover the beds, not just the model bounds.
+    expect(graph.bedBounds).not.toBeNull();
+    expect(graph.bedBounds!.min[2]).toBeLessThan(0);
+    expect(graph.bedBounds!.max[0]).toBeGreaterThan(500);
+
     graph.setHidden(new Set(['lid']));
     expect(bedA.visible).toBe(true);
     expect(bedB.visible).toBe(false);

@@ -16,6 +16,7 @@ import modelCamera from '../../shared/model-camera.json';
 import {
   boundsCenter,
   boundsRadius,
+  unionBounds,
   defaultCameraPosition,
   viewerKeyAction,
   type FramingLens,
@@ -132,8 +133,9 @@ export function ModelViewer({
     fill.position.set(-1, -0.8, -0.6);
     scene.add(fill);
 
-    const center = boundsCenter(mesh.bounds);
-    const radius = Math.max(boundsRadius(mesh.bounds), 0.001);
+    const framed = unionBounds(mesh.bounds, sceneGraph.bedBounds);
+    const center = boundsCenter(framed);
+    const radius = Math.max(boundsRadius(framed), 0.001);
     frameRef.current = { center, radius };
     const initialAspect = aspectOf(container);
 

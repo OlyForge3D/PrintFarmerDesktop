@@ -33,7 +33,6 @@ export function buildCreasedMesh(
 
   const faceNormals = new Float32Array(triangleCount * 3);
   const cornerAngles = new Float32Array(triangleCount * 3);
-  const incidentCount = new Uint32Array(vertexCount + 1);
 
   for (let tri = 0; tri < triangleCount; tri += 1) {
     const corner = [
@@ -65,90 +64,108 @@ export function buildCreasedMesh(
         faceNormals[tri * 3 + 1] = crossY / crossLength;
         faceNormals[tri * 3 + 2] = crossZ / crossLength;
       }
-      const vertex = (indices[tri * 3 + k] ?? 0) + 1;
-      incidentCount[vertex] = (incidentCount[vertex] ?? 0) + 1;
     }
   }
 
-  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-    incidentCount[vertex + 1] =
-      (incidentCount[vertex + 1] ?? 0) + (incidentCount[vertex] ?? 0);
+  // Smoothing groups: a vertex's corners are joined when their faces share an
+  // edge whose dihedral angle is within the crease angle, so a chain of gently
+  // turning faces forms one group however far its ends diverge.
+  const parent = new Uint32Array(triangleCount * 3);
+  for (let corner = 0; corner < parent.length; corner += 1) {
+    parent[corner] = corner;
   }
-  const fill = incidentCount.slice(0, vertexCount);
-  const incident = new Uint32Array(triangleCount * 3);
-  for (let corner = 0; corner < triangleCount * 3; corner += 1) {
-    const vertex = indices[corner] ?? 0;
-    incident[fill[vertex] as number] = corner;
-    fill[vertex] = (fill[vertex] as number) + 1;
+  const find = (corner: number): number => {
+    let root = corner;
+    while (parent[root] !== root) root = parent[root] as number;
+    let walk = corner;
+    while (parent[walk] !== root) {
+      const next = parent[walk] as number;
+      parent[walk] = root;
+      walk = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent[rootB] = rootA;
+  };
+  const dotOfFaces = (a: number, b: number): number =>
+    (faceNormals[a * 3] as number) * (faceNormals[b * 3] as number) +
+    (faceNormals[a * 3 + 1] as number) * (faceNormals[b * 3 + 1] as number) +
+    (faceNormals[a * 3 + 2] as number) * (faceNormals[b * 3 + 2] as number);
+  const cornerAt = (tri: number, vertex: number): number => {
+    for (let k = 0; k < 3; k += 1) {
+      if (indices[tri * 3 + k] === vertex) return tri * 3 + k;
+    }
+    return -1;
+  };
+  // Last edge seen per undirected edge; a third face on the same edge chains
+  // onto the previous one.
+  const lastEdge = new Map<number, number>();
+  for (let tri = 0; tri < triangleCount; tri += 1) {
+    for (let k = 0; k < 3; k += 1) {
+      const u = indices[tri * 3 + k] as number;
+      const v = indices[tri * 3 + ((k + 1) % 3)] as number;
+      if (u === v) continue;
+      const key = Math.min(u, v) * vertexCount + Math.max(u, v);
+      const previous = lastEdge.get(key);
+      lastEdge.set(key, tri);
+      if (previous === undefined) continue;
+      if (dotOfFaces(tri, previous) < creaseDot) continue;
+      union(cornerAt(tri, u), cornerAt(previous, u));
+      union(cornerAt(tri, v), cornerAt(previous, v));
+    }
   }
 
-  // One output vertex per (source vertex, smoothing group): corners of a
-  // vertex whose creased normals coincide share it, so memory stays near the
-  // source size instead of tripling.
+  const sums = new Float64Array(triangleCount * 9);
+  for (let corner = 0; corner < triangleCount * 3; corner += 1) {
+    const root = find(corner);
+    const tri = Math.floor(corner / 3);
+    const weight = cornerAngles[corner] as number;
+    sums[root * 3] =
+      (sums[root * 3] as number) + (faceNormals[tri * 3] as number) * weight;
+    sums[root * 3 + 1] =
+      (sums[root * 3 + 1] as number) +
+      (faceNormals[tri * 3 + 1] as number) * weight;
+    sums[root * 3 + 2] =
+      (sums[root * 3 + 2] as number) +
+      (faceNormals[tri * 3 + 2] as number) * weight;
+  }
+
   const outIndices = new Uint32Array(triangleCount * 3);
   const outPosition: number[] = [];
   const outNormal: number[] = [];
-  const groupsByVertex = new Map<number, number[]>();
-  const sameNormal = 1 - 1e-6;
+  const outputOfRoot = new Map<number, number>();
   for (let corner = 0; corner < triangleCount * 3; corner += 1) {
-    const tri = Math.floor(corner / 3);
-    const vertex = indices[corner] ?? 0;
-    const nx = faceNormals[tri * 3] as number;
-    const ny = faceNormals[tri * 3 + 1] as number;
-    const nz = faceNormals[tri * 3 + 2] as number;
-    let sumX = 0;
-    let sumY = 0;
-    let sumZ = 0;
-    const start = incidentCount[vertex] as number;
-    const end = incidentCount[vertex + 1] as number;
-    for (let slot = start; slot < end; slot += 1) {
-      const other = incident[slot] as number;
-      const otherTri = Math.floor(other / 3);
-      const ox = faceNormals[otherTri * 3] as number;
-      const oy = faceNormals[otherTri * 3 + 1] as number;
-      const oz = faceNormals[otherTri * 3 + 2] as number;
-      if (nx * ox + ny * oy + nz * oz < creaseDot) continue;
-      const weight = cornerAngles[other] as number;
-      sumX += ox * weight;
-      sumY += oy * weight;
-      sumZ += oz * weight;
-    }
-    let cx = nx;
-    let cy = ny;
-    let cz = nz;
-    const length = Math.hypot(sumX, sumY, sumZ);
-    if (length > 0) {
-      cx = sumX / length;
-      cy = sumY / length;
-      cz = sumZ / length;
-    }
-    let groups = groupsByVertex.get(vertex);
-    if (!groups) {
-      groups = [];
-      groupsByVertex.set(vertex, groups);
-    }
-    let found = -1;
-    for (const candidate of groups) {
-      const dot =
-        (outNormal[candidate * 3] as number) * cx +
-        (outNormal[candidate * 3 + 1] as number) * cy +
-        (outNormal[candidate * 3 + 2] as number) * cz;
-      if (dot >= sameNormal) {
-        found = candidate;
-        break;
+    const root = find(corner);
+    let output = outputOfRoot.get(root);
+    if (output === undefined) {
+      const tri = Math.floor(corner / 3);
+      const vertex = indices[corner] ?? 0;
+      let nx = sums[root * 3] as number;
+      let ny = sums[root * 3 + 1] as number;
+      let nz = sums[root * 3 + 2] as number;
+      const length = Math.hypot(nx, ny, nz);
+      if (length > 0) {
+        nx /= length;
+        ny /= length;
+        nz /= length;
+      } else {
+        nx = faceNormals[tri * 3] as number;
+        ny = faceNormals[tri * 3 + 1] as number;
+        nz = faceNormals[tri * 3 + 2] as number;
       }
-    }
-    if (found < 0) {
-      found = outPosition.length / 3;
+      output = outPosition.length / 3;
       outPosition.push(
         positions[vertex * 3] ?? 0,
         positions[vertex * 3 + 1] ?? 0,
         positions[vertex * 3 + 2] ?? 0,
       );
-      outNormal.push(cx, cy, cz);
-      groups.push(found);
+      outNormal.push(nx, ny, nz);
+      outputOfRoot.set(root, output);
     }
-    outIndices[corner] = found;
+    outIndices[corner] = output;
   }
 
   return {

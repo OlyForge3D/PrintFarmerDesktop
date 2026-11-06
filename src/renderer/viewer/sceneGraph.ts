@@ -12,6 +12,7 @@ import {
 } from './lod';
 import type { LodCamera } from './lod';
 import type {
+  Bounds,
   SceneMaterial,
   SceneMesh,
   SceneObject,
@@ -26,6 +27,12 @@ export interface ViewerSceneGraph {
    * is small enough to draw at full detail.
    */
   readonly lodObjectIds: ReadonlySet<string>;
+  /**
+   * Box covering the plate beds this graph added, or `null` without any. The
+   * scene's own bounds predate the beds, so framing must union the two or a
+   * small model's bed margin is cropped.
+   */
+  readonly bedBounds: Bounds | null;
   /**
    * Pick a detail level for every proxied object against the current camera.
    *
@@ -231,6 +238,7 @@ export function buildViewerSceneGraph(
     root,
     setHidden,
     lodObjectIds,
+    bedBounds: bedBoundsOf(plateBeds),
     updateLod,
     dispose: () => {
       for (const geometry of geometries) {
@@ -302,6 +310,19 @@ function addPlateBeds(
     beds.push({ bed, rootObjectIds: plate.rootObjectIds });
   }
   return beds;
+}
+
+function bedBoundsOf(beds: readonly PlateBed[]): Bounds | null {
+  if (beds.length === 0) return null;
+  const box = new THREE.Box3();
+  for (const { bed } of beds) {
+    bed.updateWorldMatrix(true, false);
+    box.expandByObject(bed);
+  }
+  return {
+    min: [box.min.x, box.min.y, box.min.z],
+    max: [box.max.x, box.max.y, box.max.z],
+  };
 }
 
 interface PlateBed {
