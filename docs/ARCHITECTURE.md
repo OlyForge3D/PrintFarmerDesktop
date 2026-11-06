@@ -22,6 +22,14 @@ or uploads source models without an explicit user action.
    (Bambu/Orca/Prusa) metadata, and the normalized scene cache. It talks to the
    main process over a framed, versioned RPC protocol on a private transport.
 
+## Model previews
+
+The viewer's initial and reset views use the thumbnail camera's front-right,
+slightly elevated, Z-up orientation without rotating model coordinates.
+`src/shared/model-camera.json` records that convention; Rust thumbnail tests
+verify it against the actual camera basis and projection, while viewer tests
+verify both projection modes against it. Thumbnail rendering remains unchanged.
+
 ## IPC contract
 
 All renderer↔main messages are defined once in `src/shared/ipc.ts` with Zod

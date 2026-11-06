@@ -782,8 +782,10 @@ describe('default framing bounds', () => {
     // framing being computed from some *other* FOV than the lens it was built
     // with - which is what happened while the 5th argument was left off the
     // `defaultCameraPosition` call and it fell back to its own hardcoded 45.
-    expect(camera.position.x - center[0]).toBeCloseTo(
-      fitPerspectiveDistance(PERSPECTIVE_FOV, aspect, radius),
+    expect(
+      camera.position.distanceTo(new THREE.Vector3(...center)),
+    ).toBeCloseTo(
+      Math.sqrt(3) * fitPerspectiveDistance(PERSPECTIVE_FOV, aspect, radius),
       12,
     );
   });
@@ -900,8 +902,8 @@ describe('default framing bounds', () => {
  *  2. the one inequality that could bind - orthographic framing must not be
  *     looser than perspective framing - has the two sides 1.2 and 1.9919 radii
  *     apart. The perspective half-height at the framing position is
- *     `sqrt(3) * 1.15 * radius / cos(fov/2)` (the `sqrt(3)` because the camera
- *     sits on the (1,1,1) diagonal), so its infimum over all FOVs is
+ *     `sqrt(3) * 1.15 * radius / cos(fov/2)` (the `sqrt(3)` preserves the
+ *     original diagonal framing distance), so its infimum over all FOVs is
  *     `sqrt(3) * 1.15 = 1.991858` radii, which exceeds
  *     `ORTHO_FRUSTUM_MULTIPLIER = 1.2` by 65.99% of the ortho value. No FOV
  *     brings them within reach of each other, so the cap can never bind on FOV.
@@ -963,9 +965,9 @@ describe('ModelViewer framing primitives', () => {
       aspect,
       radius,
     );
-    expect(camera.position.x - center[0]).toBeCloseTo(distance, 12);
-    expect(camera.position.y - center[1]).toBeCloseTo(distance, 12);
-    expect(camera.position.z - center[2]).toBeCloseTo(distance, 12);
+    expect(
+      camera.position.distanceTo(new THREE.Vector3(...center)),
+    ).toBeCloseTo(distance * Math.sqrt(3), 12);
   });
 
   it('frames from the lens the camera is actually looking through, not the default constant', () => {
@@ -992,8 +994,8 @@ describe('ModelViewer framing primitives', () => {
     frameCamera(narrow, center, radius, aspect);
 
     expect(narrow.position.x).toBeGreaterThan(wide.position.x);
-    expect(narrow.position.x).toBeCloseTo(
-      fitPerspectiveDistance(narrow.fov, aspect, radius),
+    expect(narrow.position.length()).toBeCloseTo(
+      Math.sqrt(3) * fitPerspectiveDistance(narrow.fov, aspect, radius),
       12,
     );
   });
@@ -1041,7 +1043,7 @@ describe('ModelViewer framing primitives', () => {
     //
     // Perspective half-height at the framing position is
     //   sqrt(3) * padding * radius / cos(fov/2)
-    // (sqrt(3) because the camera sits on the (1,1,1) diagonal), minimised as
+    // (sqrt(3) preserves the original diagonal framing distance), minimised as
     // fov -> 0 at sqrt(3) * 1.15 = 1.991858 radii. Orthographic is a flat
     // ORTHO_FRUSTUM_MULTIPLIER radii. The gap is what lets a FOV change pass
     // unnoticed, so it is the thing to pin.

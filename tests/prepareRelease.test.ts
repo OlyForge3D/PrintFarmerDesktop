@@ -24,6 +24,28 @@ import {
 import type { CommandRunner } from '../scripts/prepare-release.mjs';
 
 const temporary: string[] = [];
+
+function npmCommand(
+  args: string[],
+  platform = process.platform,
+  npmExecPath = process.env.npm_execpath,
+) {
+  if (platform === 'win32') {
+    if (!npmExecPath) {
+      throw new Error(
+        'npm_execpath must be set when running release tests on Windows.',
+      );
+    }
+    return { command: process.execPath, args: [npmExecPath, ...args] };
+  }
+  return { command: 'npm', args };
+}
+
+function runNpm(args: string[], options: Parameters<typeof execFileSync>[2]) {
+  const command = npmCommand(args);
+  return execFileSync(command.command, command.args, options).toString();
+}
+
 afterEach(() => {
   for (const directory of temporary.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
@@ -31,6 +53,18 @@ afterEach(() => {
 });
 
 describe('release version validation before writes', () => {
+  it('runs the npm CLI through Node on Windows instead of spawning npm.cmd', () => {
+    expect(
+      npmCommand(['version', '1.2.3'], 'win32', 'C:\\node\\npm-cli.js'),
+    ).toEqual({
+      command: process.execPath,
+      args: ['C:\\node\\npm-cli.js', 'version', '1.2.3'],
+    });
+    expect(() => npmCommand(['version', '1.2.3'], 'win32', '')).toThrow(
+      /npm_execpath/,
+    );
+  });
+
   it.each(['0.1.0-beta.10', '1.2.3', '1.2.3-rc.2', '1.2.3-beta.long-name'])(
     'accepts %s',
     (version) => expect(validateReleaseVersion(version)).toBe(version),
@@ -156,6 +190,7 @@ function fixture() {
   };
   const invoke: CommandRunner = (command, args, options) => {
     if (command === 'gh') return '[]';
+    if (command === 'npm') return runNpm(args, options);
     return execFileSync(command, args, options);
   };
   return { root, work, remote, git, gitAt, base, output, environment, invoke };
@@ -247,10 +282,9 @@ describe('persisted version commit and atomic branch/tag transaction', () => {
 
   it('rejects a run-marked tag whose commit changes unrelated source files', () => {
     const f = fixture();
-    execFileSync(
-      'npm',
+    runNpm(
       ['version', '0.1.0-beta.10', '--no-git-tag-version', '--ignore-scripts'],
-      { cwd: f.work, stdio: 'pipe' },
+      { cwd: f.work, encoding: 'utf8', stdio: 'pipe' },
     );
     writeFileSync(path.join(f.work, 'unrelated.txt'), 'unexpected source edit');
     f.git(['add', '.']);

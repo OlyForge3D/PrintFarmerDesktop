@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import modelCamera from '../src/shared/model-camera.json';
 import type { SceneMesh } from '../src/renderer/viewer/types';
 // Safe to import statically despite the `three` mock below: `lod.ts` is pure
 // and GPU-free, with no runtime dependency on three.js.
@@ -64,6 +65,7 @@ interface MockWebGLRendererLike {
 }
 
 interface MockOrbitControlsLike {
+  target: ThreeNs.Vector3;
   dispatchEvent(event: { type: 'change' }): void;
   addEventListener(type: 'change', listener: () => void): void;
   update(): boolean;
@@ -195,6 +197,77 @@ describe('<ModelViewer />', () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
+  it.each(['perspective', 'orthographic'] as const)(
+    'aligns initial and reset %s views with the thumbnail after orbit, pan, and zoom',
+    async (projection) => {
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(
+        300,
+      );
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(
+        600,
+      );
+      const { THREE, ModelViewer, lastRenderer, lastControls } =
+        await loadHarness();
+      const mesh = simpleMesh('m');
+      const { rerender, unmount } = render(
+        <ModelViewer mesh={mesh} projection={projection} resetToken={0} />,
+      );
+      runFrame();
+      const renderer = lastRenderer();
+      const camera = renderer.render.mock.calls[0]![1] as
+        ThreeNs.PerspectiveCamera | ThreeNs.OrthographicCamera;
+      const initialPosition = camera.position.clone();
+      const initialQuaternion = camera.quaternion.clone();
+      const initialTarget = lastControls().target.clone();
+      const { forward } = modelCamera;
+      const expectedForward = new THREE.Vector3(
+        forward.x,
+        forward.y,
+        forward.z,
+      ).normalize();
+      const assertAligned = (): void => {
+        expect(
+          camera
+            .getWorldDirection(new THREE.Vector3())
+            .distanceTo(expectedForward),
+        ).toBeLessThan(1e-6);
+        expect(camera.position.distanceTo(initialPosition)).toBeLessThan(1e-6);
+        expect(camera.quaternion.angleTo(initialQuaternion)).toBeLessThan(1e-6);
+        expect(lastControls().target.distanceTo(initialTarget)).toBeLessThan(
+          1e-6,
+        );
+        expect(camera.zoom).toBe(1);
+      };
+      const disturb = (): void => {
+        fireEvent.keyDown(screen.getByRole('application'), {
+          key: 'ArrowLeft',
+        });
+        fireEvent.keyDown(screen.getByRole('application'), { key: '+' });
+        lastControls().target.add(new THREE.Vector3(2, 3, 4));
+        camera.position.add(new THREE.Vector3(2, 3, 4));
+        expect(camera.position.distanceTo(initialPosition)).toBeGreaterThan(1);
+        expect(
+          camera
+            .getWorldDirection(new THREE.Vector3())
+            .distanceTo(expectedForward),
+        ).toBeGreaterThan(0.01);
+      };
+
+      assertAligned();
+      disturb();
+      rerender(
+        <ModelViewer mesh={mesh} projection={projection} resetToken={1} />,
+      );
+      assertAligned();
+      for (const key of ['r', 'Home']) {
+        disturb();
+        fireEvent.keyDown(screen.getByRole('application'), { key });
+        assertAligned();
+      }
+      unmount();
+    },
+  );
 
   it('CSS-sizes the canvas to fill its container on a HiDPI display (#823)', async () => {
     vi.stubGlobal('devicePixelRatio', 2);

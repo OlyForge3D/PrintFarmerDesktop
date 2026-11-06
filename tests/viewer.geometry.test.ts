@@ -205,25 +205,25 @@ describe('fitPerspectiveDistance FOV dependence', () => {
 });
 
 describe('defaultCameraPosition', () => {
-  it('offsets along the (1,1,1) diagonal from the center by the fit distance', () => {
+  it('preserves the radial fit distance from the center', () => {
     const center: [number, number, number] = [2, -3, 4];
     const distance = fitPerspectiveDistance(45, 1, 5);
     const pos = defaultCameraPosition(center, 5, 1, {
       projection: 'perspective',
       verticalFovDeg: 45,
     });
-    expect(pos[0]).toBeCloseTo(center[0] + distance, 5);
-    expect(pos[1]).toBeCloseTo(center[1] + distance, 5);
-    expect(pos[2]).toBeCloseTo(center[2] + distance, 5);
+    expect(
+      Math.hypot(pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]),
+    ).toBeCloseTo(distance * Math.sqrt(3), 5);
   });
 
-  it('places an orthographic camera at four radii from the center', () => {
+  it('preserves the orthographic radial framing distance', () => {
     // No FOV to state: the orthographic arm of `FramingLens` has no such field,
     // so the argument that used to be passed here and ignored no longer exists.
     const pos = defaultCameraPosition([0, 0, 0], 3, 1.5, {
       projection: 'orthographic',
     });
-    expect(pos).toEqual([12, 12, 12]);
+    expect(Math.hypot(...pos)).toBeCloseTo(12 * Math.sqrt(3), 5);
   });
 
   it('stays finite for a zero-radius model', () => {
@@ -231,7 +231,8 @@ describe('defaultCameraPosition', () => {
       projection: 'perspective',
       verticalFovDeg: 45,
     });
-    expect(pos.every((v) => Number.isFinite(v) && v > 0)).toBe(true);
+    expect(pos.every(Number.isFinite)).toBe(true);
+    expect(Math.hypot(...pos)).toBeGreaterThan(0);
   });
 });
 
