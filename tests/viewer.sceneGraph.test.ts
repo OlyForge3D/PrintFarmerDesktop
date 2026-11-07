@@ -253,7 +253,7 @@ describe('buildViewerSceneGraph', () => {
           id: 'plate-0',
           name: 'Plate 1',
           index: 0,
-          rootObjectIds: original.rootObjectIds as string[],
+          rootObjectIds: original.rootObjectIds,
         },
         { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: [] },
       ],
