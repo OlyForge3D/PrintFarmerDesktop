@@ -547,6 +547,7 @@ export const ReconcileReport = z.object({
   unchanged: z.number().int().nonnegative(),
   missing: z.number().int().nonnegative(),
   hashErrors: z.number().int().nonnegative(),
+  scanErrors: z.number().int().nonnegative().optional(),
 });
 export type ReconcileReport = z.infer<typeof ReconcileReport>;
 

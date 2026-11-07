@@ -12,12 +12,17 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   LoadSceneResponse,
+  RenderThumbnailResponse,
   type LoadSceneResponse as Scene,
+  type RenderThumbnailResponse as Thumbnail,
 } from '@shared/ipc';
+import { zipMemberSource } from '@shared/modelSource';
 import type { RecipeBoundScene } from './sidecar.js';
 
 const CACHE_FORMAT_VERSION = 1;
 const MANIFEST_NAME = 'recipe.json';
+const DEFAULT_THUMBNAIL_SIZE = 256;
+const THUMBNAIL_RENDERER_VERSION = 1;
 const UNINITIALIZED = Symbol('uninitialized-scene-cache-recipe');
 /**
  * Returned by `deriveAndStore` when the recipe moved under it and the load has
@@ -72,6 +77,7 @@ const SceneCacheManifest = z
 
 export interface SceneCacheSidecar {
   sceneCacheRecipe(): Promise<string | undefined>;
+  hashModelSource(filePath: string): Promise<string>;
   loadSceneWithRecipe(filePath: string): Promise<RecipeBoundScene>;
 }
 
@@ -90,6 +96,7 @@ export interface SceneCacheServiceOptions {
   sidecar: SceneCacheSidecar;
   fileSystem?: SceneCacheFileSystem;
   maxEntryBytes?: number;
+  thumbnailRecipe?: (sceneRecipe: string, size: number) => string;
   reportError?: (message: string, error: unknown) => void;
 }
 
@@ -136,6 +143,10 @@ export class SceneCacheService {
   private readonly sidecar: SceneCacheSidecar;
   private readonly fileSystem: SceneCacheFileSystem;
   private readonly maxEntryBytes: number;
+  private readonly thumbnailRecipe: (
+    sceneRecipe: string,
+    size: number,
+  ) => string;
   private readonly reportError: (message: string, error: unknown) => void;
   private activeRecipe: string | null | typeof UNINITIALIZED = UNINITIALIZED;
   private storageReady = false;
@@ -159,6 +170,7 @@ export class SceneCacheService {
     string,
     Promise<Scene | typeof RESTART>
   >();
+  private readonly inFlightThumbnails = new Map<string, Promise<Thumbnail>>();
 
   constructor(options: SceneCacheServiceOptions) {
     this.cacheDirectory = path.join(
@@ -169,6 +181,7 @@ export class SceneCacheService {
     this.sidecar = options.sidecar;
     this.fileSystem = options.fileSystem ?? nodeFileSystem;
     this.maxEntryBytes = options.maxEntryBytes ?? MAX_SCENE_ENTRY_BYTES;
+    this.thumbnailRecipe = options.thumbnailRecipe ?? thumbnailCacheRecipe;
     this.reportError =
       options.reportError ??
       ((message, error) => {
@@ -259,6 +272,58 @@ export class SceneCacheService {
     return derived === RESTART ? this.loadScene(filePath) : derived;
   }
 
+  /**
+   * Renders or retrieves a thumbnail from the existing scene-cache directory.
+   * Thumbnail recipes include the parser recipe and requested size, with a
+   * separately versioned renderer component. The content hash is always
+   * computed from the approved source path before looking up an entry.
+   */
+  async renderThumbnail(
+    filePath: string,
+    requestedSize: number | undefined,
+    render: () => Promise<unknown>,
+  ): Promise<Thumbnail> {
+    const size = requestedSize ?? DEFAULT_THUMBNAIL_SIZE;
+    const advertisedSceneRecipe = await this.sidecar.sceneCacheRecipe();
+    const lease = await this.withMutationLock(async () => {
+      await this.adoptRecipeLocked(advertisedSceneRecipe ?? null);
+      return this.currentLease();
+    });
+
+    const modelHash = await this.hashModel(filePath);
+    if (!modelHash || !advertisedSceneRecipe || !lease.storageReady) {
+      return RenderThumbnailResponse.parse(await render());
+    }
+
+    const expectedRecipe = this.thumbnailRecipe(advertisedSceneRecipe, size);
+    const key = thumbnailCacheKey(modelHash, expectedRecipe, size);
+    const cached = await this.readThumbnail(key, expectedRecipe);
+    if (cached && this.isCurrent(lease)) return cached;
+    if (!this.isCurrent(lease)) {
+      return this.renderThumbnail(filePath, requestedSize, render);
+    }
+
+    const pending = this.inFlightThumbnails.get(key);
+    if (pending) return pending;
+
+    const loading = (async () => {
+      const thumbnail = RenderThumbnailResponse.parse(await render());
+      if (thumbnail.cacheRecipe !== expectedRecipe) return thumbnail;
+
+      const hashAfterRender = await this.hashModel(filePath);
+      if (hashAfterRender === modelHash) {
+        await this.writeThumbnailIfCurrent(key, thumbnail, lease);
+      }
+      return thumbnail;
+    })().finally(() => {
+      if (this.inFlightThumbnails.get(key) === loading) {
+        this.inFlightThumbnails.delete(key);
+      }
+    });
+    this.inFlightThumbnails.set(key, loading);
+    return loading;
+  }
+
   private async deriveAndStore(
     filePath: string,
     modelHash: string,
@@ -328,6 +393,9 @@ export class SceneCacheService {
    */
   private async hashModel(filePath: string): Promise<string | null> {
     try {
+      if (zipMemberSource(filePath)) {
+        return await this.sidecar.hashModelSource(filePath);
+      }
       return await this.fileSystem.hashFile(filePath);
     } catch (error) {
       this.reportError(
@@ -451,6 +519,71 @@ export class SceneCacheService {
     }
   }
 
+  private async readThumbnail(
+    key: string,
+    expectedRecipe: string,
+  ): Promise<Thumbnail | null> {
+    const entryPath = this.thumbnailEntryPath(key);
+    try {
+      if ((await this.fileSystem.size(entryPath)) > this.maxEntryBytes) {
+        await this.removeBestEffort(
+          entryPath,
+          'Could not remove an oversized thumbnail cache entry.',
+        );
+        return null;
+      }
+      const payload = await this.fileSystem.readText(entryPath);
+      const parsed = RenderThumbnailResponse.safeParse(JSON.parse(payload));
+      if (parsed.success && parsed.data.cacheRecipe === expectedRecipe) {
+        return parsed.data;
+      }
+      await this.removeBestEffort(
+        entryPath,
+        'Could not remove an invalid thumbnail cache entry.',
+      );
+      return null;
+    } catch (error) {
+      if (isMissing(error)) return null;
+      this.reportError('Thumbnail cache read failed; rendering again.', error);
+      await this.removeBestEffort(
+        entryPath,
+        'Could not remove an unreadable thumbnail cache entry.',
+      );
+      return null;
+    }
+  }
+
+  private async writeThumbnailIfCurrent(
+    key: string,
+    thumbnail: Thumbnail,
+    lease: RecipeLease,
+  ): Promise<void> {
+    await this.withMutationLock(async () => {
+      if (!this.isCurrent(lease) || !this.storageReady) return;
+      const payload = JSON.stringify(thumbnail);
+      if (Buffer.byteLength(payload, 'utf8') > this.maxEntryBytes) return;
+      const entryPath = this.thumbnailEntryPath(key);
+      const temporaryPath = path.join(
+        this.cacheDirectory,
+        `.${key}.${randomUUID()}.thumbnail.tmp`,
+      );
+      try {
+        await this.fileSystem.writeText(temporaryPath, payload);
+        await this.fileSystem.rename(temporaryPath, entryPath);
+      } catch (error) {
+        this.reportError(
+          'Thumbnail cache write failed; returning the uncached thumbnail.',
+          error,
+        );
+      } finally {
+        await this.removeBestEffort(
+          temporaryPath,
+          'Could not remove a temporary thumbnail cache entry.',
+        );
+      }
+    });
+  }
+
   private async writeEntryIfCurrent(
     key: string,
     scene: Scene,
@@ -502,6 +635,10 @@ export class SceneCacheService {
 
   private entryPath(key: string): string {
     return path.join(this.cacheDirectory, `${key}.scene.json`);
+  }
+
+  private thumbnailEntryPath(key: string): string {
+    return path.join(this.cacheDirectory, `${key}.thumbnail.json`);
   }
 
   private currentLease(): RecipeLease {
@@ -619,6 +756,25 @@ export function sceneCacheKey(modelHash: string, recipe: string): string {
     hash.update(bytes);
   }
   return hash.digest('hex');
+}
+
+export function thumbnailCacheKey(
+  modelHash: string,
+  recipe: string,
+  size: number,
+): string {
+  return sceneCacheKey(modelHash, `${recipe}\u0000${size}`);
+}
+
+/**
+ * Keep this recipe shape in sync with `cache::thumbnail_cache_recipe` in Rust.
+ * The thumbnail renderer version is independent from the scene parser recipe.
+ */
+export function thumbnailCacheRecipe(
+  sceneRecipe: string,
+  size: number,
+): string {
+  return `${sceneRecipe}/thumb-v${THUMBNAIL_RENDERER_VERSION}-${size}`;
 }
 
 /**

@@ -34,7 +34,11 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { createLoadSceneHandler, registerIpcHandlers } from '../src/main/ipc';
+import {
+  createLoadSceneHandler,
+  createRenderThumbnailHandler,
+  registerIpcHandlers,
+} from '../src/main/ipc';
 import { RootApprovalStore } from '../src/main/rootApprovals';
 import { SceneCacheService } from '../src/main/sceneCache';
 import { SidecarClient } from '../src/main/sidecar';
@@ -93,6 +97,7 @@ describe('load-scene IPC handler', () => {
       userDataPath: electronState.userDataPath,
       sidecar: {
         sceneCacheRecipe: () => Promise.resolve(undefined),
+        hashModelSource: () => Promise.resolve('a'.repeat(64)),
         loadSceneWithRecipe: () => Promise.resolve({ scene: scene() }),
       },
     });
@@ -129,6 +134,45 @@ describe('load-scene IPC handler', () => {
       await dispose();
       await rm(electronState.userDataPath, { force: true, recursive: true });
     }
+  });
+});
+
+describe('render-thumbnail IPC handler', () => {
+  it('authorizes the source and routes rendering through the shared scene cache', async () => {
+    const authorizeFile = vi.fn(() =>
+      Promise.resolve('C:\\approved\\part.stl'),
+    );
+    const thumbnail = {
+      width: 256,
+      height: 256,
+      pngBase64: 'PNG',
+      cacheRecipe: 'scene/v2.2/thumb-v1-256',
+    };
+    const renderThumbnail = vi.fn(
+      async (
+        filePath: string,
+        size: number | undefined,
+        render: () => Promise<unknown>,
+      ) => {
+        expect(filePath).toBe('C:\\approved\\part.stl');
+        expect(size).toBe(256);
+        return (await render()) as typeof thumbnail;
+      },
+    );
+    const sidecarRender = vi.fn(() => Promise.resolve(thumbnail));
+    const handler = createRenderThumbnailHandler(
+      authorizeFile,
+      { renderThumbnail },
+      { renderThumbnail: sidecarRender },
+    );
+
+    await expect(
+      handler({}, { path: 'C:\\selected\\part.stl', size: 256 }),
+    ).resolves.toEqual(thumbnail);
+
+    expect(authorizeFile).toHaveBeenCalledWith('C:\\selected\\part.stl');
+    expect(renderThumbnail).toHaveBeenCalledTimes(1);
+    expect(sidecarRender).toHaveBeenCalledWith('C:\\approved\\part.stl', 256);
   });
 });
 

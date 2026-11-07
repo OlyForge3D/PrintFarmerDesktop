@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as nodeFs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { zipMemberSource } from '../shared/modelSource.js';
 import {
   ListModelsResponse,
   StartUploadJobRequest as StartUploadJobRequestSchema,
@@ -1298,7 +1299,11 @@ export class UploadJobService {
     signal: AbortSignal,
   ): Promise<UploadSnapshot> {
     let lastError: unknown = null;
-    for (const location of model.locations) {
+    for (const location of [...model.locations].sort(
+      (left, right) =>
+        Number(Boolean(zipMemberSource(left.path))) -
+        Number(Boolean(zipMemberSource(right.path))),
+    )) {
       if (!location.available) continue;
       try {
         const approved = await this.options.approvals.openApprovedFile(

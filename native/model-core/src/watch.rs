@@ -21,7 +21,7 @@ use crate::model::ModelFormat;
 
 /// True when a path names a supported model file (decided by extension).
 pub fn is_model_path(path: &Path) -> bool {
-    ModelFormat::from_path(path).is_some()
+    ModelFormat::from_path(path).is_some() || crate::archive::is_zip(path)
 }
 
 /// The model-file paths touched by a single filesystem event. Pure read

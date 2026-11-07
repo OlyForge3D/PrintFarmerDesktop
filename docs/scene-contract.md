@@ -2,6 +2,11 @@
 
 `model:loadScene` now returns **scene DTO v2** (`sceneVersion: 2`).
 
+- Rendered thumbnails persist beside scene-cache entries, keyed by source
+  content hash and the sidecar thumbnail recipe (parser, renderer version, and
+  pixel size). ZIP-member hashes are requested from the sidecar so virtual
+  member paths are never treated as filesystem paths; unsupported archive
+  members remain the source resolver's responsibility.
 - `positions` / `indices` / `bounds` / `faceColors` / `parts` remain the legacy flattened aggregate mesh for stats, thumbnails, and any older single-mesh code paths.
 - `objects` is the authoritative renderer contract:
   - `id`: stable instance id

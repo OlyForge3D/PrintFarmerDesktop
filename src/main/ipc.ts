@@ -392,6 +392,24 @@ export function createLoadSceneHandler(
   };
 }
 
+export function createRenderThumbnailHandler(
+  authorizeFile: (requestedPath: string) => Promise<string>,
+  sceneCache: Pick<SceneCacheService, 'renderThumbnail'>,
+  sidecar: Pick<SidecarClient, 'renderThumbnail'>,
+) {
+  return async (_event: unknown, rawRequest: unknown) => {
+    const request =
+      ipcSchemas[IpcChannel.RenderThumbnail].request.parse(rawRequest);
+    const approvedPath = await authorizeFile(request.path);
+    const raw = await sceneCache.renderThumbnail(
+      approvedPath,
+      request.size,
+      () => sidecar.renderThumbnail(approvedPath, request.size),
+    );
+    return ipcSchemas[IpcChannel.RenderThumbnail].response.parse(raw);
+  };
+}
+
 /**
  * Register all IPC handlers. Incoming payloads are validated against their Zod
  * request schemas before handlers run. Responses are validated at their trust
@@ -1307,13 +1325,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     IpcChannel.RenderThumbnail,
-    async (_event, rawRequest: unknown) => {
-      const request =
-        ipcSchemas[IpcChannel.RenderThumbnail].request.parse(rawRequest);
-      const approvedPath = await authorizeRendererFile(request.path);
-      const raw = await sidecar.renderThumbnail(approvedPath, request.size);
-      return ipcSchemas[IpcChannel.RenderThumbnail].response.parse(raw);
-    },
+    createRenderThumbnailHandler(authorizeRendererFile, sceneCache, sidecar),
   );
 
   ipcMain.handle(IpcChannel.ScanRoot, async (_event, rawRequest: unknown) => {

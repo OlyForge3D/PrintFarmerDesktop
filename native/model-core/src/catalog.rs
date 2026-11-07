@@ -19,7 +19,7 @@ use crate::calibration::{
     CalibrationWorkspaceStateDto, ResolveCalibrationConflictParams,
     SaveCalibrationWorkspaceStateParams,
 };
-use crate::hash::{hash_file, ContentHash};
+use crate::hash::ContentHash;
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::scan::ScanResult;
 use crate::sync::{
@@ -1164,6 +1164,7 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
 ) -> (HashMap<PathBuf, ContentHash>, usize) {
     let mut hashes = HashMap::new();
     let mut errors = 0;
+    let mut changed_paths = Vec::new();
     for file in &scan.files {
         let unchanged = store
             .get_location(root_id, &file.path)
@@ -1171,11 +1172,17 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
         if unchanged {
             continue;
         }
-        match hash_file(&file.path) {
+        changed_paths.push(file.path.clone());
+    }
+    for (path, result) in crate::archive::hash_sources(&changed_paths) {
+        match result {
             Ok(hash) => {
-                hashes.insert(file.path.clone(), hash);
+                hashes.insert(path.clone(), hash);
             }
-            Err(_) => errors += 1,
+            Err(error) => {
+                eprintln!("failed to hash model {}: {error}", path.display());
+                errors += 1;
+            }
         }
     }
     (hashes, errors)

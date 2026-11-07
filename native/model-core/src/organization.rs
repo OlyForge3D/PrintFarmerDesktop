@@ -268,6 +268,7 @@ mod tests {
                 fingerprint: FileFingerprint {
                     size: 1,
                     modified_unix_secs: Some(1),
+                    source_revision: None,
                 },
             });
         }

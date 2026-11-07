@@ -808,6 +808,13 @@ fn dispatch(
             )?)
             .map_err(|e| format!("failed to serialize sync conflict: {e}"))
         }
+        "hashModelSource" => {
+            let params: PathParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid hashModelSource params: {e}"))?;
+            let hash = crate::archive::hash_source(Path::new(&params.path))
+                .map_err(|e| format!("failed to hash model source [archive.source_error]: {e}"))?;
+            Ok(serde_json::json!({ "hash": hash }))
+        }
         "loadScene" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid loadScene params: {e}"))?;
@@ -849,8 +856,10 @@ fn dispatch(
             let scan =
                 crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
             let report = reconcile_root(store, &params.root_id, &scan);
-            serde_json::to_value(ReconcileReportDto::from(&report))
-                .map_err(|e| format!("failed to serialize reconcile report: {e}"))
+            let mut value = serde_json::to_value(ReconcileReportDto::from(&report))
+                .map_err(|e| format!("failed to serialize reconcile report: {e}"))?;
+            value["scanErrors"] = serde_json::json!(scan.skipped_errors);
+            Ok(value)
         }
         "previewImport" => {
             let params: PathParams = serde_json::from_value(params)

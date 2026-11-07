@@ -400,6 +400,7 @@ mod tests {
                 fingerprint: FileFingerprint {
                     size: 1,
                     modified_unix_secs: Some(1),
+                    source_revision: None,
                 },
             });
             if i % 2 == 0 {
@@ -718,6 +719,7 @@ mod tests {
             fingerprint: FileFingerprint {
                 size: 1,
                 modified_unix_secs: Some(1),
+                source_revision: None,
             },
         });
         store.bind_sync_profile("a", "binding-a", 1).unwrap();

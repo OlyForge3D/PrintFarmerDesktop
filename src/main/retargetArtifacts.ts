@@ -25,6 +25,10 @@ import type {
 import type { SidecarClient } from './sidecar.js';
 import { SidecarRespondedError } from './sidecar.js';
 import { TargetProfileService } from './targetProfiles.js';
+import {
+  requireStandaloneModelPath,
+  zipMemberSource,
+} from '../shared/modelSource.js';
 
 const TTL_MS = 30 * 60 * 1000;
 const OWNER_MARKER = '.printfarmer-retarget-owner.json';
@@ -462,8 +466,14 @@ export class RetargetArtifactService {
     const listed = models.parse(await this.options.sidecar.listModels());
     const location = listed
       .find((model) => model.hash === modelHash && model.format === 'threeMf')
-      ?.locations.find((item) => item.rootId === rootId && item.available);
+      ?.locations.filter((item) => item.rootId === rootId && item.available)
+      .sort(
+        (left, right) =>
+          Number(Boolean(zipMemberSource(left.path))) -
+          Number(Boolean(zipMemberSource(right.path))),
+      )[0];
     if (!location) return null;
+    requireStandaloneModelPath(location.path);
     const info = await lstat(location.path);
     return info.isFile() && !info.isSymbolicLink()
       ? await realpath(location.path)

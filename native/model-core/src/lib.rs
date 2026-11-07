@@ -5,6 +5,7 @@
 //! with the Electron main process over a framed, versioned RPC protocol on a
 //! private transport. Only the version/handshake surface exists so far.
 
+pub mod archive;
 pub mod cache;
 pub mod calibration;
 pub mod catalog;

@@ -18,6 +18,8 @@ import {
   SceneCacheService,
   sceneCacheKey,
   serializeSceneCache,
+  thumbnailCacheKey,
+  thumbnailCacheRecipe,
   type SceneCacheFileSystem,
   type SceneCacheSidecar,
 } from '../src/main/sceneCache';
@@ -104,6 +106,9 @@ interface FakeSidecar extends SceneCacheSidecar {
   advertisedRecipe: string | undefined;
   returnedRecipe: string | undefined;
   sceneCacheRecipe: ReturnType<typeof vi.fn<() => Promise<string | undefined>>>;
+  hashModelSource: ReturnType<
+    typeof vi.fn<(filePath: string) => Promise<string>>
+  >;
   loadSceneWithRecipe: ReturnType<
     typeof vi.fn<(filePath: string) => Promise<RecipeBoundScene>>
   >;
@@ -114,6 +119,9 @@ function fakeSidecar(): FakeSidecar {
     advertisedRecipe: undefined,
     returnedRecipe: undefined,
     sceneCacheRecipe: vi.fn(() => Promise.resolve(sidecar.advertisedRecipe)),
+    hashModelSource: vi.fn((filePath) =>
+      Promise.resolve(createHash('sha256').update(filePath).digest('hex')),
+    ),
     loadSceneWithRecipe: vi.fn(() => {
       const loaded = {
         scene: scene(sidecar.loadSceneWithRecipe.mock.calls.length),
@@ -179,12 +187,245 @@ function testFileSystem(): SceneCacheFileSystem {
   };
 }
 
+function memoryFileSystem(
+  sourceFiles: Map<string, string>,
+): SceneCacheFileSystem {
+  const entries = new Map<string, string>();
+  const missing = (filePath: string): Error & { code: string } =>
+    Object.assign(new Error(`Missing file: ${filePath}`), { code: 'ENOENT' });
+  return {
+    hashFile: (filePath) => {
+      const contents = sourceFiles.get(filePath);
+      if (contents === undefined) return Promise.reject(missing(filePath));
+      return Promise.resolve(
+        createHash('sha256').update(contents).digest('hex'),
+      );
+    },
+    mkdir: () => Promise.resolve(),
+    readText: (filePath) => {
+      const contents = entries.get(filePath);
+      if (contents === undefined) return Promise.reject(missing(filePath));
+      return Promise.resolve(contents);
+    },
+    rename: (sourcePath, destinationPath) => {
+      const contents = entries.get(sourcePath);
+      if (contents === undefined) return Promise.reject(missing(sourcePath));
+      entries.delete(sourcePath);
+      entries.set(destinationPath, contents);
+      return Promise.resolve();
+    },
+    remove: (targetPath) => {
+      for (const filePath of entries.keys()) {
+        if (filePath === targetPath || filePath.startsWith(`${targetPath}/`)) {
+          entries.delete(filePath);
+        }
+      }
+      return Promise.resolve();
+    },
+    size: (filePath) => {
+      const contents = entries.get(filePath);
+      if (contents === undefined) return Promise.reject(missing(filePath));
+      return Promise.resolve(Buffer.byteLength(contents, 'utf8'));
+    },
+    writeText: (filePath, contents) => {
+      if (entries.has(filePath)) {
+        return Promise.reject(
+          Object.assign(new Error(`Already exists: ${filePath}`), {
+            code: 'EEXIST',
+          }),
+        );
+      }
+      entries.set(filePath, contents);
+      return Promise.resolve();
+    },
+  };
+}
+
 describe('SceneCacheService', () => {
   it('matches the native length-prefixed cache-key contract', () => {
     expect(sceneCacheKey('a'.repeat(64), 'scene/v2.2')).toBe(
       'f4ef1c31ccf37c2e0cf75281448694835e8fe0d30473f6be361e15369c8c9672',
     );
     expect(sceneCacheKey('c', 'ab')).not.toBe(sceneCacheKey('bc', 'a'));
+  });
+
+  it('reuses persisted thumbnails across service instances', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const firstCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    expect(thumbnailCacheKey('a'.repeat(64), recipe, 256)).not.toBe(
+      thumbnailCacheKey('a'.repeat(64), recipe, 512),
+    );
+    const firstRender = vi.fn(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'PERSISTED',
+        cacheRecipe: recipe,
+      }),
+    );
+
+    await firstCache.initialize();
+    await expect(
+      firstCache.renderThumbnail('/models/part.stl', 256, firstRender),
+    ).resolves.toMatchObject({ pngBase64: 'PERSISTED' });
+
+    const secondCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    const secondRender = vi.fn(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'SHOULD_NOT_RENDER',
+        cacheRecipe: recipe,
+      }),
+    );
+    await secondCache.initialize();
+
+    await expect(
+      secondCache.renderThumbnail('/models/part.stl', 256, secondRender),
+    ).resolves.toMatchObject({ pngBase64: 'PERSISTED' });
+    expect(firstRender).toHaveBeenCalledTimes(1);
+    expect(secondRender).not.toHaveBeenCalled();
+  });
+
+  it('invalidates thumbnail entries when renderer recipe, size, or content changes', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'original bytes']]);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    let rendererVersion = 1;
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem: memoryFileSystem(sourceFiles),
+      thumbnailRecipe: (sceneRecipe, size) =>
+        `${sceneRecipe}/thumb-v${rendererVersion}-${size}`,
+    });
+    await cache.initialize();
+
+    let renderCount = 0;
+    const render = (size: number) => {
+      return vi.fn(() => {
+        renderCount += 1;
+        return Promise.resolve({
+          width: size,
+          height: size,
+          pngBase64: `PNG-${renderCount}`,
+          cacheRecipe: `scene/v2.2/thumb-v${rendererVersion}-${size}`,
+        });
+      });
+    };
+
+    await cache.renderThumbnail('/models/part.stl', 256, render(256));
+    const sameRecipeHit = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, sameRecipeHit);
+    expect(sameRecipeHit).not.toHaveBeenCalled();
+
+    const otherSize = render(512);
+    await cache.renderThumbnail('/models/part.stl', 512, otherSize);
+    expect(otherSize).toHaveBeenCalledTimes(1);
+
+    rendererVersion = 2;
+    const newRenderer = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, newRenderer);
+    expect(newRenderer).toHaveBeenCalledTimes(1);
+
+    sourceFiles.set('/models/part.stl', 'changed bytes');
+    const changedContent = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, changedContent);
+    expect(changedContent).toHaveBeenCalledTimes(1);
+
+    const changedContentHit = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, changedContentHit);
+    expect(changedContentHit).not.toHaveBeenCalled();
+    expect(renderCount).toBe(4);
+  });
+
+  it('coalesces concurrent thumbnail requests for identical source contents', async () => {
+    const sourceFiles = new Map([
+      ['/models/first.stl', 'same model bytes'],
+      ['/models/copy.stl', 'same model bytes'],
+    ]);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem: memoryFileSystem(sourceFiles),
+    });
+    await cache.initialize();
+
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    let finish!: (thumbnail: {
+      width: number;
+      height: number;
+      pngBase64: string;
+      cacheRecipe: string;
+    }) => void;
+    const render = vi.fn(
+      () =>
+        new Promise<{
+          width: number;
+          height: number;
+          pngBase64: string;
+          cacheRecipe: string;
+        }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = cache.renderThumbnail('/models/first.stl', 256, render);
+    const copy = cache.renderThumbnail('/models/copy.stl', 256, render);
+
+    await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(1));
+    finish({
+      width: 256,
+      height: 256,
+      pngBase64: 'SHARED',
+      cacheRecipe: recipe,
+    });
+    await expect(Promise.all([first, copy])).resolves.toEqual([
+      expect.objectContaining({ pngBase64: 'SHARED' }),
+      expect.objectContaining({ pngBase64: 'SHARED' }),
+    ]);
+  });
+
+  it('uses the sidecar to hash ZIP members rather than treating virtual paths as files', async () => {
+    const sourcePath = '/dir/a.zip/::zip::/0/nested/a.stl';
+    const fileSystem = memoryFileSystem(new Map());
+    const hashFile = vi.spyOn(fileSystem, 'hashFile');
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.hashModelSource.mockResolvedValue('a'.repeat(64));
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+
+    await cache.renderThumbnail(sourcePath, 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'ZIP',
+        cacheRecipe: recipe,
+      }),
+    );
+
+    expect(hashFile).not.toHaveBeenCalled();
+    expect(sidecar.hashModelSource).toHaveBeenCalledTimes(2);
+    expect(sidecar.hashModelSource).toHaveBeenCalledWith(sourcePath);
   });
 
   it('does not cache scenes when an older sidecar omits the recipe', async () => {
@@ -598,6 +839,8 @@ describe('SceneCacheService', () => {
       userDataPath,
       sidecar: {
         sceneCacheRecipe: () => Promise.resolve('scene/v2.2'),
+        hashModelSource: () =>
+          Promise.resolve(createHash('sha256').update(filePath).digest('hex')),
         loadSceneWithRecipe: async () => {
           await rm(filePath, { force: true });
           return { scene: expected, cacheRecipe: 'scene/v2.2' };
@@ -623,6 +866,10 @@ describe('SceneCacheService', () => {
       userDataPath,
       sidecar: {
         sceneCacheRecipe: () => Promise.resolve('scene/v2.2'),
+        hashModelSource: () =>
+          Promise.resolve(
+            createHash('sha256').update(missingPath).digest('hex'),
+          ),
         loadSceneWithRecipe,
       },
       reportError: vi.fn(),
