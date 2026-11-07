@@ -21,6 +21,7 @@
 | 🔄 Ralph        | Work Monitor                    | —                                     | Active |
 | 🛡️ Rai          | RAI Reviewer                    | .squad/agents/rai/charter.md          | Active |
 | 🔍 Fact Checker | Fact Checker / Devil's Advocate | .squad/agents/fact-checker/charter.md | Active |
+| 🎨 Lambert      | Design Review                   | .squad/agents/lambert/charter.md      | Active |
 
 ## Coding Agent
 

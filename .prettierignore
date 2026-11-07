@@ -12,3 +12,7 @@ resources/target-profiles/**/profiles
 # keys, non-finite numbers, wrong magic bytes, G-code in a .json. Formatting
 # them would repair the very defect each one exists to carry.
 tests/fixtures/malicious-input
+
+# Vendored impeccable detector (#843). Byte-pinned by manifest.json; reformatting
+# it would fail scripts/design-detector.mjs's integrity check.
+tools/impeccable-detector

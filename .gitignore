@@ -93,3 +93,7 @@ Thumbs.db
 .squad/sessions/
 .squad/.cache/
 .squad-workstream
+
+# impeccable: per-developer design-hook settings (shared config is .impeccable/config.json)
+.impeccable/config.local.json
+.impeccable/hook.cache.json

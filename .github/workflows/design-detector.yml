@@ -1,0 +1,45 @@
+name: Design detector
+
+# merge-queue: reports
+#
+# Subscribes to merge_group so the check reports for a queued entry and may be
+# made a required context. Deliberately a separate workflow rather than a step
+# in ci.yml: it needs full history for a three-dot diff, no `npm ci`, and no
+# platform matrix, and it should fail with its own name so a design regression
+# is not misread as a build or test failure.
+#
+# The step below, `npm run check:design-detector`, runs the vendored impeccable
+# detector (tools/impeccable-detector) over the renderer markup and style files
+# a change touches, and fails on any non-advisory finding. Suppressions are reviewable in the diff:
+# .impeccable/config.json or inline `impeccable-disable` comments.
+#
+# No secrets and read-only contents: it executes PR-authored scripts, which is
+# acceptable only because there is nothing here for them to exfiltrate.
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  design-detector:
+    name: Design detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the detector and its runner import only node: builtins.
+      - name: Scan changed design-surface files
+        env:
+          BASE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: npm run check:design-detector -- --base "$BASE_SHA" --head "$HEAD_SHA"

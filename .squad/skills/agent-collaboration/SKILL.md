@@ -29,6 +29,16 @@ Reviews are run as independent agents against an **exact commit SHA and branch-c
 
 Read it for exactly what it says, and no more. **It is self-attested and provides no separation of duties** — every squad agent runs under the owner's single identity, so a reviewer agent recording `APPROVE` is the owner recording it. A green `REVIEWED (self-attested)` means a reviewer agent examined _that exact commit_; only `APPROVE (owner)` is an authorisation by a distinct principal. What it genuinely buys is SHA binding (push again and it goes stale), presence (it fails when nothing reviewed the change at all), and a legible audit trail. **It is deliberately not a required status check** and must not become one — see `.squad/decisions/inbox/ripley-206-review-verdicts-cannot-bind.md` and `.../copilot-740-squad-verdict-semantics.md`.
 
+### Design-surface changes: Lambert, plus the deterministic detector (#843)
+
+**This is the single definition of the design-review rule.** `scripts/design-surface.mjs` decides what counts: renderer markup and style files (`src/renderer/**` `.tsx/.jsx/.css/.scss/.sass/.less/.html/.vue/.svelte/.astro`, root `index.html`) and design-governance files (`DESIGN.md`, `PRODUCT.md`, `.impeccable/**`, `tools/impeccable-detector/**`). When a squad PR touches any of them:
+
+- **The gate requires a `lambert` APPROVE at the head SHA on top of the normal count** — four records on a full-gate PR, and on a documentation-only one (`DESIGN.md`) Lambert is the one reviewer. Lambert is never a panel substitute. If Lambert authored the PR, only an owner approval clears it.
+- **The `Design detector` workflow must be green.** It runs the vendored impeccable detector (`npm run check:design-detector`) over the changed design-surface files and fails on any non-advisory finding. This is the only deterministic part of the design gate; Lambert's record is self-attested like every other here.
+- **Suppressions are reviewed, not free.** An inline `impeccable-disable` comment or a `.impeccable/config.json` ignore needs a stated reason, and Lambert checks it.
+
+Agents also get the detector's findings while they edit: `.github/hooks/impeccable.json` runs `scripts/design-detector-hook.mjs` after `edit`/`create`/`apply_patch` and injects findings into the agent's context. It is feedback, never a block (it always exits 0); opt out with `"hook": { "enabled": false }` in `.impeccable/config.local.json` or `IMPECCABLE_HOOK_DISABLED=1`.
+
 ## Documentation-Only Changes: One Reviewer
 
 **This section is the single definition of the documentation-only reviewer rule. Anywhere else that mentions it points here and does not restate it.**

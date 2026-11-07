@@ -819,6 +819,118 @@ describe('reviewer count, eligibility and rejection', () => {
   });
 });
 
+describe('the design reviewer on design-surface changes', () => {
+  const uiPaths = ['src/renderer/App.tsx', 'src/main/index.ts'];
+  const designRoster = new Set([...roster, 'lambert']);
+  const panel = [
+    comment('bishop', 'APPROVE'),
+    comment('hicks', 'APPROVE'),
+    comment('vasquez', 'APPROVE'),
+  ];
+
+  it('the full panel alone does not clear a UI change', () => {
+    const result = gate({
+      changedPaths: uiPaths,
+      comments: panel,
+      roster: designRoster,
+    });
+    expect(result.state).toBe('failure');
+    expect(result.description).toMatch(/have 3\/4, missing lambert/);
+    expect(result.requiredMembers).toContain('lambert');
+  });
+
+  it('the panel plus lambert clears a UI change', () => {
+    const result = gate({
+      changedPaths: uiPaths,
+      comments: [...panel, comment('lambert', 'APPROVE')],
+      roster: designRoster,
+    });
+    expect(result.passed).toBe(true);
+    expect(result.approvals).toEqual(['bishop', 'hicks', 'lambert', 'vasquez']);
+  });
+
+  it('control: the same panel clears a non-UI change without lambert', () => {
+    const result = gate({
+      changedPaths: codePaths,
+      comments: panel,
+      roster: designRoster,
+    });
+    expect(result.passed).toBe(true);
+    expect(result.requiredMembers).not.toContain('lambert');
+  });
+
+  it('lambert is not a panel substitute when a panel member authored the PR', () => {
+    const result = gate({
+      changedPaths: uiPaths,
+      comments: [
+        comment('hicks', 'APPROVE'),
+        comment('vasquez', 'APPROVE'),
+        comment('lambert', 'APPROVE'),
+      ],
+      roster: designRoster,
+      authorMembers: new Set(['bishop']),
+    });
+    expect(result.state).toBe('failure');
+    expect(result.description).toMatch(/have 3\/4/);
+  });
+
+  it('a lambert rejection blocks a UI change', () => {
+    const result = gate({
+      changedPaths: uiPaths,
+      comments: [...panel, comment('lambert', 'REQUEST_CHANGES')],
+      roster: designRoster,
+    });
+    expect(result.description).toMatch(/^REQUEST_CHANGES @ .* by lambert$/);
+  });
+
+  it('a docs-only DESIGN.md change needs lambert specifically', () => {
+    const withDallas = gate({
+      changedPaths: ['DESIGN.md'],
+      comments: [comment('dallas', 'APPROVE')],
+      roster: designRoster,
+    });
+    expect(withDallas.state).toBe('failure');
+    expect(withDallas.description).toMatch(/missing lambert/);
+    const withLambert = gate({
+      changedPaths: ['DESIGN.md'],
+      comments: [comment('lambert', 'APPROVE')],
+      roster: designRoster,
+    });
+    expect(withLambert.passed).toBe(true);
+  });
+
+  it('lambert authoring a UI change blocks until the owner approves', () => {
+    const blocked = gate({
+      changedPaths: uiPaths,
+      comments: panel,
+      roster: designRoster,
+      authorMembers: new Set(['lambert']),
+    });
+    expect(blocked.state).toBe('failure');
+    expect(blocked.description).toMatch(
+      /design reviewer lambert is the PR author/,
+    );
+    const owner = gate({
+      changedPaths: uiPaths,
+      comments: panel,
+      roster: designRoster,
+      authorMembers: new Set(['lambert']),
+      reviews: [
+        {
+          id: 1,
+          login: 'jpapiez',
+          isAdmin: true,
+          state: 'APPROVED',
+          commitId: headSha,
+          submittedAt: '2026-08-08T02:00:00Z',
+        },
+      ],
+    });
+    expect(owner.passed).toBe(true);
+    expect(owner.override).toBe('github-review');
+  });
+});
+
 describe('the owner override', () => {
   it('an administrator GitHub approval at the current head satisfies the gate', () => {
     const result = gate({
