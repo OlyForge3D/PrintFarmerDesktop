@@ -151,7 +151,7 @@ test(`@gpu packaged WebGL2 renders and interacts in ${hardwareRequest?.profile.i
       const orbitChangedImage = !orbited.equals(baseline);
       expect(orbitChangedImage).toBe(true);
 
-      await launched.page.getByRole('button', { name: 'Reset' }).click();
+      await launched.page.getByRole('button', { name: 'Reset view' }).click();
       await launched.page.waitForTimeout(300);
       const reset = await canvas.screenshot();
       const resetRestoredImage = reset.equals(baseline);
