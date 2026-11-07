@@ -1299,11 +1299,18 @@ export class UploadJobService {
     signal: AbortSignal,
   ): Promise<UploadSnapshot> {
     let lastError: unknown = null;
-    for (const location of [...model.locations].sort(
-      (left, right) =>
-        Number(Boolean(zipMemberSource(left.path))) -
-        Number(Boolean(zipMemberSource(right.path))),
-    )) {
+    const available = model.locations.filter((location) => location.available);
+    const standalone = available.filter(
+      (location) => !zipMemberSource(location.path),
+    );
+    if (standalone.length === 0 && available[0]) {
+      throw makeUploadError(
+        'FILE_UNAVAILABLE',
+        'This action requires an extracted model file. Extract this ZIP member and rescan the folder first.',
+        false,
+      );
+    }
+    for (const location of standalone) {
       if (!location.available) continue;
       try {
         const approved = await this.options.approvals.openApprovedFile(
@@ -1656,6 +1663,15 @@ function parseRemoteLink(raw: unknown): RemoteModelLink | null {
 
 function safeUploadError(error: unknown): UploadError {
   if (error instanceof ModelUploadError) return error.detail;
+  if (error instanceof RootApprovalError) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: true,
+      retryAfterSeconds: null,
+      duplicateRisk: false,
+    };
+  }
   if (error instanceof SnapshotError) {
     return {
       code: error.code,
