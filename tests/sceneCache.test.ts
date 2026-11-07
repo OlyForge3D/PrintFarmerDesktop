@@ -778,7 +778,7 @@ describe('SceneCacheService', () => {
     await restartedCache.initialize();
     await expect(
       restartedCache.getThumbnailCacheStatus(),
-    ).resolves.toMatchObject({ location: '/external/cache' });
+    ).resolves.toMatchObject({ location: path.resolve('/external/cache') });
     const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
     await restartedCache.renderThumbnail('/models/part.stl', 256, () =>
       Promise.resolve({
@@ -788,7 +788,10 @@ describe('SceneCacheService', () => {
         cacheRecipe: recipe,
       }),
     );
-    const directory = path.join('/external/cache', 'printfarmer-thumbnails.v1');
+    const directory = path.join(
+      path.resolve('/external/cache'),
+      'printfarmer-thumbnails.v1',
+    );
     const userFile = path.join(directory, 'keep-this-note.txt');
     const unrelated = path.join(directory, `${'b'.repeat(64)}.scene.json`);
     fileSystem.seed(userFile, 'user-owned file');
@@ -799,7 +802,10 @@ describe('SceneCacheService', () => {
     expect(fileSystem.has(unrelated)).toBe(true);
     await expect(
       restartedCache.getThumbnailCacheStatus(),
-    ).resolves.toMatchObject({ location: '/external/cache', entryCount: 0 });
+    ).resolves.toMatchObject({
+      location: path.resolve('/external/cache'),
+      entryCount: 0,
+    });
   });
 
   it('removes only owned thumbnails when switching cache locations', async () => {
@@ -834,7 +840,7 @@ describe('SceneCacheService', () => {
     expect(fileSystem.has(ownedThumbnail)).toBe(false);
     expect(fileSystem.has(unrelatedScene)).toBe(true);
     await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
-      location: '/external/cache',
+      location: path.resolve('/external/cache'),
       warning: null,
     });
   });
@@ -871,7 +877,7 @@ describe('SceneCacheService', () => {
 
     expect(fileSystem.has(oldThumbnail)).toBe(true);
     expect(await cache.getThumbnailCacheStatus()).toMatchObject({
-      location: '/external/cache',
+      location: path.resolve('/external/cache'),
       warning:
         'Could not remove owned thumbnails from the previous cache location.',
     });
@@ -1671,7 +1677,7 @@ describe('SceneCacheService', () => {
       retentionDays: 30,
     });
     const externalDirectory = path.join(
-      '/external/cache',
+      path.resolve('/external/cache'),
       'printfarmer-thumbnails.v1',
     );
     const externalThumbnail = path.join(

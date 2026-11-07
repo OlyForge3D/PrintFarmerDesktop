@@ -1780,6 +1780,10 @@ describe('UploadJobService', () => {
     );
     expect(openApprovedFile).toHaveBeenCalledExactlyOnceWith(MODEL_PATH);
     expect(jobs[0]?.items[0]?.error?.message).toContain('Reauthorize');
+    expect(jobs[0]?.items[0]?.error).toMatchObject({
+      retryable: true,
+      duplicateRisk: false,
+    });
   });
 
   it('reports extraction required for a ZIP-only upload without opening a synthetic path', async () => {
