@@ -98,6 +98,34 @@ export function fitPerspectiveDistance(
   return (radius / Math.sin(limitingFov / 2)) * padding;
 }
 
+/** Smallest near plane, as a share of the scene radius, once the camera is inside it. */
+export const DEPTH_NEAR_RADIUS_RATIO = 0.001;
+const DEPTH_SPHERE_MARGIN = 1.05;
+
+/**
+ * Near/far planes hugging the scene's bounding sphere for a camera at
+ * `distance` from its centre.
+ *
+ * A fixed near of 0.01 with a far of radius * 100 + 1000 leaves a 24-bit depth
+ * buffer resolving only ~d^2 / (near * 2^24): about 13 units at the framing
+ * distance of a 600 mm multi-plate scene, so nearby faces and the bed
+ * z-fight (flicker) while zooming. Fitting the planes to the sphere keeps the
+ * ratio small at every zoom, and the floor keeps a close-up from clipping.
+ */
+export function depthRangeFor(
+  distance: number,
+  radius: number,
+): { near: number; far: number } {
+  const r = Math.max(radius, 1e-6);
+  const d = Number.isFinite(distance) ? Math.max(distance, 0) : 0;
+  const near = Math.max(
+    d - r * DEPTH_SPHERE_MARGIN,
+    r * DEPTH_NEAR_RADIUS_RATIO,
+  );
+  const far = Math.max(d + r * DEPTH_SPHERE_MARGIN, near * 2);
+  return { near, far };
+}
+
 /** Angular step (radians) applied per arrow-key press when orbiting. */
 export const KEYBOARD_ORBIT_STEP = Math.PI / 18; // 10 degrees
 /** Multiplicative distance step applied per zoom-key press. */
