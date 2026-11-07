@@ -41,7 +41,7 @@ const ROOT_DESIGN_FILES = new Set(['index.html']);
 // measured and enforced, without being UI themselves. They need the design
 // reviewer but are not detector scan targets. The gate's own machinery is
 // listed so weakening it is itself a design-reviewed change.
-const DESIGN_GOVERNANCE_FILES = new Set([
+export const DESIGN_GOVERNANCE_FILES = Object.freeze([
   'DESIGN.md',
   'PRODUCT.md',
   'scripts/design-surface.mjs',
@@ -53,7 +53,8 @@ const DESIGN_GOVERNANCE_FILES = new Set([
   '.github/workflows/design-detector.yml',
   '.github/hooks/impeccable.json',
 ]);
-const DESIGN_GOVERNANCE_PREFIXES = Object.freeze([
+const DESIGN_GOVERNANCE_FILE_SET = new Set(DESIGN_GOVERNANCE_FILES);
+export const DESIGN_GOVERNANCE_PREFIXES = Object.freeze([
   '.impeccable/',
   'tools/impeccable-detector/',
 ]);
@@ -84,7 +85,7 @@ export function isDesignSurfacePath(filePath) {
 
 export function isDesignGovernancePath(filePath) {
   const normalized = normalizeRepoPath(filePath);
-  if (DESIGN_GOVERNANCE_FILES.has(normalized)) return true;
+  if (DESIGN_GOVERNANCE_FILE_SET.has(normalized)) return true;
   return DESIGN_GOVERNANCE_PREFIXES.some((prefix) =>
     normalized.startsWith(prefix),
   );

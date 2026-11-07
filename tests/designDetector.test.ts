@@ -1,8 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -26,10 +28,13 @@ import type { DetectorManifest } from '../scripts/design-detector.mjs';
 import {
   extractEditedPaths,
   formatContext,
+  handlePayload,
   readHookSettings,
   toRepoRelative,
 } from '../scripts/design-detector-hook.mjs';
 import {
+  DESIGN_GOVERNANCE_FILES,
+  DESIGN_GOVERNANCE_PREFIXES,
   designSurfacePaths,
   isDesignGovernancePath,
   isDesignReviewPath,
@@ -63,27 +68,59 @@ describe('design surface classification', () => {
     expect(isDesignSurfacePath(file)).toBe(expected);
   });
 
-  it('governance paths need design review but are not scan targets', () => {
-    for (const file of [
-      'DESIGN.md',
-      '.impeccable/config.json',
-      'tools/impeccable-detector/detect.mjs',
-      'scripts/design-surface.mjs',
-      'scripts/design-detector.mjs',
-      'scripts/design-detector-hook.mjs',
-      '.github/workflows/design-detector.yml',
-      '.github/hooks/impeccable.json',
-    ]) {
-      expect(isDesignGovernancePath(file)).toBe(true);
-      expect(isDesignSurfacePath(file)).toBe(false);
-      expect(requiresDesignReview([file])).toBe(true);
-    }
-    expect(
-      requiresDesignReview(['src/main/index.ts', 'docs/ARCHITECTURE.md']),
-    ).toBe(false);
-    expect(requiresDesignReview(['scripts/squad-verdict-gate.mjs'])).toBe(
-      false,
+  // Pinned by hand, not derived from the export: dropping an entry from
+  // design-surface.mjs would silently remove Lambert from that file's PRs.
+  const EXPECTED_GOVERNANCE_FILES = [
+    'DESIGN.md',
+    'PRODUCT.md',
+    'scripts/design-surface.mjs',
+    'scripts/design-surface.d.mts',
+    'scripts/design-detector.mjs',
+    'scripts/design-detector.d.mts',
+    'scripts/design-detector-hook.mjs',
+    'scripts/design-detector-hook.d.mts',
+    '.github/workflows/design-detector.yml',
+    '.github/hooks/impeccable.json',
+  ];
+  const EXPECTED_GOVERNANCE_PREFIXES = [
+    '.impeccable/',
+    'tools/impeccable-detector/',
+  ];
+
+  it('the governance set is exactly the pinned list', () => {
+    expect([...DESIGN_GOVERNANCE_FILES].sort()).toEqual(
+      [...EXPECTED_GOVERNANCE_FILES].sort(),
     );
+    expect([...DESIGN_GOVERNANCE_PREFIXES].sort()).toEqual(
+      [...EXPECTED_GOVERNANCE_PREFIXES].sort(),
+    );
+  });
+
+  it.each([
+    ...EXPECTED_GOVERNANCE_FILES,
+    '.impeccable/config.json',
+    'tools/impeccable-detector/detect.mjs',
+    'tools\\impeccable-detector\\detector\\findings.mjs',
+  ])('governance path %s needs design review but is not scanned', (file) => {
+    expect(isDesignGovernancePath(file)).toBe(true);
+    expect(isDesignSurfacePath(file)).toBe(false);
+    expect(requiresDesignReview([file])).toBe(true);
+  });
+
+  it.each([
+    'docs/DESIGN.md',
+    'DESIGN.md.bak',
+    'PRODUCT.txt',
+    'scripts/design-surfaces.mjs',
+    'scripts/squad-verdict-gate.mjs',
+    '.github/workflows/design-detector-old.yml',
+    '.github/hooks/other.json',
+    '.impeccable',
+    'tools/impeccable-detector-old/detect.mjs',
+    'src/main/index.ts',
+  ])('control: near-miss %s is not governance', (file) => {
+    expect(isDesignGovernancePath(file)).toBe(false);
+    expect(requiresDesignReview([file])).toBe(false);
   });
 
   it('every renderer file needs review even when it is not a scan target', () => {
@@ -376,5 +413,216 @@ describe('the agent edit hook', () => {
     expect(entry.matcher).toBe('edit|create|apply_patch');
     expect(entry.bash).toContain('scripts/design-detector-hook.mjs');
     expect(entry.powershell).toContain('scripts/design-detector-hook.mjs');
+  });
+});
+
+// A stand-in detector whose output and exit code the test controls through
+// the environment, so runner and hook behaviour can be pinned per outcome
+// without depending on which real rules happen to be advisory.
+const FAKE_DETECT = [
+  "const out = process.env.FAKE_DETECTOR_OUTPUT ?? '[]';",
+  "process.stdout.write(out.replaceAll('__ROOT__', JSON.stringify(process.cwd()).slice(1, -1)));",
+  "process.exitCode = Number(process.env.FAKE_DETECTOR_EXIT ?? '0');",
+  '',
+].join('\n');
+
+function fakeFinding(advisory: boolean) {
+  return JSON.stringify([
+    {
+      file: '__ROOT__/src/renderer/A.tsx',
+      line: 1,
+      antipattern: advisory ? 'advisory-rule' : 'blocking-rule',
+      description: 'fake',
+      ...(advisory ? { advisory: true } : {}),
+    },
+  ]);
+}
+
+function makeFakeRepo(prefix: string): string {
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), prefix)));
+  expect(spawnSync('git', ['init', '-q'], { cwd: root }).status).toBe(0);
+  mkdirSync(path.join(root, DETECTOR_DIR), { recursive: true });
+  writeFileSync(path.join(root, DETECTOR_DIR, 'detect.mjs'), FAKE_DETECT);
+  expect(main(['--write-manifest'], root)).toBe(0);
+  mkdirSync(path.join(root, 'src/renderer'), { recursive: true });
+  writeFileSync(path.join(root, 'src/renderer/A.tsx'), CLEAN_TSX);
+  writeFileSync(path.join(root, 'src/main.ts'), 'export {};\n');
+  return root;
+}
+
+function withFakeOutput<T>(output: string, exit: string, run: () => T): T {
+  const saved = {
+    out: process.env.FAKE_DETECTOR_OUTPUT,
+    exit: process.env.FAKE_DETECTOR_EXIT,
+  };
+  process.env.FAKE_DETECTOR_OUTPUT = output;
+  process.env.FAKE_DETECTOR_EXIT = exit;
+  try {
+    return run();
+  } finally {
+    if (saved.out === undefined) delete process.env.FAKE_DETECTOR_OUTPUT;
+    else process.env.FAKE_DETECTOR_OUTPUT = saved.out;
+    if (saved.exit === undefined) delete process.env.FAKE_DETECTOR_EXIT;
+    else process.env.FAKE_DETECTOR_EXIT = saved.exit;
+  }
+}
+
+describe('advisory findings through the enforcing runner', () => {
+  let root: string;
+  beforeAll(() => {
+    root = makeFakeRepo('design-advisory-');
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('an advisory-only result is reported but passes', () => {
+    withFakeOutput(fakeFinding(true), '2', () => {
+      const findings = runDetector(root, ['src/renderer/A.tsx']);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.advisory).toBe(true);
+      expect(main(['--files', 'src/renderer/A.tsx'], root)).toBe(0);
+    });
+  });
+
+  it('control: the same result without advisory fails', () => {
+    withFakeOutput(fakeFinding(false), '2', () => {
+      expect(main(['--files', 'src/renderer/A.tsx'], root)).toBe(1);
+    });
+  });
+});
+
+describe('the agent edit hook end to end', () => {
+  const hookScript = path.join(repoRoot, 'scripts/design-detector-hook.mjs');
+  let root: string;
+  beforeAll(() => {
+    root = makeFakeRepo('design-hook-e2e-');
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const editPayload = (file: string) => ({
+    cwd: root,
+    toolName: 'edit',
+    toolArgs: JSON.stringify({ path: file }),
+  });
+
+  function blockingDetect(calls: string[][]) {
+    return (_root: string, files: readonly string[]) => {
+      calls.push([...files]);
+      return [
+        {
+          file: path.join(root, files[0]!),
+          line: 1,
+          antipattern: 'gradient-text',
+          description: 'fake',
+        },
+      ];
+    };
+  }
+
+  it('injects blocking findings for an edited design-surface file', () => {
+    const calls: string[][] = [];
+    const output = handlePayload(editPayload('src/renderer/A.tsx'), {
+      env: {},
+      detect: blockingDetect(calls),
+    });
+    expect(calls).toEqual([['src/renderer/A.tsx']]);
+    expect(output?.additionalContext).toContain('gradient-text');
+  });
+
+  it('control: disabled by config, it never runs the detector', () => {
+    const configDir = path.join(root, '.impeccable');
+    mkdirSync(configDir, { recursive: true });
+    const local = path.join(configDir, 'config.local.json');
+    writeFileSync(local, JSON.stringify({ hook: { enabled: false } }));
+    try {
+      const calls: string[][] = [];
+      expect(
+        handlePayload(editPayload('src/renderer/A.tsx'), {
+          env: {},
+          detect: blockingDetect(calls),
+        }),
+      ).toBeNull();
+      expect(calls).toEqual([]);
+    } finally {
+      rmSync(local);
+    }
+  });
+
+  it('control: disabled by environment, it never runs the detector', () => {
+    const calls: string[][] = [];
+    expect(
+      handlePayload(editPayload('src/renderer/A.tsx'), {
+        env: { IMPECCABLE_HOOK_DISABLED: '1' },
+        detect: blockingDetect(calls),
+      }),
+    ).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it('stays silent for clean, advisory-only, and non-design edits', () => {
+    expect(
+      handlePayload(editPayload('src/renderer/A.tsx'), {
+        env: {},
+        detect: () => [],
+      }),
+    ).toBeNull();
+    expect(
+      handlePayload(editPayload('src/renderer/A.tsx'), {
+        env: {},
+        detect: () => [
+          { file: 'x', antipattern: 'a', description: 'd', advisory: true },
+        ],
+      }),
+    ).toBeNull();
+    const calls: string[][] = [];
+    expect(
+      handlePayload(editPayload('src/main.ts'), {
+        env: {},
+        detect: blockingDetect(calls),
+      }),
+    ).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  function runHook(stdin: string, output: string, exit: string) {
+    return spawnSync(process.execPath, [hookScript], {
+      cwd: root,
+      input: stdin,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        IMPECCABLE_HOOK_DISABLED: '',
+        FAKE_DETECTOR_OUTPUT: output,
+        FAKE_DETECTOR_EXIT: exit,
+      },
+    });
+  }
+
+  it('as a process, emits context for a blocking finding and exits 0', () => {
+    const result = runHook(
+      JSON.stringify(editPayload('src/renderer/A.tsx')),
+      fakeFinding(false),
+      '2',
+    );
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as { additionalContext: string };
+    expect(output.additionalContext).toContain('blocking-rule');
+  });
+
+  it('as a process, malformed stdin produces no context and exits 0', () => {
+    const result = runHook('not json', fakeFinding(false), '2');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('design-detector-hook');
+  });
+
+  it('as a process, a crashing detector produces no context and exits 0', () => {
+    const result = runHook(
+      JSON.stringify(editPayload('src/renderer/A.tsx')),
+      'garbage',
+      '5',
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('detector exited 5');
   });
 });

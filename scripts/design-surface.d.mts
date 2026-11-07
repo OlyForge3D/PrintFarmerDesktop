@@ -1,5 +1,9 @@
 export declare const DESIGN_REVIEWER: 'lambert';
 export declare const DESIGN_SURFACE_EXTENSIONS: readonly string[];
+/** Exact governance files that need design review but are not scanned. */
+export declare const DESIGN_GOVERNANCE_FILES: readonly string[];
+/** Governance directory prefixes (trailing slash). */
+export declare const DESIGN_GOVERNANCE_PREFIXES: readonly string[];
 
 export function normalizeRepoPath(filePath: unknown): string;
 /** Renderer markup/style files the vendored detector scans. */

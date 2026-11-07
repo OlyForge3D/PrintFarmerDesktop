@@ -86,7 +86,12 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
 - Copilot agents get the same findings in-context after each edit through
   `.github/hooks/impeccable.json`. Turn it off for yourself with
   `{ "hook": { "enabled": false } }` in the gitignored
-  `.impeccable/config.local.json`.
+  `.impeccable/config.local.json`, or set `IMPECCABLE_HOOK_DISABLED=1`.
+  The hook runs code from the checked-out branch, the same trust you already
+  extend to its git hooks and npm scripts. Before pointing an agent at an
+  untrusted or fork branch, set `IMPECCABLE_HOOK_DISABLED=1` or review
+  `.github/hooks/` and `scripts/` first; a branch can add its own hook manifest
+  regardless of this one.
 - Suppress a deliberate choice with an inline `impeccable-disable <rule> -- reason`
   comment or `detector.ignoreRules` / `ignoreFiles` in
   `.impeccable/config.json`. Both are visible in review.

@@ -11,8 +11,10 @@ Use `squad/<issue>-<slug>`, keep the main checkout read-only, and open a linked
 PR. Before pushing a BEHIND sync, run `npm run plan:behind-sync-order -- --claim`
 and stand down when another lease exists. Report blockers with evidence.
 
-If any changed path is design surface (`src/renderer/**` markup or styles, or
-`DESIGN.md`/`PRODUCT.md`; the definition is `scripts/design-surface.mjs`), run
+If the change needs design review — any `src/renderer/**` file, root
+`index.html`, or design-governance file (`isDesignReviewPath` in
+`scripts/design-surface.mjs`; the detector scans only the narrower
+`isDesignSurfacePath` markup/style set) — run
 the impeccable skill's `shape` on the feature before writing UI code and put the
 resulting brief in the PR description. Fix `Design detector` findings rather
 than suppressing them; a suppression needs a stated reason. The PR also needs a
