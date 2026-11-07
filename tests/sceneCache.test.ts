@@ -231,7 +231,10 @@ function memoryFileSystem(
     },
     remove: (targetPath) => {
       for (const filePath of entries.keys()) {
-        if (filePath === targetPath || filePath.startsWith(`${targetPath}/`)) {
+        if (
+          filePath === targetPath ||
+          filePath.startsWith(`${targetPath}${path.sep}`)
+        ) {
           entries.delete(filePath);
           modifiedAt.delete(filePath);
           reportedSizes.delete(filePath);
@@ -284,6 +287,20 @@ function memoryFileSystem(
 }
 
 describe('SceneCacheService', () => {
+  it('removes nested fixture files using native separators without removing sibling directories', async () => {
+    const fileSystem = memoryFileSystem(new Map());
+    const directory = path.join('/user-data', CACHE_DIRECTORY);
+    const nested = path.join(directory, 'nested', 'entry.scene.json');
+    const sibling = path.join(`${directory}-other`, 'entry.scene.json');
+    fileSystem.seed(nested, 'cached scene');
+    fileSystem.seed(sibling, 'unrelated scene');
+
+    await fileSystem.remove(directory);
+
+    expect(fileSystem.has(nested)).toBe(false);
+    expect(fileSystem.has(sibling)).toBe(true);
+  });
+
   it('matches the native length-prefixed cache-key contract', () => {
     expect(sceneCacheKey('a'.repeat(64), 'scene/v2.2')).toBe(
       'f4ef1c31ccf37c2e0cf75281448694835e8fe0d30473f6be361e15369c8c9672',
