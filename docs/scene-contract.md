@@ -7,6 +7,15 @@
   pixel size). ZIP-member hashes are requested from the sidecar so virtual
   member paths are never treated as filesystem paths; unsupported archive
   members remain the source resolver's responsibility.
+- Thumbnail cache controls are available from the Library's **Thumbnail cache**
+  action. By default, entries share the app's `scene-cache.v1` directory under
+  Electron `userData`; users may choose another folder through the native picker.
+  Custom locations use a `printfarmer-thumbnails.v1` subfolder. Switching
+  locations starts a fresh cache and leaves the previous folder untouched.
+  Defaults are a 512 MiB LRU size cap and 30-day unused-entry retention. Startup
+  and each new thumbnail enforce both limits. Clearing removes only cache
+  entries owned by the thumbnail cache; source models and unrelated folder
+  contents are never removed.
 - `positions` / `indices` / `bounds` / `faceColors` / `parts` remain the legacy flattened aggregate mesh for stats, thumbnails, and any older single-mesh code paths.
 - `objects` is the authoritative renderer contract:
   - `id`: stable instance id

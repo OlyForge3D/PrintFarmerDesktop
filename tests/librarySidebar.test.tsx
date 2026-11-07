@@ -85,6 +85,13 @@ describe('LibrarySidebar', () => {
     expect(screen.queryByRole('button', { name: /manage/i })).toBeNull();
   });
 
+  it('exposes thumbnail cache management from the source controls', () => {
+    const onOpenThumbnailCacheSettings = vi.fn();
+    renderSidebar({ onOpenThumbnailCacheSettings });
+    fireEvent.click(screen.getByRole('button', { name: 'Thumbnail cache' }));
+    expect(onOpenThumbnailCacheSettings).toHaveBeenCalledOnce();
+  });
+
   it('collapses filter groups, keeps selections, and remembers the state', () => {
     const onTagsChange = vi.fn();
     const view = renderSidebar({ selectedTags: ['red'], onTagsChange });

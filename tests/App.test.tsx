@@ -330,7 +330,7 @@ describe('<App />', () => {
       );
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 10,
+        contractVersion: 11,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '44.3.0',
@@ -406,7 +406,7 @@ describe('<App />', () => {
     );
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 10,
+        contractVersion: 11,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '44.3.0',

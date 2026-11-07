@@ -189,8 +189,15 @@ function testFileSystem(): SceneCacheFileSystem {
 
 function memoryFileSystem(
   sourceFiles: Map<string, string>,
-): SceneCacheFileSystem {
+): SceneCacheFileSystem & {
+  setModifiedAt(filePath: string, value: number): void;
+  setReportedSize(filePath: string, size: number): void;
+  seed(filePath: string, contents: string): void;
+  has(filePath: string): boolean;
+} {
   const entries = new Map<string, string>();
+  const modifiedAt = new Map<string, number>();
+  const reportedSizes = new Map<string, number>();
   const missing = (filePath: string): Error & { code: string } =>
     Object.assign(new Error(`Missing file: ${filePath}`), { code: 'ENOENT' });
   return {
@@ -212,12 +219,21 @@ function memoryFileSystem(
       if (contents === undefined) return Promise.reject(missing(sourcePath));
       entries.delete(sourcePath);
       entries.set(destinationPath, contents);
+      modifiedAt.set(destinationPath, modifiedAt.get(sourcePath) ?? Date.now());
+      const reportedSize = reportedSizes.get(sourcePath);
+      if (reportedSize !== undefined) {
+        reportedSizes.set(destinationPath, reportedSize);
+      }
+      modifiedAt.delete(sourcePath);
+      reportedSizes.delete(sourcePath);
       return Promise.resolve();
     },
     remove: (targetPath) => {
       for (const filePath of entries.keys()) {
         if (filePath === targetPath || filePath.startsWith(`${targetPath}/`)) {
           entries.delete(filePath);
+          modifiedAt.delete(filePath);
+          reportedSizes.delete(filePath);
         }
       }
       return Promise.resolve();
@@ -236,8 +252,33 @@ function memoryFileSystem(
         );
       }
       entries.set(filePath, contents);
+      modifiedAt.set(filePath, Date.now());
       return Promise.resolve();
     },
+    listFiles: (directoryPath) =>
+      Promise.resolve(
+        [...entries.entries()]
+          .filter(([filePath]) => path.dirname(filePath) === directoryPath)
+          .map(([filePath, contents]) => ({
+            name: path.basename(filePath),
+            size:
+              reportedSizes.get(filePath) ??
+              Buffer.byteLength(contents, 'utf8'),
+            modifiedAt: modifiedAt.get(filePath) ?? Date.now(),
+          })),
+      ),
+    touch: (filePath) => {
+      if (!entries.has(filePath)) return Promise.reject(missing(filePath));
+      modifiedAt.set(filePath, Date.now());
+      return Promise.resolve();
+    },
+    setModifiedAt: (filePath, value) => modifiedAt.set(filePath, value),
+    setReportedSize: (filePath, size) => reportedSizes.set(filePath, size),
+    seed: (filePath, contents) => {
+      entries.set(filePath, contents);
+      modifiedAt.set(filePath, Date.now());
+    },
+    has: (filePath) => entries.has(filePath),
   };
 }
 
@@ -399,6 +440,36 @@ describe('SceneCacheService', () => {
     ]);
   });
 
+  it('does not use a content-cache hit to hide a missing source path', async () => {
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem: memoryFileSystem(
+        new Map([['/models/available.stl', 'same model bytes']]),
+      ),
+    });
+    await cache.initialize();
+
+    await cache.renderThumbnail('/models/available.stl', 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'VALID',
+        cacheRecipe: thumbnailCacheRecipe('scene/v2.2', 256),
+      }),
+    );
+
+    const missingSourceRender = vi.fn(() =>
+      Promise.reject(new Error('Model source is missing.')),
+    );
+    await expect(
+      cache.renderThumbnail('/models/missing.stl', 256, missingSourceRender),
+    ).rejects.toThrow('Model source is missing.');
+    expect(missingSourceRender).toHaveBeenCalledOnce();
+  });
+
   it('uses the sidecar to hash ZIP members rather than treating virtual paths as files', async () => {
     const sourcePath = '/dir/a.zip/::zip::/0/nested/a.stl';
     const fileSystem = memoryFileSystem(new Map());
@@ -426,6 +497,208 @@ describe('SceneCacheService', () => {
     expect(hashFile).not.toHaveBeenCalled();
     expect(sidecar.hashModelSource).toHaveBeenCalledTimes(2);
     expect(sidecar.hashModelSource).toHaveBeenCalledWith(sourcePath);
+  });
+
+  it('persists cache controls and applies an LRU size cap', async () => {
+    const sourceFiles = new Map([
+      ['/models/first.stl', 'first model bytes'],
+      ['/models/second.stl', 'second model bytes'],
+    ]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    const response = (pngBase64: string) => ({
+      width: 256,
+      height: 256,
+      pngBase64,
+      cacheRecipe: recipe,
+    });
+    await cache.renderThumbnail('/models/first.stl', 256, () =>
+      Promise.resolve(response('FIRST')),
+    );
+    const firstHash = createHash('sha256')
+      .update('first model bytes')
+      .digest('hex');
+    const firstEntry = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${thumbnailCacheKey(firstHash, recipe, 256)}.thumbnail.json`,
+    );
+    fileSystem.setModifiedAt(firstEntry, Date.now() - 10_000);
+
+    await cache.renderThumbnail('/models/second.stl', 256, () =>
+      Promise.resolve(response('SECOND')),
+    );
+    const secondHash = createHash('sha256')
+      .update('second model bytes')
+      .digest('hex');
+    const secondEntry = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${thumbnailCacheKey(secondHash, recipe, 256)}.thumbnail.json`,
+    );
+    fileSystem.setReportedSize(firstEntry, 12 * 1024 * 1024);
+    fileSystem.setReportedSize(secondEntry, 12 * 1024 * 1024);
+
+    const limited = await cache.setThumbnailCacheSettings({
+      location: null,
+      maxBytes: 16 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    expect(limited.entryCount).toBe(1);
+    expect(limited.usedBytes).toBe(12 * 1024 * 1024);
+    expect(fileSystem.has(firstEntry)).toBe(false);
+    expect(fileSystem.has(secondEntry)).toBe(true);
+
+    const restartedCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await restartedCache.initialize();
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({
+      maxBytes: 16 * 1024 * 1024,
+      retentionDays: 30,
+      entryCount: 1,
+    });
+  });
+
+  it('expires thumbnails beyond the configured retention period', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const firstCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await firstCache.initialize();
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    await firstCache.renderThumbnail('/models/part.stl', 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'EXPIRED',
+        cacheRecipe: recipe,
+      }),
+    );
+    const hash = createHash('sha256').update('same model bytes').digest('hex');
+    const entry = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${thumbnailCacheKey(hash, recipe, 256)}.thumbnail.json`,
+    );
+    fileSystem.setModifiedAt(entry, Date.now() - 31 * 24 * 60 * 60 * 1000);
+
+    const restartedCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await restartedCache.initialize();
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({ entryCount: 0, usedBytes: 0 });
+  });
+
+  it('clears only cache-owned files in a custom location', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    const restartedCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await restartedCache.initialize();
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({ location: '/external/cache' });
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    await restartedCache.renderThumbnail('/models/part.stl', 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'CUSTOM',
+        cacheRecipe: recipe,
+      }),
+    );
+    const directory = path.join('/external/cache', 'printfarmer-thumbnails.v1');
+    const userFile = path.join(directory, 'keep-this-note.txt');
+    const unrelated = path.join(directory, `${'b'.repeat(64)}.scene.json`);
+    fileSystem.seed(userFile, 'user-owned file');
+    fileSystem.seed(unrelated, JSON.stringify(scene(1)));
+
+    await expect(restartedCache.clearThumbnailCache()).resolves.toBe(1);
+    expect(fileSystem.has(userFile)).toBe(true);
+    expect(fileSystem.has(unrelated)).toBe(true);
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({ location: '/external/cache', entryCount: 0 });
+  });
+
+  it('falls back to rendering with an explicit warning when cache storage becomes unwritable', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const reportError = vi.fn();
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+      reportError,
+    });
+    await cache.initialize();
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    vi.spyOn(fileSystem, 'writeText').mockRejectedValue(
+      new Error('disk is read-only'),
+    );
+    const render = vi.fn(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'UNCACHED',
+        cacheRecipe: thumbnailCacheRecipe('scene/v2.2', 256),
+      }),
+    );
+
+    await expect(
+      cache.renderThumbnail('/models/part.stl', 256, render),
+    ).resolves.toMatchObject({ pngBase64: 'UNCACHED' });
+    expect(render).toHaveBeenCalledOnce();
+    const status = await cache.getThumbnailCacheStatus();
+    expect(status.warning).toContain('not writable');
+    expect(reportError).toHaveBeenCalledWith(
+      expect.stringContaining('not writable'),
+      expect.any(Error),
+    );
   });
 
   it('does not cache scenes when an older sidecar omits the recipe', async () => {

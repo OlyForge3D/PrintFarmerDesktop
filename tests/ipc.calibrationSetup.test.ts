@@ -60,7 +60,7 @@ describe('Path C — IPC contract', () => {
     //
     // v9 → v10 rationale: tag and collection definition management added the
     // listOrganization and preview/apply organization deletion channels.
-    expect(IPC_CONTRACT_VERSION).toBe(10);
+    expect(IPC_CONTRACT_VERSION).toBe(11);
   });
 
   it('registers all five surviving cascade channels', () => {

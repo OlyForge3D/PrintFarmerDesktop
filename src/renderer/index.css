@@ -1524,6 +1524,48 @@ select:disabled {
   transform: translateX(-50%);
 }
 
+.thumbnail-cache-dialog {
+  top: 50%;
+  bottom: auto;
+  width: min(620px, calc(100% - 48px));
+  min-height: 0;
+  max-height: calc(100% - 96px);
+  transform: translate(-50%, -50%);
+}
+
+.thumbnail-cache-content {
+  overflow: auto;
+}
+
+.thumbnail-cache-path {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.thumbnail-cache-hint,
+.thumbnail-cache-usage,
+.thumbnail-cache-message {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.thumbnail-cache-message {
+  margin: 12px 20px 0;
+  color: var(--success);
+}
+
+.thumbnail-cache-field {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  color: var(--muted);
+}
+
+.thumbnail-cache-field input {
+  width: 100%;
+}
+
 /* Durable model upload queue */
 
 .modal-backdrop {

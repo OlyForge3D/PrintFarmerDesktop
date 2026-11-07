@@ -350,7 +350,7 @@ describe('SidecarClient', () => {
   });
 
   it('keeps Desktop IPC v10 independent from sidecar protocol v5', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(10);
+    expect(IPC_CONTRACT_VERSION).toBe(11);
     expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(5);
   });
   it('resolves a handshake response', async () => {

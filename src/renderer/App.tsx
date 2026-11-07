@@ -68,6 +68,7 @@ import {
 import { UploadsWorkspace } from './uploads/UploadsWorkspace';
 import { summarizeUploadJobs } from './uploads/uploadSummary';
 import { OrganizationWorkspace } from './library/OrganizationWorkspace';
+import { ThumbnailCacheDialog } from './library/ThumbnailCacheDialog';
 import { RetargetWorkflow } from './retarget/RetargetWorkflow';
 import type { RetargetTarget } from './retarget/useRetargetWorkflow';
 import { CalibrationWorkspace } from './calibration';
@@ -84,6 +85,7 @@ const MAX_UPLOAD_SELECTION = 500;
 type ModalOwner =
   | 'none'
   | 'profiles'
+  | 'thumbnailCache'
   | 'import'
   | 'previewPreparation'
   | 'preview'
@@ -105,6 +107,7 @@ export function App(): React.JSX.Element {
       selectedProfileId: null,
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [thumbnailCacheOpen, setThumbnailCacheOpen] = useState(false);
   const [importPreparing, setImportPreparing] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [modalOwner, setModalOwnerState] = useState<ModalOwner>('none');
@@ -234,6 +237,7 @@ export function App(): React.JSX.Element {
     !onboardingDismissed &&
     library.status !== 'loading' &&
     !profilesOpen &&
+    !thumbnailCacheOpen &&
     !retargetTarget &&
     !previewOpen &&
     !library.importDraft &&
@@ -247,12 +251,14 @@ export function App(): React.JSX.Element {
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
+    thumbnailCacheOpen ||
     retargetOpen ||
     collectionsOpen;
   const backgroundExcluded =
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
+    thumbnailCacheOpen ||
     retargetOpen ||
     collectionsOpen;
   const prepareFolderImport = library.addFolder;
@@ -627,6 +633,7 @@ export function App(): React.JSX.Element {
     library.importDraft,
     previewOpen,
     profilesOpen,
+    thumbnailCacheOpen,
     releaseModal,
   ]);
 
@@ -1050,6 +1057,15 @@ export function App(): React.JSX.Element {
     setProfilesOpen(false);
     releaseModal('profiles');
   };
+  const openThumbnailCache = (): void => {
+    if (busy || reserveModal('thumbnailCache') === null) return;
+    if (onboardingOpen) setOnboardingDismissed(true);
+    setThumbnailCacheOpen(true);
+  };
+  const closeThumbnailCache = (): void => {
+    setThumbnailCacheOpen(false);
+    releaseModal('thumbnailCache');
+  };
   const openCollectionManager = (target?: CollectionTargetKind): void => {
     if (busy || reserveModal('collections') === null) return;
     setCollectionManager({ target });
@@ -1293,6 +1309,7 @@ export function App(): React.JSX.Element {
                   onQueryChange={setQuery}
                   onFilterChange={setFilter}
                   onAddFolder={beginImport}
+                  onOpenThumbnailCacheSettings={openThumbnailCache}
                   collections={library.collections}
                   selectedCollections={collectionIds}
                   onCollectionsChange={setCollectionIds}
@@ -1752,6 +1769,7 @@ export function App(): React.JSX.Element {
         <LibraryOnboarding
           busy={importPreparing}
           onAddFolder={beginImport}
+          onManageThumbnailCache={openThumbnailCache}
           onClose={dismissOnboarding}
         />
       ) : null}
@@ -1803,6 +1821,9 @@ export function App(): React.JSX.Element {
           onMutationSettled={refreshServerProfiles}
           onClose={closeProfiles}
         />
+      ) : null}
+      {thumbnailCacheOpen ? (
+        <ThumbnailCacheDialog onClose={closeThumbnailCache} />
       ) : null}
 
       {collectionManager ? (

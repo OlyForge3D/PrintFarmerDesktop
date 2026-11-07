@@ -1771,6 +1771,7 @@ describe('UploadJobService', () => {
         },
       ],
       approvals: { openApprovedFile },
+      transport: vi.fn().mockRejectedValue(new Error('Upload must not start')),
     });
     await service.start({ profileId: PROFILE.id, hashes: [hash] });
     const jobs = await waitFor(
@@ -1796,6 +1797,7 @@ describe('UploadJobService', () => {
         },
       ],
       approvals: { openApprovedFile },
+      transport: vi.fn().mockRejectedValue(new Error('Upload must not start')),
     });
     await service.start({ profileId: PROFILE.id, hashes: [hash] });
     const jobs = await waitFor(
