@@ -88,10 +88,12 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
   `{ "hook": { "enabled": false } }` in the gitignored
   `.impeccable/config.local.json`, or set `IMPECCABLE_HOOK_DISABLED=1`.
   The hook runs code from the checked-out branch, the same trust you already
-  extend to its git hooks and npm scripts. Before pointing an agent at an
-  untrusted or fork branch, set `IMPECCABLE_HOOK_DISABLED=1` or review
-  `.github/hooks/` and `scripts/` first; a branch can add its own hook manifest
-  regardless of this one.
+  extend to its git hooks and npm scripts. The opt-outs above are honored by
+  that same branch code, so they are not a safeguard against an untrusted or
+  fork branch: such a branch can edit the script, the manifest, or add its own
+  manifest. Before pointing an agent at one, review every `.github/hooks/`
+  manifest and the executables it references, disable repository hooks in the
+  agent host outside the checkout, or don't run the agent on that checkout.
 - Suppress a deliberate choice with an inline `impeccable-disable <rule> -- reason`
   comment or `detector.ignoreRules` / `ignoreFiles` in
   `.impeccable/config.json`. Both are visible in review.
