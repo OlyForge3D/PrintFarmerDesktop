@@ -1,0 +1,17 @@
+name: PrintFarmer Desktop CodeQL config
+
+# Read by .github/workflows/codeql.yml. GitHub's default setup ignores this file,
+# so it only applies while that advanced-setup workflow is the one running.
+
+paths-ignore:
+  # Vendored third-party code: the impeccable design detector (Apache-2.0,
+  # tools/impeccable-detector/NOTICE.md), copied from upstream and pinned by
+  # manifest.json (#843). We do not edit it (the design detector refuses to run
+  # a copy that differs from its manifest), so alerts here have no in-repo fix
+  # and could only be dismissed one by one. It is not shipped: it runs in CI and
+  # in agent hooks over this repo's own files, never inside the app.
+  # The security rules this exclusion hides are listed in #844 (default suite:
+  # js/bad-tag-filter, js/incomplete-multi-character-sanitization;
+  # security-extended adds js/file-system-race). Re-run CodeQL on the folder and
+  # update #844 on every re-vendor.
+  - tools/impeccable-detector

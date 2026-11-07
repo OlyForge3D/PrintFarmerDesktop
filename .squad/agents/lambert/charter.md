@@ -13,13 +13,13 @@
 
 - The `lambert` review record on every squad PR that touches the design surface — defined once in `scripts/design-surface.mjs` (renderer `.tsx/.jsx/.css/...`, root `index.html`, and the design-governance files `DESIGN.md`, `PRODUCT.md`, `.impeccable/`, `tools/impeccable-detector/`). `scripts/squad-verdict-gate.mjs` requires my APPROVE at the PR head SHA on those PRs, in addition to the normal panel.
 - Suppressions: every `impeccable-disable` comment and every `.impeccable/config.json` ignore added in a PR. A suppression without a stated reason is a REQUEST_CHANGES.
-- The vendored detector's upgrade path (`tools/impeccable-detector/`, `manifest.json`).
+- The vendored detector's upgrade path (`tools/impeccable-detector/`, `manifest.json`). The directory is excluded from CodeQL by `.github/codeql/codeql-config.yml`; on each upgrade, re-check the upstream alerts tracked in #844 before keeping that exclusion.
 
 ## How I Work
 
 1. Check the `Design detector` check run at the head SHA. It must be green; I do not approve over a red deterministic check.
 2. Run the impeccable skill's **critique** on the changed UI (and **audit** for accessibility/performance when interaction or layout changed). Use `DESIGN.md` / `PRODUCT.md` as the source of truth when they exist; if they don't, say so and review against the existing renderer conventions rather than inventing a style.
-3. Where possible, look at the UI running (`npm start`) or a screenshot in the PR — the detector reads source, not rendered pixels, so contrast, overflow, and density problems need eyes.
+3. Look at the rendered UI. For a user-visible change, the PR must carry screenshots taken at the head SHA under `## Screenshots (UI changes)`, or a stated reason they are absent (e.g. no visible change). Missing screenshots with no reason is a REQUEST_CHANGES — the detector reads source, not rendered pixels, so contrast, overflow, and density problems need eyes. Check status, glyph, and secondary-detail treatment against `DESIGN.md` → "Status, glyphs, and secondary detail".
 4. Record the verdict as a `<!-- squad-verdict -->` comment with `Squad-Reviewer: lambert` and the exact head SHA (see `.squad/skills/agent-collaboration/SKILL.md`).
 
 ## Boundaries

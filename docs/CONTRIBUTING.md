@@ -95,6 +95,14 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
   also need a `lambert` design review; see
   `.squad/skills/agent-collaboration/SKILL.md`.
 
+- User-visible renderer changes include screenshots of the running app
+  (`npm start`) taken at the head commit, in the pull request's
+  `## Screenshots (UI changes)` section, or a stated reason there are none.
+  Status, glyph, and secondary-detail conventions are in `DESIGN.md`.
+- `tools/impeccable-detector/` is third-party code excluded from CodeQL by
+  `.github/codeql/codeql-config.yml`; the upstream alerts that exclusion hides
+  are tracked in #844.
+
 The detector reads source, not rendered pixels, so it catches tells like
 gradient text and purple palettes but not contrast, overflow, or density
 problems. A green check is a floor, not a design review.

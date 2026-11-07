@@ -37,6 +37,12 @@ Use the existing Segoe UI Variable/Segoe UI/system sans stack throughout the pro
 - Alerts use full borders/background tints and a textual severity heading.
 - Desktop dialogs follow centralized modal ownership, focus trap, Escape handling, and trigger restoration.
 
+## Status, glyphs, and secondary detail
+
+- **Status glyphs are quiet until they mean something.** A status dot or toggle glyph renders in the muted/quiet ink at rest and takes a semantic color only when its state is active or needs attention: source and server dots default to `--quiet` and become `--success`/`--warning`/`--danger` (`src/renderer/index.css`, `.source-root-dot`, `.server-status-dot`); favorite and icon toggles stay `--muted` until `.active` fills them (`.model-fav-button.active`, `.icon-button.active`). Color is never the only signal: pair it with text, an accessible name, or `aria-pressed`.
+- **Reuse the glyph vocabulary.** Icons come from `src/renderer/ui/Icon.tsx` (`IconName`). Add a glyph there, in the same stroke style, only when no existing one carries the meaning; swapping or restyling existing glyphs is a deliberate redesign, called out in the PR.
+- **Secondary detail goes in the tooltip, not a new line.** Full paths, hashes, and longer explanations live in the element's `title` (or an equivalent tooltip) behind a truncated inline value, as `SourcesWorkspace`, `ImportWizard`, and `PropertiesInspector` already do. Don't add new inline secondary lines for them. At-a-glance metadata (a card's format and size, statusbar counts) stays inline. A `title` is not reachable by keyboard or touch, so it must never be the only route to information needed to act; that belongs in the inspector, a disclosure, or the accessible name.
+
 ## Layout
 
 The shell retains native titlebar and statusbar regions. Top-level workspaces are peers selected from persistent shell navigation. Library keeps its three-pane layout. Printer Calibration uses a workflow-oriented shell with a project rail, main task region, and contextual detail region that collapse structurally at narrow widths without hiding current status.

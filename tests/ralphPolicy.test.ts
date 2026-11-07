@@ -147,6 +147,7 @@ describe('Ralph bounded-round policy', () => {
     expect(handoff).toMatch(/impeccable skill's `shape`/);
     expect(handoff).toContain('scripts/design-surface.mjs');
     expect(handoff).toContain('`lambert`');
+    expect(handoff).toContain('## Screenshots (UI changes)');
     for (const reference of [
       'triage-dispatch.md',
       'pr-gates.md',
