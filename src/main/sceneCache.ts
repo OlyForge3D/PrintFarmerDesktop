@@ -51,6 +51,7 @@ const RESTART = Symbol('scene-cache-restart');
 
 export const SCENE_CACHE_DIRECTORY = 'scene-cache.v1';
 export const MAX_SCENE_ENTRY_BYTES = 64 * 1024 * 1024;
+const THUMBNAIL_ENTRY_NAME = /^[a-f0-9]{64}\.thumbnail\.json$/;
 
 /**
  * How much of the model to read per `read` call while hashing.
@@ -165,31 +166,47 @@ const nodeFileSystem: SceneCacheFileSystem = {
       flag: 'wx',
       mode: 0o600,
     }),
-  listFiles: async (directoryPath) => {
-    const names = await readdir(directoryPath);
-    const files = await Promise.all(
-      names.map(async (name) => {
-        const filePath = path.join(directoryPath, name);
-        const details = await stat(filePath);
-        return details.isFile()
-          ? {
-              name,
-              size: details.size,
-              modifiedAt: details.mtimeMs,
-            }
-          : null;
-      }),
-    );
-    return files.filter(
-      (file): file is { name: string; size: number; modifiedAt: number } =>
-        file !== null,
-    );
-  },
+  listFiles: listThumbnailCacheFiles,
   touch: async (filePath) => {
     const now = new Date();
     await utimes(filePath, now, now);
   },
 };
+
+export async function listThumbnailCacheFiles(
+  directoryPath: string,
+  readDirectory: (directoryPath: string) => Promise<string[]> = readdir,
+  statFile: (
+    filePath: string,
+  ) => Promise<
+    Pick<Awaited<ReturnType<typeof stat>>, 'isFile' | 'size' | 'mtimeMs'>
+  > = stat,
+): Promise<Array<{ name: string; size: number; modifiedAt: number }>> {
+  const names = await readDirectory(directoryPath);
+  const files = await Promise.all(
+    names
+      .filter((name) => THUMBNAIL_ENTRY_NAME.test(name))
+      .map(async (name) => {
+        try {
+          const details = await statFile(path.join(directoryPath, name));
+          return details.isFile()
+            ? {
+                name,
+                size: details.size,
+                modifiedAt: details.mtimeMs,
+              }
+            : null;
+        } catch (error) {
+          if (isMissing(error)) return null;
+          throw error;
+        }
+      }),
+  );
+  return files.filter(
+    (file): file is { name: string; size: number; modifiedAt: number } =>
+      file !== null,
+  );
+}
 
 /**
  * Persists validated scene DTOs under the recipe advertised by the sidecar.
@@ -310,11 +327,23 @@ export class SceneCacheService {
         settings.location === null ? null : path.resolve(settings.location),
     };
     await this.withMutationLock(async () => {
+      const previousDirectory = this.thumbnailDirectory(this.thumbnailSettings);
       await this.ensureThumbnailDirectory(normalized);
       await this.persistThumbnailSettings(normalized);
       this.thumbnailSettings = normalized;
       this.thumbnailGeneration += 1;
       this.thumbnailCacheWarning = null;
+      const nextDirectory = this.thumbnailDirectory(normalized);
+      if (previousDirectory !== nextDirectory) {
+        try {
+          await this.clearThumbnailEntries(previousDirectory);
+        } catch (error) {
+          this.setThumbnailCacheWarning(
+            'Could not remove owned thumbnails from the previous cache location.',
+            error,
+          );
+        }
+      }
     });
     await this.enforceThumbnailCachePolicy();
     return this.getThumbnailCacheStatus();
@@ -367,6 +396,7 @@ export class SceneCacheService {
       this.thumbnailGeneration += 1;
       this.activeRecipe = UNINITIALIZED;
       this.storageReady = false;
+      let thumbnailCleanupError: unknown;
       try {
         await this.clearThumbnailEntries(
           this.thumbnailDirectory(this.thumbnailSettings),
@@ -376,10 +406,27 @@ export class SceneCacheService {
           'Could not clear thumbnail cache while resetting approved roots.',
           error,
         );
-        throw error;
+        thumbnailCleanupError = error;
       }
-      await this.fileSystem.remove(this.manifestPath);
-      await this.fileSystem.remove(this.cacheDirectory);
+      let manifestCleanupError: unknown;
+      try {
+        await this.fileSystem.remove(this.manifestPath);
+      } catch (error) {
+        manifestCleanupError = error;
+      }
+      let directoryCleanupError: unknown;
+      try {
+        await this.fileSystem.remove(this.cacheDirectory);
+      } catch (error) {
+        directoryCleanupError = error;
+      }
+      const cleanupError =
+        thumbnailCleanupError ?? manifestCleanupError ?? directoryCleanupError;
+      if (cleanupError) {
+        throw cleanupError instanceof Error
+          ? cleanupError
+          : new Error('Cache cleanup failed.', { cause: cleanupError });
+      }
     });
   }
 
@@ -724,7 +771,7 @@ export class SceneCacheService {
   ): Promise<Array<{ name: string; size: number; modifiedAt: number }>> {
     if (!this.fileSystem.listFiles) return [];
     return (await this.fileSystem.listFiles(directory)).filter((entry) =>
-      /^[a-f0-9]{64}\.thumbnail\.json$/.test(entry.name),
+      THUMBNAIL_ENTRY_NAME.test(entry.name),
     );
   }
 

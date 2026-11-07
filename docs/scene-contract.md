@@ -11,7 +11,9 @@
   action. By default, entries share the app's `scene-cache.v1` directory under
   Electron `userData`; users may choose another folder through the native picker.
   Custom locations use a `printfarmer-thumbnails.v1` subfolder. Switching
-  locations starts a fresh cache and leaves the previous folder untouched.
+  locations starts a fresh cache and removes only owned thumbnail entries from
+  the previous location; unrelated files are preserved. Cleanup failures are
+  surfaced as a cache warning.
   Defaults are a 512 MiB LRU size cap and 30-day unused-entry retention. Startup
   and each new thumbnail enforce both limits. Clearing removes only cache
   entries owned by the thumbnail cache; source models and unrelated folder

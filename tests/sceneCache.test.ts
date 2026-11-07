@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_SCENE_ENTRY_BYTES,
   SceneCacheService,
+  listThumbnailCacheFiles,
   sceneCacheKey,
   serializeSceneCache,
   thumbnailCacheKey,
@@ -572,6 +573,148 @@ describe('SceneCacheService', () => {
     });
   });
 
+  it('tolerates disappearing cache entries during usage, LRU cleanup, and clear', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const baseListFiles = fileSystem.listFiles!.bind(fileSystem);
+    const cacheDirectory = path.join('/user-data', CACHE_DIRECTORY);
+    const oldEntry = `${'a'.repeat(64)}.thumbnail.json`;
+    const middleEntry = `${'b'.repeat(64)}.thumbnail.json`;
+    const newestEntry = `${'c'.repeat(64)}.thumbnail.json`;
+    const disappearingEntry = `${'d'.repeat(64)}.thumbnail.json`;
+    const temporaryEntry = 'concurrent-write.tmp';
+    const entryNames = [
+      oldEntry,
+      middleEntry,
+      newestEntry,
+      disappearingEntry,
+      temporaryEntry,
+    ];
+    let disappearingName: string | null = null;
+    let temporaryStatCount = 0;
+    fileSystem.listFiles = (directoryPath) =>
+      listThumbnailCacheFiles(
+        directoryPath,
+        async (currentDirectory) =>
+          (await baseListFiles(currentDirectory)).map((entry) => entry.name),
+        async (filePath) => {
+          const name = path.basename(filePath);
+          if (name === temporaryEntry) {
+            temporaryStatCount += 1;
+            throw Object.assign(new Error('Probe disappeared.'), {
+              code: 'ENOENT',
+            });
+          }
+          if (name === disappearingName) {
+            disappearingName = null;
+            await fileSystem.remove(filePath);
+            throw Object.assign(new Error('Cache entry disappeared.'), {
+              code: 'ENOENT',
+            });
+          }
+          const entry = (await baseListFiles(path.dirname(filePath))).find(
+            (candidate) => candidate.name === name,
+          );
+          if (!entry) {
+            throw Object.assign(new Error('Cache entry disappeared.'), {
+              code: 'ENOENT',
+            });
+          }
+          return {
+            isFile: () => true,
+            size: entry.size,
+            mtimeMs: entry.modifiedAt,
+          };
+        },
+      );
+
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    for (const name of entryNames) {
+      const filePath = path.join(cacheDirectory, name);
+      fileSystem.seed(filePath, 'thumbnail');
+      if (name !== temporaryEntry) {
+        fileSystem.setReportedSize(filePath, 8 * 1024 * 1024);
+      }
+    }
+    fileSystem.setModifiedAt(
+      path.join(cacheDirectory, oldEntry),
+      Date.now() - 3_000,
+    );
+    fileSystem.setModifiedAt(
+      path.join(cacheDirectory, middleEntry),
+      Date.now() - 2_000,
+    );
+    fileSystem.setModifiedAt(
+      path.join(cacheDirectory, newestEntry),
+      Date.now() - 1_000,
+    );
+
+    disappearingName = disappearingEntry;
+    await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
+      entryCount: 3,
+      usedBytes: 24 * 1024 * 1024,
+      warning: null,
+    });
+    expect(temporaryStatCount).toBe(0);
+
+    const limited = await cache.setThumbnailCacheSettings({
+      location: null,
+      maxBytes: 16 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    expect(limited).toMatchObject({
+      entryCount: 2,
+      usedBytes: 16 * 1024 * 1024,
+    });
+    expect(fileSystem.has(path.join(cacheDirectory, oldEntry))).toBe(false);
+    expect(fileSystem.has(path.join(cacheDirectory, middleEntry))).toBe(true);
+    expect(fileSystem.has(path.join(cacheDirectory, newestEntry))).toBe(true);
+    expect(fileSystem.has(path.join(cacheDirectory, temporaryEntry))).toBe(
+      true,
+    );
+
+    disappearingName = middleEntry;
+    await expect(cache.clearThumbnailCache()).resolves.toBe(1);
+    await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
+      entryCount: 0,
+      usedBytes: 0,
+      warning: null,
+    });
+    expect(fileSystem.has(path.join(cacheDirectory, middleEntry))).toBe(false);
+    expect(fileSystem.has(path.join(cacheDirectory, newestEntry))).toBe(false);
+    expect(fileSystem.has(path.join(cacheDirectory, temporaryEntry))).toBe(
+      true,
+    );
+    expect(temporaryStatCount).toBe(0);
+  });
+
+  it('preserves directory and non-ENOENT stat errors when listing thumbnails', async () => {
+    const missingDirectory = Object.assign(new Error('Missing directory.'), {
+      code: 'ENOENT',
+    });
+    await expect(
+      listThumbnailCacheFiles('/cache', () => Promise.reject(missingDirectory)),
+    ).rejects.toBe(missingDirectory);
+
+    const permissionError = Object.assign(new Error('Permission denied.'), {
+      code: 'EACCES',
+    });
+    await expect(
+      listThumbnailCacheFiles(
+        '/cache',
+        () => Promise.resolve([`${'a'.repeat(64)}.thumbnail.json`]),
+        () => Promise.reject(permissionError),
+      ),
+    ).rejects.toBe(permissionError);
+  });
+
   it('expires thumbnails beyond the configured retention period', async () => {
     const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
     const fileSystem = memoryFileSystem(sourceFiles);
@@ -657,6 +800,85 @@ describe('SceneCacheService', () => {
     await expect(
       restartedCache.getThumbnailCacheStatus(),
     ).resolves.toMatchObject({ location: '/external/cache', entryCount: 0 });
+  });
+
+  it('removes only owned thumbnails when switching cache locations', async () => {
+    const sourceFiles = new Map<string, string>();
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    const oldDirectory = path.join('/user-data', CACHE_DIRECTORY);
+    const ownedThumbnail = path.join(
+      oldDirectory,
+      `${'a'.repeat(64)}.thumbnail.json`,
+    );
+    const unrelatedScene = path.join(
+      oldDirectory,
+      `${'b'.repeat(64)}.scene.json`,
+    );
+    fileSystem.seed(ownedThumbnail, 'owned thumbnail');
+    fileSystem.seed(unrelatedScene, 'unrelated cache entry');
+
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+
+    expect(fileSystem.has(ownedThumbnail)).toBe(false);
+    expect(fileSystem.has(unrelatedScene)).toBe(true);
+    await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
+      location: '/external/cache',
+      warning: null,
+    });
+  });
+
+  it('reports a warning when old-location thumbnail cleanup fails', async () => {
+    const fileSystem = memoryFileSystem(new Map());
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const reportError = vi.fn();
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+      reportError,
+    });
+    await cache.initialize();
+    const oldThumbnail = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${'c'.repeat(64)}.thumbnail.json`,
+    );
+    fileSystem.seed(oldThumbnail, 'old thumbnail');
+    const remove = fileSystem.remove.bind(fileSystem);
+    vi.spyOn(fileSystem, 'remove').mockImplementation((targetPath) =>
+      targetPath === oldThumbnail
+        ? Promise.reject(new Error('cache folder is read-only'))
+        : remove(targetPath),
+    );
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+
+    expect(fileSystem.has(oldThumbnail)).toBe(true);
+    expect(await cache.getThumbnailCacheStatus()).toMatchObject({
+      location: '/external/cache',
+      warning:
+        'Could not remove owned thumbnails from the previous cache location.',
+    });
+    expect(reportError).toHaveBeenCalledWith(
+      expect.stringContaining('previous cache location'),
+      expect.any(Error),
+    );
   });
 
   it('falls back to rendering with an explicit warning when cache storage becomes unwritable', async () => {
@@ -1413,6 +1635,65 @@ describe('SceneCacheService', () => {
     await expect(
       readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('removes the scene manifest and cache when external thumbnail cleanup fails', async () => {
+    const userDataPath = '/user-data';
+    const sourcePath = '/models/part.stl';
+    const sourceFiles = new Map([[sourcePath, 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const reportError = vi.fn();
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar,
+      fileSystem,
+      reportError,
+    });
+    await expect(cache.loadScene(sourcePath)).resolves.toEqual(scene(1));
+    const cacheDirectory = path.join(userDataPath, CACHE_DIRECTORY);
+    const manifestPath = path.join(cacheDirectory, 'recipe.json');
+    const sceneEntryPath = path.join(
+      cacheDirectory,
+      `${sceneCacheKey(
+        createHash('sha256').update('same model bytes').digest('hex'),
+        'scene/v2.2',
+      )}.scene.json`,
+    );
+    expect(fileSystem.has(manifestPath)).toBe(true);
+    expect(fileSystem.has(sceneEntryPath)).toBe(true);
+
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    const externalDirectory = path.join(
+      '/external/cache',
+      'printfarmer-thumbnails.v1',
+    );
+    const externalThumbnail = path.join(
+      externalDirectory,
+      `${'e'.repeat(64)}.thumbnail.json`,
+    );
+    fileSystem.seed(externalThumbnail, 'external thumbnail');
+    const remove = fileSystem.remove.bind(fileSystem);
+    vi.spyOn(fileSystem, 'remove').mockImplementation((targetPath) =>
+      targetPath === externalThumbnail
+        ? Promise.reject(Object.assign(new Error('locked'), { code: 'EACCES' }))
+        : remove(targetPath),
+    );
+
+    await expect(cache.purge()).rejects.toMatchObject({ code: 'EACCES' });
+    expect(fileSystem.has(manifestPath)).toBe(false);
+    expect(fileSystem.has(sceneEntryPath)).toBe(false);
+    expect(fileSystem.has(externalThumbnail)).toBe(true);
+    expect(reportError).toHaveBeenCalledWith(
+      expect.stringContaining('Could not clear thumbnail cache'),
+      expect.objectContaining({ code: 'EACCES' }),
+    );
   });
 
   it('evicts entries that survived a purge whose directory removal failed', async () => {

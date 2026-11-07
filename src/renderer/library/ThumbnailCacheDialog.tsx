@@ -220,9 +220,9 @@ export function ThumbnailCacheDialog({
               </button>
             </div>
             <p className="thumbnail-cache-hint">
-              A new location starts with an empty cache. Existing cache files
-              remain in their previous folder; only PrintFarmer thumbnail
-              entries are managed there.
+              A new location starts with an empty cache. Switching locations
+              removes only PrintFarmer thumbnail entries from the previous
+              folder; unrelated files are preserved.
             </p>
           </section>
 
