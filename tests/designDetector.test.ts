@@ -32,6 +32,7 @@ import {
 import {
   designSurfacePaths,
   isDesignGovernancePath,
+  isDesignReviewPath,
   isDesignSurfacePath,
   requiresDesignReview,
 } from '../scripts/design-surface.mjs';
@@ -67,6 +68,11 @@ describe('design surface classification', () => {
       'DESIGN.md',
       '.impeccable/config.json',
       'tools/impeccable-detector/detect.mjs',
+      'scripts/design-surface.mjs',
+      'scripts/design-detector.mjs',
+      'scripts/design-detector-hook.mjs',
+      '.github/workflows/design-detector.yml',
+      '.github/hooks/impeccable.json',
     ]) {
       expect(isDesignGovernancePath(file)).toBe(true);
       expect(isDesignSurfacePath(file)).toBe(false);
@@ -75,6 +81,23 @@ describe('design surface classification', () => {
     expect(
       requiresDesignReview(['src/main/index.ts', 'docs/ARCHITECTURE.md']),
     ).toBe(false);
+    expect(requiresDesignReview(['scripts/squad-verdict-gate.mjs'])).toBe(
+      false,
+    );
+  });
+
+  it('every renderer file needs review even when it is not a scan target', () => {
+    for (const file of [
+      'src/renderer/library/sceneMaterials.ts',
+      'src/renderer/viewer/sceneGraph.ts',
+      'src/renderer/assets/logo.svg',
+    ]) {
+      expect(isDesignSurfacePath(file)).toBe(false);
+      expect(isDesignReviewPath(file)).toBe(true);
+      expect(requiresDesignReview([file])).toBe(true);
+    }
+    expect(isDesignReviewPath('src/main/renderer.ts')).toBe(false);
+    expect(isDesignReviewPath('../src/renderer/App.ts')).toBe(false);
   });
 
   it('dedupes and normalizes scan targets', () => {
@@ -227,6 +250,41 @@ describe('running the vendored detector', () => {
     } finally {
       writeFileSync(victim, original);
     }
+  });
+
+  it('with --tool-root, a no-op detector in the scanned tree is never executed', () => {
+    const trusted = mkdtempSync(path.join(tmpdir(), 'design-trusted-'));
+    const prDetect = path.join(root, DETECTOR_DIR, 'detect.mjs');
+    const original = readFileSync(prDetect, 'utf8');
+    const manifestPath = path.join(root, DETECTOR_DIR, 'manifest.json');
+    const originalManifest = readFileSync(manifestPath, 'utf8');
+    try {
+      cpSync(
+        path.join(repoRoot, DETECTOR_DIR),
+        path.join(trusted, DETECTOR_DIR),
+        { recursive: true },
+      );
+      // The change under test swaps in a no-op and regenerates its manifest.
+      writeFileSync(prDetect, 'console.log("[]");\n');
+      expect(main(['--write-manifest'], root)).toBe(0);
+      // Control: trusting the change's own copy, the slop passes.
+      expect(main(['--files', 'src/renderer/Slop.tsx'], root)).toBe(0);
+      // Treatment: the trusted copy still catches it.
+      expect(
+        main(
+          ['--tool-root', trusted, '--files', 'src/renderer/Slop.tsx'],
+          root,
+        ),
+      ).toBe(1);
+    } finally {
+      writeFileSync(prDetect, original);
+      writeFileSync(manifestPath, originalManifest);
+      rmSync(trusted, { recursive: true, force: true });
+    }
+  });
+
+  it('--tool-root requires a value', () => {
+    expect(() => parseArgs(['--tool-root'])).toThrow(/needs a directory/);
   });
 });
 

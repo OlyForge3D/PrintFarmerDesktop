@@ -1274,7 +1274,8 @@ export function evaluateGate({
         ),
         reason:
           `this PR changes the design surface and was authored by ${DESIGN_REVIEWER}, ` +
-          'the only design reviewer; an owner approval is required',
+          'the only design reviewer; an owner approval is required (a GitHub review ' +
+          'approval, or a verdict record naming your own admin login as the reviewer)',
         notes,
         requiredMembers: [DESIGN_REVIEWER],
         approvals: [],

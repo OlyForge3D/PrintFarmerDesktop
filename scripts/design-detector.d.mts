@@ -21,6 +21,7 @@ export interface DesignDetectorOptions {
   head: string | null;
   all: boolean;
   writeManifest: boolean;
+  toolRoot: string | null;
 }
 
 export declare const DETECTOR_DIR: string;
@@ -51,6 +52,7 @@ export function changedPathsBetween(
 export function runDetector(
   root: string,
   files: readonly string[],
+  toolRoot?: string,
 ): DetectorFinding[];
 export function parseArgs(argv: readonly string[]): DesignDetectorOptions;
 export function main(argv?: readonly string[], root?: string): number;

@@ -12,9 +12,15 @@
 
 export const DESIGN_REVIEWER = 'lambert';
 
-// Files the vendored detector can actually analyse. `.ts`/`.js` are excluded on
-// purpose: renderer logic files carry no markup or styles the detector reads,
-// and scanning them would only produce noise the gate then has to explain.
+// Two different surfaces, deliberately:
+//
+//   isDesignSurfacePath     files the detector can scan (markup + styles)
+//   requiresDesignReview    changes a human design reviewer must see
+//
+// The second is wider. Renderer `.ts` carries no markup the detector reads, but
+// it still sets visible colors, Three.js materials, and which empty/loading
+// state renders, so every src/renderer/** change needs review even when there
+// is nothing to scan.
 export const DESIGN_SURFACE_EXTENSIONS = Object.freeze([
   '.tsx',
   '.jsx',
@@ -32,9 +38,21 @@ const RENDERER_PREFIX = 'src/renderer/';
 const ROOT_DESIGN_FILES = new Set(['index.html']);
 
 // Paths that change what "good design" means for this repo, or how it is
-// measured, without being UI themselves. They need the design reviewer but are
-// not detector scan targets.
-const DESIGN_GOVERNANCE_FILES = new Set(['DESIGN.md', 'PRODUCT.md']);
+// measured and enforced, without being UI themselves. They need the design
+// reviewer but are not detector scan targets. The gate's own machinery is
+// listed so weakening it is itself a design-reviewed change.
+const DESIGN_GOVERNANCE_FILES = new Set([
+  'DESIGN.md',
+  'PRODUCT.md',
+  'scripts/design-surface.mjs',
+  'scripts/design-surface.d.mts',
+  'scripts/design-detector.mjs',
+  'scripts/design-detector.d.mts',
+  'scripts/design-detector-hook.mjs',
+  'scripts/design-detector-hook.d.mts',
+  '.github/workflows/design-detector.yml',
+  '.github/hooks/impeccable.json',
+]);
 const DESIGN_GOVERNANCE_PREFIXES = Object.freeze([
   '.impeccable/',
   'tools/impeccable-detector/',
@@ -78,8 +96,17 @@ export function designSurfacePaths(paths) {
   );
 }
 
-export function requiresDesignReview(paths) {
-  return (paths ?? []).some(
-    (p) => isDesignSurfacePath(p) || isDesignGovernancePath(p),
+export function isDesignReviewPath(filePath) {
+  const normalized = normalizeRepoPath(filePath);
+  if (!normalized || normalized.startsWith('../') || normalized.startsWith('/'))
+    return false;
+  return (
+    ROOT_DESIGN_FILES.has(normalized) ||
+    normalized.startsWith(RENDERER_PREFIX) ||
+    isDesignGovernancePath(normalized)
   );
+}
+
+export function requiresDesignReview(paths) {
+  return (paths ?? []).some(isDesignReviewPath);
 }

@@ -79,7 +79,9 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
 `manifest.json`):
 
 - The `Design detector` workflow scans the files a pull request changes and
-  fails on any non-advisory finding. Run it locally with
+  fails on any non-advisory finding. It runs the detector and manifest from the
+  base commit, not from the pull request, so a change to the detector only
+  takes effect after it merges. Run it locally with
   `npm run check:design-detector -- --files <paths>` or `-- --all`.
 - Copilot agents get the same findings in-context after each edit through
   `.github/hooks/impeccable.json`. Turn it off for yourself with
@@ -88,8 +90,10 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
 - Suppress a deliberate choice with an inline `impeccable-disable <rule> -- reason`
   comment or `detector.ignoreRules` / `ignoreFiles` in
   `.impeccable/config.json`. Both are visible in review.
-- Squad pull requests that touch these paths also need a `lambert` design
-  review; see `.squad/skills/agent-collaboration/SKILL.md`.
+- Squad pull requests that touch any `src/renderer/**` file (including `.ts`
+  the detector cannot scan), root `index.html`, or the design gate's own files
+  also need a `lambert` design review; see
+  `.squad/skills/agent-collaboration/SKILL.md`.
 
 The detector reads source, not rendered pixels, so it catches tells like
 gradient text and purple palettes but not contrast, overflow, or density

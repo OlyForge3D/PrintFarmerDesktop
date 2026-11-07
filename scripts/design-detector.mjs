@@ -5,6 +5,7 @@
 //   node scripts/design-detector.mjs --base <sha> --head <sha>   CI (diff)
 //   node scripts/design-detector.mjs --files a.tsx b.css         explicit
 //   node scripts/design-detector.mjs --all                       whole renderer
+//   ... --tool-root <dir>   run the detector + manifest from <dir> (CI: base)
 //
 // Suppressions use the detector's own mechanisms, both reviewable in the diff:
 // `.impeccable/config.json` (`detector.ignoreRules` / `ignoreFiles` /
@@ -167,8 +168,8 @@ function allRendererPaths(root) {
   return out.split('\0').filter(Boolean);
 }
 
-export function runDetector(root, files) {
-  const detect = join(root, DETECTOR_DIR, 'detect.mjs');
+export function runDetector(root, files, toolRoot = root) {
+  const detect = join(toolRoot, DETECTOR_DIR, 'detect.mjs');
   const findings = [];
   for (let i = 0; i < files.length; i += CHUNK_SIZE) {
     const chunk = files.slice(i, i + CHUNK_SIZE);
@@ -201,6 +202,7 @@ export function parseArgs(argv) {
     head: null,
     all: false,
     writeManifest: false,
+    toolRoot: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -208,7 +210,10 @@ export function parseArgs(argv) {
     else if (arg === '--head') options.head = argv[++i] ?? null;
     else if (arg === '--all') options.all = true;
     else if (arg === '--write-manifest') options.writeManifest = true;
-    else if (arg === '--files') {
+    else if (arg === '--tool-root') {
+      options.toolRoot = argv[++i] ?? null;
+      if (!options.toolRoot) throw new Error('--tool-root needs a directory');
+    } else if (arg === '--files') {
       while (i + 1 < argv.length && !argv[i + 1].startsWith('--'))
         options.files.push(argv[++i]);
     } else throw new Error(`unknown argument: ${arg}`);
@@ -229,7 +234,13 @@ export function parseArgs(argv) {
 
 export function main(argv = process.argv.slice(2), root = process.cwd()) {
   const options = parseArgs(argv);
-  const detectorDir = join(root, DETECTOR_DIR);
+  // CI passes --tool-root pointing at a checkout of the base commit, so the
+  // detector and its manifest come from already-reviewed code while `root`
+  // (the change under test) supplies only the files and suppression config.
+  // Without it, a change could swap in a no-op detector and regenerate the
+  // manifest to match.
+  const toolRoot = options.toolRoot ? resolve(root, options.toolRoot) : root;
+  const detectorDir = join(toolRoot, DETECTOR_DIR);
   const manifestPath = join(detectorDir, MANIFEST_FILE);
 
   if (options.writeManifest) {
@@ -276,7 +287,9 @@ export function main(argv = process.argv.slice(2), root = process.cwd()) {
     return 0;
   }
 
-  const { blocking, advisory } = partitionFindings(runDetector(root, targets));
+  const { blocking, advisory } = partitionFindings(
+    runDetector(root, targets, toolRoot),
+  );
   console.log(
     `Scanned ${targets.length} design-surface file(s) with the impeccable detector.`,
   );

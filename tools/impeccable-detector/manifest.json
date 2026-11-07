@@ -1,5 +1,8 @@
 {
   "source": "impeccable skill scripts (detect.mjs + detector/** + lib/impeccable-config.mjs)",
+  "upstream": "https://impeccable.style (impeccable by Paul Bakaus)",
+  "vendoredFrom": "the impeccable skill v4.0.3 bundled with the GitHub Copilot app (app-skills/impeccable/scripts)",
+  "provenanceLimit": "No immutable upstream commit or archive digest was available when vendoring; these hashes detect drift from the vendored bytes, not that the bytes match an upstream release. Re-vendor by copying the same paths from a newer skill copy, then run `node scripts/design-detector.mjs --write-manifest`.",
   "version": "4.0.3",
   "license": "Apache-2.0",
   "files": {
