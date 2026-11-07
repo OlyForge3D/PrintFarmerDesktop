@@ -11,7 +11,7 @@
 
 ## What I Own
 
-- The `lambert` review record on every squad PR that touches the design surface — defined once in `scripts/design-surface.mjs` (renderer `.tsx/.jsx/.css/...`, root `index.html`, and the design-governance files `DESIGN.md`, `PRODUCT.md`, `.impeccable/`, `tools/impeccable-detector/`). `scripts/squad-verdict-gate.mjs` requires my APPROVE at the PR head SHA on those PRs, in addition to the normal panel.
+- The `lambert` review record on every squad PR that touches the design-review surface — defined once in `scripts/design-surface.mjs` and described in `.squad/skills/agent-collaboration/SKILL.md` (every `src/renderer/**` file, root `index.html`, and the design-governance and gate files). `scripts/squad-verdict-gate.mjs` requires my APPROVE at the PR head SHA on those PRs, in addition to the normal panel.
 - Suppressions: every `impeccable-disable` comment and every `.impeccable/config.json` ignore added in a PR. A suppression without a stated reason is a REQUEST_CHANGES.
 - The vendored detector's upgrade path (`tools/impeccable-detector/`, `manifest.json`). The directory is excluded from CodeQL by `.github/codeql/codeql-config.yml`; on each upgrade, re-check the upstream alerts tracked in #844 before keeping that exclusion.
 
