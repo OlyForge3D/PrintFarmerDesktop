@@ -480,7 +480,7 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   expect(orbitedView.equals(baselineView)).toBe(false);
 
   // The toolbar reset must return to the deterministic fitted view.
-  await page.getByRole('button', { name: 'Reset' }).click();
+  await page.getByRole('button', { name: 'Reset view' }).click();
   await page.waitForTimeout(250);
   const toolbarResetView = await canvas.screenshot();
   expect(toolbarResetView.equals(baselineView)).toBe(true);
@@ -498,12 +498,15 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
 
   const wireframe = page.getByRole('button', { name: 'Wireframe' });
   await wireframe.click();
+  await expect(wireframe).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Solid' })).toHaveAttribute(
     'aria-pressed',
-    'true',
+    'false',
   );
   await page.getByRole('button', { name: 'Orthographic' }).click();
-  await expect(page.getByRole('button', { name: 'Perspective' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Orthographic' }),
+  ).toHaveAttribute('aria-pressed', 'true');
 
   // The viewer remains mounted and healthy after the interactions.
   await expect(viewer).toBeVisible();

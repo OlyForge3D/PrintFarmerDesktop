@@ -111,6 +111,56 @@ function baseProps(): PreviewWorkspaceProps {
 }
 
 describe('<PreviewWorkspace />', () => {
+  it('shows fixed shading and projection icon pairs with a reset button', () => {
+    const onToggleWireframe = vi.fn();
+    const onToggleProjection = vi.fn();
+    const onReset = vi.fn();
+    const props = {
+      ...baseProps(),
+      mesh: sceneMesh(),
+      onToggleWireframe,
+      onToggleProjection,
+      onReset,
+    };
+    const { rerender } = render(<PreviewWorkspace {...props} />);
+    const pressed = (name: string): string | null =>
+      screen.getByRole('button', { name }).getAttribute('aria-pressed');
+
+    expect(pressed('Solid')).toBe('true');
+    expect(pressed('Wireframe')).toBe('false');
+    expect(pressed('Perspective')).toBe('true');
+    expect(pressed('Orthographic')).toBe('false');
+    expect(screen.getByRole('button', { name: 'Wireframe' })).toHaveAttribute(
+      'title',
+      'Wireframe shading',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Solid' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Perspective' }));
+    expect(onToggleWireframe).not.toHaveBeenCalled();
+    expect(onToggleProjection).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wireframe' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Orthographic' }));
+    expect(onToggleWireframe).toHaveBeenCalledTimes(1);
+    expect(onToggleProjection).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset view' }));
+    expect(onReset).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <PreviewWorkspace {...props} wireframe projection="orthographic" />,
+    );
+    expect(pressed('Solid')).toBe('false');
+    expect(pressed('Wireframe')).toBe('true');
+    expect(pressed('Perspective')).toBe('false');
+    expect(pressed('Orthographic')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Wireframe' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Orthographic' }));
+    expect(onToggleWireframe).toHaveBeenCalledTimes(1);
+    expect(onToggleProjection).toHaveBeenCalledTimes(1);
+  });
+
   it('only shows Snapmaker preparation when the selected project is eligible', () => {
     const props = baseProps();
     const { rerender } = render(
