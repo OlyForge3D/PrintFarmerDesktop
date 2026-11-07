@@ -153,6 +153,13 @@ const PersistedCheck = z.object({
     .nullable(),
 });
 
+export interface ManualCheckResult {
+  /** True when the release list could not be fetched or parsed. */
+  failed: boolean;
+  /** The newer release on this train, or the last known result on failure. */
+  release: AvailableRelease | null;
+}
+
 export interface ReleaseNotifierOptions {
   currentVersion: string;
   platform?: NodeJS.Platform;
@@ -240,30 +247,49 @@ export class ReleaseNotifier {
     }
   }
 
+  /**
+   * User-initiated check: always queries the network, ignoring and then
+   * refreshing the cache. Unlike the background path it reports failure, so the
+   * caller can tell "up to date" from "could not check". A failed manual check
+   * leaves the cache untouched.
+   */
+  async checkNow(): Promise<ManualCheckResult> {
+    await this.loadPersistedCheck();
+    try {
+      this.lastResult = await this.fetchAvailableRelease();
+    } catch (error) {
+      this.onError(error);
+      return { failed: true, release: this.lastResult };
+    }
+    this.lastCheckedAt = this.now();
+    await this.persistCheck();
+    return { failed: false, release: this.lastResult };
+  }
+
+  private async fetchAvailableRelease(): Promise<AvailableRelease | null> {
+    const [list, latest] = await Promise.allSettled([
+      fetchBoundedText(
+        this.fetchImplementation,
+        RELEASES_API_URL,
+        MAX_RELEASES_BYTES,
+      ),
+      fetchBoundedText(
+        this.fetchImplementation,
+        LATEST_RELEASE_API_URL,
+        MAX_RELEASES_BYTES,
+      ),
+    ]);
+    if (list.status === 'rejected') throw list.reason;
+    const releases = parseGitHubReleases(list.value);
+    if (latest.status === 'fulfilled') {
+      releases.push(...parseGitHubReleases(`[${latest.value}]`));
+    }
+    return selectAvailableRelease(this.currentVersion, releases, this.platform);
+  }
+
   private async check(): Promise<AvailableRelease | null> {
     try {
-      const [list, latest] = await Promise.allSettled([
-        fetchBoundedText(
-          this.fetchImplementation,
-          RELEASES_API_URL,
-          MAX_RELEASES_BYTES,
-        ),
-        fetchBoundedText(
-          this.fetchImplementation,
-          LATEST_RELEASE_API_URL,
-          MAX_RELEASES_BYTES,
-        ),
-      ]);
-      if (list.status === 'rejected') throw list.reason;
-      const releases = parseGitHubReleases(list.value);
-      if (latest.status === 'fulfilled') {
-        releases.push(...parseGitHubReleases(`[${latest.value}]`));
-      }
-      this.lastResult = selectAvailableRelease(
-        this.currentVersion,
-        releases,
-        this.platform,
-      );
+      this.lastResult = await this.fetchAvailableRelease();
     } catch (error) {
       this.onError(error);
     }

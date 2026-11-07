@@ -121,6 +121,7 @@ export const IpcChannel = {
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   GetAvailableRelease: 'updates:getAvailableRelease',
+  CheckForUpdates: 'updates:checkNow',
   SidecarPing: 'sidecar:ping',
   LoadScene: 'model:loadScene',
   OpenModelFile: 'dialog:openModelFile',
@@ -226,6 +227,23 @@ export const GetAvailableReleaseResponse = z.object({
 export type GetAvailableReleaseResponse = z.infer<
   typeof GetAvailableReleaseResponse
 >;
+
+// --- updates:checkNow -------------------------------------------------------
+
+/**
+ * User-initiated "Check for Updates": bypasses the six-hour cache and reports
+ * the outcome. `unavailable` means this is not an installed build (development
+ * runs never query production releases).
+ */
+export const CheckForUpdatesRequest = z.void();
+export type CheckForUpdatesRequest = z.infer<typeof CheckForUpdatesRequest>;
+
+export const CheckForUpdatesResponse = z.object({
+  currentVersion: z.string(),
+  status: z.enum(['available', 'upToDate', 'failed', 'unavailable']),
+  available: AvailableRelease.nullable(),
+});
+export type CheckForUpdatesResponse = z.infer<typeof CheckForUpdatesResponse>;
 
 // --- sidecar:ping ---------------------------------------------------------
 
@@ -7993,6 +8011,10 @@ export const ipcSchemas = {
     request: GetAvailableReleaseRequest,
     response: GetAvailableReleaseResponse,
   },
+  [IpcChannel.CheckForUpdates]: {
+    request: CheckForUpdatesRequest,
+    response: CheckForUpdatesResponse,
+  },
   [IpcChannel.SidecarPing]: {
     request: SidecarPingRequest,
     response: SidecarPingResponse,
@@ -8387,6 +8409,7 @@ export type IpcSchemas = typeof ipcSchemas;
 export interface PrintFarmerApi {
   getAppInfo(): Promise<AppInfoResponse>;
   getAvailableRelease(): Promise<GetAvailableReleaseResponse>;
+  checkForUpdates(): Promise<CheckForUpdatesResponse>;
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
   loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
   openModelFile(): Promise<OpenModelFileResponse>;

@@ -1750,6 +1750,8 @@ export function App(): React.JSX.Element {
           appInfo={info}
           availableRelease={availableRelease.release}
           onDismissRelease={availableRelease.dismiss}
+          onCheckForUpdates={availableRelease.checkNow}
+          updateCheck={availableRelease.checkState}
         />
       </div>
 

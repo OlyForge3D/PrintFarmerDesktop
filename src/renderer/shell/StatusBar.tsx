@@ -4,6 +4,24 @@ import type {
   ServerProfile,
 } from '@shared/ipc';
 import { serverStatusLabel } from './serverPresentation';
+import type { UpdateCheckState } from './useAvailableRelease';
+
+function updateCheckMessage(state: UpdateCheckState): string {
+  switch (state.kind) {
+    case 'checking':
+      return 'Checking for updates…';
+    case 'available':
+      return `Version ${state.version} is available`;
+    case 'upToDate':
+      return `You're up to date (v${state.version})`;
+    case 'failed':
+      return "Couldn't check for updates. Try again later.";
+    case 'unavailable':
+      return 'Update checks run only in installed builds';
+    case 'idle':
+      return '';
+  }
+}
 
 export interface StatusBarProps {
   /** What the app is doing right now, in the product's own words. */
@@ -17,6 +35,8 @@ export interface StatusBarProps {
   /** A newer build on this build's release train, if one is published. */
   availableRelease?: AvailableRelease | null;
   onDismissRelease?: () => void;
+  onCheckForUpdates?: () => void;
+  updateCheck?: UpdateCheckState;
 }
 
 /**
@@ -34,6 +54,8 @@ export function StatusBar({
   appInfo,
   availableRelease = null,
   onDismissRelease,
+  onCheckForUpdates,
+  updateCheck = { kind: 'idle' },
 }: StatusBarProps): React.JSX.Element {
   return (
     <footer className="app-statusbar" aria-label="Application status">
@@ -89,6 +111,22 @@ export function StatusBar({
               Dismiss
             </button>
           ) : null}
+        </span>
+      ) : null}
+
+      {onCheckForUpdates ? (
+        <span className="status-item status-item--check">
+          <button
+            type="button"
+            className="status-item-dismiss"
+            onClick={onCheckForUpdates}
+            disabled={updateCheck.kind === 'checking'}
+          >
+            Check for Updates
+          </button>
+          <span role="status" aria-live="polite">
+            {updateCheckMessage(updateCheck)}
+          </span>
         </span>
       ) : null}
 

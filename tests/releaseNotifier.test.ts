@@ -333,4 +333,74 @@ describe('ReleaseNotifier', () => {
     await expect(notifier.getAvailableRelease()).resolves.toBeNull();
     expect(onError).toHaveBeenCalledOnce();
   });
+
+  describe('checkNow', () => {
+    it('bypasses a fresh cache, refreshes it, and reports a newer release', async () => {
+      const now = 0;
+      const fetchImplementation = githubFake([]);
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0-beta.8',
+        platform: 'darwin',
+        fetchImplementation,
+        now: () => now,
+        checkIntervalMs: 6 * 60 * 60 * 1000,
+      });
+      expect(await notifier.getAvailableRelease()).toBeNull();
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+
+      // A release lands inside the cache window.
+      fetchImplementation.mockImplementation(
+        githubFake([release('0.1.0-beta.9')]),
+      );
+      expect(
+        (await notifier.getAvailableRelease())?.version ?? null,
+      ).toBeNull();
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+
+      const result = await notifier.checkNow();
+      expect(result.failed).toBe(false);
+      expect(result.release?.version).toBe('0.1.0-beta.9');
+      expect(fetchImplementation).toHaveBeenCalledTimes(4);
+      // The refreshed result now serves the cached path.
+      expect((await notifier.getAvailableRelease())?.version).toBe(
+        '0.1.0-beta.9',
+      );
+      expect(fetchImplementation).toHaveBeenCalledTimes(4);
+    });
+
+    it('reports up to date as a successful check with no release', async () => {
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0-beta.9',
+        platform: 'darwin',
+        fetchImplementation: githubFake([release('0.1.0-beta.9')]),
+      });
+      await expect(notifier.checkNow()).resolves.toEqual({
+        failed: false,
+        release: null,
+      });
+    });
+
+    it('reports failure and keeps the previous cached result', async () => {
+      const onError = vi.fn();
+      const good = githubFake([release('0.1.0-beta.9')]);
+      const fetchImplementation = vi.fn<typeof fetch>(good);
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0-beta.8',
+        platform: 'darwin',
+        fetchImplementation,
+        onError,
+      });
+      expect((await notifier.getAvailableRelease())?.version).toBe(
+        '0.1.0-beta.9',
+      );
+
+      fetchImplementation.mockImplementation(() =>
+        Promise.resolve(jsonResponse({ message: 'rate limited' }, 403)),
+      );
+      const result = await notifier.checkNow();
+      expect(result.failed).toBe(true);
+      expect(onError).toHaveBeenCalledOnce();
+      expect(result.release?.version).toBe('0.1.0-beta.9');
+    });
+  });
 });

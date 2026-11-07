@@ -11,6 +11,7 @@ import {
 import { z } from 'zod';
 import {
   AppInfoResponse,
+  CheckForUpdatesResponse,
   GetAvailableReleaseResponse,
   IPC_CONTRACT_VERSION,
   IpcChannel,
@@ -1068,7 +1069,7 @@ export function registerIpcHandlers(
   });
 
   let releaseNotifier = sharedReleaseNotifier ?? null;
-  ipcMain.handle(IpcChannel.GetAvailableRelease, async () => {
+  const ensureReleaseNotifier = (): ReleaseNotifier | null => {
     // Development runs (`npm start`) carry the package version but are not an
     // installed build, so they never query or announce production releases.
     if (!releaseNotifier && app.isPackaged) {
@@ -1077,6 +1078,33 @@ export function registerIpcHandlers(
         cacheFilePath: path.join(app.getPath('userData'), 'release-check.json'),
       });
     }
+    return releaseNotifier;
+  };
+  ipcMain.handle(IpcChannel.CheckForUpdates, async () => {
+    const notifier = ensureReleaseNotifier();
+    let response: CheckForUpdatesResponse;
+    if (!notifier) {
+      response = {
+        currentVersion: app.getVersion(),
+        status: 'unavailable',
+        available: null,
+      };
+    } else {
+      const result = await notifier.checkNow();
+      response = {
+        currentVersion: app.getVersion(),
+        status: result.failed
+          ? 'failed'
+          : result.release
+            ? 'available'
+            : 'upToDate',
+        available: result.failed ? null : result.release,
+      };
+    }
+    return ipcSchemas[IpcChannel.CheckForUpdates].response.parse(response);
+  });
+  ipcMain.handle(IpcChannel.GetAvailableRelease, async () => {
+    ensureReleaseNotifier();
     const response: GetAvailableReleaseResponse = {
       currentVersion: app.getVersion(),
       available: releaseNotifier
