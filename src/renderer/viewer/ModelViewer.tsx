@@ -406,9 +406,10 @@ export function fitDepthRange(
   center: [number, number, number],
   radius: number,
 ): boolean {
-  const distance = camera.position.distanceTo(
-    new THREE.Vector3(center[0], center[1], center[2]),
-  );
+  // Clip planes bound depth along the view axis, not radial distance: a
+  // lateral pan keeps the scene on screen while radial distance grows.
+  const toCenter = new THREE.Vector3(...center).sub(camera.position);
+  const distance = toCenter.dot(camera.getWorldDirection(new THREE.Vector3()));
   const { near, far } = depthRangeFor(distance, radius);
   if (near === camera.near && far === camera.far) return false;
   camera.near = near;

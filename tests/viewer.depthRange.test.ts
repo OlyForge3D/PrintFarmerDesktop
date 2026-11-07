@@ -87,6 +87,31 @@ describe.each(['perspective', 'orthographic'] as const)(
       }
     });
 
+    it('keeps on-screen geometry unclipped when panned sideways', () => {
+      const camera = createCamera(projection, 3, RADIUS);
+      frameCamera(camera, CENTER, RADIUS, 3);
+      const target = new THREE.Vector3(...CENTER);
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(
+        camera.quaternion,
+      );
+      // Pan like OrbitControls: camera and target shift together.
+      camera.position.addScaledVector(right, RADIUS * 0.9);
+      target.addScaledVector(right, RADIUS * 0.9);
+      camera.lookAt(target);
+      camera.updateMatrixWorld(true);
+      fitDepthRange(camera, CENTER, RADIUS);
+      camera.updateMatrixWorld(true);
+      // Points of the scene sphere nearest to and farthest from the camera.
+      const centre = new THREE.Vector3(...CENTER);
+      const axis = camera.getWorldDirection(new THREE.Vector3());
+      for (const sign of [-1, 1]) {
+        const point = centre.clone().addScaledVector(axis, sign * RADIUS);
+        const depth = point.clone().sub(camera.position).dot(axis);
+        expect(depth).toBeGreaterThanOrEqual(camera.near);
+        expect(depth).toBeLessThanOrEqual(camera.far);
+      }
+    });
+
     it('reports whether the planes changed', () => {
       const camera = createCamera(projection, 1, RADIUS);
       frameCamera(camera, CENTER, RADIUS, 1);

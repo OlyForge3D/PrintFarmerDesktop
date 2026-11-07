@@ -103,8 +103,8 @@ export const DEPTH_NEAR_RADIUS_RATIO = 0.001;
 const DEPTH_SPHERE_MARGIN = 1.05;
 
 /**
- * Near/far planes hugging the scene's bounding sphere for a camera at
- * `distance` from its centre.
+ * Near/far planes hugging the scene's bounding sphere, given the depth of its
+ * centre along the camera's view axis.
  *
  * A fixed near of 0.01 with a far of radius * 100 + 1000 leaves a 24-bit depth
  * buffer resolving only ~d^2 / (near * 2^24): about 13 units at the framing
