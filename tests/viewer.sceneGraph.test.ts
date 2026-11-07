@@ -164,7 +164,8 @@ describe('buildViewerSceneGraph', () => {
     // The lid was moved to x=500, z=5; each bed lies beneath its own parts.
     expect(bedA.position.x).toBeLessThan(10);
     expect(bedB.position.x).toBeCloseTo(500.5);
-    expect(bedB.position.z).toBeCloseTo(5 - 1);
+    // Centre = part bottom (5) - gap (0.2) - half thickness (1).
+    expect(bedB.position.z).toBeCloseTo(5 - 0.2 - 1);
     expect(bedA.position.z).toBeLessThan(0);
 
     // Framing must cover the beds, not just the model bounds.
@@ -242,6 +243,35 @@ describe('buildViewerSceneGraph', () => {
       });
     }
   }
+
+  it('keeps each bed strictly below its parts and polygon-offset, so no surface is coplanar', () => {
+    const original = multiObjectScene();
+    const scene: SceneMesh = {
+      ...original,
+      plates: [
+        {
+          id: 'plate-0',
+          name: 'Plate 1',
+          index: 0,
+          rootObjectIds: original.rootObjectIds,
+        },
+        { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: [] },
+      ],
+    };
+    const graph = buildViewerSceneGraph(scene);
+    const bed = graph.root.getObjectByName('Plate 1:bed') as THREE.Mesh;
+    const group = bed.parent as THREE.Group;
+    group.remove(bed);
+    const parts = new THREE.Box3().setFromObject(group);
+    group.add(bed);
+    graph.root.updateMatrixWorld(true);
+    const bedBox = new THREE.Box3().setFromObject(bed);
+    expect(bedBox.max.z).toBeLessThan(parts.min.z);
+    const material = bed.material as THREE.MeshStandardMaterial;
+    expect(material.polygonOffset).toBe(true);
+    expect(material.polygonOffsetFactor).toBeGreaterThan(0);
+    graph.dispose();
+  });
 
   it('uses packed geometry without copying it into number arrays and keeps full-detail rendering', () => {
     const original = multiObjectScene();

@@ -255,6 +255,11 @@ export function buildViewerSceneGraph(
 const PLATE_BED_MARGIN_RATIO = 0.15;
 const PLATE_BED_MIN_MARGIN = 10;
 const PLATE_BED_THICKNESS = 2;
+// The bed's top sits this far below the parts' lowest point (as a fraction of
+// the plate's footprint, never less than the minimum) so the two surfaces are
+// never coplanar, which flickers as depth precision changes with zoom.
+const PLATE_BED_GAP_RATIO = 0.002;
+const PLATE_BED_MIN_GAP = 0.2;
 
 /**
  * Multi-plate packages only record which plate each object belongs to, not the
@@ -287,6 +292,10 @@ function addPlateBeds(
       sizeY * PLATE_BED_MARGIN_RATIO,
       PLATE_BED_MIN_MARGIN,
     );
+    const gap = Math.max(
+      Math.max(sizeX, sizeY) * PLATE_BED_GAP_RATIO,
+      PLATE_BED_MIN_GAP,
+    );
     const geometry = new THREE.BoxGeometry(
       sizeX + marginX * 2,
       sizeY + marginY * 2,
@@ -296,13 +305,16 @@ function addPlateBeds(
       color: 0x4a4f57,
       roughness: 0.9,
       metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     });
     const bed = new THREE.Mesh(geometry, material);
     bed.name = `${plate.name}:bed`;
     bed.position.set(
       (box.min.x + box.max.x) / 2,
       (box.min.y + box.max.y) / 2,
-      box.min.z - PLATE_BED_THICKNESS / 2,
+      box.min.z - gap - PLATE_BED_THICKNESS / 2,
     );
     group.add(bed);
     geometries.push(geometry);
