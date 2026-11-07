@@ -144,21 +144,74 @@ export function PreviewWorkspace({
             role="toolbar"
             aria-label="3D view controls"
           >
+            <div
+              className="preview-toolbar-group"
+              role="group"
+              aria-label="Shading"
+            >
+              <button
+                type="button"
+                title="Solid shading"
+                aria-label="Solid"
+                aria-pressed={!wireframe}
+                onClick={() => {
+                  if (wireframe) onToggleWireframe();
+                }}
+                disabled={!mesh}
+              >
+                <Icon name="solid" />
+              </button>
+              <button
+                type="button"
+                title="Wireframe shading"
+                aria-label="Wireframe"
+                aria-pressed={wireframe}
+                onClick={() => {
+                  if (!wireframe) onToggleWireframe();
+                }}
+                disabled={!mesh}
+              >
+                <Icon name="wireframe" />
+              </button>
+            </div>
+            <div
+              className="preview-toolbar-group"
+              role="group"
+              aria-label="Projection"
+            >
+              <button
+                type="button"
+                title="Perspective projection"
+                aria-label="Perspective"
+                aria-pressed={projection === 'perspective'}
+                onClick={() => {
+                  if (projection !== 'perspective') onToggleProjection();
+                }}
+                disabled={!mesh}
+              >
+                <Icon name="perspective" />
+              </button>
+              <button
+                type="button"
+                title="Orthographic projection"
+                aria-label="Orthographic"
+                aria-pressed={projection === 'orthographic'}
+                onClick={() => {
+                  if (projection !== 'orthographic') onToggleProjection();
+                }}
+                disabled={!mesh}
+              >
+                <Icon name="orthographic" />
+              </button>
+            </div>
             <button
               type="button"
-              aria-pressed={wireframe}
-              onClick={onToggleWireframe}
+              title="Reset camera view"
+              aria-label="Reset view"
+              onClick={onReset}
               disabled={!mesh}
             >
-              <Icon name="view" />
-              {wireframe ? 'Solid' : 'Wireframe'}
-            </button>
-            <button type="button" onClick={onToggleProjection} disabled={!mesh}>
-              {projection === 'perspective' ? 'Orthographic' : 'Perspective'}
-            </button>
-            <button type="button" onClick={onReset} disabled={!mesh}>
               <Icon name="reset" />
-              Reset
             </button>
             {retargetEligible ? (
               <button type="button" onClick={onRetarget}>

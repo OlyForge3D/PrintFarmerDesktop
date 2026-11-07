@@ -3242,7 +3242,21 @@ select:disabled {
 
 .preview-toolbar {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
+}
+
+.preview-toolbar-group {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+}
+
+.preview-toolbar-group button {
+  border-color: transparent;
+  background: transparent;
 }
 
 .preview-toolbar button[aria-pressed='true'] {

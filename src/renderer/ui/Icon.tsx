@@ -8,6 +8,8 @@ export type IconName =
   | 'file'
   | 'folder'
   | 'missing'
+  | 'orthographic'
+  | 'perspective'
   | 'preview'
   | 'refresh'
   | 'reset'
@@ -16,7 +18,9 @@ export type IconName =
   | 'star'
   | 'tag'
   | 'upload'
-  | 'view';
+  | 'view'
+  | 'wireframe'
+  | 'solid';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {
   name: IconName;
@@ -119,6 +123,38 @@ function iconPath(name: IconName): React.JSX.Element {
           <path d="M20 7v5h-5" />
           <path d="M4 17v-5h5" />
           <path d="M6.1 8.2A7 7 0 0 1 18.8 10M5.2 14A7 7 0 0 0 17.9 15.8" />
+        </>
+      );
+    case 'solid':
+      return (
+        <>
+          <path
+            d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"
+            fill="currentColor"
+            fillOpacity="0.28"
+          />
+          <path d="m4 7.5 8 4.5 8-4.5M12 12v9" />
+        </>
+      );
+    case 'wireframe':
+      return (
+        <>
+          <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" />
+          <path d="m4 7.5 8 4.5 8-4.5M12 12v9" strokeDasharray="2 2" />
+        </>
+      );
+    case 'perspective':
+      return (
+        <>
+          <path d="M3 20 9 6h6l6 14z" />
+          <path d="M9 6 3 20M15 6l6 14M6 13h12" />
+        </>
+      );
+    case 'orthographic':
+      return (
+        <>
+          <rect x="4" y="4" width="16" height="16" rx="1" />
+          <path d="M4 12h16M12 4v16" />
         </>
       );
     case 'reset':
