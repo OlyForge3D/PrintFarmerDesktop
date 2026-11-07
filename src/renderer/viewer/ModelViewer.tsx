@@ -18,6 +18,7 @@ import {
   boundsRadius,
   unionBounds,
   defaultCameraPosition,
+  depthRangeFor,
   viewerKeyAction,
   type FramingLens,
 } from './geometry';
@@ -188,6 +189,7 @@ export function ModelViewer({
       // Detail levels depend on where the camera ended up, so they are picked
       // for the frame about to be drawn rather than the one just finished.
       sceneGraph.updateLod(camera);
+      fitDepthRange(camera, center, radius);
       renderer.render(scene, camera);
     };
     animate();
@@ -346,11 +348,11 @@ export function createCamera(
   aspect: number,
   radius: number,
 ): THREE.PerspectiveCamera | THREE.OrthographicCamera {
-  const far = radius * 100 + 1000;
+  const { near, far } = depthRangeFor(radius * 6, radius);
   // `up` must be set here, before framing calls lookAt() and before
   // OrbitControls is constructed, because the controls capture it once.
   if (projection === 'orthographic') {
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, far);
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, near, far);
     camera.up.set(...VIEWER_UP);
     applyOrthoFrustum(camera, radius, aspect);
     return camera;
@@ -358,7 +360,7 @@ export function createCamera(
   const camera = new THREE.PerspectiveCamera(
     PERSPECTIVE_FOV,
     aspect,
-    0.01,
+    near,
     far,
   );
   camera.up.set(...VIEWER_UP);
@@ -392,6 +394,28 @@ export function applyOrthoFrustum(
   camera.top = halfHeight;
   camera.bottom = -halfHeight;
   camera.updateProjectionMatrix();
+}
+
+/**
+ * Refit near/far to the camera's current distance from the scene. Run before
+ * each draw because zooming, panning and orbiting all change that distance.
+ * Returns whether the projection changed.
+ */
+export function fitDepthRange(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  center: [number, number, number],
+  radius: number,
+): boolean {
+  // Clip planes bound depth along the view axis, not radial distance: a
+  // lateral pan keeps the scene on screen while radial distance grows.
+  const toCenter = new THREE.Vector3(...center).sub(camera.position);
+  const distance = toCenter.dot(camera.getWorldDirection(new THREE.Vector3()));
+  const { near, far } = depthRangeFor(distance, radius);
+  if (near === camera.near && far === camera.far) return false;
+  camera.near = near;
+  camera.far = far;
+  camera.updateProjectionMatrix();
+  return true;
 }
 
 /**
@@ -430,7 +454,12 @@ export function frameCamera(
   const [x, y, z] = defaultCameraPosition(center, radius, aspect, lens);
   camera.position.set(x, y, z);
   camera.lookAt(center[0], center[1], center[2]);
-  if (lens.projection === 'perspective') camera.updateProjectionMatrix();
+  if (
+    !fitDepthRange(camera, center, radius) &&
+    lens.projection === 'perspective'
+  ) {
+    camera.updateProjectionMatrix();
+  }
 }
 
 const MIN_POLAR = 0.01;
