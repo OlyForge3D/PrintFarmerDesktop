@@ -1166,9 +1166,12 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
     let mut errors = 0;
     let mut changed_paths = Vec::new();
     for file in &scan.files {
-        let unchanged = store
-            .get_location(root_id, &file.path)
-            .is_some_and(|existing| existing.fingerprint == file.fingerprint && existing.available);
+        let unchanged = !crate::archive::requires_content_revalidation(&file.path)
+            && store
+                .get_location(root_id, &file.path)
+                .is_some_and(|existing| {
+                    existing.fingerprint == file.fingerprint && existing.available
+                });
         if unchanged {
             continue;
         }
@@ -1203,9 +1206,10 @@ pub(crate) fn reconcile_root_with_hashes<S: CatalogStore + ?Sized>(
         seen.push(file.path.clone());
         let existing = store.get_location(root_id, &file.path);
 
-        let unchanged = existing
-            .as_ref()
-            .is_some_and(|e| e.fingerprint == file.fingerprint && e.available);
+        let unchanged = !crate::archive::requires_content_revalidation(&file.path)
+            && existing
+                .as_ref()
+                .is_some_and(|e| e.fingerprint == file.fingerprint && e.available);
         if unchanged {
             report.unchanged += 1;
             continue;

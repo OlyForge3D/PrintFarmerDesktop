@@ -269,7 +269,10 @@ export function App(): React.JSX.Element {
   );
   const retargetIdentity = useCallback(
     (model: LogicalModel): RetargetTarget | null => {
-      const location = model.locations.find((item) => item.available);
+      const sourcePath = preferredPath(model);
+      const location = model.locations.find(
+        (item) => item.available && item.path === sourcePath,
+      );
       return model.format === 'threeMf' && location
         ? {
             modelHash: model.hash,

@@ -26,6 +26,12 @@ import { createCalibrationState } from '../src/renderer/calibration/domain';
 import { emptyWorkflowDrafts } from '../src/renderer/calibration/workspaceTypes';
 import { modelPage, withModelPaging } from './helpers/libraryPage';
 
+vi.mock('../src/renderer/retarget/RetargetWorkflow', () => ({
+  RetargetWorkflow: ({ target }: { target: { rootId: string } }) => (
+    <div data-testid="retarget-source-root">{target.rootId}</div>
+  ),
+}));
+
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
     name,
@@ -1434,6 +1440,7 @@ describe('<App />', () => {
           roots: [{ rootId: 'existing-root', path: 'C:\\Existing' }],
         }),
       );
+
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
           contractVersion: 2,
@@ -1530,6 +1537,64 @@ describe('<App />', () => {
     );
   });
 
+  it('selects the extracted duplicate root for Snapmaker preparation', async () => {
+    const project: LogicalModel = {
+      hash: 'a'.repeat(64),
+      format: 'threeMf',
+      size: 4096,
+      locations: [
+        {
+          rootId: 'zip-root',
+          path: 'C:\\archives\\parts.zip\\::zip::\\0\\project.3mf',
+          rootRelative: 'parts.zip/project.3mf',
+          size: 4096,
+          available: true,
+        },
+        {
+          rootId: 'extracted-root',
+          path: 'C:\\models\\project.3mf',
+          rootRelative: 'project.3mf',
+          size: 4096,
+          available: true,
+        },
+      ],
+    };
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([project]),
+      renderThumbnail: vi
+        .fn()
+        .mockResolvedValue({ width: 256, height: 256, pngBase64: 'AAAA' }),
+      tagsForModel: vi.fn().mockResolvedValue([]),
+      listCollections: vi.fn().mockResolvedValue([]),
+      collectionsForModel: vi.fn().mockResolvedValue([]),
+      extractVendorMetadata: vi.fn().mockResolvedValue({
+        slicer: 'orcaSlicer',
+        printerTarget: 'bambu',
+        core: {},
+        plates: [],
+        thumbnails: [],
+      }),
+    });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Select project.3mf' }),
+    );
+    fireEvent.click(
+      await within(screen.getByLabelText('Model properties')).findByRole(
+        'button',
+        { name: 'Prepare for Snapmaker U1' },
+      ),
+    );
+    expect(await screen.findByTestId('retarget-source-root')).toHaveTextContent(
+      'extracted-root',
+    );
+  });
   it.each([
     ['bambu', 'orcaSlicer', true, false],
     ['other', 'bambuStudio', false, false],

@@ -17,6 +17,23 @@ pub const MAX_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CENTRAL_DIRECTORY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_INDEXED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
+pub fn requires_content_revalidation(path: &Path) -> bool {
+    cfg!(not(unix)) && member_source(path).is_ok_and(|source| source.is_some())
+}
+
+fn change_revision(metadata: &Metadata) -> Option<(i64, i64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((metadata.ctime(), metadata.ctime_nsec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -247,11 +264,12 @@ pub fn discover(
         }
         let mut fingerprint = FileFingerprint::new(entry.size(), modified);
         fingerprint.source_revision = Some(format!(
-            "{}:{:?}:{}:{}:{}",
+            "{}:{:?}:{:?}:{}:{}:{}",
             metadata.len(),
             modified
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|time| time.as_nanos()),
+            change_revision(metadata),
             entry.crc32(),
             entry.compressed_size(),
             entry.header_start()
@@ -451,9 +469,12 @@ mod tests {
         assert_eq!(models[0].locations.len(), 2);
         assert!(models[0].is_duplicate_group());
         let scan = scan_root(root.path(), &AtomicBool::new(false));
-        assert!(crate::catalog::hash_changed_files(&store, "root", &scan)
-            .0
-            .is_empty());
+        assert_eq!(
+            crate::catalog::hash_changed_files(&store, "root", &scan)
+                .0
+                .len(),
+            usize::from(!cfg!(unix))
+        );
         assert_eq!(reconcile(&mut store, root.path()).unchanged, 2);
     }
 
@@ -697,6 +718,80 @@ mod tests {
 
     #[cfg(feature = "sqlite")]
     #[test]
+    fn restored_mtime_and_crc_collision_do_not_preserve_stale_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("parts.zip");
+        let a = [
+            0x42, 0x5a, 0xb9, 0xe9, 0xe0, 0xaa, 0x22, 0x13, 0xb4, 0xc3, 0xe1, 0x92,
+        ];
+        let b = [
+            0xbe, 0x55, 0x21, 0x4e, 0xb3, 0x9d, 0xda, 0x07, 0x61, 0x89, 0x7c, 0xc1,
+        ];
+        assert_eq!(a.len(), b.len());
+        assert_ne!(
+            hash_reader(a.as_slice()).unwrap(),
+            hash_reader(b.as_slice()).unwrap()
+        );
+        write_zip(&archive, &[("a.stl", &a)]);
+        std::fs::write(root.path().join("a.stl"), a).unwrap();
+        let before = archive.metadata().unwrap();
+        let mtime = before.modified().unwrap();
+        let mut first = open_archive(&archive).unwrap();
+        let entry = first.by_index_raw(0).unwrap();
+        let directory = (
+            entry.crc32(),
+            entry.size(),
+            entry.compressed_size(),
+            entry.header_start(),
+        );
+        drop(entry);
+        drop(first);
+        let db = root.path().join("catalog.sqlite");
+        {
+            let mut store = crate::sqlite_catalog::SqliteCatalog::open(&db).unwrap();
+            reconcile(&mut store, root.path());
+            assert_eq!(store.models().len(), 1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_zip(&archive, &[("a.stl", &b)]);
+        File::options()
+            .write(true)
+            .open(&archive)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(mtime))
+            .unwrap();
+        let after = archive.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(mtime, after.modified().unwrap());
+        if cfg!(unix) {
+            assert_ne!(change_revision(&before), change_revision(&after));
+        }
+        let mut second = open_archive(&archive).unwrap();
+        let entry = second.by_index_raw(0).unwrap();
+        assert_eq!(
+            directory,
+            (
+                entry.crc32(),
+                entry.size(),
+                entry.compressed_size(),
+                entry.header_start()
+            )
+        );
+        drop(entry);
+        let mut store = crate::sqlite_catalog::SqliteCatalog::open(&db).unwrap();
+        assert_eq!(reconcile(&mut store, root.path()).changed, 1);
+        assert_eq!(store.models().len(), 2);
+        let scan = scan_root(root.path(), &AtomicBool::new(false));
+        assert_eq!(
+            crate::catalog::hash_changed_files(&store, "root", &scan)
+                .0
+                .len(),
+            usize::from(!cfg!(unix))
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
     fn sqlite_member_fingerprints_survive_restart() {
         let root = tempfile::tempdir().unwrap();
         let db = root.path().join("catalog.sqlite");
@@ -708,9 +803,12 @@ mod tests {
         }
         let mut store = crate::sqlite_catalog::SqliteCatalog::open(&db).unwrap();
         let scan = scan_root(root.path(), &AtomicBool::new(false));
-        assert!(crate::catalog::hash_changed_files(&store, "root", &scan)
-            .0
-            .is_empty());
+        assert_eq!(
+            crate::catalog::hash_changed_files(&store, "root", &scan)
+                .0
+                .len(),
+            usize::from(!cfg!(unix))
+        );
         assert_eq!(reconcile(&mut store, root.path()).unchanged, 2);
         assert_eq!(store.models()[0].locations.len(), 2);
     }

@@ -29,8 +29,10 @@ identity is SHA-256 of its streamed, uncompressed bytes, so it groups with an
 extracted copy even within the same source root. A 3MF member is one model;
 its internal resources are not separately indexed, and nested ZIP recursion
 is not supported. ZIP CRC is only part of the change fingerprint, never the
-model identity. Archive size/high-resolution mtime and member directory data
+model identity. Archive size/high-resolution mtime, Unix change-time and member directory data
 invalidate that fingerprint; SQLite persists it across restarts.
+On platforms without portable filesystem change-time (including Windows),
+members are conservatively streamed through SHA-256 again on reconciliation.
 
 ZIP indexing uses seekable files and bounded central-directory reads, with no
 whole-archive buffering or extraction. Limits are 100,000 directory entries,
