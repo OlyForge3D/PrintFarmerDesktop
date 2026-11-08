@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "purpose": "Observed source findings, not approval, certification, or a regression gate.",
-  "inspectedCommit": "9b7affb8aa5eeaf18424a15a7c837ab09d205e80",
+  "inspectedCommit": "20c218b7c3870e282b5cbab984c826e928ee4fee",
   "provenance": {
     "node": "v24.13.1",
     "detector": {
@@ -38,12 +38,12 @@
       ".impeccable/config.json": "29f35c1af71396b2845a0de850779a0f55a482a274856985e34e1b0d99ca5971",
       "DESIGN.md": "891b744d4cec75f8a0d842a739b45ddc5b6c2a03a3392294c22d83c6bec91a11",
       "index.html": "110488cc8ff92304bfddc67facd50b0757982c298192bd86ce919ceec1cea622",
-      "package-lock.json": "af90c515c4006739fc7087bb1c9dc49f5156932b6fa4ca6a6c6987ebbeb66ab5",
+      "package-lock.json": "4bcd80d9833bd005c019bf07f09293855b535a9d954eec7f3e5e0208bddf5c26",
       "scripts/design-baseline.mjs": "fd5e3addedc32d62bb25d0d6f5fc92f9f8a46db0bdb525468c0518f70ead3c14",
       "scripts/design-detector.mjs": "726f88d74df216be4240640f8737045f1943191f5670669f5d719b5641fae8e5",
       "scripts/design-ratchet.mjs": "2b04547d9774a8d3bf6005f0c2fbe5e671a5f9dd3f8de498e600a33c9c7361bd",
       "scripts/design-surface.mjs": "c2df93e9486c5a9004af27e76ae28d801ff501d0d5e5da01ace3264ab4dfed29",
-      "src/renderer/App.tsx": "7887cda9d945b5fa57e7861cf1a8ba2d89db31afc9b42a34c7ae7a704a8ab9fa",
+      "src/renderer/App.tsx": "77f5fcd7321a5abd8c6bd3d4b8e6cefdd660c7c1c23241b7894e9d4b690f30dd",
       "src/renderer/calibration/CalibrationConflictDialog.css": "478734a7de8d60a9cdeb411973d7feae733fed9d6fddfba2af80e8b8bd98bae4",
       "src/renderer/calibration/CalibrationConflictsDialog.css": "45643b067aa3aec8930f6067ba6c35ca8abb9c84e3f6b2a77eda375e313ffd69",
       "src/renderer/calibration/CalibrationConflictsDialog.tsx": "253398327650181c96a426f020d88ff295033fd26e35e7636bc0b8406573bd79",
@@ -71,7 +71,7 @@
       "src/renderer/calibration/useDialogFocus.ts": "954011b945e9404afd20999db3c52ab1114fee25210a21b758fc6cdb7fe93b52",
       "src/renderer/calibration/workspaceTypes.ts": "6fd5a590202e8449d6f2a127769c5118482801b1138c01159e6206d79ecf5eb5",
       "src/renderer/global.d.ts": "fb2bed9e7586b900fb50401ba3f5bb9dd3ba9dc373d05425833b3118391c3cc9",
-      "src/renderer/index.css": "e471594ec1f06f94ab78b70c30ebf72e342e532407f8129351326636a3badacd",
+      "src/renderer/index.css": "b27bf3674037ce4b6351024aa048d853b106f6eccf8513d9d3f7e194e2c67674",
       "src/renderer/library/CollectionEditor.tsx": "2cb476a8c3367b13c2864425cdfab7b4430db9791b6644f918a7e30f983b644e",
       "src/renderer/library/CollectionManager.tsx": "82515542f5180b798ed221a7afba471df1378c93865c36d64e805ac2c7a882eb",
       "src/renderer/library/ImportWizard.tsx": "d52205f60f3f59c21646d739137418bec229c469368d985ddf7075d68956d763",
@@ -109,11 +109,11 @@
       "src/renderer/retarget/useRetargetWorkflow.ts": "10f78d9d77a9281c8bdd8d686b1907d218e7756e64e1e15f715805d71b9cd14c",
       "src/renderer/serverProfiles/ServerProfilesDialog.tsx": "2bf8c0e44b99e9d7d800045c5f00a8ecd66cdab2bf9ea477f354bc7fb1485a0d",
       "src/renderer/shell/AuthorityBar.tsx": "9b5ef7eb1361b090e20dbd16439622e5c318f4a7155687b21af6da2f0590c17c",
-      "src/renderer/shell/StatusBar.tsx": "73fef7b8cd0f6d1015f2db508549c53e30cef19e2a463ff19793f98b6d1f9ec8",
+      "src/renderer/shell/StatusBar.tsx": "5e55dd72fdf73c55ac44c55d0211ec841ba364048447cd3fd2f6ed19744ab2e7",
       "src/renderer/shell/WorkspaceRail.tsx": "78ea9d66e790435073dbae48c7a47a59ba7c1bfef5797d935cc13109895fe868",
       "src/renderer/shell/serverPresentation.ts": "b23b315ac38549657f95afc5a0fd8e0553be63842e36c8ccdb72d587fb70962a",
       "src/renderer/shell/shell.css": "093e6f8007c3c58ee4a712301da2ddd96282a87395c75bb90df4c5ed3162f3c2",
-      "src/renderer/shell/useAvailableRelease.ts": "f6da5d741bdf972b4ff2b7b9e17a5c4f43e3162b719aec3d79cba2a67d74340e",
+      "src/renderer/shell/useAvailableRelease.ts": "61a36bbd79b4ef41f1f3d1446435302bb51bc7cdbed9348a419c633d162bd65f",
       "src/renderer/shell/workspaces.ts": "4fe3845131e50f4cc1ebd5e4f8cf1bd47aa0bf5d2e7c0aefe6f7b5691863a4cc",
       "src/renderer/ui/Icon.tsx": "e5a7e6f843930f0f090a4963b1eb59463cb69116c140f42273329b7fcc54fa24",
       "src/renderer/uploads/UploadsWorkspace.tsx": "cab31e1ca174fb482debc8ddc5618160d44b0a7771f540507f2ff1d3bf236d0f",
@@ -129,10 +129,7 @@
       "src/renderer/viewer/types.ts": "0e79bc34331e395110954cf812672541900041e7b009303d2e494ae361179122",
       "tools/impeccable-detector/manifest.json": "bd914aaa7648163b955271f73408137f2f3ab12867c6c9c42693bb5530e05b8d"
     },
-    "trackedInputsChangedFromCommit": [
-      "scripts/design-baseline.mjs",
-      "scripts/design-ratchet.mjs"
-    ],
+    "trackedInputsChangedFromCommit": [],
     "untrackedInputs": [],
     "localConfig": "absent",
     "effectiveConfig": {
