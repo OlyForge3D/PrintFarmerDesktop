@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -335,6 +336,60 @@ describe('ReleaseNotifier', () => {
   });
 
   describe('checkNow', () => {
+    it('waits for the persisted cache load before starting a manual check', async () => {
+      const cacheFilePath = path.join(cacheDir, 'release-check.json');
+      await writeFile(
+        cacheFilePath,
+        JSON.stringify({
+          currentVersion: '0.1.0-beta.8',
+          checkedAt: 150,
+          result: null,
+        }),
+      );
+      let finishRead: (value: string) => void = () => {};
+      const delayedRead = new Promise<string>((resolve) => {
+        finishRead = resolve;
+      });
+      const readSpy = vi
+        .spyOn(fs, 'readFile')
+        .mockImplementationOnce(() => delayedRead);
+      const fetchImplementation = githubFake([release('0.1.0-beta.10')]);
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0-beta.8',
+        platform: 'darwin',
+        fetchImplementation,
+        now: () => 200,
+        checkIntervalMs: 1000,
+        cacheFilePath,
+      });
+
+      try {
+        const passiveCheck = notifier.getAvailableRelease();
+        await vi.waitFor(() => expect(readSpy).toHaveBeenCalledOnce());
+        const manualCheck = notifier.checkNow();
+        await Promise.resolve();
+        expect(fetchImplementation).not.toHaveBeenCalled();
+
+        finishRead(
+          JSON.stringify({
+            currentVersion: '0.1.0-beta.8',
+            checkedAt: 150,
+            result: null,
+          }),
+        );
+        await expect(manualCheck).resolves.toMatchObject({
+          failed: false,
+          release: { version: '0.1.0-beta.10' },
+        });
+        await expect(passiveCheck).resolves.toBeNull();
+        await expect(notifier.getAvailableRelease()).resolves.toMatchObject({
+          version: '0.1.0-beta.10',
+        });
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
     it('does not let an older background response replace a manual result', async () => {
       const pendingResponses: ((response: Response) => void)[] = [];
       const fetchImplementation = vi.fn<typeof fetch>(

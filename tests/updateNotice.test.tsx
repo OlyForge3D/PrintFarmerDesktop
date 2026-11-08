@@ -136,9 +136,7 @@ describe('update-available notice', () => {
           name: 'Beta 0.1.0-beta.9 available',
         }),
       ).toBeTruthy();
-      expect(
-        screen.getByText('Version 0.1.0-beta.9 is available'),
-      ).toBeTruthy();
+      expect(screen.getByText('Update available')).toBeTruthy();
       expect(check).toHaveBeenCalledOnce();
     });
 
@@ -210,9 +208,7 @@ describe('update-available notice', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Check for Updates' }),
       );
-      expect(
-        await screen.findByText("You're up to date (v0.1.0-beta.8)"),
-      ).toBeTruthy();
+      expect(await screen.findByText('Up to date')).toBeTruthy();
     });
 
     it.each([
@@ -231,9 +227,7 @@ describe('update-available notice', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Check for Updates' }),
       );
-      expect(
-        await screen.findByText("Couldn't check for updates. Try again later."),
-      ).toBeTruthy();
+      expect(await screen.findByText('Check failed')).toBeTruthy();
     });
 
     it('explains that development builds do not check', async () => {
@@ -249,9 +243,7 @@ describe('update-available notice', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Check for Updates' }),
       );
-      expect(
-        await screen.findByText('Update checks run only in installed builds'),
-      ).toBeTruthy();
+      expect(await screen.findByText('Installed builds only')).toBeTruthy();
     });
   });
 });

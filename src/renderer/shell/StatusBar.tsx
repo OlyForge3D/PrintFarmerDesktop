@@ -9,15 +9,15 @@ import type { UpdateCheckState } from './useAvailableRelease';
 function updateCheckMessage(state: UpdateCheckState): string {
   switch (state.kind) {
     case 'checking':
-      return 'Checking for updates…';
+      return 'Checking…';
     case 'available':
-      return `Version ${state.version} is available`;
+      return 'Update available';
     case 'upToDate':
-      return `You're up to date (v${state.version})`;
+      return 'Up to date';
     case 'failed':
-      return "Couldn't check for updates. Try again later.";
+      return 'Check failed';
     case 'unavailable':
-      return 'Update checks run only in installed builds';
+      return 'Installed builds only';
     case 'idle':
       return '';
   }

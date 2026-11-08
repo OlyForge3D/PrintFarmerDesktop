@@ -188,6 +188,7 @@ export class ReleaseNotifier {
   private readonly onError: (error: unknown) => void;
   private readonly cacheFilePath: string | null;
   private cacheLoaded = false;
+  private cacheLoadPromise: Promise<void> | null = null;
   private lastCheckedAt: number | null = null;
   private lastResult: AvailableRelease | null = null;
   private inFlight: Promise<AvailableRelease | null> | null = null;
@@ -220,9 +221,18 @@ export class ReleaseNotifier {
     return this.inFlight;
   }
 
-  private async loadPersistedCheck(): Promise<void> {
-    if (this.cacheLoaded || this.cacheFilePath === null) return;
-    this.cacheLoaded = true;
+  private loadPersistedCheck(): Promise<void> {
+    if (this.cacheLoaded) return Promise.resolve();
+    if (!this.cacheLoadPromise) {
+      this.cacheLoadPromise = this.readPersistedCheck().finally(() => {
+        this.cacheLoaded = true;
+      });
+    }
+    return this.cacheLoadPromise;
+  }
+
+  private async readPersistedCheck(): Promise<void> {
+    if (this.cacheFilePath === null) return;
     try {
       const parsed = PersistedCheck.safeParse(
         JSON.parse(await fs.readFile(this.cacheFilePath, 'utf8')),
