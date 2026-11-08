@@ -16,3 +16,6 @@ tests/fixtures/malicious-input
 # Vendored impeccable detector (#843). Byte-pinned by manifest.json; reformatting
 # it would fail scripts/design-detector.mjs's integrity check.
 tools/impeccable-detector
+
+# Deterministic output owned by the design baseline generator.
+reports/design-baseline.json

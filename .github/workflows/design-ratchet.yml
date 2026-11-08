@@ -1,0 +1,78 @@
+name: Design full-source ratchet
+
+# merge-queue: reports
+# pull_request_target runs the workflow from the default branch, not PR-owned
+# YAML. Target blobs are fetched as data, never checked out or executed.
+# Bootstrap this workflow into the default branch before requiring its status.
+on:
+  pull_request_target:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  design-ratchet:
+    name: Design full-source ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out base repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          path: target
+          fetch-depth: 0
+      - name: Fetch target Git objects without checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HEAD_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then exit 1; fi
+          if [[ "$EVENT_NAME" == pull_request_target ]]; then
+            test "$BASE_REF" = "$DEFAULT_BRANCH"
+            if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then exit 1; fi
+            ref="refs/pull/$PR_NUMBER/head"
+          else
+            test "$BASE_REF" = "refs/heads/$DEFAULT_BRANCH"
+            if [[ "$QUEUE_REF" != refs/heads/gh-readonly-queue/* ]]; then exit 1; fi
+            ref="$QUEUE_REF"
+          fi
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$header"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="$header" \
+            git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin "$ref"
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+      - name: Check out trusted base scanner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          path: trusted
+          sparse-checkout: |
+            scripts/design-ratchet.mjs
+            scripts/design-detector.mjs
+            scripts/design-surface.mjs
+            tools/impeccable-detector
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 #v4
+        with:
+          node-version: 24.13.1
+      - name: Check trusted full-source allowance
+        env:
+          BASE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        shell: bash
+        run: |
+          marker="$(openssl rand -hex 32)"
+          echo "::stop-commands::$marker"
+          node "$GITHUB_WORKSPACE/trusted/scripts/design-ratchet.mjs" "$GITHUB_WORKSPACE/target" "$BASE_SHA" "$HEAD_SHA" "$GITHUB_WORKSPACE/trusted"

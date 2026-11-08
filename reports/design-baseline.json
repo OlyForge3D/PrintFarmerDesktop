@@ -1,0 +1,810 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Observed source findings, not approval, certification, or a regression gate.",
+  "inspectedCommit": "9b7affb8aa5eeaf18424a15a7c837ab09d205e80",
+  "provenance": {
+    "node": "v24.13.1",
+    "detector": {
+      "version": "4.0.3",
+      "upstream": "https://impeccable.style (impeccable by Paul Bakaus)",
+      "provenanceLimit": "No immutable upstream commit or archive digest was available when vendoring; these hashes detect drift from the vendored bytes, not that the bytes match an upstream release. Re-vendor by copying the same paths from a newer skill copy, then run `node scripts/design-detector.mjs --write-manifest`.",
+      "localModifications": "Local regex corrections suppress bare JSDoc <img> references when no closing </img> appears in the file, and exclude spinning rounded-full rings from the rounded-card accent rule.",
+      "files": {
+        "LICENSE": "02bb8c3b4e70190e3986c0404ad2fd8d639b4f534252d82379cc1b502b6d1812",
+        "NOTICE.md": "c60a093c2845fd9fb82f9c6f742ece31f379f8190b535309d32d66c45ccffdcb",
+        "detect.mjs": "f5dfd05ca1e314acd8ed79c6301a20a1b844f2eb6691bd63e04116a8e7efb187",
+        "detector/cli/main.mjs": "7d922711abb67ea3c626f1a2fcbe4464e72230bfdd61644217c4ac351065edd5",
+        "detector/design-system.mjs": "a3f995a4223e8eb8295bca41ba08ea6d4be3409597fdb163a0775ee61c5ffd35",
+        "detector/detect-antipatterns.mjs": "f5240e4162b270efafd099b81d315309a6f25a83a887aedf02bf9bcf3ed5c724",
+        "detector/engines/browser/detect-url.mjs": "5a2240c5a56ea6d302bd008a03b1319facc3289056d44beb45d38c3ace8252f6",
+        "detector/engines/regex/detect-text.mjs": "61a953c7420eda2bb10e729b061d3e6d04f5c8dfc889e07252edea1b5d50a609",
+        "detector/engines/static-html/css-cascade.mjs": "c68070331a9f4e6f301a9508a61c196c61b13534a91be25a7c4cfbdcc57c7807",
+        "detector/engines/static-html/detect-html.mjs": "3e8ae988cd2ec9adb20429aac1ecad7c2ea0ff97b5704a154d03355f9e656c36",
+        "detector/engines/visual/screenshot-contrast.mjs": "b4520b3f001079bd175bf20d46c5197b1b8ec5fb98fdf72c50a24c0b6598ee99",
+        "detector/findings.mjs": "8b8af7212c8515d6791a8af1375d0619a9f9a707a881e6fbd850e4216b3f8eca",
+        "detector/node/file-system.mjs": "219e74a5a8dfd8594c1b9c8a4488bc7e5c403cf8d4f8f9628cc0a1fb8fd0f4e1",
+        "detector/profile/profiler.mjs": "5e201f3557360bd368a3977fecf925f376fd95f8a4dd6c4cc63fbd62848cda43",
+        "detector/registry/antipatterns.mjs": "f660130d533b3faa58dafa7c5fb4be0353a2e0a9e977362bd1c76095ecfb24ff",
+        "detector/rules/checks.mjs": "6a00479a31930f7c546f948db485da92116aa5127e6383c4296fb351ab56a2f0",
+        "detector/shared/color.mjs": "01a68231413473f2c1183e12663ccf8aca26a87d067de75fbf3c21e73b751a83",
+        "detector/shared/constants.mjs": "606f50159d56b5e972724c13933e63220696636215292e5316846426f3e12896",
+        "detector/shared/fonts.mjs": "869c297295a10082d87988f31c136c5df9ddad84da0c2bbba2e85e1261e320a6",
+        "detector/shared/inline-ignores.mjs": "74c80303e25f017b4671ae299b9fca424a5f7714203d19207a8d8896dfd2eecc",
+        "detector/shared/page.mjs": "b4cef5548d84fa90d15e6b42b20be9ef74ed05e4e6e46076ec5acc61b343315c",
+        "lib/impeccable-config.mjs": "132d158e5a14c70ca4dd338eff110c671ba55fef8e7f7729677c7afd627cebe3"
+      }
+    },
+    "inputSha256": {
+      ".impeccable/config.json": "29f35c1af71396b2845a0de850779a0f55a482a274856985e34e1b0d99ca5971",
+      "DESIGN.md": "891b744d4cec75f8a0d842a739b45ddc5b6c2a03a3392294c22d83c6bec91a11",
+      "index.html": "110488cc8ff92304bfddc67facd50b0757982c298192bd86ce919ceec1cea622",
+      "package-lock.json": "af90c515c4006739fc7087bb1c9dc49f5156932b6fa4ca6a6c6987ebbeb66ab5",
+      "scripts/design-baseline.mjs": "fd5e3addedc32d62bb25d0d6f5fc92f9f8a46db0bdb525468c0518f70ead3c14",
+      "scripts/design-detector.mjs": "726f88d74df216be4240640f8737045f1943191f5670669f5d719b5641fae8e5",
+      "scripts/design-ratchet.mjs": "2b04547d9774a8d3bf6005f0c2fbe5e671a5f9dd3f8de498e600a33c9c7361bd",
+      "scripts/design-surface.mjs": "c2df93e9486c5a9004af27e76ae28d801ff501d0d5e5da01ace3264ab4dfed29",
+      "src/renderer/App.tsx": "7887cda9d945b5fa57e7861cf1a8ba2d89db31afc9b42a34c7ae7a704a8ab9fa",
+      "src/renderer/calibration/CalibrationConflictDialog.css": "478734a7de8d60a9cdeb411973d7feae733fed9d6fddfba2af80e8b8bd98bae4",
+      "src/renderer/calibration/CalibrationConflictsDialog.css": "45643b067aa3aec8930f6067ba6c35ca8abb9c84e3f6b2a77eda375e313ffd69",
+      "src/renderer/calibration/CalibrationConflictsDialog.tsx": "253398327650181c96a426f020d88ff295033fd26e35e7636bc0b8406573bd79",
+      "src/renderer/calibration/CalibrationDashboard.tsx": "3f64af51adb86dae5f77e0de17cd22f31e4e236281d0b27b53ebb0de309988e0",
+      "src/renderer/calibration/CalibrationWorkspace.tsx": "8caa3a91a8a9d2d6a81d77a996f723b10e799f643ea53c7bc71fc71328751e94",
+      "src/renderer/calibration/CalibrationWorkspaceStore.tsx": "ef57a34f4b47094aa7cae4f4e9d975015837ffe98b2cdf6bbe33fc9e19477538",
+      "src/renderer/calibration/FilamentCalibrationWizard.tsx": "ed2702f162c88ca2c8289c5098d6b9d431355e3d98fa306dc2aabdfd27a27b9b",
+      "src/renderer/calibration/ProfileSelectionSection.tsx": "ffff006b8e38ebb6556ca5c571f01807fabe44f1ea61ab4ecc3d557d3cebc411",
+      "src/renderer/calibration/api.ts": "753b677a9f9f56b5bc7741afb0115a1fe7c197ded2d218657be26c839177f713",
+      "src/renderer/calibration/blockedReasonMessages.ts": "97c3b1adf9bc4777ad416ac9f77228a266987db310fb1ca164a1fefcbddf5394",
+      "src/renderer/calibration/calibrationWorkspace.css": "79bd092c873da7b35eec32376c4d1a499a359da948704f3f67cc325f3ac25d35",
+      "src/renderer/calibration/domain/catalog.ts": "604897bc88344a8dae8f4e23bc284c0690c0cad1964cb01bf8463feb996eed05",
+      "src/renderer/calibration/domain/eligibility.ts": "c1dfa672a3110a9862e7e1b90447b593f8e21a35c842673278179e623c784e44",
+      "src/renderer/calibration/domain/formulas.ts": "97dee7722f1e11401b1fef9f8da7e65f3061aa99ebe55fd19abcf791ec7ab707",
+      "src/renderer/calibration/domain/index.ts": "952cd2eada4fe705db062fcea3fdfd2cc364019521e2f314c0455e79be2f6a2c",
+      "src/renderer/calibration/domain/reducer.ts": "2fcd50ddcca3294e1b5309bc5dcc9e8b3a2364f473c7c98c0cd71fee40be0dbb",
+      "src/renderer/calibration/domain/selectors.ts": "69964786ad865623691bb0a2b818b4e084dd1b053cb411f2d77ebc6397e60894",
+      "src/renderer/calibration/domain/types.ts": "ba77fb3e5b942d34f49e4e6d27490c400ff6f641cfce585badde0b4635df5ec2",
+      "src/renderer/calibration/filamentWizardState.ts": "4c8fcc6786feef6e842ed19b730bd5dfb27d1121deca80dc157411aac5508be1",
+      "src/renderer/calibration/index.ts": "762bc18c546cc05c2388a809b30782b98e4cb622eb78ce6a4ab9fb84311505f6",
+      "src/renderer/calibration/parseDomainState.ts": "a461a56f62bcbf49e05b4ce7d71e745fbae4fc96e90f8cc09e3be706bfca3fe0",
+      "src/renderer/calibration/profileSelection.ts": "584311b35f1ea8c08d74b7268f61c6b43c58299376ac8c784f72f1be4a325f8f",
+      "src/renderer/calibration/projectEligibility.ts": "584142e3cf69cad323b21d55e67ae06cc312feba819fbb499bece8e90284e3ca",
+      "src/renderer/calibration/refusalMessages.ts": "eb4065c949a96fc6acefd8c1a1000a11d1d0be8b26e2f4bf33006d16d71a62a8",
+      "src/renderer/calibration/useDialogFocus.ts": "954011b945e9404afd20999db3c52ab1114fee25210a21b758fc6cdb7fe93b52",
+      "src/renderer/calibration/workspaceTypes.ts": "6fd5a590202e8449d6f2a127769c5118482801b1138c01159e6206d79ecf5eb5",
+      "src/renderer/global.d.ts": "fb2bed9e7586b900fb50401ba3f5bb9dd3ba9dc373d05425833b3118391c3cc9",
+      "src/renderer/index.css": "e471594ec1f06f94ab78b70c30ebf72e342e532407f8129351326636a3badacd",
+      "src/renderer/library/CollectionEditor.tsx": "2cb476a8c3367b13c2864425cdfab7b4430db9791b6644f918a7e30f983b644e",
+      "src/renderer/library/CollectionManager.tsx": "82515542f5180b798ed221a7afba471df1378c93865c36d64e805ac2c7a882eb",
+      "src/renderer/library/ImportWizard.tsx": "d52205f60f3f59c21646d739137418bec229c469368d985ddf7075d68956d763",
+      "src/renderer/library/LibraryErrorAlert.tsx": "2c90f676fae16e0c108840c85dbbd9ed78f55a04c1aa303d974202faa323e6f1",
+      "src/renderer/library/LibraryOnboarding.tsx": "3293cee35d2b5a0801d568315ca279037822a70c1b55ccd79b865ebc0e605950",
+      "src/renderer/library/LibraryPagination.tsx": "1add47612af45e5fdcb1f7c7f68bdfe6c1af3781b61fcfb3f66343e96ba199f1",
+      "src/renderer/library/LibrarySidebar.tsx": "6e3a2ee5ff495206a8c20e8bda059122c59d27b030935ed8e04760cee24a1f0a",
+      "src/renderer/library/MaterialsPanel.tsx": "f91f4553308c93cd41138da28698de8342d9b20d9092f3a0f65ca7a70f82655b",
+      "src/renderer/library/ModelCard.tsx": "091eda07b13f0fc1ecaaa14cc41f7dc44912cc747b6743fcb091e55a42c3d0f4",
+      "src/renderer/library/ModelGrid.tsx": "f7ebccc4e6f4b2bcaf2fc24608b121c3c80c06049251b7ea58157994ea894ae0",
+      "src/renderer/library/ModelStats.tsx": "e23410d51f2ef1fabfb23acbfb759a8b023bc0d917b4044435e56d0397659efb",
+      "src/renderer/library/OrganizationWorkspace.tsx": "f14d798d89cb4c3a58d8953387f4f6892c938d3c311a3c4570cd80785a958698",
+      "src/renderer/library/PartTree.tsx": "83539e0873dbd58f30e3e730f9d0d00623238b1b065c77696352a326cc84c32e",
+      "src/renderer/library/PropertiesInspector.tsx": "2f01132f568d94893a78648a5d55ee6ee5e38666d32b38ce0f9f0d8bad7d4932",
+      "src/renderer/library/SourcesWorkspace.tsx": "1d6d0b8b41a49b31c8819199daef918ff647f7ed4028a51f9c1c6ddb65e9c08a",
+      "src/renderer/library/TagEditor.tsx": "257b3a47388eb10b5d2c414c5010eb0de26da848feaa5916db3833a91b92935e",
+      "src/renderer/library/ThumbnailCacheDialog.tsx": "d0cdf574411fd05ff67353d1464778b4f3bad7ae5dde6fae54ba9e911fb0c697",
+      "src/renderer/library/VendorPanel.tsx": "075227ab75dfedb8a2c144683ded38863de79e7f41148ede6729babacb6e7f56",
+      "src/renderer/library/filter.ts": "7019747a55a48de7f497583ea430cfb3a73f11bc81c3c3f2d0aecccf248c16b6",
+      "src/renderer/library/importPlan.ts": "130c7cda8913dd3ba25b546d5e530b55719c698b0b782cf6bdd6f4c66ff7659c",
+      "src/renderer/library/model.ts": "f386e951db0f2acc9dd2e4391f9d89c1d3ba6cec6ef0d6d46995fe88cab881cf",
+      "src/renderer/library/partTreeModel.ts": "ec1db028038780edd74ea475fa2337eec39e66c069b631e246c0cfdd0cc729e1",
+      "src/renderer/library/presentation.ts": "5ffd16eb3ae152ba9a5efa18bfe30a92879c3978c5bf0fffb73d25fc8c88603e",
+      "src/renderer/library/sceneMaterials.ts": "efa5f923807609aad1104821ed4ed8fb125988a8bbffe9a3edb1e5da72ac9385",
+      "src/renderer/library/sceneStats.ts": "142b521c7c85d75b79f5a7ea99e4de9447d9bd05bf79edbcd4b580dd75f0928b",
+      "src/renderer/library/sourceRoots.ts": "d7b97b23331746c4d82af68933734a038b7170c25634e6e5af5b36410a031af5",
+      "src/renderer/library/useFavorites.ts": "39264b4f62c6568d9797f97ebe25b1abc4a614e63b9494c159125ffaf1e4d1d8",
+      "src/renderer/library/useLibrary.ts": "810ea240edcc447c8f1c4899e217ffc73657d4f2acf865cceec9cecc8b34caf0",
+      "src/renderer/library/useModelCollections.ts": "fda464c891e982a0cc2bcbd2f1a6164700e9079debafd87283afd56ef92fd378",
+      "src/renderer/library/useModelTags.ts": "84d2cf241b9198d232353f66790d9c696d99cb85472d156b578e18227aa70328",
+      "src/renderer/library/useThumbnail.ts": "f09d8995e8a4aa10b1479121f1b9f57038a60167d80b6677a0315890e110074d",
+      "src/renderer/library/useVendorMetadata.ts": "1699e704b2ba8605a11723cb9715a78a6cf0f200de033f3c89ffde428c755caf",
+      "src/renderer/main.tsx": "1ca8b3b8eba4f612b279c7850418be8b16a205ce5f823eadfc0f3c7bbac970a6",
+      "src/renderer/retarget/RetargetWorkflow.tsx": "7ad5872ea300fac524cd34028dd20fe5c7fbe4fd41d7c06adaf0650d027e8b23",
+      "src/renderer/retarget/useRetargetWorkflow.ts": "10f78d9d77a9281c8bdd8d686b1907d218e7756e64e1e15f715805d71b9cd14c",
+      "src/renderer/serverProfiles/ServerProfilesDialog.tsx": "2bf8c0e44b99e9d7d800045c5f00a8ecd66cdab2bf9ea477f354bc7fb1485a0d",
+      "src/renderer/shell/AuthorityBar.tsx": "9b5ef7eb1361b090e20dbd16439622e5c318f4a7155687b21af6da2f0590c17c",
+      "src/renderer/shell/StatusBar.tsx": "73fef7b8cd0f6d1015f2db508549c53e30cef19e2a463ff19793f98b6d1f9ec8",
+      "src/renderer/shell/WorkspaceRail.tsx": "78ea9d66e790435073dbae48c7a47a59ba7c1bfef5797d935cc13109895fe868",
+      "src/renderer/shell/serverPresentation.ts": "b23b315ac38549657f95afc5a0fd8e0553be63842e36c8ccdb72d587fb70962a",
+      "src/renderer/shell/shell.css": "093e6f8007c3c58ee4a712301da2ddd96282a87395c75bb90df4c5ed3162f3c2",
+      "src/renderer/shell/useAvailableRelease.ts": "f6da5d741bdf972b4ff2b7b9e17a5c4f43e3162b719aec3d79cba2a67d74340e",
+      "src/renderer/shell/workspaces.ts": "4fe3845131e50f4cc1ebd5e4f8cf1bd47aa0bf5d2e7c0aefe6f7b5691863a4cc",
+      "src/renderer/ui/Icon.tsx": "e5a7e6f843930f0f090a4963b1eb59463cb69116c140f42273329b7fcc54fa24",
+      "src/renderer/uploads/UploadsWorkspace.tsx": "cab31e1ca174fb482debc8ddc5618160d44b0a7771f540507f2ff1d3bf236d0f",
+      "src/renderer/uploads/uploadSummary.ts": "32893e383b8ea2824eeeb903012dee4ecb7d7fe53fd9a327455eeaf231fed53e",
+      "src/renderer/viewer/ModelViewer.tsx": "d174e34d35235d1ecdac1f7bb4a1622221cca57bd33d30f65ef88db710421b97",
+      "src/renderer/viewer/PlateSelector.tsx": "1223e82da57474d706cf828cd7e8122cdf248b8fcc9a68e3e91c867674775d17",
+      "src/renderer/viewer/PreviewWorkspace.tsx": "d6fd9cf513b5e6fcf6b8d4d5ea4c211fabdcd6f3b4b73b2948b0fd86cb3fcc26",
+      "src/renderer/viewer/creasedNormals.ts": "69a0fba50ca8d4788f3183a998d3a1f1ace040dd6b0546d7f7fc30dfe7d9f401",
+      "src/renderer/viewer/geometry.ts": "e34763454051454e277a2c612466b33a8611b0a0dd160852d40a08f6ee9e131c",
+      "src/renderer/viewer/lod.ts": "8470862cb816d69e537df707deb0bc9b3af2995ca3967f71dbbde82ebf0897ae",
+      "src/renderer/viewer/plateSelection.ts": "ba2f5021add6ac0227d087bcbd0d6adc45bb9fc219276a179a45f8cc7641e727",
+      "src/renderer/viewer/sceneGraph.ts": "c95129d74b506794a2aece3f43a4afab24735701fa4f57c07b1dff383a111659",
+      "src/renderer/viewer/types.ts": "0e79bc34331e395110954cf812672541900041e7b009303d2e494ae361179122",
+      "tools/impeccable-detector/manifest.json": "bd914aaa7648163b955271f73408137f2f3ab12867c6c9c42693bb5530e05b8d"
+    },
+    "trackedInputsChangedFromCommit": [
+      "scripts/design-baseline.mjs",
+      "scripts/design-ratchet.mjs"
+    ],
+    "untrackedInputs": [],
+    "localConfig": "absent",
+    "effectiveConfig": {
+      "ignoreRules": [],
+      "ignoreFiles": [],
+      "ignoreValues": [],
+      "designSystem": {
+        "enabled": true
+      }
+    },
+    "htmlEngine": "regex-fallback"
+  },
+  "scope": {
+    "selected": [
+      "index.html",
+      "src/renderer/App.tsx",
+      "src/renderer/calibration/CalibrationConflictDialog.css",
+      "src/renderer/calibration/CalibrationConflictsDialog.css",
+      "src/renderer/calibration/CalibrationConflictsDialog.tsx",
+      "src/renderer/calibration/CalibrationDashboard.tsx",
+      "src/renderer/calibration/CalibrationWorkspace.tsx",
+      "src/renderer/calibration/CalibrationWorkspaceStore.tsx",
+      "src/renderer/calibration/FilamentCalibrationWizard.tsx",
+      "src/renderer/calibration/ProfileSelectionSection.tsx",
+      "src/renderer/calibration/calibrationWorkspace.css",
+      "src/renderer/index.css",
+      "src/renderer/library/CollectionEditor.tsx",
+      "src/renderer/library/CollectionManager.tsx",
+      "src/renderer/library/ImportWizard.tsx",
+      "src/renderer/library/LibraryErrorAlert.tsx",
+      "src/renderer/library/LibraryOnboarding.tsx",
+      "src/renderer/library/LibraryPagination.tsx",
+      "src/renderer/library/LibrarySidebar.tsx",
+      "src/renderer/library/MaterialsPanel.tsx",
+      "src/renderer/library/ModelCard.tsx",
+      "src/renderer/library/ModelGrid.tsx",
+      "src/renderer/library/ModelStats.tsx",
+      "src/renderer/library/OrganizationWorkspace.tsx",
+      "src/renderer/library/PartTree.tsx",
+      "src/renderer/library/PropertiesInspector.tsx",
+      "src/renderer/library/SourcesWorkspace.tsx",
+      "src/renderer/library/TagEditor.tsx",
+      "src/renderer/library/ThumbnailCacheDialog.tsx",
+      "src/renderer/library/VendorPanel.tsx",
+      "src/renderer/main.tsx",
+      "src/renderer/retarget/RetargetWorkflow.tsx",
+      "src/renderer/serverProfiles/ServerProfilesDialog.tsx",
+      "src/renderer/shell/AuthorityBar.tsx",
+      "src/renderer/shell/StatusBar.tsx",
+      "src/renderer/shell/WorkspaceRail.tsx",
+      "src/renderer/shell/shell.css",
+      "src/renderer/ui/Icon.tsx",
+      "src/renderer/uploads/UploadsWorkspace.tsx",
+      "src/renderer/viewer/ModelViewer.tsx",
+      "src/renderer/viewer/PlateSelector.tsx",
+      "src/renderer/viewer/PreviewWorkspace.tsx"
+    ],
+    "scanned": [
+      "index.html",
+      "src/renderer/App.tsx",
+      "src/renderer/calibration/CalibrationConflictDialog.css",
+      "src/renderer/calibration/CalibrationConflictsDialog.css",
+      "src/renderer/calibration/CalibrationConflictsDialog.tsx",
+      "src/renderer/calibration/CalibrationDashboard.tsx",
+      "src/renderer/calibration/CalibrationWorkspace.tsx",
+      "src/renderer/calibration/CalibrationWorkspaceStore.tsx",
+      "src/renderer/calibration/FilamentCalibrationWizard.tsx",
+      "src/renderer/calibration/ProfileSelectionSection.tsx",
+      "src/renderer/calibration/calibrationWorkspace.css",
+      "src/renderer/index.css",
+      "src/renderer/library/CollectionEditor.tsx",
+      "src/renderer/library/CollectionManager.tsx",
+      "src/renderer/library/ImportWizard.tsx",
+      "src/renderer/library/LibraryErrorAlert.tsx",
+      "src/renderer/library/LibraryOnboarding.tsx",
+      "src/renderer/library/LibraryPagination.tsx",
+      "src/renderer/library/LibrarySidebar.tsx",
+      "src/renderer/library/MaterialsPanel.tsx",
+      "src/renderer/library/ModelCard.tsx",
+      "src/renderer/library/ModelGrid.tsx",
+      "src/renderer/library/ModelStats.tsx",
+      "src/renderer/library/OrganizationWorkspace.tsx",
+      "src/renderer/library/PartTree.tsx",
+      "src/renderer/library/PropertiesInspector.tsx",
+      "src/renderer/library/SourcesWorkspace.tsx",
+      "src/renderer/library/TagEditor.tsx",
+      "src/renderer/library/ThumbnailCacheDialog.tsx",
+      "src/renderer/library/VendorPanel.tsx",
+      "src/renderer/main.tsx",
+      "src/renderer/retarget/RetargetWorkflow.tsx",
+      "src/renderer/serverProfiles/ServerProfilesDialog.tsx",
+      "src/renderer/shell/AuthorityBar.tsx",
+      "src/renderer/shell/StatusBar.tsx",
+      "src/renderer/shell/WorkspaceRail.tsx",
+      "src/renderer/shell/shell.css",
+      "src/renderer/ui/Icon.tsx",
+      "src/renderer/uploads/UploadsWorkspace.tsx",
+      "src/renderer/viewer/ModelViewer.tsx",
+      "src/renderer/viewer/PlateSelector.tsx",
+      "src/renderer/viewer/PreviewWorkspace.tsx"
+    ],
+    "ignoredByConfig": [],
+    "classificationNotes": [
+      {
+        "file": "src/renderer/calibration/CalibrationConflictDialog.css",
+        "literalReferences": [],
+        "status": "No literal reference found in tracked renderer code; runtime reachability not established."
+      }
+    ],
+    "excluded": [
+      "Renderer plain TypeScript, assets and unsupported file extensions are not detector targets; plain TypeScript may be read solely for literal stylesheet-reference classification.",
+      "Main and preload source, including UI state and native menu construction.",
+      "OS/native dialogs and menus, installer and other native UI.",
+      "Runtime states, rendered DOM, interactions, accessibility tree, pixels, zoom and DPI.",
+      "Untracked files and any files ignored by detector configuration; inline suppressions remain active.",
+      "HTML static DOM and linked-stylesheet analysis: optional parser dependencies unavailable."
+    ]
+  },
+  "policy": [
+    {
+      "file": "index.html",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/App.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/CalibrationConflictDialog.css",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/CalibrationConflictsDialog.css",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/CalibrationConflictsDialog.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/CalibrationDashboard.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/CalibrationWorkspace.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/CalibrationWorkspaceStore.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/FilamentCalibrationWizard.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/ProfileSelectionSection.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/calibration/calibrationWorkspace.css",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/index.css",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/CollectionEditor.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/CollectionManager.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/ImportWizard.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/LibraryErrorAlert.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/LibraryOnboarding.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/LibraryPagination.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/LibrarySidebar.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/MaterialsPanel.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/ModelCard.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/ModelGrid.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/ModelStats.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/OrganizationWorkspace.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/PartTree.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/PropertiesInspector.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/SourcesWorkspace.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/TagEditor.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/ThumbnailCacheDialog.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/library/VendorPanel.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/main.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/retarget/RetargetWorkflow.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/serverProfiles/ServerProfilesDialog.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/shell/AuthorityBar.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/shell/StatusBar.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/shell/WorkspaceRail.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/shell/shell.css",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/ui/Icon.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/uploads/UploadsWorkspace.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/viewer/ModelViewer.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/viewer/PlateSelector.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    },
+    {
+      "file": "src/renderer/viewer/PreviewWorkspace.tsx",
+      "source": "DESIGN.md",
+      "sidecar": null,
+      "parsed": false,
+      "status": "no frontmatter; no policy parsed",
+      "allowlists": {
+        "fonts": false,
+        "colors": false,
+        "radii": false,
+        "fontSizes": false
+      }
+    }
+  ],
+  "counts": {
+    "selected": 42,
+    "scanned": 42,
+    "ignored": 0,
+    "blocking": 0,
+    "advisory": 0
+  },
+  "findings": []
+}
