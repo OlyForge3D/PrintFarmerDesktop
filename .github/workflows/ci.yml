@@ -452,6 +452,14 @@ jobs:
           PRINTFARMER_BUILD_E2E: '1'
         run: npm run package
 
+      - name: Make macOS installers using configured makers
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'macOS'
+        run: npm run make -- --skip-package --platform=darwin
+
+      - name: Verify branded macOS installer
+        if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true' && runner.os == 'macOS'
+        run: npm run verify:dmg
+
       - name: Verify SBOM reproduces from the lockfiles
         # Runs here rather than in `desktop` because this is the only job with
         # both toolchains, so it is the only one where the cargo half of the

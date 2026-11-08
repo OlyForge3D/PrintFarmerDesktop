@@ -87,6 +87,20 @@ Finder's labels. Use `title` for the mounted volume name, not `name`: setting
 contents callback uses the packaged app path for both native and universal
 builds; signing and notarization still run before the maker.
 
+Do not override macOS makers with package-name `--targets` arguments: Forge
+matches configured class instances by their short names (`dmg`, `zip`,
+`squirrel`), and unmatched package names instantiate unconfigured makers.
+Use `npm run make -- --skip-package --platform=darwin` after packaging, adding
+`--arch=universal` for universal builds. Windows release steps select
+`--targets=squirrel` or `--targets=zip` separately so the portable archive does
+not rebuild a signed installer.
+
+Run `npm run verify:dmg` on macOS after making the installers. It mounts each
+built DMG read-only, checks the volume title, compares the embedded Retina TIFF
+byte-for-byte with the committed PNG pair converted by `tiffutil`, and requires
+a Finder layout. Both the release workflow and CI's macOS release-package job
+run this assertion before accepting the artifacts.
+
 ## UI design checks
 
 Changes to the renderer's markup and styles (the set is defined in

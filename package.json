@@ -25,6 +25,7 @@
     "start": "node scripts/start-local.mjs",
     "package": "electron-forge package",
     "make": "electron-forge make",
+    "verify:dmg": "node scripts/verify-dmg.mjs",
     "generate:dmg-background": "electron scripts/generate-dmg-background.mjs",
     "build:sidecar": "node scripts/stage-sidecar.mjs",
     "build:sidecar:universal": "node scripts/build-universal-sidecar.mjs",

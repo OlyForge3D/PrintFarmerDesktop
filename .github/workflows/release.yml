@@ -282,15 +282,21 @@ jobs:
 
       - name: Make unsigned Windows installer
         if: env.IS_BETA_RELEASE == 'true' && runner.os == 'Windows'
-        run: npm run make -- --skip-package --platform=win32 --arch=x64 --targets=@electron-forge/maker-squirrel
+        run: npm run make -- --skip-package --platform=win32 --arch=x64 --targets=squirrel
 
       - name: Make Windows portable archive
         if: runner.os == 'Windows'
-        run: npm run make -- --skip-package --platform=win32 --arch=x64 --targets=@electron-forge/maker-zip
+        run: npm run make -- --skip-package --platform=win32 --arch=x64 --targets=zip
 
       - name: Make macOS publishable archives
         if: runner.os == 'macOS'
-        run: npm run make -- --skip-package --platform=darwin --arch=universal --targets=@electron-forge/maker-zip,@electron-forge/maker-dmg
+        # Package-name overrides instantiate default makers instead of matching
+        # the configured class instances. Let Forge filter them by platform.
+        run: npm run make -- --skip-package --platform=darwin --arch=universal
+
+      - name: Verify branded macOS installer
+        if: runner.os == 'macOS'
+        run: npm run verify:dmg
 
       - name: Verify Windows Authenticode signatures
         if: env.IS_STABLE_RELEASE == 'true' && runner.os == 'Windows'
