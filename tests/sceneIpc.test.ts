@@ -1,8 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { dialog } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
-import { IpcChannel, type LoadSceneResponse } from '@shared/ipc';
+import {
+  IpcChannel,
+  type LoadSceneResponse,
+  type ThumbnailCacheSettings,
+} from '@shared/ipc';
 
 type InvokeHandler = (event: unknown, request: unknown) => Promise<unknown>;
 
@@ -34,7 +39,11 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { createLoadSceneHandler, registerIpcHandlers } from '../src/main/ipc';
+import {
+  createLoadSceneHandler,
+  createRenderThumbnailHandler,
+  registerIpcHandlers,
+} from '../src/main/ipc';
 import { RootApprovalStore } from '../src/main/rootApprovals';
 import { SceneCacheService } from '../src/main/sceneCache';
 import { SidecarClient } from '../src/main/sidecar';
@@ -93,6 +102,7 @@ describe('load-scene IPC handler', () => {
       userDataPath: electronState.userDataPath,
       sidecar: {
         sceneCacheRecipe: () => Promise.resolve(undefined),
+        hashModelSource: () => Promise.resolve('a'.repeat(64)),
         loadSceneWithRecipe: () => Promise.resolve({ scene: scene() }),
       },
     });
@@ -125,6 +135,164 @@ describe('load-scene IPC handler', () => {
       ).resolves.toEqual(scene());
 
       expect(loadScene).toHaveBeenCalledWith(approvedPath);
+    } finally {
+      await dispose();
+      await rm(electronState.userDataPath, { force: true, recursive: true });
+    }
+  });
+});
+
+describe('render-thumbnail IPC handler', () => {
+  it('authorizes the source and routes rendering through the shared scene cache', async () => {
+    const authorizeFile = vi.fn(() =>
+      Promise.resolve('C:\\approved\\part.stl'),
+    );
+    const thumbnail = {
+      width: 256,
+      height: 256,
+      pngBase64: 'PNG',
+      cacheRecipe: 'scene/v2.2/thumb-v1-256',
+    };
+    const renderThumbnail = vi.fn(
+      async (
+        filePath: string,
+        size: number | undefined,
+        render: () => Promise<unknown>,
+      ) => {
+        expect(filePath).toBe('C:\\approved\\part.stl');
+        expect(size).toBe(256);
+        return (await render()) as typeof thumbnail;
+      },
+    );
+    const sidecarRender = vi.fn(() => Promise.resolve(thumbnail));
+    const handler = createRenderThumbnailHandler(
+      authorizeFile,
+      { renderThumbnail },
+      { renderThumbnail: sidecarRender },
+    );
+
+    await expect(
+      handler({}, { path: 'C:\\selected\\part.stl', size: 256 }),
+    ).resolves.toEqual(thumbnail);
+
+    expect(authorizeFile).toHaveBeenCalledWith('C:\\selected\\part.stl');
+    expect(renderThumbnail).toHaveBeenCalledTimes(1);
+    expect(sidecarRender).toHaveBeenCalledWith('C:\\approved\\part.stl', 256);
+  });
+});
+
+describe('thumbnail cache settings IPC handlers', () => {
+  it('only accepts a custom cache folder selected by the native picker', async () => {
+    electronState.userDataPath = await mkdtemp(
+      path.join(tmpdir(), 'printfarmer-thumbnail-settings-ipc-'),
+    );
+    electronState.handlers.clear();
+    const approvals = new RootApprovalStore({
+      userDataPath: electronState.userDataPath,
+    });
+    const sceneCache = new SceneCacheService({
+      userDataPath: electronState.userDataPath,
+      sidecar: {
+        sceneCacheRecipe: () => Promise.resolve(undefined),
+        hashModelSource: () => Promise.resolve('a'.repeat(64)),
+        loadSceneWithRecipe: () => Promise.resolve({ scene: scene() }),
+      },
+    });
+    vi.spyOn(sceneCache, 'initialize').mockResolvedValue();
+    let status: ThumbnailCacheSettings = {
+      location: null,
+      effectiveLocation: path.join(
+        electronState.userDataPath,
+        'scene-cache.v1',
+      ),
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+      usedBytes: 0,
+      entryCount: 0,
+      warning: null,
+    };
+    vi.spyOn(sceneCache, 'getThumbnailCacheStatus').mockImplementation(() =>
+      Promise.resolve(status),
+    );
+    const setCacheSettings = vi
+      .spyOn(sceneCache, 'setThumbnailCacheSettings')
+      .mockImplementation((next) => {
+        status = {
+          ...status,
+          ...next,
+          effectiveLocation:
+            next.location ??
+            path.join(electronState.userDataPath, 'scene-cache.v1'),
+        };
+        return Promise.resolve(status);
+      });
+    vi.spyOn(sceneCache, 'clearThumbnailCache').mockResolvedValue(0);
+
+    const uploads = Object.create(
+      UploadJobService.prototype,
+    ) as UploadJobService;
+    uploads.initialize = vi.fn(() => Promise.resolve());
+    uploads.dispose = vi.fn();
+    const sidecar = Object.create(SidecarClient.prototype) as SidecarClient;
+    const dispose = registerIpcHandlers(
+      undefined,
+      undefined,
+      sidecar,
+      undefined,
+      uploads,
+      approvals,
+      sceneCache,
+    );
+
+    try {
+      const choose = electronState.handlers.get(
+        IpcChannel.ChooseThumbnailCacheLocation,
+      );
+      const set = electronState.handlers.get(
+        IpcChannel.SetThumbnailCacheSettings,
+      );
+      expect(choose).toBeDefined();
+      expect(set).toBeDefined();
+
+      await expect(
+        set?.(
+          {},
+          {
+            location: '/not-picked',
+            maxBytes: 512 * 1024 * 1024,
+            retentionDays: 30,
+          },
+        ),
+      ).rejects.toThrow('native folder picker');
+
+      const showOpenDialog = vi.spyOn(dialog, 'showOpenDialog');
+      showOpenDialog.mockResolvedValueOnce({
+        canceled: false,
+        filePaths: ['/picked/cache'],
+      });
+      await expect(choose?.({ sender: {} }, undefined)).resolves.toEqual({
+        canceled: false,
+        path: '/picked/cache',
+      });
+      await expect(
+        set?.(
+          {},
+          {
+            location: '/picked/cache',
+            maxBytes: 1024 * 1024 * 1024,
+            retentionDays: 14,
+          },
+        ),
+      ).resolves.toMatchObject({
+        location: '/picked/cache',
+        maxBytes: 1024 * 1024 * 1024,
+        retentionDays: 14,
+      });
+      expect(setCacheSettings).toHaveBeenCalledWith({
+        location: '/picked/cache',
+        maxBytes: 1024 * 1024 * 1024,
+        retentionDays: 14,
+      });
     } finally {
       await dispose();
       await rm(electronState.userDataPath, { force: true, recursive: true });

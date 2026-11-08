@@ -19,7 +19,7 @@ use crate::calibration::{
     CalibrationWorkspaceStateDto, ResolveCalibrationConflictParams,
     SaveCalibrationWorkspaceStateParams,
 };
-use crate::hash::{hash_file, ContentHash};
+use crate::hash::ContentHash;
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::scan::ScanResult;
 use crate::sync::{
@@ -1164,18 +1164,28 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
 ) -> (HashMap<PathBuf, ContentHash>, usize) {
     let mut hashes = HashMap::new();
     let mut errors = 0;
+    let mut changed_paths = Vec::new();
     for file in &scan.files {
-        let unchanged = store
-            .get_location(root_id, &file.path)
-            .is_some_and(|existing| existing.fingerprint == file.fingerprint && existing.available);
+        let unchanged = !crate::archive::requires_content_revalidation(&file.path)
+            && store
+                .get_location(root_id, &file.path)
+                .is_some_and(|existing| {
+                    existing.fingerprint == file.fingerprint && existing.available
+                });
         if unchanged {
             continue;
         }
-        match hash_file(&file.path) {
+        changed_paths.push(file.path.clone());
+    }
+    for (path, result) in crate::archive::hash_sources(&changed_paths) {
+        match result {
             Ok(hash) => {
-                hashes.insert(file.path.clone(), hash);
+                hashes.insert(path.clone(), hash);
             }
-            Err(_) => errors += 1,
+            Err(error) => {
+                eprintln!("failed to hash model {}: {error}", path.display());
+                errors += 1;
+            }
         }
     }
     (hashes, errors)
@@ -1196,9 +1206,10 @@ pub(crate) fn reconcile_root_with_hashes<S: CatalogStore + ?Sized>(
         seen.push(file.path.clone());
         let existing = store.get_location(root_id, &file.path);
 
-        let unchanged = existing
-            .as_ref()
-            .is_some_and(|e| e.fingerprint == file.fingerprint && e.available);
+        let unchanged = !crate::archive::requires_content_revalidation(&file.path)
+            && existing
+                .as_ref()
+                .is_some_and(|e| e.fingerprint == file.fingerprint && e.available);
         if unchanged {
             report.unchanged += 1;
             continue;

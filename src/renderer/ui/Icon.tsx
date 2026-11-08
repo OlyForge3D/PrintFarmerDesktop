@@ -14,6 +14,7 @@ export type IconName =
   | 'refresh'
   | 'reset'
   | 'search'
+  | 'settings'
   | 'server'
   | 'star'
   | 'tag'
@@ -169,6 +170,13 @@ function iconPath(name: IconName): React.JSX.Element {
         <>
           <circle cx="10.5" cy="10.5" r="6.5" />
           <path d="m15.5 15.5 4.5 4.5" />
+        </>
+      );
+    case 'settings':
+      return (
+        <>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.8 1.8 0 0 0 .4 2l-1.6 2.8a1.8 1.8 0 0 0-2.1-.1 1.8 1.8 0 0 0-1.2 1.6h-3.2a1.8 1.8 0 0 0-3.3-1.5l-2.8-1.6a1.8 1.8 0 0 0-.1-2.1 1.8 1.8 0 0 0-1.6-1.2v-3.2a1.8 1.8 0 0 0 1.5-3.3L7 5.6a1.8 1.8 0 0 0 2.1-.1 1.8 1.8 0 0 0 1.2-1.6h3.2a1.8 1.8 0 0 0 3.3 1.5l2.8 1.6a1.8 1.8 0 0 0 .1 2.1 1.8 1.8 0 0 0 1.6 1.2v3.2a1.8 1.8 0 0 0-1.9 1.5z" />
         </>
       );
     case 'server':

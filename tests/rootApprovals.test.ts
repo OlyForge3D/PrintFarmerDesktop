@@ -136,6 +136,24 @@ describe('batch catalog authorization', () => {
     );
   });
 
+  it('authorizes the real ZIP container while preserving member identity and rejects escaped containers', async () => {
+    const { store, fileSystem, inside, outside } = await approvedStore();
+    const archive = path.join(path.dirname(inside[0]!), 'parts.zip');
+    const source = path.join(archive, '::zip::', '0', 'nested', 'part.stl');
+    fileSystem.realpaths.set(archive, archive);
+    expect(await store.authorizeFiles([source])).toEqual([
+      { sourcePath: source, canonicalPath: source },
+    ]);
+    expect(await store.canonicalizePickerFile(source)).toBe(source);
+    await expect(store.openApprovedFile(source)).rejects.toThrow('Extract');
+    const escaped = path.join(path.dirname(outside), 'parts.zip');
+    fileSystem.realpaths.set(archive, escaped);
+    expect(await store.authorizeFiles([source])).toEqual([null]);
+    await expect(store.authorizeFile(source)).rejects.toBeInstanceOf(
+      RootApprovalError,
+    );
+  });
+
   it('bounds concurrent checks across overlapping batches and rechecks approvals', async () => {
     const { fileSystem, store, inside } = await approvedStore();
     let reads = 0;

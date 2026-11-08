@@ -15,6 +15,11 @@ import {
   type PrintFarmerApi,
   type RenderThumbnailRequest,
   type RenderThumbnailResponse,
+  type GetThumbnailCacheSettingsResponse,
+  type SetThumbnailCacheSettingsRequest,
+  type SetThumbnailCacheSettingsResponse,
+  type ChooseThumbnailCacheLocationResponse,
+  type ClearThumbnailCacheResponse,
   type ScanRootRequest,
   type ScanRootResponse,
   type ImportPreviewRequest,
@@ -249,6 +254,26 @@ const api: PrintFarmerApi = {
       IpcChannel.RenderThumbnail,
       request,
     ) as Promise<RenderThumbnailResponse>,
+  getThumbnailCacheSettings:
+    async (): Promise<GetThumbnailCacheSettingsResponse> =>
+      ipcSchemas[IpcChannel.GetThumbnailCacheSettings].response.parse(
+        await ipcRenderer.invoke(IpcChannel.GetThumbnailCacheSettings),
+      ),
+  setThumbnailCacheSettings: async (
+    request: SetThumbnailCacheSettingsRequest,
+  ): Promise<SetThumbnailCacheSettingsResponse> =>
+    ipcSchemas[IpcChannel.SetThumbnailCacheSettings].response.parse(
+      await ipcRenderer.invoke(IpcChannel.SetThumbnailCacheSettings, request),
+    ),
+  chooseThumbnailCacheLocation:
+    async (): Promise<ChooseThumbnailCacheLocationResponse> =>
+      ipcSchemas[IpcChannel.ChooseThumbnailCacheLocation].response.parse(
+        await ipcRenderer.invoke(IpcChannel.ChooseThumbnailCacheLocation),
+      ),
+  clearThumbnailCache: async (): Promise<ClearThumbnailCacheResponse> =>
+    ipcSchemas[IpcChannel.ClearThumbnailCache].response.parse(
+      await ipcRenderer.invoke(IpcChannel.ClearThumbnailCache),
+    ),
   scanRoot: (request: ScanRootRequest): Promise<ScanRootResponse> =>
     ipcRenderer.invoke(
       IpcChannel.ScanRoot,

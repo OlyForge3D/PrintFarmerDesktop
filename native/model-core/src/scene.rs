@@ -26,6 +26,8 @@ const DEFAULT_PLATE_NAME: &str = "Plate 1";
 
 #[derive(Debug, Error)]
 pub enum SceneError {
+    #[error("archive source error: {0}")]
+    Archive(#[from] std::io::Error),
     #[error("unsupported or unrecognized model file")]
     UnsupportedFormat,
     #[error("stl parse error: {0}")]
@@ -47,6 +49,7 @@ impl SceneError {
     /// matching on prose that is free to change.
     pub fn code(&self) -> String {
         match self {
+            Self::Archive(_) => "archive.source_error".to_string(),
             Self::UnsupportedFormat => "unsupported_format".to_string(),
             Self::Stl(e) => format!("stl.{}", e.code()),
             Self::ThreeMf(e) => format!("threemf.{}", e.code()),
@@ -444,6 +447,8 @@ fn default_plate(root_object_ids: Vec<String>) -> ScenePlate {
 
 /// Load and normalize a model file, dispatching on its extension.
 pub fn load_scene(path: &Path) -> Result<SceneMesh, SceneError> {
+    let resolved = crate::archive::resolve(path)?;
+    let path = resolved.path();
     match ModelFormat::from_path(path) {
         Some(ModelFormat::Stl) => Ok(SceneMesh::from_stl(&stl::parse_file(path)?)),
         Some(ModelFormat::ThreeMf) => {

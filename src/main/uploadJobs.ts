@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as nodeFs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { zipMemberSource } from '../shared/modelSource.js';
 import {
   ListModelsResponse,
   StartUploadJobRequest as StartUploadJobRequestSchema,
@@ -1298,7 +1299,18 @@ export class UploadJobService {
     signal: AbortSignal,
   ): Promise<UploadSnapshot> {
     let lastError: unknown = null;
-    for (const location of model.locations) {
+    const available = model.locations.filter((location) => location.available);
+    const standalone = available.filter(
+      (location) => !zipMemberSource(location.path),
+    );
+    if (standalone.length === 0 && available[0]) {
+      throw makeUploadError(
+        'FILE_UNAVAILABLE',
+        'This action requires an extracted model file. Extract this ZIP member and rescan the folder first.',
+        false,
+      );
+    }
+    for (const location of standalone) {
       if (!location.available) continue;
       try {
         const approved = await this.options.approvals.openApprovedFile(
@@ -1651,6 +1663,15 @@ function parseRemoteLink(raw: unknown): RemoteModelLink | null {
 
 function safeUploadError(error: unknown): UploadError {
   if (error instanceof ModelUploadError) return error.detail;
+  if (error instanceof RootApprovalError) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: true,
+      retryAfterSeconds: null,
+      duplicateRisk: false,
+    };
+  }
   if (error instanceof SnapshotError) {
     return {
       code: error.code,

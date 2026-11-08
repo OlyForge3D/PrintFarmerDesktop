@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { z } from 'zod';
 import type {
   CalibrationWorkspaceStageId,
   QueryModelsRequest,
@@ -460,6 +461,14 @@ export class SidecarClient {
       params.size = size;
     }
     return this.request('renderThumbnail', params);
+  }
+
+  /** Hash the logical source resolved by the sidecar, including ZIP members. */
+  async hashModelSource(filePath: string): Promise<string> {
+    const response = z
+      .object({ hash: z.string().regex(/^[a-f0-9]{64}$/) })
+      .parse(await this.request('hashModelSource', { path: filePath }));
+    return response.hash;
   }
 
   /** Scan a folder and reconcile it into the catalog (raw wire object). */

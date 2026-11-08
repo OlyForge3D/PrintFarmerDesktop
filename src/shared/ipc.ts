@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 10 as const;
+export const IPC_CONTRACT_VERSION = 11 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -127,6 +127,10 @@ export const IpcChannel = {
   ExtractVendorMetadata: 'model:extractVendorMetadata',
   ExtractVendorPlateThumbnails: 'model:extractVendorPlateThumbnails',
   RenderThumbnail: 'model:renderThumbnail',
+  GetThumbnailCacheSettings: 'thumbnailCache:getSettings',
+  SetThumbnailCacheSettings: 'thumbnailCache:setSettings',
+  ChooseThumbnailCacheLocation: 'thumbnailCache:chooseLocation',
+  ClearThumbnailCache: 'thumbnailCache:clear',
   ScanRoot: 'catalog:scanRoot',
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
@@ -518,6 +522,82 @@ export const RenderThumbnailResponse = z.object({
 });
 export type RenderThumbnailResponse = z.infer<typeof RenderThumbnailResponse>;
 
+// --- thumbnailCache:* -----------------------------------------------------
+
+export const ThumbnailCacheSettings = z
+  .object({
+    location: z.string().min(1).max(4096).nullable(),
+    effectiveLocation: z.string().min(1).max(4096),
+    maxBytes: z
+      .number()
+      .int()
+      .min(16 * 1024 * 1024)
+      .max(16 * 1024 ** 3),
+    retentionDays: z.number().int().min(1).max(3650),
+    usedBytes: z.number().int().nonnegative(),
+    entryCount: z.number().int().nonnegative(),
+    warning: z.string().max(512).nullable(),
+  })
+  .strict();
+export type ThumbnailCacheSettings = z.infer<typeof ThumbnailCacheSettings>;
+
+export const GetThumbnailCacheSettingsRequest = z.void();
+export type GetThumbnailCacheSettingsRequest = z.infer<
+  typeof GetThumbnailCacheSettingsRequest
+>;
+export const GetThumbnailCacheSettingsResponse = ThumbnailCacheSettings;
+export type GetThumbnailCacheSettingsResponse = z.infer<
+  typeof GetThumbnailCacheSettingsResponse
+>;
+
+export const SetThumbnailCacheSettingsRequest = z
+  .object({
+    location: z.string().min(1).max(4096).nullable(),
+    maxBytes: z
+      .number()
+      .int()
+      .min(16 * 1024 * 1024)
+      .max(16 * 1024 ** 3),
+    retentionDays: z.number().int().min(1).max(3650),
+  })
+  .strict();
+export type SetThumbnailCacheSettingsRequest = z.infer<
+  typeof SetThumbnailCacheSettingsRequest
+>;
+export const SetThumbnailCacheSettingsResponse = ThumbnailCacheSettings;
+export type SetThumbnailCacheSettingsResponse = z.infer<
+  typeof SetThumbnailCacheSettingsResponse
+>;
+
+export const ChooseThumbnailCacheLocationRequest = z.void();
+export type ChooseThumbnailCacheLocationRequest = z.infer<
+  typeof ChooseThumbnailCacheLocationRequest
+>;
+export const ChooseThumbnailCacheLocationResponse = z
+  .object({
+    canceled: z.boolean(),
+    path: z.string().min(1).max(4096).nullable(),
+  })
+  .strict()
+  .refine((value) => value.canceled === (value.path === null));
+export type ChooseThumbnailCacheLocationResponse = z.infer<
+  typeof ChooseThumbnailCacheLocationResponse
+>;
+
+export const ClearThumbnailCacheRequest = z.void();
+export type ClearThumbnailCacheRequest = z.infer<
+  typeof ClearThumbnailCacheRequest
+>;
+export const ClearThumbnailCacheResponse = z
+  .object({
+    clearedEntries: z.number().int().nonnegative(),
+    settings: ThumbnailCacheSettings,
+  })
+  .strict();
+export type ClearThumbnailCacheResponse = z.infer<
+  typeof ClearThumbnailCacheResponse
+>;
+
 // --- catalog:scanRoot / catalog:listModels --------------------------------
 
 /** A physical file backing a logical model, mirroring the sidecar's DTO. */
@@ -547,6 +627,7 @@ export const ReconcileReport = z.object({
   unchanged: z.number().int().nonnegative(),
   missing: z.number().int().nonnegative(),
   hashErrors: z.number().int().nonnegative(),
+  scanErrors: z.number().int().nonnegative().optional(),
 });
 export type ReconcileReport = z.infer<typeof ReconcileReport>;
 
@@ -7936,6 +8017,22 @@ export const ipcSchemas = {
     request: RenderThumbnailRequest,
     response: RenderThumbnailResponse,
   },
+  [IpcChannel.GetThumbnailCacheSettings]: {
+    request: GetThumbnailCacheSettingsRequest,
+    response: GetThumbnailCacheSettingsResponse,
+  },
+  [IpcChannel.SetThumbnailCacheSettings]: {
+    request: SetThumbnailCacheSettingsRequest,
+    response: SetThumbnailCacheSettingsResponse,
+  },
+  [IpcChannel.ChooseThumbnailCacheLocation]: {
+    request: ChooseThumbnailCacheLocationRequest,
+    response: ChooseThumbnailCacheLocationResponse,
+  },
+  [IpcChannel.ClearThumbnailCache]: {
+    request: ClearThumbnailCacheRequest,
+    response: ClearThumbnailCacheResponse,
+  },
   [IpcChannel.ScanRoot]: {
     request: ScanRootRequest,
     response: ScanRootResponse,
@@ -8302,6 +8399,12 @@ export interface PrintFarmerApi {
   renderThumbnail(
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
+  getThumbnailCacheSettings(): Promise<GetThumbnailCacheSettingsResponse>;
+  setThumbnailCacheSettings(
+    request: SetThumbnailCacheSettingsRequest,
+  ): Promise<SetThumbnailCacheSettingsResponse>;
+  chooseThumbnailCacheLocation(): Promise<ChooseThumbnailCacheLocationResponse>;
+  clearThumbnailCache(): Promise<ClearThumbnailCacheResponse>;
   scanRoot(request: ScanRootRequest): Promise<ScanRootResponse>;
   previewImport(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
   importRoot(request: ImportRootRequest): Promise<ImportRootResponse>;

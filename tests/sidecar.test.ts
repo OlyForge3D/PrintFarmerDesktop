@@ -350,7 +350,7 @@ describe('SidecarClient', () => {
   });
 
   it('keeps Desktop IPC v10 independent from sidecar protocol v5', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(10);
+    expect(IPC_CONTRACT_VERSION).toBe(11);
     expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(5);
   });
   it('resolves a handshake response', async () => {
@@ -595,6 +595,30 @@ describe('SidecarClient', () => {
       params: { path: string; size?: number };
     };
     expect(request.params.size).toBeUndefined();
+  });
+
+  it('hashes a model source through the sidecar', async () => {
+    const hash = 'a'.repeat(64);
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: { hash },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+
+    await expect(
+      client.hashModelSource('/dir/a.zip/::zip::/0/nested/a.stl'),
+    ).resolves.toBe(hash);
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { path: string };
+    };
+    expect(request.method).toBe('hashModelSource');
+    expect(request.params.path).toBe('/dir/a.zip/::zip::/0/nested/a.stl');
   });
 
   it('sends a well-formed scanRoot request and resolves the report', async () => {

@@ -344,6 +344,8 @@ impl From<&vendor::VendorMetadata> for VendorMetadataDto {
 
 /// Extract slicer-project (vendor) metadata and return the wire DTO.
 pub fn extract_vendor_metadata_dto(path: &Path) -> Result<VendorMetadataDto, ThreeMfError> {
+    let resolved = crate::archive::resolve(path)?;
+    let path = resolved.path();
     Ok(VendorMetadataDto::from(&vendor::extract_file(path)?))
 }
 
@@ -382,6 +384,8 @@ pub struct VendorPlateThumbnailsDto {
 pub fn extract_vendor_plate_thumbnails_dto(
     path: &Path,
 ) -> Result<VendorPlateThumbnailsDto, ThreeMfError> {
+    let resolved = crate::archive::resolve(path)?;
+    let path = resolved.path();
     Ok(VendorPlateThumbnailsDto {
         thumbnails: vendor::read_plate_thumbnails_file(path)?
             .iter()

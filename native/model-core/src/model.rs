@@ -52,6 +52,10 @@ pub struct FileFingerprint {
     /// platform reports one. Sub-second precision is intentionally dropped so
     /// fingerprints stay stable across filesystems with coarse timestamps.
     pub modified_unix_secs: Option<i64>,
+    /// Container revision, including high-resolution archive mtime and member
+    /// directory data. Never used as the model's content identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<String>,
 }
 
 impl FileFingerprint {
@@ -64,6 +68,7 @@ impl FileFingerprint {
         Self {
             size,
             modified_unix_secs,
+            source_revision: None,
         }
     }
 

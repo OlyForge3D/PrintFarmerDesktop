@@ -416,6 +416,7 @@ mod sqlite {
             fingerprint: FileFingerprint {
                 size: row.get(3)?,
                 modified_unix_secs: row.get(4)?,
+                source_revision: row.get(6)?,
             },
             available: row.get::<_, i64>(5)? != 0,
         })
@@ -529,7 +530,7 @@ mod sqlite {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut models = Vec::with_capacity(hashes.len());
             for (hash, format, size) in hashes {
-                let locations = transaction.prepare("SELECT root_id,path,root_relative,size_bytes,modified_unix_secs,available FROM model_locations WHERE model_hash=?1 AND root_id NOT IN (SELECT value FROM json_each(?2)) ORDER BY path")?
+                let locations = transaction.prepare("SELECT root_id,path,root_relative,size_bytes,modified_unix_secs,available,source_revision FROM model_locations WHERE model_hash=?1 AND root_id NOT IN (SELECT value FROM json_each(?2)) ORDER BY path")?
                     .query_map(params![hash, excluded], location)?.collect::<rusqlite::Result<Vec<_>>>()?;
                 models.push(LogicalModel {
                     hash,
@@ -545,7 +546,7 @@ mod sqlite {
             for (root_id, total_models, available_models, available_locations, missing_locations) in
                 root_rows
             {
-                let sample = transaction.query_row("SELECT root_id,path,root_relative,size_bytes,modified_unix_secs,available FROM model_locations WHERE root_id=?1 ORDER BY available DESC,path LIMIT 1", [&root_id], location)?;
+                let sample = transaction.query_row("SELECT root_id,path,root_relative,size_bytes,modified_unix_secs,available,source_revision FROM model_locations WHERE root_id=?1 ORDER BY available DESC,path LIMIT 1", [&root_id], location)?;
                 sources.push(SourceSummary {
                     root_id,
                     total_models,
@@ -602,6 +603,7 @@ mod tests {
                 fingerprint: FileFingerprint {
                     size: i + 1,
                     modified_unix_secs: Some(i as i64),
+                    source_revision: None,
                 },
             });
             if i < 3000 {
@@ -631,6 +633,7 @@ mod tests {
             fingerprint: FileFingerprint {
                 size: 1,
                 modified_unix_secs: None,
+                source_revision: None,
             },
         });
         store.commit_batch().unwrap();
@@ -780,6 +783,7 @@ mod tests {
                     fingerprint: FileFingerprint {
                         size: 1,
                         modified_unix_secs: if i == 0 { None } else { Some(i as i64) },
+                        source_revision: None,
                     },
                 });
             }

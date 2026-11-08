@@ -5,6 +5,7 @@ import type {
   ReconcileReport,
 } from '@shared/ipc';
 import { basename } from './model';
+import { zipMemberSource } from '@shared/modelSource';
 
 const STORAGE_KEY = 'printfarmer.library.sourceRoots.v1';
 
@@ -194,6 +195,9 @@ export function reconcileHeadline(report: ReconcileReport | null): string {
   if (!report) {
     return 'Catalog is local to this computer.';
   }
+  if ((report.scanErrors ?? 0) > 0 || report.hashErrors > 0) {
+    return 'Some library files could not be indexed';
+  }
   if (report.missing > 0) {
     return `${report.missing} missing ${pluralize('file', report.missing)}`;
   }
@@ -209,7 +213,8 @@ export function reconcileDetails(
   if (!report) {
     return null;
   }
-  return `${report.added} added • ${report.changed} changed • ${report.missing} missing`;
+  const errors = (report.scanErrors ?? 0) + report.hashErrors;
+  return `${report.added} added • ${report.changed} changed • ${report.missing} missing${errors > 0 ? ` • ${errors} errors` : ''}`;
 }
 
 function deriveSourceRoots(
@@ -256,6 +261,18 @@ function deriveSourceRoots(
 }
 
 function rootPathFromLocation(location: ModelLocation): string | null {
+  const member = zipMemberSource(location.path);
+  if (member) {
+    const suffix = `/${member.memberName}`;
+    const relative = normalize(location.rootRelative);
+    return rootPathFromLocation({
+      ...location,
+      path: member.archivePath,
+      rootRelative: relative.endsWith(suffix)
+        ? relative.slice(0, -suffix.length)
+        : relative,
+    });
+  }
   const trimmedPath = trimSeparators(location.path);
   const trimmedRelative = trimSeparators(location.rootRelative);
   if (!trimmedRelative) {

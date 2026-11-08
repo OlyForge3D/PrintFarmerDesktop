@@ -1,4 +1,5 @@
 import type { LogicalModel, ModelFormat } from '@shared/ipc';
+import { zipMemberSource } from '@shared/modelSource';
 
 /**
  * A stable, deterministic source-root id derived from an absolute folder path.
@@ -38,7 +39,10 @@ export function modelDisplayName(model: LogicalModel): string {
 
 /** The preferred absolute path to open for a model: first available location. */
 export function preferredPath(model: LogicalModel): string | null {
-  const available = model.locations.find((location) => location.available);
+  const available =
+    model.locations.find(
+      (location) => location.available && !zipMemberSource(location.path),
+    ) ?? model.locations.find((location) => location.available);
   return (available ?? model.locations[0])?.path ?? null;
 }
 

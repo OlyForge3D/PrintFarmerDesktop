@@ -3,12 +3,9 @@ import type { LogicalModel, RenderThumbnailResponse } from '@shared/ipc';
 import { preferredPath } from './model';
 
 /**
- * Process-lifetime cache of rendered thumbnails, keyed by content hash *and* the
- * sidecar's cache recipe. The hash alone is not a safe key: the same bytes
- * render to different pixels after a parser or renderer change, and a version
- * nothing reads invalidates nothing. The sidecar is authoritative about its own
- * recipe, so the first render establishes it and a recipe change drops
- * everything cached under the previous one.
+ * Small renderer-side front cache for the main process's persistent thumbnail
+ * cache. Entries include content hash, recipe, and size; the sidecar remains
+ * authoritative about which recipe produced the pixels.
  */
 const cache = new Map<string, string>();
 const inFlight = new Map<
@@ -18,6 +15,7 @@ const inFlight = new Map<
 const MAX_CACHED_THUMBNAILS = 256;
 const thumbnailQueue: Array<() => void> = [];
 const MAX_CONCURRENT_THUMBNAILS = 3;
+const THUMBNAIL_SIZE = 256;
 let activeThumbnails = 0;
 let cacheGeneration = 0;
 
@@ -39,8 +37,8 @@ const UNVERSIONED = '\u0000unversioned';
  * neither field can carry a NUL — the precondition holds by construction and
  * not by convention.
  */
-function cacheKey(recipe: string | null, hash: string): string {
-  return `${recipe ?? UNVERSIONED}\u0000${hash}`;
+function cacheKey(recipe: string | null, hash: string, size: number): string {
+  return `${recipe ?? UNVERSIONED}\u0000${hash}\u0000${size}`;
 }
 
 /**
@@ -78,8 +76,6 @@ export interface ThumbnailState {
   status: ThumbnailStatus;
 }
 
-const THUMBNAIL_SIZE = 256;
-
 function scheduleThumbnail<T>(task: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const start = (): void => {
@@ -108,7 +104,7 @@ function requestThumbnail(
   >,
   isActive: () => boolean,
 ): Promise<string> {
-  const requestKey = `${cacheKey(activeRecipe, hash)}\u0000${path}`;
+  const requestKey = `${cacheKey(activeRecipe, hash, THUMBNAIL_SIZE)}\u0000${path}`;
   const pending = inFlight.get(requestKey);
   if (pending) {
     pending.consumers.add(isActive);
@@ -132,7 +128,7 @@ function requestThumbnail(
         // so it is stored even though adopting may have bumped the generation.
         const recipe = result.cacheRecipe ?? null;
         adoptRecipe(recipe);
-        cache.set(cacheKey(recipe, hash), src);
+        cache.set(cacheKey(recipe, hash, THUMBNAIL_SIZE), src);
         while (cache.size > MAX_CACHED_THUMBNAILS) {
           const oldest = cache.keys().next().value;
           if (oldest === undefined) break;
@@ -161,7 +157,8 @@ export function useThumbnail(
 ): ThumbnailState {
   const hash = model.hash;
   const path = preferredPath(model);
-  const cached = cache.get(cacheKey(activeRecipe, hash)) ?? null;
+  const cached =
+    cache.get(cacheKey(activeRecipe, hash, THUMBNAIL_SIZE)) ?? null;
   const [state, setState] = useState<ThumbnailState>(
     cached
       ? { src: cached, status: 'ready' }
@@ -170,7 +167,7 @@ export function useThumbnail(
 
   useEffect(() => {
     if (!enabled) return;
-    const existing = cache.get(cacheKey(activeRecipe, hash));
+    const existing = cache.get(cacheKey(activeRecipe, hash, THUMBNAIL_SIZE));
     if (existing) {
       setState({ src: existing, status: 'ready' });
       return;
