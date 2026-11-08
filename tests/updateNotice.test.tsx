@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GetAvailableReleaseResponse, PrintFarmerApi } from '@shared/ipc';
 import { StatusBar } from '../src/renderer/shell/StatusBar.js';
@@ -15,7 +21,7 @@ const beta9: GetAvailableReleaseResponse = {
 };
 
 function Harness(): React.JSX.Element {
-  const { release, dismiss } = useAvailableRelease();
+  const { release, dismiss, checkNow, checkState } = useAvailableRelease();
   return (
     <StatusBar
       activity="Ready"
@@ -27,15 +33,22 @@ function Harness(): React.JSX.Element {
       appInfo={null}
       availableRelease={release}
       onDismissRelease={dismiss}
+      onCheckForUpdates={checkNow}
+      updateCheck={checkState}
     />
   );
 }
 
-function installApi(getAvailableRelease: () => Promise<unknown>): void {
+function installApi(
+  getAvailableRelease: () => Promise<unknown>,
+  checkForUpdates: () => Promise<unknown> = () =>
+    Promise.reject(new Error('not stubbed')),
+): void {
   (window as unknown as { printFarmer: Partial<PrintFarmerApi> }).printFarmer =
     {
       getAvailableRelease:
         getAvailableRelease as PrintFarmerApi['getAvailableRelease'],
+      checkForUpdates: checkForUpdates as PrintFarmerApi['checkForUpdates'],
     };
 }
 
@@ -94,5 +107,143 @@ describe('update-available notice', () => {
     await waitFor(() => expect(check).toHaveBeenCalled());
     expect(screen.queryByRole('link', { name: /available/ })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  describe('Check for Updates', () => {
+    const none = vi.fn().mockResolvedValue({
+      currentVersion: '0.1.0-beta.8',
+      available: null,
+    });
+
+    it('announces an available release, even one dismissed earlier', async () => {
+      localStorage.setItem(
+        'printfarmer.dismissedReleaseVersion',
+        '0.1.0-beta.9',
+      );
+      const check = vi.fn().mockResolvedValue({
+        currentVersion: '0.1.0-beta.8',
+        status: 'available',
+        available: beta9.available,
+      });
+      installApi(none, check);
+      render(<Harness />);
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      expect(
+        await screen.findByRole('link', {
+          name: 'Beta 0.1.0-beta.9 available',
+        }),
+      ).toBeTruthy();
+      expect(screen.getByText('Update available')).toBeTruthy();
+      expect(check).toHaveBeenCalledOnce();
+    });
+
+    it('does not let an older background response overwrite a manual result', async () => {
+      let resolveBackground: (
+        value: GetAvailableReleaseResponse,
+      ) => void = () => {};
+      let resolveManual: (value: {
+        currentVersion: string;
+        status: 'available';
+        available: NonNullable<GetAvailableReleaseResponse['available']>;
+      }) => void = () => {};
+      const background = vi.fn(
+        () =>
+          new Promise<GetAvailableReleaseResponse>((resolve) => {
+            resolveBackground = resolve;
+          }),
+      );
+      const manual = vi.fn(
+        () =>
+          new Promise<{
+            currentVersion: string;
+            status: 'available';
+            available: NonNullable<GetAvailableReleaseResponse['available']>;
+          }>((resolve) => {
+            resolveManual = resolve;
+          }),
+      );
+      installApi(background, manual);
+      render(<Harness />);
+      await waitFor(() => expect(background).toHaveBeenCalledOnce());
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      await waitFor(() => expect(manual).toHaveBeenCalledOnce());
+
+      resolveManual({
+        currentVersion: '0.1.0-beta.8',
+        status: 'available',
+        available: beta9.available!,
+      });
+      expect(
+        await screen.findByRole('link', {
+          name: 'Beta 0.1.0-beta.9 available',
+        }),
+      ).toBeTruthy();
+
+      act(() => {
+        resolveBackground({ currentVersion: '0.1.0-beta.8', available: null });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(
+        screen.getByRole('link', {
+          name: 'Beta 0.1.0-beta.9 available',
+        }),
+      ).toBeTruthy();
+    });
+
+    it('says when the app is up to date', async () => {
+      installApi(
+        none,
+        vi.fn().mockResolvedValue({
+          currentVersion: '0.1.0-beta.8',
+          status: 'upToDate',
+          available: null,
+        }),
+      );
+      render(<Harness />);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      expect(await screen.findByText('Up to date')).toBeTruthy();
+    });
+
+    it.each([
+      [
+        'a failed response',
+        vi.fn().mockResolvedValue({
+          currentVersion: '0.1.0-beta.8',
+          status: 'failed',
+          available: null,
+        }),
+      ],
+      ['a rejected call', vi.fn().mockRejectedValue(new Error('ipc'))],
+    ])('reports a failure for %s', async (_label, check) => {
+      installApi(none, check);
+      render(<Harness />);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      expect(await screen.findByText('Check failed')).toBeTruthy();
+    });
+
+    it('explains that development builds do not check', async () => {
+      installApi(
+        none,
+        vi.fn().mockResolvedValue({
+          currentVersion: '0.1.0-beta.8',
+          status: 'unavailable',
+          available: null,
+        }),
+      );
+      render(<Harness />);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      expect(await screen.findByText('Installed builds only')).toBeTruthy();
+    });
   });
 });

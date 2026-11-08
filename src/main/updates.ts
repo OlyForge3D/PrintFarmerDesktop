@@ -44,6 +44,16 @@ interface TrustedUpdate {
   signature: string;
 }
 
+export class UpdateHttpError extends Error {
+  constructor(
+    readonly status: number,
+    url: string,
+  ) {
+    super(`update request failed with HTTP ${status}: ${url}`);
+    this.name = 'UpdateHttpError';
+  }
+}
+
 export async function fetchBoundedText(
   fetchImplementation: FetchImplementation,
   url: string,
@@ -54,9 +64,7 @@ export async function fetchBoundedText(
     headers: { accept: 'application/json, text/plain' },
   });
   if (!response.ok) {
-    throw new Error(
-      `update request failed with HTTP ${response.status}: ${url}`,
-    );
+    throw new UpdateHttpError(response.status, url);
   }
   const contentLengthHeader = response.headers.get('content-length');
   const contentLength =

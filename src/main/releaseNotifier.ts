@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { z } from 'zod';
 import { compareVersions } from './updateMetadata.js';
-import { fetchBoundedText } from './updates.js';
+import { fetchBoundedText, UpdateHttpError } from './updates.js';
 
 /**
  * Notification-only release check: tells the user a newer build exists on
@@ -153,6 +153,13 @@ const PersistedCheck = z.object({
     .nullable(),
 });
 
+export interface ManualCheckResult {
+  /** True when the release list or latest stable release could not be checked. */
+  failed: boolean;
+  /** The newer release on this train, or the last known result on failure. */
+  release: AvailableRelease | null;
+}
+
 export interface ReleaseNotifierOptions {
   currentVersion: string;
   platform?: NodeJS.Platform;
@@ -169,8 +176,9 @@ export interface ReleaseNotifierOptions {
 
 /**
  * Caches the last check so the renderer can ask freely without exceeding the
- * unauthenticated GitHub API rate limit. Failures are logged and reported as
- * "nothing available" — a release check must never surface as an app error.
+ * unauthenticated GitHub API rate limit. Failures are logged without refreshing
+ * the cache; manual checks report failure, while background checks retain the
+ * last known result without surfacing an app error.
  */
 export class ReleaseNotifier {
   private readonly currentVersion: string;
@@ -181,9 +189,12 @@ export class ReleaseNotifier {
   private readonly onError: (error: unknown) => void;
   private readonly cacheFilePath: string | null;
   private cacheLoaded = false;
+  private cacheLoadPromise: Promise<void> | null = null;
   private lastCheckedAt: number | null = null;
   private lastResult: AvailableRelease | null = null;
   private inFlight: Promise<AvailableRelease | null> | null = null;
+  private manualCheckGeneration = 0;
+  private manualChecksInFlight = 0;
 
   constructor(options: ReleaseNotifierOptions) {
     this.currentVersion = options.currentVersion;
@@ -211,9 +222,18 @@ export class ReleaseNotifier {
     return this.inFlight;
   }
 
-  private async loadPersistedCheck(): Promise<void> {
-    if (this.cacheLoaded || this.cacheFilePath === null) return;
-    this.cacheLoaded = true;
+  private loadPersistedCheck(): Promise<void> {
+    if (this.cacheLoaded) return Promise.resolve();
+    if (!this.cacheLoadPromise) {
+      this.cacheLoadPromise = this.readPersistedCheck().finally(() => {
+        this.cacheLoaded = true;
+      });
+    }
+    return this.cacheLoadPromise;
+  }
+
+  private async readPersistedCheck(): Promise<void> {
+    if (this.cacheFilePath === null) return;
     try {
       const parsed = PersistedCheck.safeParse(
         JSON.parse(await fs.readFile(this.cacheFilePath, 'utf8')),
@@ -240,33 +260,75 @@ export class ReleaseNotifier {
     }
   }
 
-  private async check(): Promise<AvailableRelease | null> {
+  /**
+   * User-initiated check: always queries the network, ignoring and then
+   * refreshing the cache. Unlike the background path it reports failure, so the
+   * caller can tell "up to date" from "could not check". A failed manual check
+   * leaves the cache untouched.
+   */
+  async checkNow(): Promise<ManualCheckResult> {
+    await this.loadPersistedCheck();
+    const generation = ++this.manualCheckGeneration;
+    this.manualChecksInFlight += 1;
     try {
-      const [list, latest] = await Promise.allSettled([
-        fetchBoundedText(
-          this.fetchImplementation,
-          RELEASES_API_URL,
-          MAX_RELEASES_BYTES,
-        ),
-        fetchBoundedText(
-          this.fetchImplementation,
-          LATEST_RELEASE_API_URL,
-          MAX_RELEASES_BYTES,
-        ),
-      ]);
-      if (list.status === 'rejected') throw list.reason;
-      const releases = parseGitHubReleases(list.value);
-      if (latest.status === 'fulfilled') {
-        releases.push(...parseGitHubReleases(`[${latest.value}]`));
+      const release = await this.fetchAvailableRelease();
+      if (generation === this.manualCheckGeneration) {
+        this.lastResult = release;
+        this.lastCheckedAt = this.now();
+        await this.persistCheck();
       }
-      this.lastResult = selectAvailableRelease(
-        this.currentVersion,
-        releases,
-        this.platform,
-      );
+      return { failed: false, release };
     } catch (error) {
       this.onError(error);
+      return { failed: true, release: this.lastResult };
+    } finally {
+      this.manualChecksInFlight -= 1;
     }
+  }
+
+  private async fetchAvailableRelease(): Promise<AvailableRelease | null> {
+    const [list, latest] = await Promise.allSettled([
+      fetchBoundedText(
+        this.fetchImplementation,
+        RELEASES_API_URL,
+        MAX_RELEASES_BYTES,
+      ),
+      fetchBoundedText(
+        this.fetchImplementation,
+        LATEST_RELEASE_API_URL,
+        MAX_RELEASES_BYTES,
+      ),
+    ]);
+    if (list.status === 'rejected') throw list.reason;
+    const releases = parseGitHubReleases(list.value);
+    if (latest.status === 'fulfilled') {
+      releases.push(...parseGitHubReleases(`[${latest.value}]`));
+    } else if (!(
+      latest.reason instanceof UpdateHttpError && latest.reason.status === 404
+    )) {
+      throw latest.reason;
+    }
+    return selectAvailableRelease(this.currentVersion, releases, this.platform);
+  }
+
+  private async check(): Promise<AvailableRelease | null> {
+    const generation = this.manualCheckGeneration;
+    const startedDuringManualCheck = this.manualChecksInFlight > 0;
+    let result = this.lastResult;
+    try {
+      result = await this.fetchAvailableRelease();
+    } catch (error) {
+      this.onError(error);
+      return this.lastResult;
+    }
+    if (
+      startedDuringManualCheck ||
+      generation !== this.manualCheckGeneration ||
+      this.manualChecksInFlight > 0
+    ) {
+      return this.lastResult;
+    }
+    this.lastResult = result;
     this.lastCheckedAt = this.now();
     await this.persistCheck();
     return this.lastResult;
