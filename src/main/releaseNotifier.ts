@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { z } from 'zod';
 import { compareVersions } from './updateMetadata.js';
-import { fetchBoundedText } from './updates.js';
+import { fetchBoundedText, UpdateHttpError } from './updates.js';
 
 /**
  * Notification-only release check: tells the user a newer build exists on
@@ -154,7 +154,7 @@ const PersistedCheck = z.object({
 });
 
 export interface ManualCheckResult {
-  /** True when the release list could not be fetched or parsed. */
+  /** True when the release list or latest stable release could not be checked. */
   failed: boolean;
   /** The newer release on this train, or the last known result on failure. */
   release: AvailableRelease | null;
@@ -176,8 +176,9 @@ export interface ReleaseNotifierOptions {
 
 /**
  * Caches the last check so the renderer can ask freely without exceeding the
- * unauthenticated GitHub API rate limit. Failures are logged and reported as
- * "nothing available" — a release check must never surface as an app error.
+ * unauthenticated GitHub API rate limit. Failures are logged without refreshing
+ * the cache; manual checks report failure, while background checks retain the
+ * last known result without surfacing an app error.
  */
 export class ReleaseNotifier {
   private readonly currentVersion: string;
@@ -302,6 +303,10 @@ export class ReleaseNotifier {
     const releases = parseGitHubReleases(list.value);
     if (latest.status === 'fulfilled') {
       releases.push(...parseGitHubReleases(`[${latest.value}]`));
+    } else if (!(
+      latest.reason instanceof UpdateHttpError && latest.reason.status === 404
+    )) {
+      throw latest.reason;
     }
     return selectAvailableRelease(this.currentVersion, releases, this.platform);
   }
@@ -314,6 +319,7 @@ export class ReleaseNotifier {
       result = await this.fetchAvailableRelease();
     } catch (error) {
       this.onError(error);
+      return this.lastResult;
     }
     if (
       startedDuringManualCheck ||

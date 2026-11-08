@@ -267,7 +267,128 @@ describe('ReleaseNotifier', () => {
     expect((await notifier.getAvailableRelease())?.version).toBe(
       '0.1.0-beta.9',
     );
+    await expect(notifier.checkNow()).resolves.toMatchObject({
+      failed: false,
+      release: { version: '0.1.0-beta.9' },
+    });
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('does not ignore a 404 from the releases list', async () => {
+    const onError = vi.fn();
+    const notifier = new ReleaseNotifier({
+      currentVersion: '0.1.0',
+      fetchImplementation: vi.fn<typeof fetch>(() =>
+        Promise.resolve(jsonResponse({ message: 'Not Found' }, 404)),
+      ),
+      onError,
+    });
+    await expect(notifier.checkNow()).resolves.toEqual({
+      failed: true,
+      release: null,
+    });
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
+  describe.each([
+    ['server error', 500],
+    ['rate limit forbidden', 403],
+    ['rate limit too many requests', 429],
+    ['network error', null],
+  ] as const)('latest stable release %s', (_label, status) => {
+    function failingLatest(): ReturnType<typeof vi.fn<typeof fetch>> {
+      return vi.fn<typeof fetch>((input) => {
+        if (input !== LATEST_RELEASE_API_URL) {
+          return Promise.resolve(jsonResponse([release('0.2.0-beta.40')]));
+        }
+        return status === null
+          ? Promise.reject(new TypeError('fetch failed'))
+          : Promise.resolve(jsonResponse({ message: 'unavailable' }, status));
+      });
+    }
+
+    it('reports manual failure without caching an incomplete result', async () => {
+      const cacheFilePath = path.join(cacheDir, 'release-check.json');
+      const onError = vi.fn();
+      const fetchImplementation = failingLatest();
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0',
+        platform: 'darwin',
+        fetchImplementation,
+        cacheFilePath,
+        onError,
+      });
+
+      await expect(notifier.checkNow()).resolves.toEqual({
+        failed: true,
+        release: null,
+      });
+      expect(onError).toHaveBeenCalledOnce();
+      await expect(readFile(cacheFilePath, 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      fetchImplementation.mockImplementation(githubFake([], release('0.1.1')));
+      await expect(notifier.getAvailableRelease()).resolves.toMatchObject({
+        version: '0.1.1',
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not persist or throttle a failed background check', async () => {
+      const cacheFilePath = path.join(cacheDir, 'release-check.json');
+      const onError = vi.fn();
+      const fetchImplementation = failingLatest();
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0',
+        platform: 'darwin',
+        fetchImplementation,
+        cacheFilePath,
+        onError,
+      });
+
+      await expect(notifier.getAvailableRelease()).resolves.toBeNull();
+      expect(onError).toHaveBeenCalledOnce();
+      await expect(readFile(cacheFilePath, 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      const restarted = new ReleaseNotifier({
+        currentVersion: '0.1.0',
+        platform: 'darwin',
+        fetchImplementation: githubFake([], release('0.1.1')),
+        cacheFilePath,
+      });
+      await expect(restarted.getAvailableRelease()).resolves.toMatchObject({
+        version: '0.1.1',
+      });
+      fetchImplementation.mockImplementation(githubFake([], release('0.1.1')));
+      await expect(notifier.getAvailableRelease()).resolves.toMatchObject({
+        version: '0.1.1',
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(4);
+    });
+
+    it('preserves the previous successful cache on manual failure', async () => {
+      const cacheFilePath = path.join(cacheDir, 'release-check.json');
+      const fetchImplementation = githubFake([], release('0.1.1'));
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0',
+        platform: 'darwin',
+        fetchImplementation,
+        cacheFilePath,
+        onError: vi.fn(),
+      });
+      await notifier.getAvailableRelease();
+      const previousCache = await readFile(cacheFilePath, 'utf8');
+      fetchImplementation.mockImplementation(failingLatest());
+
+      await expect(notifier.checkNow()).resolves.toMatchObject({
+        failed: true,
+        release: { version: '0.1.1' },
+      });
+      expect(await readFile(cacheFilePath, 'utf8')).toBe(previousCache);
+    });
   });
 
   it('remembers the last check across restarts', async () => {

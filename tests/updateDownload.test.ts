@@ -240,6 +240,22 @@ afterEach(async () => {
 });
 
 describe('bounded update metadata', () => {
+  it.each([404, 403, 429, 500])(
+    'preserves HTTP status %i on failure',
+    async (status) => {
+      const fetchImplementation = vi.fn<typeof fetch>(() =>
+        Promise.resolve(new Response('unavailable', { status })),
+      );
+      await expect(
+        fetchBoundedText(fetchImplementation, 'https://example.test/data', 4),
+      ).rejects.toMatchObject({
+        name: 'UpdateHttpError',
+        status,
+        message: `update request failed with HTTP ${status}: https://example.test/data`,
+      });
+    },
+  );
+
   it('accepts a chunked response exactly at the byte limit', async () => {
     const fetchImplementation = vi.fn(() =>
       Promise.resolve(new Response('1234')),
