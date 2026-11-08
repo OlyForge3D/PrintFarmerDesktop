@@ -61,7 +61,11 @@ import {
   preferredPath,
   rootIdForPath,
 } from '../src/renderer/library/model.js';
-import { saveStoredSourceRoots } from '../src/renderer/library/sourceRoots.js';
+import {
+  saveStoredSourceRoots,
+  reconcileHeadline,
+  reconcileDetails,
+} from '../src/renderer/library/sourceRoots.js';
 
 function installApi(api: Partial<PrintFarmerApi>): void {
   Object.defineProperty(window, 'printFarmer', {
@@ -269,6 +273,8 @@ describe('useLibrary', () => {
   });
 
   it('previews a chosen folder, then imports its confirmed rules', async () => {
+    const warning =
+      'Skipped ZIP oversized.zip: on-disk size 536870913 bytes exceeds the 512 MiB limit (536870912 bytes).';
     const openFolder = vi.fn().mockResolvedValue({
       path: 'C:\\models',
       approvalId: '11111111-1111-4111-8111-111111111111',
@@ -277,6 +283,7 @@ describe('useLibrary', () => {
       modelCount: 1,
       totalBytes: 2048,
       skippedErrors: 0,
+      archiveWarnings: [warning],
       complete: true,
       formats: { stl: 1, threeMf: 0, obj: 0 },
       folders: [],
@@ -289,6 +296,7 @@ describe('useLibrary', () => {
         unchanged: 0,
         missing: 0,
         hashErrors: 0,
+        archiveWarnings: [warning],
       },
       modelsOrganized: 1,
       collectionsCreated: 1,
@@ -323,6 +331,10 @@ describe('useLibrary', () => {
     expect(result.current.importDraft?.rootId).toBe(
       rootIdForPath('C:\\models'),
     );
+    expect(result.current.importDraft?.preview.archiveWarnings).toEqual([
+      warning,
+    ]);
+    expect(result.current.error).toBeNull();
 
     await act(async () => {
       await result.current.confirmImport({
@@ -330,6 +342,15 @@ describe('useLibrary', () => {
         commonTags: ['printable'],
       });
     });
+    expect(result.current.lastImport?.report.archiveWarnings).toEqual([
+      warning,
+    ]);
+    expect(reconcileHeadline(result.current.lastImport!.report)).toBe(
+      'Oversized ZIP archives were skipped',
+    );
+    expect(reconcileDetails(result.current.lastImport!.report)).toContain(
+      warning,
+    );
 
     expect(importRoot).toHaveBeenCalledWith({
       rootId: rootIdForPath('C:\\models'),
@@ -759,6 +780,28 @@ describe('smart import', () => {
 
   beforeEach(() => {
     forgetImportPlan(draft.rootId);
+  });
+
+  it('shows the skipped ZIP filename, actual size and limit without disabling import', () => {
+    const warning =
+      'Skipped ZIP oversized.zip: on-disk size 536870913 bytes exceeds the 512 MiB limit (536870912 bytes).';
+    render(
+      <ImportWizard
+        draft={{
+          ...draft,
+          preview: { ...draft.preview, archiveWarnings: [warning] },
+        }}
+        busy={false}
+        error={null}
+        onDismissError={vi.fn()}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(true)}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(warning);
+    expect(
+      screen.getByRole('button', { name: 'Import 3 files' }),
+    ).toBeEnabled();
   });
 
   it('dismisses an import error without cancelling the prepared import', () => {
