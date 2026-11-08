@@ -27,18 +27,19 @@ and again after native changes; `npm start` does not build the Rust sidecar.
 
 Renderer/main/preload (run from the repo root):
 
-| Command                                 | Purpose                                         |
-| --------------------------------------- | ----------------------------------------------- |
-| `npm start`                             | Launch the app with hot reload                  |
-| `npm run build:sidecar`                 | Build and stage the development sidecar         |
-| `npm run typecheck`                     | Strict TypeScript check (no emit)               |
-| `npm run lint`                          | ESLint (type-aware)                             |
-| `npm run format`                        | Prettier check (`format:write` fixes)           |
-| `npm run check:inert-class-field-seams` | Guards against #270-style inert prototype seams |
-| `npm run test`                          | Vitest unit/component tests                     |
-| `npm run make`                          | Build platform installers                       |
-| `npm run verify:target-profiles`        | Verify the pinned printer-profile snapshot      |
-| `npm run worktree:remove -- <path>`     | Safely force-remove a linked worktree           |
+| Command                                  | Purpose                                            |
+| ---------------------------------------- | -------------------------------------------------- |
+| `npm start`                              | Launch the app with hot reload                     |
+| `npm run build:sidecar`                  | Build and stage the development sidecar            |
+| `npm run typecheck`                      | Strict TypeScript check (no emit)                  |
+| `npm run lint`                           | ESLint (type-aware)                                |
+| `npm run format`                         | Prettier check (`format:write` fixes)              |
+| `npm run check:inert-class-field-seams`  | Guards against #270-style inert prototype seams    |
+| `npm run check:design-detector -- --all` | Scan the renderer for AI-slop design anti-patterns |
+| `npm run test`                           | Vitest unit/component tests                        |
+| `npm run make`                           | Build platform installers                          |
+| `npm run verify:target-profiles`         | Verify the pinned printer-profile snapshot         |
+| `npm run worktree:remove -- <path>`      | Safely force-remove a linked worktree              |
 
 Rust sidecar (run from `native/`):
 
@@ -69,6 +70,49 @@ suite that does not exist in that build, which is why it reads as a complete
 pass. CI runs each feature separately (`ci.yml`), so this is a local-check
 hazard: a change to a feature-gated module can look tested locally and only be
 exercised in CI.
+
+## UI design checks
+
+Changes to the renderer's markup and styles (the set is defined in
+`scripts/design-surface.mjs`) are checked for generated-UI anti-patterns by a
+vendored copy of the impeccable design skill's detector in `tools/impeccable-detector/` (Apache-2.0, pinned by
+`manifest.json`):
+
+- The `Design detector` workflow scans the files a pull request changes and
+  fails on any non-advisory finding. It runs the detector and manifest from the
+  base commit, not from the pull request, so a change to the detector only
+  takes effect after it merges. Run it locally with
+  `npm run check:design-detector -- --files <paths>` or `-- --all`.
+- Copilot agents get the same findings in-context after each edit through
+  `.github/hooks/impeccable.json`. Turn it off for yourself with
+  `{ "hook": { "enabled": false } }` in the gitignored
+  `.impeccable/config.local.json`, or set `IMPECCABLE_HOOK_DISABLED=1`.
+  The hook runs code from the checked-out branch, the same trust you already
+  extend to its git hooks and npm scripts. The opt-outs above are honored by
+  that same branch code, so they are not a safeguard against an untrusted or
+  fork branch: such a branch can edit the script, the manifest, or add its own
+  manifest. Before pointing an agent at one, review every `.github/hooks/`
+  manifest and the executables it references, disable repository hooks in the
+  agent host outside the checkout, or don't run the agent on that checkout.
+- Suppress a deliberate choice with an inline `impeccable-disable <rule> -- reason`
+  comment or `detector.ignoreRules` / `ignoreFiles` in
+  `.impeccable/config.json`. Both are visible in review.
+- Squad pull requests that touch any `src/renderer/**` file (including `.ts`
+  the detector cannot scan), root `index.html`, or the design gate's own files
+  also need a `lambert` design review; see
+  `.squad/skills/agent-collaboration/SKILL.md`.
+
+- User-visible renderer changes include screenshots of the running app
+  (`npm start`) taken at the head commit, in the pull request's
+  `## Screenshots (UI changes)` section, or a stated reason there are none.
+  Status, glyph, and secondary-detail conventions are in `DESIGN.md`.
+- `tools/impeccable-detector/` is third-party code excluded from CodeQL by
+  `.github/codeql/codeql-config.yml`; the upstream alerts that exclusion hides
+  are tracked in #844.
+
+The detector reads source, not rendered pixels, so it catches tells like
+gradient text and purple palettes but not contrast, overflow, or density
+problems. A green check is a floor, not a design review.
 
 ## Conventions
 

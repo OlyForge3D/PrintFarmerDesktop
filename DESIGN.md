@@ -37,6 +37,12 @@ Use the existing Segoe UI Variable/Segoe UI/system sans stack throughout the pro
 - Alerts use full borders/background tints and a textual severity heading.
 - Desktop dialogs follow centralized modal ownership, focus trap, Escape handling, and trigger restoration.
 
+## Status, glyphs, and secondary detail
+
+- **Status glyphs are quiet until they mean something.** A status dot or toggle glyph renders in the muted/quiet ink at rest and takes a semantic color only when its state is active or needs attention: source and server dots default to `--quiet` and become `--success`/`--warning`/`--danger` (`src/renderer/index.css`, `.source-root-dot`, `.server-status-dot`); favorite and icon toggles are `--muted` at rest, preview the semantic color on hover (`.model-fav-button:hover` takes `--favorite`), and fill only while `.active` (`.model-fav-button.active`, `.icon-button.active`). Color is never the only signal: pair it with text, an accessible name, or `aria-pressed`.
+- **Reuse the glyph vocabulary.** Icons come from `src/renderer/ui/Icon.tsx` (`IconName`). Add a glyph there, in the same stroke style, only when no existing one carries the meaning; swapping or restyling existing glyphs is a deliberate redesign, called out in the PR.
+- **Secondary detail stays off the main line, but stays reachable.** Full paths, hashes, and longer explanations sit behind a truncated inline value rather than on new inline secondary lines; at-a-glance metadata (a card's format and size, statusbar counts) stays inline. A native `title` is hover-only — keyboard and touch users never see it — so it may only repeat detail that is also available another way: visible text elsewhere (such as the inspector), a disclosure, the accessible name, or a tooltip that opens on both hover and keyboard focus. Current code is mixed: `SourcesWorkspace` and `ImportWizard` render the full path as text and truncate it visually (screen readers get it; sighted keyboard and touch users don't), and `PropertiesInspector` shows a 12-character content hash with the full hash only in `title`. Treat those as gaps to close when touched; new code must not make `title` the only route to any detail.
+
 ## Layout
 
 The shell retains native titlebar and statusbar regions. Top-level workspaces are peers selected from persistent shell navigation. Library keeps its three-pane layout. Printer Calibration uses a workflow-oriented shell with a project rail, main task region, and contextual detail region that collapse structurally at narrow widths without hiding current status.

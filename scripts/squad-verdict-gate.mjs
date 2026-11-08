@@ -32,6 +32,7 @@
 //   Squad-Head-SHA: 0123456789abcdef0123456789abcdef01234567
 
 import { isDocumentationPath } from './docs-only-change.mjs';
+import { DESIGN_REVIEWER, requiresDesignReview } from './design-surface.mjs';
 
 export const verdictContext = 'squad/pre-pr-verdict';
 
@@ -1256,6 +1257,32 @@ export function evaluateGate({
     "Self-attested: every agent here runs under the owner's authority, so this " +
       'record is not independent review and provides no separation of duties.',
   );
+  if (requiresDesignReview(changedPaths)) {
+    notes.push(
+      `Design surface changed: ${DESIGN_REVIEWER} (design reviewer) approval is required. ` +
+        'The deterministic slop check is the separate Design detector workflow; ' +
+        `${DESIGN_REVIEWER}'s record is self-attested like every other here.`,
+    );
+    // There is exactly one design reviewer, so unlike a panel member it has no
+    // substitute. Only the owner override (steps 1-2 above) can clear this.
+    if (authorMembers.has(DESIGN_REVIEWER)) {
+      return {
+        state: 'failure',
+        passed: false,
+        description: truncate(
+          `BLOCKED @ ${shortSha(head)}: design reviewer ${DESIGN_REVIEWER} is the PR author`,
+        ),
+        reason:
+          `this PR changes the design surface and was authored by ${DESIGN_REVIEWER}, ` +
+          'the only design reviewer; an owner approval is required (a GitHub review ' +
+          'approval, or a verdict record naming your own admin login as the reviewer)',
+        notes,
+        requiredMembers: [DESIGN_REVIEWER],
+        approvals: [],
+        stale,
+      };
+    }
+  }
 
   // 3. Reviewer eligibility. Excluding the author agent is a quality heuristic
   //    (fresh context catches more than self-re-reading), not an independence
@@ -1312,11 +1339,20 @@ export function evaluateGate({
     .map((record) => record.reviewer)
     .sort();
 
-  // 5. Reviewer count and panel membership.
-  const requiredCount = scope.docsOnly ? 1 : 3;
+  // 5. Reviewer count and panel membership. A change to the design surface
+  //    (scripts/design-surface.mjs) additionally needs the design reviewer, ON
+  //    TOP of the normal count rather than as a panel substitute: design review
+  //    is a different job, not a fourth opinion on the same one. On a
+  //    docs-only change (DESIGN.md, PRODUCT.md) the design reviewer IS the one
+  //    required reviewer.
+  const designReview = requiresDesignReview(changedPaths);
+  const requiredCount = scope.docsOnly
+    ? 1
+    : reviewPanel.length + (designReview ? 1 : 0);
   const requiredMembers = scope.docsOnly
     ? []
     : reviewPanel.filter((member) => !authorMembers.has(member));
+  if (designReview) requiredMembers.push(DESIGN_REVIEWER);
   if (!scope.docsOnly && requiredMembers.length < reviewPanel.length) {
     notes.push(
       `Panel members ${reviewPanel.filter((m) => authorMembers.has(m)).join(', ')} ` +

@@ -142,6 +142,12 @@ describe('Ralph bounded-round policy', () => {
     );
     expect(handoff).toMatch(/changed paths.*acceptance criteria/);
     expect(handoff).not.toContain('full Ralph policy');
+    // #843: UI work is shaped before it is built, and routed to the design
+    // reviewer; the surface definition is cited, not restated.
+    expect(handoff).toMatch(/impeccable skill's `shape`/);
+    expect(handoff).toContain('scripts/design-surface.mjs');
+    expect(handoff).toContain('`lambert`');
+    expect(handoff).toContain('## Screenshots (UI changes)');
     for (const reference of [
       'triage-dispatch.md',
       'pr-gates.md',

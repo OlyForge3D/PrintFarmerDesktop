@@ -13,6 +13,8 @@ export default tseslint.config(
       'node_modules/**',
       'native/**',
       '.squad/templates/ralph-triage.js',
+      // Vendored third-party detector, pinned by manifest.json (#843).
+      'tools/impeccable-detector/**',
     ],
   },
   js.configs.recommended,

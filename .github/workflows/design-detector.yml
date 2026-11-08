@@ -1,0 +1,71 @@
+name: Design detector
+
+# merge-queue: reports
+#
+# Subscribes to merge_group so the check reports for a queued entry and may be
+# made a required context. Deliberately a separate workflow rather than a step
+# in ci.yml: it needs full history for a three-dot diff, no `npm ci`, and no
+# platform matrix, and it should fail with its own name so a design regression
+# is not misread as a build or test failure.
+#
+# Runs the vendored impeccable detector (tools/impeccable-detector) over the
+# renderer markup and style files a change touches, and fails on any
+# non-advisory finding. Suppressions are reviewable in the diff:
+# .impeccable/config.json or inline `impeccable-disable` comments.
+#
+# Trust split: the runner, detector, and manifest are checked out from the BASE
+# commit into .design-trusted/ and executed from there; the change under test
+# supplies only the files to scan and its suppression config. Otherwise a PR
+# could replace detect.mjs with a no-op and regenerate the manifest to match.
+# A change to the detector itself therefore takes effect only after it merges.
+#
+# Bootstrap: if the base has no runner yet (the PR that introduces this
+# workflow), the PR's own copy runs and a warning says so.
+#
+# No secrets and read-only contents.
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  design-detector:
+    name: Design detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check out trusted detector from base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          path: .design-trusted
+          sparse-checkout: |
+            scripts/design-detector.mjs
+            scripts/design-surface.mjs
+            tools/impeccable-detector
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 #v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the detector and its runner import only node: builtins.
+      - name: Scan changed design-surface files
+        env:
+          BASE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          if [ -f .design-trusted/scripts/design-detector.mjs ] && [ -d .design-trusted/tools/impeccable-detector ]; then
+            node .design-trusted/scripts/design-detector.mjs --tool-root .design-trusted --base "$BASE_SHA" --head "$HEAD_SHA"
+          else
+            echo "::warning::Base commit has no design detector yet; running this change's own copy (bootstrap only, not a trusted result)."
+            npm run check:design-detector -- --base "$BASE_SHA" --head "$HEAD_SHA"
+          fi

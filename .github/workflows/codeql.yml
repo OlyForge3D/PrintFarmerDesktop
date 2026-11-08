@@ -1,0 +1,47 @@
+name: CodeQL
+
+# merge-queue: reports
+#
+# Advanced setup so .github/codeql/codeql-config.yml applies (default setup
+# ignores config files). The config excludes vendored third-party code; see the
+# reason recorded there. Not a required context unless branch protection says so.
+#
+# Languages: javascript-typescript (main, preload, renderer, scripts) and
+# actions (workflow injection). The Rust sidecar is not analysed here.
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [development, main]
+  schedule:
+    - cron: '27 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 #v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 #v4
+        with:
+          category: /language:${{ matrix.language }}
