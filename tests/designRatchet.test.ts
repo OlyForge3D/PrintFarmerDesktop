@@ -89,6 +89,7 @@ beforeEach(() => {
     'export const A = () => <h1>Test</h1>;\n',
   );
   git('init', '-q');
+  git('config', 'core.autocrlf', 'false');
   commit('sources');
   const result = command(process.execPath, ['scripts/design-baseline.mjs']);
   if (result.status !== 0) throw new Error(result.stderr);
@@ -143,6 +144,7 @@ describe('design count ratchet', () => {
     if (!paths?.length) throw new Error('Missing trusted sparse checkout');
     const trusted = path.join(fixture, 'trusted');
     git('clone', '-q', '--no-checkout', fixture, trusted);
+    git('-C', trusted, 'config', 'core.autocrlf', 'false');
     git('-C', trusted, 'sparse-checkout', 'set', '--no-cone', ...paths);
     git('-C', trusted, 'checkout', '-q', base);
     const result = command(process.execPath, [
