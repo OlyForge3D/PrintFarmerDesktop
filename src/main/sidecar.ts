@@ -379,9 +379,12 @@ export class SidecarClient {
       if (!channel || channel !== this.channel) {
         throw new Error('sidecar restarted before the scene request');
       }
+      const params = await this.withArchiveSizeLimit('loadScenePacked', {
+        path: filePath,
+      });
       const scene = await this.dispatchRequest(
         'loadScenePacked',
-        { path: filePath },
+        params,
         {
           timeoutMs: this.requestTimeoutMs,
           terminateOnTimeout: false,
@@ -1224,30 +1227,39 @@ export class SidecarClient {
     },
   ): Promise<unknown> {
     return this.enqueue(async (): Promise<unknown> => {
-      if (
-        this.archiveSizeLimitProvider &&
-        [
-          'scanRoot',
-          'previewImport',
-          'importRoot',
-          'hashModelSource',
-          'loadScene',
-          'loadScenePacked',
-          'renderThumbnail',
-          'extractVendorMetadata',
-          'extractVendorPlateThumbnails',
-        ].includes(method)
-      ) {
-        params = {
-          ...z.record(z.unknown()).parse(params),
-          maxArchiveBytes: await this.archiveSizeLimitProvider(),
-        };
-      }
+      params = await this.withArchiveSizeLimit(method, params);
       if (this.requireProtocolHandshake && method !== 'handshake') {
         await this.ensureProtocol();
       }
       return this.dispatchRequest(method, params, policy);
     });
+  }
+
+  private async withArchiveSizeLimit(
+    method: string,
+    params: unknown,
+  ): Promise<unknown> {
+    if (
+      !this.archiveSizeLimitProvider ||
+      ![
+        'scanRoot',
+        'previewImport',
+        'importRoot',
+        'hashModelSource',
+        'loadScene',
+        'loadScenePacked',
+        'renderThumbnail',
+        'extractVendorMetadata',
+        'extractVendorPlateThumbnails',
+      ].includes(method)
+    ) {
+      return params;
+    }
+
+    return {
+      ...z.record(z.unknown()).parse(params),
+      maxArchiveBytes: await this.archiveSizeLimitProvider(),
+    };
   }
 
   private enqueue<T>(dispatch: () => Promise<T>): Promise<T> {
