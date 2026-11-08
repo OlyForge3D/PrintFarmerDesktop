@@ -3213,8 +3213,9 @@ select:disabled {
   text-overflow: ellipsis;
 }
 
-.status-item--check {
+.app-statusbar > .status-item--check {
   display: flex;
+  flex: 0 1 auto;
   min-width: 0;
   align-items: center;
   gap: 6px;
@@ -3225,6 +3226,7 @@ select:disabled {
 }
 
 .status-item--check > [role='status'] {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
