@@ -781,6 +781,7 @@ describe('<App />', () => {
       unchanged: number;
       missing: number;
       hashErrors: number;
+      archiveWarnings: string[];
     }>();
     const listModels = vi
       .fn()
@@ -832,6 +833,9 @@ describe('<App />', () => {
         unchanged: 1,
         missing: 0,
         hashErrors: 0,
+        archiveWarnings: [
+          'Skipped ZIP oversized.zip: on-disk size 536870913 bytes exceeds the 512 MiB limit (536870912 bytes).',
+        ],
       });
       await pending.promise;
     });
@@ -845,6 +849,14 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Scan again' })).toBeVisible(),
     );
+    expect(
+      screen.getByRole('main', { name: 'Catalog sources' }),
+    ).toHaveTextContent('536870913 bytes exceeds the 512 MiB limit');
+    fireEvent.click(screen.getByRole('button', { name: /^Library$/ }));
+    expect(
+      screen.getByText('Oversized ZIP archives were skipped'),
+    ).toBeVisible();
+    expect(screen.getByText(/0 added.*536870913 bytes/)).toBeVisible();
   });
 
   it('shows a scan error alert and clears scanning state after a rescan failure', async () => {
