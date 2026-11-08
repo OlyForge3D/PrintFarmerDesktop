@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -53,7 +54,9 @@ function ratchet(head = git('rev-parse', 'HEAD'), baseRef = base) {
 }
 
 beforeEach(() => {
-  fixture = mkdtempSync(path.join(tmpdir(), 'design-ratchet-test-'));
+  fixture = realpathSync(
+    mkdtempSync(path.join(tmpdir(), 'design-ratchet-test-')),
+  );
   mkdirSync(path.join(fixture, 'src/renderer'), { recursive: true });
   mkdirSync(path.join(fixture, 'scripts'), { recursive: true });
   mkdirSync(path.join(fixture, '.impeccable'), { recursive: true });
@@ -86,6 +89,7 @@ beforeEach(() => {
     'export const A = () => <h1>Test</h1>;\n',
   );
   git('init', '-q');
+  git('config', 'core.autocrlf', 'false');
   commit('sources');
   const result = command(process.execPath, ['scripts/design-baseline.mjs']);
   if (result.status !== 0) throw new Error(result.stderr);
@@ -126,6 +130,104 @@ describe('design count ratchet', () => {
     expect(workflow).not.toContain('allow-unsafe-pr-checkout: true');
     expect(workflow).not.toMatch(/npm (?:ci|install)/);
   });
+
+  it('runs with exactly the trusted sparse-checkout paths from the workflow', () => {
+    const workflow = readFileSync(
+      path.join(repo, '.github/workflows/design-ratchet.yml'),
+      'utf8',
+    );
+    const paths = /sparse-checkout: \|\n((?: {12}.+\n)+)/
+      .exec(workflow)?.[1]
+      ?.trim()
+      .split('\n')
+      .map((file) => file.trim());
+    if (!paths?.length) throw new Error('Missing trusted sparse checkout');
+    const trusted = path.join(fixture, 'trusted');
+    git('clone', '-q', '--no-checkout', fixture, trusted);
+    git('-C', trusted, 'config', 'core.autocrlf', 'false');
+    git('-C', trusted, 'sparse-checkout', 'set', '--no-cone', ...paths);
+    git('-C', trusted, 'checkout', '-q', base);
+    const result = command(process.execPath, [
+      path.join(trusted, 'scripts/design-ratchet.mjs'),
+      fixture,
+      base,
+      base,
+      trusted,
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('0/0 total');
+    rmSync(path.join(trusted, 'scripts/design-baseline.mjs'));
+    const incomplete = command(process.execPath, [
+      path.join(trusted, 'scripts/design-ratchet.mjs'),
+      fixture,
+      base,
+      base,
+      trusted,
+    ]);
+    expect(incomplete.status).toBe(1);
+    expect(incomplete.stderr).toContain('design-baseline.mjs');
+  });
+
+  it('rejects a squash-stranded anchor and preserves enforcement after a landed-source refresh', () => {
+    const mainBranch = git('branch', '--show-current');
+    const source =
+      'export const A = () => <h1 className="bg-gradient-to-r from-purple-500 to-indigo-500 bg-clip-text text-transparent">Test</h1>;\n';
+    git('switch', '-qc', 'source-and-baseline');
+    writeFileSync(path.join(fixture, 'src/renderer/Test.tsx'), source);
+    const branchSource = commit('source with debt on feature branch');
+    let report = command(process.execPath, ['scripts/design-baseline.mjs']);
+    expect(report.status, report.stderr).toBe(0);
+    commit('baseline anchored to feature branch source');
+    git('switch', '-q', mainBranch);
+    git('merge', '--squash', 'source-and-baseline');
+    const squashed = commit('squashed source and baseline');
+    expect(
+      command('git', ['merge-base', '--is-ancestor', branchSource, squashed])
+        .status,
+    ).toBe(1);
+    const stranded = ratchet(squashed, squashed);
+    expect(stranded.status).toBe(1);
+    expect(stranded.stderr).toContain(
+      'Baseline inspected commit is not an ancestor of trusted base',
+    );
+    const reportPath = path.join(fixture, 'reports/design-baseline.json');
+    const before = z
+      .object({ findings: z.array(z.unknown()) })
+      .parse(JSON.parse(readFileSync(reportPath, 'utf8')));
+
+    // A report-only refresh inspects landed sources, not a new branch commit.
+    git('switch', '-qc', 'baseline-refresh');
+    report = command(process.execPath, ['scripts/design-baseline.mjs']);
+    expect(report.status, report.stderr).toBe(0);
+    const refreshed = z
+      .object({
+        inspectedCommit: z.string(),
+        findings: z.array(z.unknown()),
+      })
+      .parse(JSON.parse(readFileSync(reportPath, 'utf8')));
+    expect(refreshed.inspectedCommit).toBe(squashed);
+    expect(refreshed.findings).toEqual(before.findings);
+    const repair = commit('refresh report from landed source');
+    // Broken trusted bases cannot be repaired by a PR-controlled fallback.
+    expect(ratchet(repair, squashed).stderr).toContain(
+      'Baseline inspected commit is not an ancestor of trusted base',
+    );
+    git('switch', '-q', mainBranch);
+    git('merge', '--squash', 'baseline-refresh');
+    const landed = commit('squashed report-only refresh');
+    expect(
+      command('git', ['merge-base', '--is-ancestor', squashed, landed]).status,
+    ).toBe(0);
+    const accepted = ratchet(landed, landed);
+    expect(accepted.status, accepted.stderr).toBe(0);
+    writeFileSync(path.join(fixture, 'src/renderer/Extra.tsx'), source);
+    const increase = ratchet(commit('new debt'), landed);
+    expect(increase.status, increase.stderr).toBe(1);
+    const counts = /(\d+)\/(\d+) total/.exec(increase.stdout);
+    if (!counts) throw new Error('Missing ratchet counts');
+    expect(Number(counts[2])).toBeGreaterThan(0);
+    expect(Number(counts[1])).toBeGreaterThan(Number(counts[2]));
+  }, 30000);
 
   it('allows equal, lower, and same-total swaps while reporting severity', () => {
     const blocking = { antipattern: 'one' };

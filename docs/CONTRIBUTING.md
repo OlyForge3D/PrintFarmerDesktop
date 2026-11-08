@@ -214,9 +214,9 @@ associated source and directive lines are unchanged; whole-file suppressions
 remain in effect. The changed-file gate still follows its own existing
 suppression behavior.
 
-The checked-in initial report was made at its recorded commit with modified
-scanner and lockfile inputs and an untracked generator; their hashes and status
-are recorded rather than attributed to that commit. Before accepting it, the
+The checked-in report was regenerated from clean inputs at the landed
+development commit after the initial bootstrap's squash merge stranded its
+feature-branch anchor. Its allowance remains zero. Before accepting it, the
 ratchet checks selected source hashes against the inspected commit and scanner
 hashes against the trusted base, validates the detector manifest and report
 counts, and requires the recorded Node version, regex-only HTML capability,
@@ -241,6 +241,27 @@ allowance only after the change is reviewed and merged. Changes to detector,
 policy, Node version or
 HTML capabilities require a separately reviewed migration and compatible
 baseline; do not silently regenerate or increase the ceiling.
+
+**Keep the inspected commit reachable after squash merges.** A report generated
+after a feature-branch source commit records that branch-only SHA; squash merging
+source and report together does not retain it in development's ancestry. Land
+source fixes first, then create a separate report-only PR from the landed
+development commit and generate the report before making any branch commits.
+Use the report's recorded Node version and HTML capabilities, verify clean input
+provenance and unchanged or lower findings, and leave scanner/config unchanged.
+Squashing this report-only PR preserves its inspected commit as an ancestor.
+Before accepting a baseline, verify its inspected SHA is an ancestor of the
+destination branch, not merely of the PR head.
+
+If an already-trusted baseline has a stranded anchor, the check intentionally
+fails before examining a candidate repair: a PR cannot replace the policy used
+to judge itself. Recovery therefore needs an explicitly reviewed, independently
+authorized bootstrap to land a regenerated report from the existing development
+commit. Do not skip the check, remove ancestry validation, increase the allowance,
+or treat the repair PR as green against the broken base. Validate the repaired
+commit as both trusted base and target with
+`node scripts/design-ratchet.mjs . <repair-sha> <repair-sha> .`, then verify live
+PR-head and merge-group reporting after recovery.
 
 The ratchet covers only the static source surface described above. A zero
 total is neither WCAG compliance nor visual approval, and same-count swaps can
