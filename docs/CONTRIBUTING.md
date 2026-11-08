@@ -71,6 +71,22 @@ pass. CI runs each feature separately (`ci.yml`), so this is a local-check
 hazard: a change to a feature-gated module can look tested locally and only be
 exercised in CI.
 
+## macOS installer artwork
+
+The drag-to-install DMG uses `assets/dmg/background.svg` as its editable source.
+On macOS, run `npm run generate:dmg-background` to regenerate
+the committed 680 x 460 PNG and its double-resolution `@2x` sibling. Appdmg
+combines those into a Retina TIFF when building the installer. Use
+`npm run generate:dmg-background -- --preview-dir /absolute/path` to also save a composed preview with icons and
+labels; this is illustrative, not a Finder screenshot.
+
+Keep the artwork's icon centers and dimensions aligned with the `MakerDMG`
+configuration in `forge.config.ts`. The pale icon area preserves contrast for
+Finder's labels. Use `title` for the mounted volume name, not `name`: setting
+`name` disables Forge's version/architecture-qualified DMG filename. The
+contents callback uses the packaged app path for both native and universal
+builds; signing and notarization still run before the maker.
+
 ## UI design checks
 
 Changes to the renderer's markup and styles (the set is defined in
