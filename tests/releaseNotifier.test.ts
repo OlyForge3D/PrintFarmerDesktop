@@ -335,6 +335,85 @@ describe('ReleaseNotifier', () => {
   });
 
   describe('checkNow', () => {
+    it('does not let an older background response replace a manual result', async () => {
+      const pendingResponses: ((response: Response) => void)[] = [];
+      const fetchImplementation = vi.fn<typeof fetch>(
+        () =>
+          new Promise((resolve) => {
+            pendingResponses.push(resolve);
+          }),
+      );
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0-beta.8',
+        platform: 'darwin',
+        fetchImplementation,
+      });
+
+      const backgroundCheck = notifier.getAvailableRelease();
+      await vi.waitFor(() =>
+        expect(fetchImplementation).toHaveBeenCalledTimes(2),
+      );
+      const manualCheck = notifier.checkNow();
+      await vi.waitFor(() =>
+        expect(fetchImplementation).toHaveBeenCalledTimes(4),
+      );
+
+      pendingResponses[2]?.(jsonResponse([release('0.1.0-beta.10')]));
+      pendingResponses[3]?.(jsonResponse({ message: 'Not Found' }, 404));
+      await expect(manualCheck).resolves.toMatchObject({
+        failed: false,
+        release: { version: '0.1.0-beta.10' },
+      });
+
+      pendingResponses[0]?.(jsonResponse([release('0.1.0-beta.9')]));
+      pendingResponses[1]?.(jsonResponse({ message: 'Not Found' }, 404));
+      await expect(backgroundCheck).resolves.toMatchObject({
+        version: '0.1.0-beta.10',
+      });
+      await expect(notifier.getAvailableRelease()).resolves.toMatchObject({
+        version: '0.1.0-beta.10',
+      });
+    });
+    it('prevents an older background check from replacing the manual result', async () => {
+      const pendingResponses: ((response: Response) => void)[] = [];
+      const fetchImplementation = vi.fn<typeof fetch>(
+        () =>
+          new Promise((resolve) => {
+            pendingResponses.push(resolve);
+          }),
+      );
+      const notifier = new ReleaseNotifier({
+        currentVersion: '0.1.0-beta.8',
+        platform: 'darwin',
+        fetchImplementation,
+      });
+
+      const backgroundCheck = notifier.getAvailableRelease();
+      await vi.waitFor(() =>
+        expect(fetchImplementation).toHaveBeenCalledTimes(2),
+      );
+      const manualCheck = notifier.checkNow();
+      await vi.waitFor(() =>
+        expect(fetchImplementation).toHaveBeenCalledTimes(4),
+      );
+
+      pendingResponses[2]?.(jsonResponse([release('0.1.0-beta.10')]));
+      pendingResponses[3]?.(jsonResponse({ message: 'Not Found' }, 404));
+      await expect(manualCheck).resolves.toMatchObject({
+        failed: false,
+        release: { version: '0.1.0-beta.10' },
+      });
+
+      pendingResponses[0]?.(jsonResponse([release('0.1.0-beta.9')]));
+      pendingResponses[1]?.(jsonResponse({ message: 'Not Found' }, 404));
+      await expect(backgroundCheck).resolves.toMatchObject({
+        version: '0.1.0-beta.10',
+      });
+      await expect(notifier.getAvailableRelease()).resolves.toMatchObject({
+        version: '0.1.0-beta.10',
+      });
+    });
+
     it('bypasses a fresh cache, refreshes it, and reports a newer release', async () => {
       const now = 0;
       const fetchImplementation = githubFake([]);

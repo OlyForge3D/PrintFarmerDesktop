@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GetAvailableReleaseResponse, PrintFarmerApi } from '@shared/ipc';
 import { StatusBar } from '../src/renderer/shell/StatusBar.js';
@@ -134,6 +140,61 @@ describe('update-available notice', () => {
         screen.getByText('Version 0.1.0-beta.9 is available'),
       ).toBeTruthy();
       expect(check).toHaveBeenCalledOnce();
+    });
+
+    it('does not let an older background response overwrite a manual result', async () => {
+      let resolveBackground: (
+        value: GetAvailableReleaseResponse,
+      ) => void = () => {};
+      let resolveManual: (value: {
+        currentVersion: string;
+        status: 'available';
+        available: NonNullable<GetAvailableReleaseResponse['available']>;
+      }) => void = () => {};
+      const background = vi.fn(
+        () =>
+          new Promise<GetAvailableReleaseResponse>((resolve) => {
+            resolveBackground = resolve;
+          }),
+      );
+      const manual = vi.fn(
+        () =>
+          new Promise<{
+            currentVersion: string;
+            status: 'available';
+            available: NonNullable<GetAvailableReleaseResponse['available']>;
+          }>((resolve) => {
+            resolveManual = resolve;
+          }),
+      );
+      installApi(background, manual);
+      render(<Harness />);
+      await waitFor(() => expect(background).toHaveBeenCalledOnce());
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      await waitFor(() => expect(manual).toHaveBeenCalledOnce());
+
+      resolveManual({
+        currentVersion: '0.1.0-beta.8',
+        status: 'available',
+        available: beta9.available!,
+      });
+      expect(
+        await screen.findByRole('link', {
+          name: 'Beta 0.1.0-beta.9 available',
+        }),
+      ).toBeTruthy();
+
+      act(() => {
+        resolveBackground({ currentVersion: '0.1.0-beta.8', available: null });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(
+        screen.getByRole('link', {
+          name: 'Beta 0.1.0-beta.9 available',
+        }),
+      ).toBeTruthy();
     });
 
     it('says when the app is up to date', async () => {

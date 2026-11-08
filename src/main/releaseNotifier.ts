@@ -191,6 +191,8 @@ export class ReleaseNotifier {
   private lastCheckedAt: number | null = null;
   private lastResult: AvailableRelease | null = null;
   private inFlight: Promise<AvailableRelease | null> | null = null;
+  private manualCheckGeneration = 0;
+  private manualChecksInFlight = 0;
 
   constructor(options: ReleaseNotifierOptions) {
     this.currentVersion = options.currentVersion;
@@ -255,15 +257,22 @@ export class ReleaseNotifier {
    */
   async checkNow(): Promise<ManualCheckResult> {
     await this.loadPersistedCheck();
+    const generation = ++this.manualCheckGeneration;
+    this.manualChecksInFlight += 1;
     try {
-      this.lastResult = await this.fetchAvailableRelease();
+      const release = await this.fetchAvailableRelease();
+      if (generation === this.manualCheckGeneration) {
+        this.lastResult = release;
+        this.lastCheckedAt = this.now();
+        await this.persistCheck();
+      }
+      return { failed: false, release };
     } catch (error) {
       this.onError(error);
       return { failed: true, release: this.lastResult };
+    } finally {
+      this.manualChecksInFlight -= 1;
     }
-    this.lastCheckedAt = this.now();
-    await this.persistCheck();
-    return { failed: false, release: this.lastResult };
   }
 
   private async fetchAvailableRelease(): Promise<AvailableRelease | null> {
@@ -288,11 +297,22 @@ export class ReleaseNotifier {
   }
 
   private async check(): Promise<AvailableRelease | null> {
+    const generation = this.manualCheckGeneration;
+    const startedDuringManualCheck = this.manualChecksInFlight > 0;
+    let result = this.lastResult;
     try {
-      this.lastResult = await this.fetchAvailableRelease();
+      result = await this.fetchAvailableRelease();
     } catch (error) {
       this.onError(error);
     }
+    if (
+      startedDuringManualCheck ||
+      generation !== this.manualCheckGeneration ||
+      this.manualChecksInFlight > 0
+    ) {
+      return this.lastResult;
+    }
+    this.lastResult = result;
     this.lastCheckedAt = this.now();
     await this.persistCheck();
     return this.lastResult;

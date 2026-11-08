@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AvailableRelease } from '@shared/ipc';
 
 const DISMISSED_RELEASE_KEY = 'printfarmer.dismissedReleaseVersion';
@@ -46,12 +46,20 @@ export function useAvailableRelease(
   const [checkState, setCheckState] = useState<UpdateCheckState>({
     kind: 'idle',
   });
+  const manualCheckVersion = useRef(0);
+  const manualCheckId = useRef(0);
+  const manualCheckInFlight = useRef(false);
 
   const checkNow = useCallback(() => {
+    const checkId = ++manualCheckId.current;
+    manualCheckVersion.current += 1;
+    manualCheckInFlight.current = true;
     setCheckState({ kind: 'checking' });
     Promise.resolve()
       .then(() => window.printFarmer.checkForUpdates())
       .then((response) => {
+        if (checkId !== manualCheckId.current) return;
+        manualCheckInFlight.current = false;
         if (response.status === 'available' && response.available) {
           // A manual check is an explicit ask: show the notice even if this
           // version was dismissed earlier.
@@ -78,16 +86,28 @@ export function useAvailableRelease(
           });
         }
       })
-      .catch(() => setCheckState({ kind: 'failed' }));
+      .catch(() => {
+        if (checkId !== manualCheckId.current) return;
+        manualCheckInFlight.current = false;
+        setCheckState({ kind: 'failed' });
+      });
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     const check = () => {
+      const versionAtStart = manualCheckVersion.current;
+      const startedDuringManualCheck = manualCheckInFlight.current;
       Promise.resolve()
         .then(() => window.printFarmer.getAvailableRelease())
         .then((response) => {
-          if (!cancelled) setRelease(response.available);
+          if (
+            !cancelled &&
+            !startedDuringManualCheck &&
+            versionAtStart === manualCheckVersion.current
+          ) {
+            setRelease(response.available);
+          }
         })
         .catch(() => undefined);
     };

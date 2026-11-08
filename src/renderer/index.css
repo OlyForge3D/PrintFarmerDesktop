@@ -3213,6 +3213,23 @@ select:disabled {
   text-overflow: ellipsis;
 }
 
+.status-item--check {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-item--check > button {
+  flex: 0 0 auto;
+}
+
+.status-item--check > [role='status'] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* On-demand 3D preview */
 
 .preview-backdrop {
