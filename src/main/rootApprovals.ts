@@ -4,6 +4,11 @@ import type { BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {
+  requireStandaloneModelPath,
+  zipMemberPath,
+  zipMemberSource,
+} from '../shared/modelSource.js';
 
 const STORE_VERSION = 1;
 const MAX_ROOTS = 256;
@@ -294,6 +299,13 @@ export class RootApprovalStore {
 
   private async canonicalCatalogFile(filePath: string): Promise<string | null> {
     try {
+      const member = zipMemberSource(filePath);
+      if (member) {
+        const canonicalArchive = await this.fileSystem.realpath(
+          member.archivePath,
+        );
+        return zipMemberPath(member, canonicalArchive);
+      }
       return await this.fileSystem.realpath(filePath);
     } catch (error) {
       if (isMissingPath(error)) return null;
@@ -341,6 +353,7 @@ export class RootApprovalStore {
   }
 
   async openApprovedFile(filePath: string): Promise<ApprovedFile> {
+    requireStandaloneModelPath(filePath);
     const lstat = (candidate: string): Promise<BigIntStats> =>
       this.lstatBigInt(candidate);
     const open = (candidate: string, flags: number): Promise<FileHandle> =>
@@ -437,6 +450,13 @@ export class RootApprovalStore {
 
   async canonicalizePickerFile(filePath: string): Promise<string> {
     try {
+      const member = zipMemberSource(filePath);
+      if (member) {
+        return zipMemberPath(
+          member,
+          await this.fileSystem.realpath(member.archivePath),
+        );
+      }
       return await this.fileSystem.realpath(filePath);
     } catch {
       throw new RootApprovalError(

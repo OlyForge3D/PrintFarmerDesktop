@@ -31,8 +31,8 @@ use crate::catalog::{
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
     SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
-    SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_VERSION,
+    SCHEMA_V17, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
     self, ApplyPullBatchDto, CalibrationConflictKind, CalibrationConflictResolutionKind,
@@ -128,6 +128,9 @@ impl SqliteCatalog {
                 if version < 16 {
                     conn.execute_batch(SCHEMA_V16)?;
                 }
+                if version < 17 {
+                    conn.execute_batch(SCHEMA_V17)?;
+                }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
             })();
@@ -169,7 +172,7 @@ impl SqliteCatalog {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT root_id, path, root_relative, size_bytes, modified_unix_secs, available
+                "SELECT root_id, path, root_relative, size_bytes, modified_unix_secs, available, source_revision
                  FROM model_locations WHERE model_hash = ?1 ORDER BY path",
             )
             .expect("catalog read failed: locations prepare");
@@ -187,6 +190,7 @@ impl SqliteCatalog {
                     fingerprint: FileFingerprint {
                         size: size_bytes as u64,
                         modified_unix_secs: modified,
+                        source_revision: row.get(6)?,
                     },
                     available: available != 0,
                 })
@@ -885,7 +889,7 @@ impl CatalogStore for SqliteCatalog {
     fn get_location(&self, root_id: &str, path: &Path) -> Option<StoredLocation> {
         self.conn
             .query_row(
-                "SELECT model_hash, size_bytes, modified_unix_secs, available
+                "SELECT model_hash, size_bytes, modified_unix_secs, available, source_revision
                  FROM model_locations WHERE root_id = ?1 AND path = ?2",
                 params![root_id, path_to_str(path)],
                 |row| {
@@ -897,6 +901,7 @@ impl CatalogStore for SqliteCatalog {
                         fingerprint: FileFingerprint {
                             size: size_bytes as u64,
                             modified_unix_secs: modified,
+                            source_revision: row.get(4)?,
                         },
                         available: available != 0,
                     })
@@ -939,13 +944,14 @@ impl CatalogStore for SqliteCatalog {
             .execute(
                 "INSERT INTO model_locations(
                      root_id, path, root_relative, model_hash,
-                     size_bytes, modified_unix_secs, available, last_seen_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)
+                     size_bytes, modified_unix_secs, available, last_seen_at, source_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)
                  ON CONFLICT(root_id, path) DO UPDATE SET
                      root_relative = excluded.root_relative,
                      model_hash = excluded.model_hash,
                      size_bytes = excluded.size_bytes,
                      modified_unix_secs = excluded.modified_unix_secs,
+                     source_revision = excluded.source_revision,
                      available = 1,
                      last_seen_at = excluded.last_seen_at",
                 params![
@@ -956,6 +962,7 @@ impl CatalogStore for SqliteCatalog {
                     upsert.fingerprint.size as i64,
                     upsert.fingerprint.modified_unix_secs,
                     now,
+                    upsert.fingerprint.source_revision,
                 ],
             )
             .expect("catalog write failed: upsert location");
@@ -5352,6 +5359,7 @@ mod tests {
                 fingerprint: FileFingerprint {
                     size: 3,
                     modified_unix_secs: Some(1),
+                    source_revision: None,
                 },
             });
         }
@@ -6391,6 +6399,7 @@ mod tests {
         let db = dir.path().join("v12-calibration.sqlite3");
         {
             let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
             conn.execute_batch(SCHEMA_V12).unwrap();
             conn.execute(
                 "INSERT INTO calibration_projects(

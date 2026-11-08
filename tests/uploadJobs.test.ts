@@ -1741,6 +1741,81 @@ describe('UploadJobService', () => {
     ]);
   });
 
+  it('preserves the extracted-source approval error instead of trying an unsupported ZIP duplicate', async () => {
+    const hash = 'e'.repeat(64);
+    const stat = await fs.stat(MODEL_PATH);
+    const openApprovedFile = vi
+      .fn()
+      .mockRejectedValue(
+        new RootApprovalError(
+          'APPROVAL_REQUIRED',
+          'Reauthorize the extracted source.',
+        ),
+      );
+    const service = await serviceFixture({
+      hashes: [hash],
+      locations: [
+        {
+          rootId: 'zip',
+          path: '/models/parts.zip/::zip::/0/part.stl',
+          rootRelative: 'parts.zip/part.stl',
+          size: stat.size,
+          available: true,
+        },
+        {
+          rootId: 'extracted',
+          path: MODEL_PATH,
+          rootRelative: 'part.stl',
+          size: stat.size,
+          available: true,
+        },
+      ],
+      approvals: { openApprovedFile },
+      transport: vi.fn().mockRejectedValue(new Error('Upload must not start')),
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    const jobs = await waitFor(
+      () => service.list(),
+      (items) => items[0]?.items[0]?.state === 'failed',
+    );
+    expect(openApprovedFile).toHaveBeenCalledExactlyOnceWith(MODEL_PATH);
+    expect(jobs[0]?.items[0]?.error?.message).toContain('Reauthorize');
+    expect(jobs[0]?.items[0]?.error).toMatchObject({
+      retryable: true,
+      duplicateRisk: false,
+    });
+  });
+
+  it('reports extraction required for a ZIP-only upload without opening a synthetic path', async () => {
+    const hash = 'e'.repeat(64);
+    const openApprovedFile = vi.fn();
+    const service = await serviceFixture({
+      hashes: [hash],
+      locations: [
+        {
+          rootId: 'zip',
+          path: '/models/parts.zip/::zip::/0/part.stl',
+          rootRelative: 'parts.zip/part.stl',
+          size: 100,
+          available: true,
+        },
+      ],
+      approvals: { openApprovedFile },
+      transport: vi.fn().mockRejectedValue(new Error('Upload must not start')),
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    const jobs = await waitFor(
+      () => service.list(),
+      (items) => items[0]?.items[0]?.state === 'failed',
+    );
+    expect(openApprovedFile).not.toHaveBeenCalled();
+    expect(jobs[0]?.items[0]?.error).toMatchObject({
+      code: 'FILE_UNAVAILABLE',
+      retryable: false,
+    });
+    expect(jobs[0]?.items[0]?.error?.message).toContain('Extract');
+  });
+
   it('falls back after a stale approved copy fails snapshot hashing', async () => {
     const hash = '2'.repeat(64);
     const stat = await fs.stat(MODEL_PATH);

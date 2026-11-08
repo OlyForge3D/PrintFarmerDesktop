@@ -8,7 +8,12 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
+
+/// Preserve ZIP member change fingerprints across restarts.
+pub const SCHEMA_V17: &str = r#"
+ALTER TABLE model_locations ADD COLUMN source_revision TEXT;
+"#;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -926,7 +931,7 @@ mod tests {
         let migrations = [
             SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
             SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
-            SCHEMA_V16,
+            SCHEMA_V16, SCHEMA_V17,
         ];
         assert_eq!(
             SCHEMA_VERSION as usize,

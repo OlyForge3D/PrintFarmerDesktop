@@ -3,21 +3,32 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import {
   LoadSceneResponse,
+  RenderThumbnailResponse,
   type LoadSceneResponse as Scene,
+  type RenderThumbnailResponse as Thumbnail,
 } from '@shared/ipc';
+import { zipMemberSource } from '@shared/modelSource';
 import type { RecipeBoundScene } from './sidecar.js';
 
 const CACHE_FORMAT_VERSION = 1;
 const MANIFEST_NAME = 'recipe.json';
+const DEFAULT_THUMBNAIL_SIZE = 256;
+const THUMBNAIL_RENDERER_VERSION = 1;
+const DEFAULT_THUMBNAIL_CACHE_MAX_BYTES = 512 * 1024 * 1024;
+const DEFAULT_THUMBNAIL_CACHE_RETENTION_DAYS = 30;
+const THUMBNAIL_CACHE_DIRECTORY = 'printfarmer-thumbnails.v1';
+const THUMBNAIL_CACHE_SETTINGS_FILE = 'thumbnail-cache-settings.json';
 const UNINITIALIZED = Symbol('uninitialized-scene-cache-recipe');
 /**
  * Returned by `deriveAndStore` when the recipe moved under it and the load has
@@ -40,6 +51,7 @@ const RESTART = Symbol('scene-cache-restart');
 
 export const SCENE_CACHE_DIRECTORY = 'scene-cache.v1';
 export const MAX_SCENE_ENTRY_BYTES = 64 * 1024 * 1024;
+const THUMBNAIL_ENTRY_NAME = /^[a-f0-9]{64}\.thumbnail\.json$/;
 
 /**
  * How much of the model to read per `read` call while hashing.
@@ -70,8 +82,34 @@ const SceneCacheManifest = z
   })
   .strict();
 
+const ThumbnailCacheSettingsData = z
+  .object({
+    location: z.string().min(1).nullable(),
+    maxBytes: z
+      .number()
+      .int()
+      .min(16 * 1024 * 1024)
+      .max(16 * 1024 ** 3),
+    retentionDays: z.number().int().min(1).max(3650),
+  })
+  .strict();
+
+export interface ThumbnailCacheSettingsData {
+  location: string | null;
+  maxBytes: number;
+  retentionDays: number;
+}
+
+export interface ThumbnailCacheStatus extends ThumbnailCacheSettingsData {
+  effectiveLocation: string;
+  usedBytes: number;
+  entryCount: number;
+  warning: string | null;
+}
+
 export interface SceneCacheSidecar {
   sceneCacheRecipe(): Promise<string | undefined>;
+  hashModelSource(filePath: string): Promise<string>;
   loadSceneWithRecipe(filePath: string): Promise<RecipeBoundScene>;
 }
 
@@ -83,6 +121,10 @@ export interface SceneCacheFileSystem {
   remove(targetPath: string): Promise<void>;
   size(filePath: string): Promise<number>;
   writeText(filePath: string, contents: string): Promise<void>;
+  listFiles?(
+    directoryPath: string,
+  ): Promise<Array<{ name: string; size: number; modifiedAt: number }>>;
+  touch?(filePath: string): Promise<void>;
 }
 
 export interface SceneCacheServiceOptions {
@@ -90,6 +132,7 @@ export interface SceneCacheServiceOptions {
   sidecar: SceneCacheSidecar;
   fileSystem?: SceneCacheFileSystem;
   maxEntryBytes?: number;
+  thumbnailRecipe?: (sceneRecipe: string, size: number) => string;
   reportError?: (message: string, error: unknown) => void;
 }
 
@@ -123,7 +166,47 @@ const nodeFileSystem: SceneCacheFileSystem = {
       flag: 'wx',
       mode: 0o600,
     }),
+  listFiles: listThumbnailCacheFiles,
+  touch: async (filePath) => {
+    const now = new Date();
+    await utimes(filePath, now, now);
+  },
 };
+
+export async function listThumbnailCacheFiles(
+  directoryPath: string,
+  readDirectory: (directoryPath: string) => Promise<string[]> = readdir,
+  statFile: (
+    filePath: string,
+  ) => Promise<
+    Pick<Awaited<ReturnType<typeof stat>>, 'isFile' | 'size' | 'mtimeMs'>
+  > = stat,
+): Promise<Array<{ name: string; size: number; modifiedAt: number }>> {
+  const names = await readDirectory(directoryPath);
+  const files = await Promise.all(
+    names
+      .filter((name) => THUMBNAIL_ENTRY_NAME.test(name))
+      .map(async (name) => {
+        try {
+          const details = await statFile(path.join(directoryPath, name));
+          return details.isFile()
+            ? {
+                name,
+                size: details.size,
+                modifiedAt: details.mtimeMs,
+              }
+            : null;
+        } catch (error) {
+          if (isMissing(error)) return null;
+          throw error;
+        }
+      }),
+  );
+  return files.filter(
+    (file): file is { name: string; size: number; modifiedAt: number } =>
+      file !== null,
+  );
+}
 
 /**
  * Persists validated scene DTOs under the recipe advertised by the sidecar.
@@ -133,9 +216,14 @@ const nodeFileSystem: SceneCacheFileSystem = {
 export class SceneCacheService {
   private readonly cacheDirectory: string;
   private readonly manifestPath: string;
+  private readonly thumbnailSettingsPath: string;
   private readonly sidecar: SceneCacheSidecar;
   private readonly fileSystem: SceneCacheFileSystem;
   private readonly maxEntryBytes: number;
+  private readonly thumbnailRecipe: (
+    sceneRecipe: string,
+    size: number,
+  ) => string;
   private readonly reportError: (message: string, error: unknown) => void;
   private activeRecipe: string | null | typeof UNINITIALIZED = UNINITIALIZED;
   private storageReady = false;
@@ -159,6 +247,15 @@ export class SceneCacheService {
     string,
     Promise<Scene | typeof RESTART>
   >();
+  private readonly inFlightThumbnails = new Map<string, Promise<Thumbnail>>();
+  private thumbnailSettings: ThumbnailCacheSettingsData = {
+    location: null,
+    maxBytes: DEFAULT_THUMBNAIL_CACHE_MAX_BYTES,
+    retentionDays: DEFAULT_THUMBNAIL_CACHE_RETENTION_DAYS,
+  };
+  private thumbnailCacheWarning: string | null = null;
+  private thumbnailGeneration = 0;
+  private thumbnailSettingsInitialization: Promise<void> | null = null;
 
   constructor(options: SceneCacheServiceOptions) {
     this.cacheDirectory = path.join(
@@ -166,9 +263,14 @@ export class SceneCacheService {
       SCENE_CACHE_DIRECTORY,
     );
     this.manifestPath = path.join(this.cacheDirectory, MANIFEST_NAME);
+    this.thumbnailSettingsPath = path.join(
+      options.userDataPath,
+      THUMBNAIL_CACHE_SETTINGS_FILE,
+    );
     this.sidecar = options.sidecar;
     this.fileSystem = options.fileSystem ?? nodeFileSystem;
     this.maxEntryBytes = options.maxEntryBytes ?? MAX_SCENE_ENTRY_BYTES;
+    this.thumbnailRecipe = options.thumbnailRecipe ?? thumbnailCacheRecipe;
     this.reportError =
       options.reportError ??
       ((message, error) => {
@@ -177,11 +279,91 @@ export class SceneCacheService {
   }
 
   async initialize(): Promise<void> {
+    await this.ensureThumbnailSettingsLoaded();
     await this.adoptRecipe(await this.sidecar.sceneCacheRecipe());
+    await this.enforceThumbnailCachePolicy();
   }
 
   async adoptRecipe(recipe: string | undefined): Promise<void> {
     await this.withMutationLock(() => this.adoptRecipeLocked(recipe ?? null));
+  }
+
+  async getThumbnailCacheStatus(): Promise<ThumbnailCacheStatus> {
+    await this.ensureThumbnailSettingsLoaded();
+    let entries: Array<{ name: string; size: number; modifiedAt: number }> = [];
+    try {
+      await this.ensureThumbnailDirectory(this.thumbnailSettings);
+      entries = await this.listThumbnailEntries(
+        this.thumbnailDirectory(this.thumbnailSettings),
+      );
+    } catch (error) {
+      this.setThumbnailCacheWarning(
+        'Thumbnail cache location is unavailable or not writable.',
+        error,
+      );
+    }
+    return {
+      ...this.thumbnailSettings,
+      effectiveLocation: this.thumbnailDirectory(this.thumbnailSettings),
+      usedBytes: entries.reduce((total, entry) => total + entry.size, 0),
+      entryCount: entries.length,
+      warning: this.thumbnailCacheWarning,
+    };
+  }
+
+  async setThumbnailCacheSettings(
+    rawSettings: ThumbnailCacheSettingsData,
+  ): Promise<ThumbnailCacheStatus> {
+    await this.ensureThumbnailSettingsLoaded();
+    const settings = ThumbnailCacheSettingsData.parse(rawSettings);
+    if (settings.location !== null && !path.isAbsolute(settings.location)) {
+      throw new Error(
+        'Thumbnail cache location must be an absolute folder path.',
+      );
+    }
+    const normalized: ThumbnailCacheSettingsData = {
+      ...settings,
+      location:
+        settings.location === null ? null : path.resolve(settings.location),
+    };
+    await this.withMutationLock(async () => {
+      const previousDirectory = this.thumbnailDirectory(this.thumbnailSettings);
+      await this.ensureThumbnailDirectory(normalized);
+      await this.persistThumbnailSettings(normalized);
+      this.thumbnailSettings = normalized;
+      this.thumbnailGeneration += 1;
+      this.thumbnailCacheWarning = null;
+      const nextDirectory = this.thumbnailDirectory(normalized);
+      if (previousDirectory !== nextDirectory) {
+        try {
+          await this.clearThumbnailEntries(previousDirectory);
+        } catch (error) {
+          this.setThumbnailCacheWarning(
+            'Could not remove owned thumbnails from the previous cache location.',
+            error,
+          );
+        }
+      }
+    });
+    await this.enforceThumbnailCachePolicy();
+    return this.getThumbnailCacheStatus();
+  }
+
+  async clearThumbnailCache(): Promise<number> {
+    await this.ensureThumbnailSettingsLoaded();
+    return this.withMutationLock(async () => {
+      const directory = this.thumbnailDirectory(this.thumbnailSettings);
+      await this.ensureThumbnailDirectory(this.thumbnailSettings);
+      const entries = await this.listThumbnailEntries(directory);
+      let clearedEntries = 0;
+      for (const entry of entries) {
+        await this.fileSystem.remove(path.join(directory, entry.name));
+        clearedEntries += 1;
+      }
+      this.thumbnailGeneration += 1;
+      this.thumbnailCacheWarning = null;
+      return clearedEntries;
+    });
   }
 
   /**
@@ -208,12 +390,43 @@ export class SceneCacheService {
    * {@link RESTART}.
    */
   async purge(): Promise<void> {
+    await this.ensureThumbnailSettingsLoaded();
     await this.withMutationLock(async () => {
       this.generation += 1;
+      this.thumbnailGeneration += 1;
       this.activeRecipe = UNINITIALIZED;
       this.storageReady = false;
-      await this.fileSystem.remove(this.manifestPath);
-      await this.fileSystem.remove(this.cacheDirectory);
+      let thumbnailCleanupError: unknown;
+      try {
+        await this.clearThumbnailEntries(
+          this.thumbnailDirectory(this.thumbnailSettings),
+        );
+      } catch (error) {
+        this.setThumbnailCacheWarning(
+          'Could not clear thumbnail cache while resetting approved roots.',
+          error,
+        );
+        thumbnailCleanupError = error;
+      }
+      let manifestCleanupError: unknown;
+      try {
+        await this.fileSystem.remove(this.manifestPath);
+      } catch (error) {
+        manifestCleanupError = error;
+      }
+      let directoryCleanupError: unknown;
+      try {
+        await this.fileSystem.remove(this.cacheDirectory);
+      } catch (error) {
+        directoryCleanupError = error;
+      }
+      const cleanupError =
+        thumbnailCleanupError ?? manifestCleanupError ?? directoryCleanupError;
+      if (cleanupError) {
+        throw cleanupError instanceof Error
+          ? cleanupError
+          : new Error('Cache cleanup failed.', { cause: cleanupError });
+      }
     });
   }
 
@@ -257,6 +470,90 @@ export class SceneCacheService {
     // `finally` above has already removed this key. Restarting from inside the
     // registered promise re-attached it to itself; see RESTART.
     return derived === RESTART ? this.loadScene(filePath) : derived;
+  }
+
+  /**
+   * Renders or retrieves a thumbnail from the existing scene-cache directory.
+   * Thumbnail recipes include the parser recipe and requested size, with a
+   * separately versioned renderer component. The content hash is always
+   * computed from the approved source path before looking up an entry.
+   */
+  async renderThumbnail(
+    filePath: string,
+    requestedSize: number | undefined,
+    render: () => Promise<unknown>,
+  ): Promise<Thumbnail> {
+    await this.ensureThumbnailSettingsLoaded();
+    const size = requestedSize ?? DEFAULT_THUMBNAIL_SIZE;
+    const advertisedSceneRecipe = await this.sidecar.sceneCacheRecipe();
+    const lease = await this.withMutationLock(async () => {
+      await this.adoptRecipeLocked(advertisedSceneRecipe ?? null);
+      return this.currentLease();
+    });
+
+    const modelHash = await this.hashModel(filePath);
+    if (!modelHash || !advertisedSceneRecipe || !lease.storageReady) {
+      if (advertisedSceneRecipe && !lease.storageReady) {
+        this.setThumbnailCacheWarning(
+          'Thumbnail cache is unavailable; rendering without caching.',
+          new Error('Scene cache storage is not ready.'),
+        );
+      }
+      return RenderThumbnailResponse.parse(await render());
+    }
+
+    const expectedRecipe = this.thumbnailRecipe(advertisedSceneRecipe, size);
+    const key = thumbnailCacheKey(modelHash, expectedRecipe, size);
+    const thumbnailDirectory = this.thumbnailDirectory(this.thumbnailSettings);
+    const thumbnailGeneration = this.thumbnailGeneration;
+    try {
+      await this.ensureThumbnailDirectory(this.thumbnailSettings);
+    } catch (error) {
+      this.setThumbnailCacheWarning(
+        'Thumbnail cache location is unavailable or not writable; rendering without caching.',
+        error,
+      );
+      return RenderThumbnailResponse.parse(await render());
+    }
+    const cached = await this.readThumbnail(
+      key,
+      expectedRecipe,
+      thumbnailDirectory,
+    );
+    if (cached && this.isCurrent(lease)) return cached;
+    if (!this.isCurrent(lease)) {
+      return this.renderThumbnail(filePath, requestedSize, render);
+    }
+
+    const pending = this.inFlightThumbnails.get(key);
+    if (pending) return pending;
+
+    const loading = (async () => {
+      const thumbnail = RenderThumbnailResponse.parse(await render());
+      if (thumbnail.cacheRecipe !== expectedRecipe) return thumbnail;
+
+      const hashAfterRender = await this.hashModel(filePath);
+      if (
+        hashAfterRender === modelHash &&
+        thumbnailGeneration === this.thumbnailGeneration
+      ) {
+        await this.writeThumbnailIfCurrent(
+          key,
+          thumbnail,
+          lease,
+          thumbnailDirectory,
+          thumbnailGeneration,
+        );
+        await this.enforceThumbnailCachePolicy();
+      }
+      return thumbnail;
+    })().finally(() => {
+      if (this.inFlightThumbnails.get(key) === loading) {
+        this.inFlightThumbnails.delete(key);
+      }
+    });
+    this.inFlightThumbnails.set(key, loading);
+    return loading;
   }
 
   private async deriveAndStore(
@@ -328,6 +625,9 @@ export class SceneCacheService {
    */
   private async hashModel(filePath: string): Promise<string | null> {
     try {
+      if (zipMemberSource(filePath)) {
+        return await this.sidecar.hashModelSource(filePath);
+      }
       return await this.fileSystem.hashFile(filePath);
     } catch (error) {
       this.reportError(
@@ -385,6 +685,142 @@ export class SceneCacheService {
         error,
       );
     }
+  }
+
+  private async loadThumbnailSettings(): Promise<void> {
+    try {
+      const payload = await this.fileSystem.readText(
+        this.thumbnailSettingsPath,
+      );
+      this.thumbnailSettings = ThumbnailCacheSettingsData.parse(
+        JSON.parse(payload),
+      );
+      if (
+        this.thumbnailSettings.location !== null &&
+        !path.isAbsolute(this.thumbnailSettings.location)
+      ) {
+        throw new Error('Configured thumbnail cache location is not absolute.');
+      }
+    } catch (error) {
+      if (!isMissing(error)) {
+        this.thumbnailSettings = {
+          location: null,
+          maxBytes: DEFAULT_THUMBNAIL_CACHE_MAX_BYTES,
+          retentionDays: DEFAULT_THUMBNAIL_CACHE_RETENTION_DAYS,
+        };
+        this.setThumbnailCacheWarning(
+          'Saved thumbnail cache settings could not be read; using defaults.',
+          error,
+        );
+      }
+    }
+    try {
+      await this.ensureThumbnailDirectory(this.thumbnailSettings);
+    } catch (error) {
+      this.setThumbnailCacheWarning(
+        'Thumbnail cache location is unavailable or not writable.',
+        error,
+      );
+    }
+  }
+
+  private ensureThumbnailSettingsLoaded(): Promise<void> {
+    if (!this.thumbnailSettingsInitialization) {
+      this.thumbnailSettingsInitialization = this.loadThumbnailSettings();
+    }
+    return this.thumbnailSettingsInitialization;
+  }
+
+  private async persistThumbnailSettings(
+    settings: ThumbnailCacheSettingsData,
+  ): Promise<void> {
+    const temporaryPath = `${this.thumbnailSettingsPath}.${randomUUID()}.tmp`;
+    try {
+      await this.fileSystem.writeText(temporaryPath, JSON.stringify(settings));
+      await this.fileSystem.rename(temporaryPath, this.thumbnailSettingsPath);
+    } catch (error) {
+      await this.removeBestEffort(
+        temporaryPath,
+        'Could not remove a temporary thumbnail cache settings file.',
+      );
+      throw error;
+    }
+  }
+
+  private thumbnailDirectory(settings: ThumbnailCacheSettingsData): string {
+    return settings.location === null
+      ? this.cacheDirectory
+      : path.join(settings.location, THUMBNAIL_CACHE_DIRECTORY);
+  }
+
+  private async ensureThumbnailDirectory(
+    settings: ThumbnailCacheSettingsData,
+  ): Promise<void> {
+    const directory = this.thumbnailDirectory(settings);
+    await this.fileSystem.mkdir(directory);
+    const probePath = path.join(directory, `.write-test-${randomUUID()}.tmp`);
+    try {
+      await this.fileSystem.writeText(probePath, 'ok');
+    } finally {
+      await this.fileSystem.remove(probePath);
+    }
+  }
+
+  private async listThumbnailEntries(
+    directory: string,
+  ): Promise<Array<{ name: string; size: number; modifiedAt: number }>> {
+    if (!this.fileSystem.listFiles) return [];
+    return (await this.fileSystem.listFiles(directory)).filter((entry) =>
+      THUMBNAIL_ENTRY_NAME.test(entry.name),
+    );
+  }
+
+  private async clearThumbnailEntries(directory: string): Promise<void> {
+    let entries: Array<{ name: string; size: number; modifiedAt: number }>;
+    try {
+      entries = await this.listThumbnailEntries(directory);
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      await this.fileSystem.remove(path.join(directory, entry.name));
+    }
+  }
+
+  private async enforceThumbnailCachePolicy(): Promise<void> {
+    const directory = this.thumbnailDirectory(this.thumbnailSettings);
+    try {
+      await this.ensureThumbnailDirectory(this.thumbnailSettings);
+      const entries = await this.listThumbnailEntries(directory);
+      const retentionCutoff =
+        Date.now() - this.thumbnailSettings.retentionDays * 24 * 60 * 60 * 1000;
+      const expired = entries.filter(
+        (entry) => entry.modifiedAt < retentionCutoff,
+      );
+      for (const entry of expired) {
+        await this.fileSystem.remove(path.join(directory, entry.name));
+      }
+      const retained = entries
+        .filter((entry) => entry.modifiedAt >= retentionCutoff)
+        .sort((left, right) => left.modifiedAt - right.modifiedAt);
+      let totalBytes = retained.reduce((total, entry) => total + entry.size, 0);
+      for (const entry of retained) {
+        if (totalBytes <= this.thumbnailSettings.maxBytes) break;
+        await this.fileSystem.remove(path.join(directory, entry.name));
+        totalBytes -= entry.size;
+      }
+    } catch (error) {
+      this.setThumbnailCacheWarning(
+        'Thumbnail cache policy could not be enforced at the configured location.',
+        error,
+      );
+    }
+  }
+
+  private setThumbnailCacheWarning(message: string, error: unknown): void {
+    this.thumbnailCacheWarning = message;
+    this.reportError(message, error);
   }
 
   private async readPersistedRecipe(): Promise<string | null> {
@@ -451,6 +887,91 @@ export class SceneCacheService {
     }
   }
 
+  private async readThumbnail(
+    key: string,
+    expectedRecipe: string,
+    directory: string,
+  ): Promise<Thumbnail | null> {
+    const entryPath = this.thumbnailEntryPath(key, directory);
+    try {
+      if ((await this.fileSystem.size(entryPath)) > this.maxEntryBytes) {
+        await this.removeBestEffort(
+          entryPath,
+          'Could not remove an oversized thumbnail cache entry.',
+        );
+        return null;
+      }
+      const payload = await this.fileSystem.readText(entryPath);
+      const parsed = RenderThumbnailResponse.safeParse(JSON.parse(payload));
+      if (parsed.success && parsed.data.cacheRecipe === expectedRecipe) {
+        try {
+          await this.fileSystem.touch?.(entryPath);
+        } catch (error) {
+          this.setThumbnailCacheWarning(
+            'Could not update thumbnail cache usage metadata.',
+            error,
+          );
+        }
+        return parsed.data;
+      }
+      await this.removeBestEffort(
+        entryPath,
+        'Could not remove an invalid thumbnail cache entry.',
+      );
+      return null;
+    } catch (error) {
+      if (isMissing(error)) return null;
+      this.setThumbnailCacheWarning(
+        'Thumbnail cache read failed; rendering again.',
+        error,
+      );
+      await this.removeBestEffort(
+        entryPath,
+        'Could not remove an unreadable thumbnail cache entry.',
+      );
+      return null;
+    }
+  }
+
+  private async writeThumbnailIfCurrent(
+    key: string,
+    thumbnail: Thumbnail,
+    lease: RecipeLease,
+    directory: string,
+    thumbnailGeneration: number,
+  ): Promise<void> {
+    await this.withMutationLock(async () => {
+      if (
+        !this.isCurrent(lease) ||
+        !this.storageReady ||
+        thumbnailGeneration !== this.thumbnailGeneration
+      ) {
+        return;
+      }
+      const payload = JSON.stringify(thumbnail);
+      if (Buffer.byteLength(payload, 'utf8') > this.maxEntryBytes) return;
+      const entryPath = this.thumbnailEntryPath(key, directory);
+      const temporaryPath = path.join(
+        directory,
+        `.${key}.${randomUUID()}.thumbnail.tmp`,
+      );
+      try {
+        await this.fileSystem.writeText(temporaryPath, payload);
+        await this.fileSystem.rename(temporaryPath, entryPath);
+      } catch (error) {
+        this.setThumbnailCacheWarning(
+          'Thumbnail cache write failed; returning the uncached thumbnail.',
+          error,
+        );
+      } finally {
+        await this.removeBestEffort(
+          temporaryPath,
+          'Could not remove a temporary thumbnail cache entry.',
+        );
+      }
+    });
+  }
+
   private async writeEntryIfCurrent(
     key: string,
     scene: Scene,
@@ -502,6 +1023,10 @@ export class SceneCacheService {
 
   private entryPath(key: string): string {
     return path.join(this.cacheDirectory, `${key}.scene.json`);
+  }
+
+  private thumbnailEntryPath(key: string, directory: string): string {
+    return path.join(directory, `${key}.thumbnail.json`);
   }
 
   private currentLease(): RecipeLease {
@@ -619,6 +1144,25 @@ export function sceneCacheKey(modelHash: string, recipe: string): string {
     hash.update(bytes);
   }
   return hash.digest('hex');
+}
+
+export function thumbnailCacheKey(
+  modelHash: string,
+  recipe: string,
+  size: number,
+): string {
+  return sceneCacheKey(modelHash, `${recipe}\u0000${size}`);
+}
+
+/**
+ * Keep this recipe shape in sync with `cache::thumbnail_cache_recipe` in Rust.
+ * The thumbnail renderer version is independent from the scene parser recipe.
+ */
+export function thumbnailCacheRecipe(
+  sceneRecipe: string,
+  size: number,
+): string {
+  return `${sceneRecipe}/thumb-v${THUMBNAIL_RENDERER_VERSION}-${size}`;
 }
 
 /**

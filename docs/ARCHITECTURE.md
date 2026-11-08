@@ -24,6 +24,35 @@ or uploads source models without an explicit user action.
 
 ## Model previews
 
+Scans also index STL, OBJ, 3MF and STEP members of `.zip` files. A member's
+identity is SHA-256 of its streamed, uncompressed bytes, so it groups with an
+extracted copy even within the same source root. A 3MF member is one model;
+its internal resources are not separately indexed, and nested ZIP recursion
+is not supported. ZIP CRC is only part of the change fingerprint, never the
+model identity. Archive size/high-resolution mtime, Unix change-time and member directory data
+invalidate that fingerprint; SQLite persists it across restarts.
+On platforms without portable filesystem change-time (including Windows),
+members are conservatively streamed through SHA-256 again on reconciliation.
+
+ZIP indexing uses seekable files and bounded central-directory reads, with no
+whole-archive buffering or extraction. Limits are 100,000 directory entries,
+64 MiB central-directory data, 512 MiB per supported model member and 8 GiB of
+supported model bytes per archive. The shared 300:1 ratio limit applies above
+4 MiB. Encrypted, symlink, unsafe-path, corrupt and over-budget model members
+reject indexing that archive; scan errors appear in source-root status and
+details are logged by the sidecar. Incomplete scans do not declare unseen
+locations missing; successful rescans reconcile member changes/removals and
+archive deletion using normal catalog availability semantics.
+
+Archive locations use a reserved `::zip::` path component plus central-directory
+index and member name. These are locators, not filesystem paths: main authorizes
+the real archive and preserves the member identity, and the sidecar resolves a
+requested member into a bounded, private temporary file only when parsing or
+vendor metadata requires it. The temporary directory is removed on success or
+failure. Previews, embedded vendor metadata and thumbnails support these
+sources. Upload and retarget actions prefer available extracted copies; if only
+an archive member is available, they explicitly require extraction and a rescan.
+
 The viewer's initial and reset views use the thumbnail camera's front-right,
 slightly elevated, Z-up orientation without rotating model coordinates.
 `src/shared/model-camera.json` records that convention; Rust thumbnail tests

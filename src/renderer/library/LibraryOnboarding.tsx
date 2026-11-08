@@ -4,12 +4,14 @@ import { Icon } from '../ui/Icon';
 export interface LibraryOnboardingProps {
   busy: boolean;
   onAddFolder: () => void;
+  onManageThumbnailCache?: () => void;
   onClose: () => void;
 }
 
 export function LibraryOnboarding({
   busy,
   onAddFolder,
+  onManageThumbnailCache,
   onClose,
 }: LibraryOnboardingProps): React.JSX.Element {
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -136,6 +138,16 @@ export function LibraryOnboarding({
             >
               Maybe later
             </button>
+            {onManageThumbnailCache ? (
+              <button
+                type="button"
+                className="library-onboarding-secondary"
+                disabled={busy}
+                onClick={onManageThumbnailCache}
+              >
+                Thumbnail cache settings
+              </button>
+            ) : null}
           </div>
         </div>
       </section>

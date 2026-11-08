@@ -30,8 +30,47 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('validates thumbnail cache settings boundaries and usage responses', () => {
+    const request = ipcSchemas[
+      IpcChannel.SetThumbnailCacheSettings
+    ].request.parse({
+      location: null,
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    expect(request.maxBytes).toBe(512 * 1024 * 1024);
+    expect(
+      ipcSchemas[IpcChannel.GetThumbnailCacheSettings].response.parse({
+        ...request,
+        effectiveLocation: '/profile/scene-cache.v1',
+        usedBytes: 1024,
+        entryCount: 2,
+        warning: null,
+      }).entryCount,
+    ).toBe(2);
+    expect(() =>
+      ipcSchemas[IpcChannel.SetThumbnailCacheSettings].request.parse({
+        location: null,
+        maxBytes: 1,
+        retentionDays: 30,
+      }),
+    ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.ChooseThumbnailCacheLocation].response.parse({
+        canceled: false,
+        path: '/picked/cache',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.ChooseThumbnailCacheLocation].response.parse({
+        canceled: true,
+        path: '/picked/cache',
+      }),
+    ).toThrow();
+  });
+
   it('validates redacted server profile IPC without changing the contract version', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(10);
+    expect(IPC_CONTRACT_VERSION).toBe(11);
     const request = ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
       displayName: 'Production farm',
       baseUrl: 'http://10.0.0.20',

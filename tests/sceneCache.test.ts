@@ -16,8 +16,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_SCENE_ENTRY_BYTES,
   SceneCacheService,
+  listThumbnailCacheFiles,
   sceneCacheKey,
   serializeSceneCache,
+  thumbnailCacheKey,
+  thumbnailCacheRecipe,
   type SceneCacheFileSystem,
   type SceneCacheSidecar,
 } from '../src/main/sceneCache';
@@ -104,6 +107,9 @@ interface FakeSidecar extends SceneCacheSidecar {
   advertisedRecipe: string | undefined;
   returnedRecipe: string | undefined;
   sceneCacheRecipe: ReturnType<typeof vi.fn<() => Promise<string | undefined>>>;
+  hashModelSource: ReturnType<
+    typeof vi.fn<(filePath: string) => Promise<string>>
+  >;
   loadSceneWithRecipe: ReturnType<
     typeof vi.fn<(filePath: string) => Promise<RecipeBoundScene>>
   >;
@@ -114,6 +120,9 @@ function fakeSidecar(): FakeSidecar {
     advertisedRecipe: undefined,
     returnedRecipe: undefined,
     sceneCacheRecipe: vi.fn(() => Promise.resolve(sidecar.advertisedRecipe)),
+    hashModelSource: vi.fn((filePath) =>
+      Promise.resolve(createHash('sha256').update(filePath).digest('hex')),
+    ),
     loadSceneWithRecipe: vi.fn(() => {
       const loaded = {
         scene: scene(sidecar.loadSceneWithRecipe.mock.calls.length),
@@ -179,12 +188,762 @@ function testFileSystem(): SceneCacheFileSystem {
   };
 }
 
+function memoryFileSystem(
+  sourceFiles: Map<string, string>,
+): SceneCacheFileSystem & {
+  setModifiedAt(filePath: string, value: number): void;
+  setReportedSize(filePath: string, size: number): void;
+  seed(filePath: string, contents: string): void;
+  has(filePath: string): boolean;
+} {
+  const entries = new Map<string, string>();
+  const modifiedAt = new Map<string, number>();
+  const reportedSizes = new Map<string, number>();
+  const missing = (filePath: string): Error & { code: string } =>
+    Object.assign(new Error(`Missing file: ${filePath}`), { code: 'ENOENT' });
+  return {
+    hashFile: (filePath) => {
+      const contents = sourceFiles.get(filePath);
+      if (contents === undefined) return Promise.reject(missing(filePath));
+      return Promise.resolve(
+        createHash('sha256').update(contents).digest('hex'),
+      );
+    },
+    mkdir: () => Promise.resolve(),
+    readText: (filePath) => {
+      const contents = entries.get(filePath);
+      if (contents === undefined) return Promise.reject(missing(filePath));
+      return Promise.resolve(contents);
+    },
+    rename: (sourcePath, destinationPath) => {
+      const contents = entries.get(sourcePath);
+      if (contents === undefined) return Promise.reject(missing(sourcePath));
+      entries.delete(sourcePath);
+      entries.set(destinationPath, contents);
+      modifiedAt.set(destinationPath, modifiedAt.get(sourcePath) ?? Date.now());
+      const reportedSize = reportedSizes.get(sourcePath);
+      if (reportedSize !== undefined) {
+        reportedSizes.set(destinationPath, reportedSize);
+      }
+      modifiedAt.delete(sourcePath);
+      reportedSizes.delete(sourcePath);
+      return Promise.resolve();
+    },
+    remove: (targetPath) => {
+      for (const filePath of entries.keys()) {
+        if (
+          filePath === targetPath ||
+          filePath.startsWith(`${targetPath}${path.sep}`)
+        ) {
+          entries.delete(filePath);
+          modifiedAt.delete(filePath);
+          reportedSizes.delete(filePath);
+        }
+      }
+      return Promise.resolve();
+    },
+    size: (filePath) => {
+      const contents = entries.get(filePath);
+      if (contents === undefined) return Promise.reject(missing(filePath));
+      return Promise.resolve(Buffer.byteLength(contents, 'utf8'));
+    },
+    writeText: (filePath, contents) => {
+      if (entries.has(filePath)) {
+        return Promise.reject(
+          Object.assign(new Error(`Already exists: ${filePath}`), {
+            code: 'EEXIST',
+          }),
+        );
+      }
+      entries.set(filePath, contents);
+      modifiedAt.set(filePath, Date.now());
+      return Promise.resolve();
+    },
+    listFiles: (directoryPath) =>
+      Promise.resolve(
+        [...entries.entries()]
+          .filter(([filePath]) => path.dirname(filePath) === directoryPath)
+          .map(([filePath, contents]) => ({
+            name: path.basename(filePath),
+            size:
+              reportedSizes.get(filePath) ??
+              Buffer.byteLength(contents, 'utf8'),
+            modifiedAt: modifiedAt.get(filePath) ?? Date.now(),
+          })),
+      ),
+    touch: (filePath) => {
+      if (!entries.has(filePath)) return Promise.reject(missing(filePath));
+      modifiedAt.set(filePath, Date.now());
+      return Promise.resolve();
+    },
+    setModifiedAt: (filePath, value) => modifiedAt.set(filePath, value),
+    setReportedSize: (filePath, size) => reportedSizes.set(filePath, size),
+    seed: (filePath, contents) => {
+      entries.set(filePath, contents);
+      modifiedAt.set(filePath, Date.now());
+    },
+    has: (filePath) => entries.has(filePath),
+  };
+}
+
 describe('SceneCacheService', () => {
+  it('removes nested fixture files using native separators without removing sibling directories', async () => {
+    const fileSystem = memoryFileSystem(new Map());
+    const directory = path.join('/user-data', CACHE_DIRECTORY);
+    const nested = path.join(directory, 'nested', 'entry.scene.json');
+    const sibling = path.join(`${directory}-other`, 'entry.scene.json');
+    fileSystem.seed(nested, 'cached scene');
+    fileSystem.seed(sibling, 'unrelated scene');
+
+    await fileSystem.remove(directory);
+
+    expect(fileSystem.has(nested)).toBe(false);
+    expect(fileSystem.has(sibling)).toBe(true);
+  });
+
   it('matches the native length-prefixed cache-key contract', () => {
     expect(sceneCacheKey('a'.repeat(64), 'scene/v2.2')).toBe(
       'f4ef1c31ccf37c2e0cf75281448694835e8fe0d30473f6be361e15369c8c9672',
     );
     expect(sceneCacheKey('c', 'ab')).not.toBe(sceneCacheKey('bc', 'a'));
+  });
+
+  it('reuses persisted thumbnails across service instances', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const firstCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    expect(thumbnailCacheKey('a'.repeat(64), recipe, 256)).not.toBe(
+      thumbnailCacheKey('a'.repeat(64), recipe, 512),
+    );
+    const firstRender = vi.fn(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'PERSISTED',
+        cacheRecipe: recipe,
+      }),
+    );
+
+    await firstCache.initialize();
+    await expect(
+      firstCache.renderThumbnail('/models/part.stl', 256, firstRender),
+    ).resolves.toMatchObject({ pngBase64: 'PERSISTED' });
+
+    const secondCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    const secondRender = vi.fn(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'SHOULD_NOT_RENDER',
+        cacheRecipe: recipe,
+      }),
+    );
+    await secondCache.initialize();
+
+    await expect(
+      secondCache.renderThumbnail('/models/part.stl', 256, secondRender),
+    ).resolves.toMatchObject({ pngBase64: 'PERSISTED' });
+    expect(firstRender).toHaveBeenCalledTimes(1);
+    expect(secondRender).not.toHaveBeenCalled();
+  });
+
+  it('invalidates thumbnail entries when renderer recipe, size, or content changes', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'original bytes']]);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    let rendererVersion = 1;
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem: memoryFileSystem(sourceFiles),
+      thumbnailRecipe: (sceneRecipe, size) =>
+        `${sceneRecipe}/thumb-v${rendererVersion}-${size}`,
+    });
+    await cache.initialize();
+
+    let renderCount = 0;
+    const render = (size: number) => {
+      return vi.fn(() => {
+        renderCount += 1;
+        return Promise.resolve({
+          width: size,
+          height: size,
+          pngBase64: `PNG-${renderCount}`,
+          cacheRecipe: `scene/v2.2/thumb-v${rendererVersion}-${size}`,
+        });
+      });
+    };
+
+    await cache.renderThumbnail('/models/part.stl', 256, render(256));
+    const sameRecipeHit = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, sameRecipeHit);
+    expect(sameRecipeHit).not.toHaveBeenCalled();
+
+    const otherSize = render(512);
+    await cache.renderThumbnail('/models/part.stl', 512, otherSize);
+    expect(otherSize).toHaveBeenCalledTimes(1);
+
+    rendererVersion = 2;
+    const newRenderer = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, newRenderer);
+    expect(newRenderer).toHaveBeenCalledTimes(1);
+
+    sourceFiles.set('/models/part.stl', 'changed bytes');
+    const changedContent = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, changedContent);
+    expect(changedContent).toHaveBeenCalledTimes(1);
+
+    const changedContentHit = render(256);
+    await cache.renderThumbnail('/models/part.stl', 256, changedContentHit);
+    expect(changedContentHit).not.toHaveBeenCalled();
+    expect(renderCount).toBe(4);
+  });
+
+  it('coalesces concurrent thumbnail requests for identical source contents', async () => {
+    const sourceFiles = new Map([
+      ['/models/first.stl', 'same model bytes'],
+      ['/models/copy.stl', 'same model bytes'],
+    ]);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem: memoryFileSystem(sourceFiles),
+    });
+    await cache.initialize();
+
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    let finish!: (thumbnail: {
+      width: number;
+      height: number;
+      pngBase64: string;
+      cacheRecipe: string;
+    }) => void;
+    const render = vi.fn(
+      () =>
+        new Promise<{
+          width: number;
+          height: number;
+          pngBase64: string;
+          cacheRecipe: string;
+        }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = cache.renderThumbnail('/models/first.stl', 256, render);
+    const copy = cache.renderThumbnail('/models/copy.stl', 256, render);
+
+    await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(1));
+    finish({
+      width: 256,
+      height: 256,
+      pngBase64: 'SHARED',
+      cacheRecipe: recipe,
+    });
+    await expect(Promise.all([first, copy])).resolves.toEqual([
+      expect.objectContaining({ pngBase64: 'SHARED' }),
+      expect.objectContaining({ pngBase64: 'SHARED' }),
+    ]);
+  });
+
+  it('does not use a content-cache hit to hide a missing source path', async () => {
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem: memoryFileSystem(
+        new Map([['/models/available.stl', 'same model bytes']]),
+      ),
+    });
+    await cache.initialize();
+
+    await cache.renderThumbnail('/models/available.stl', 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'VALID',
+        cacheRecipe: thumbnailCacheRecipe('scene/v2.2', 256),
+      }),
+    );
+
+    const missingSourceRender = vi.fn(() =>
+      Promise.reject(new Error('Model source is missing.')),
+    );
+    await expect(
+      cache.renderThumbnail('/models/missing.stl', 256, missingSourceRender),
+    ).rejects.toThrow('Model source is missing.');
+    expect(missingSourceRender).toHaveBeenCalledOnce();
+  });
+
+  it('uses the sidecar to hash ZIP members rather than treating virtual paths as files', async () => {
+    const sourcePath = '/dir/a.zip/::zip::/0/nested/a.stl';
+    const fileSystem = memoryFileSystem(new Map());
+    const hashFile = vi.spyOn(fileSystem, 'hashFile');
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.hashModelSource.mockResolvedValue('a'.repeat(64));
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+
+    await cache.renderThumbnail(sourcePath, 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'ZIP',
+        cacheRecipe: recipe,
+      }),
+    );
+
+    expect(hashFile).not.toHaveBeenCalled();
+    expect(sidecar.hashModelSource).toHaveBeenCalledTimes(2);
+    expect(sidecar.hashModelSource).toHaveBeenCalledWith(sourcePath);
+  });
+
+  it('persists cache controls and applies an LRU size cap', async () => {
+    const sourceFiles = new Map([
+      ['/models/first.stl', 'first model bytes'],
+      ['/models/second.stl', 'second model bytes'],
+    ]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    const response = (pngBase64: string) => ({
+      width: 256,
+      height: 256,
+      pngBase64,
+      cacheRecipe: recipe,
+    });
+    await cache.renderThumbnail('/models/first.stl', 256, () =>
+      Promise.resolve(response('FIRST')),
+    );
+    const firstHash = createHash('sha256')
+      .update('first model bytes')
+      .digest('hex');
+    const firstEntry = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${thumbnailCacheKey(firstHash, recipe, 256)}.thumbnail.json`,
+    );
+    fileSystem.setModifiedAt(firstEntry, Date.now() - 10_000);
+
+    await cache.renderThumbnail('/models/second.stl', 256, () =>
+      Promise.resolve(response('SECOND')),
+    );
+    const secondHash = createHash('sha256')
+      .update('second model bytes')
+      .digest('hex');
+    const secondEntry = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${thumbnailCacheKey(secondHash, recipe, 256)}.thumbnail.json`,
+    );
+    fileSystem.setReportedSize(firstEntry, 12 * 1024 * 1024);
+    fileSystem.setReportedSize(secondEntry, 12 * 1024 * 1024);
+
+    const limited = await cache.setThumbnailCacheSettings({
+      location: null,
+      maxBytes: 16 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    expect(limited.entryCount).toBe(1);
+    expect(limited.usedBytes).toBe(12 * 1024 * 1024);
+    expect(fileSystem.has(firstEntry)).toBe(false);
+    expect(fileSystem.has(secondEntry)).toBe(true);
+
+    const restartedCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await restartedCache.initialize();
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({
+      maxBytes: 16 * 1024 * 1024,
+      retentionDays: 30,
+      entryCount: 1,
+    });
+  });
+
+  it('tolerates disappearing cache entries during usage, LRU cleanup, and clear', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const baseListFiles = fileSystem.listFiles!.bind(fileSystem);
+    const cacheDirectory = path.join('/user-data', CACHE_DIRECTORY);
+    const oldEntry = `${'a'.repeat(64)}.thumbnail.json`;
+    const middleEntry = `${'b'.repeat(64)}.thumbnail.json`;
+    const newestEntry = `${'c'.repeat(64)}.thumbnail.json`;
+    const disappearingEntry = `${'d'.repeat(64)}.thumbnail.json`;
+    const temporaryEntry = 'concurrent-write.tmp';
+    const entryNames = [
+      oldEntry,
+      middleEntry,
+      newestEntry,
+      disappearingEntry,
+      temporaryEntry,
+    ];
+    let disappearingName: string | null = null;
+    let temporaryStatCount = 0;
+    fileSystem.listFiles = (directoryPath) =>
+      listThumbnailCacheFiles(
+        directoryPath,
+        async (currentDirectory) =>
+          (await baseListFiles(currentDirectory)).map((entry) => entry.name),
+        async (filePath) => {
+          const name = path.basename(filePath);
+          if (name === temporaryEntry) {
+            temporaryStatCount += 1;
+            throw Object.assign(new Error('Probe disappeared.'), {
+              code: 'ENOENT',
+            });
+          }
+          if (name === disappearingName) {
+            disappearingName = null;
+            await fileSystem.remove(filePath);
+            throw Object.assign(new Error('Cache entry disappeared.'), {
+              code: 'ENOENT',
+            });
+          }
+          const entry = (await baseListFiles(path.dirname(filePath))).find(
+            (candidate) => candidate.name === name,
+          );
+          if (!entry) {
+            throw Object.assign(new Error('Cache entry disappeared.'), {
+              code: 'ENOENT',
+            });
+          }
+          return {
+            isFile: () => true,
+            size: entry.size,
+            mtimeMs: entry.modifiedAt,
+          };
+        },
+      );
+
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    for (const name of entryNames) {
+      const filePath = path.join(cacheDirectory, name);
+      fileSystem.seed(filePath, 'thumbnail');
+      if (name !== temporaryEntry) {
+        fileSystem.setReportedSize(filePath, 8 * 1024 * 1024);
+      }
+    }
+    fileSystem.setModifiedAt(
+      path.join(cacheDirectory, oldEntry),
+      Date.now() - 3_000,
+    );
+    fileSystem.setModifiedAt(
+      path.join(cacheDirectory, middleEntry),
+      Date.now() - 2_000,
+    );
+    fileSystem.setModifiedAt(
+      path.join(cacheDirectory, newestEntry),
+      Date.now() - 1_000,
+    );
+
+    disappearingName = disappearingEntry;
+    await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
+      entryCount: 3,
+      usedBytes: 24 * 1024 * 1024,
+      warning: null,
+    });
+    expect(temporaryStatCount).toBe(0);
+
+    const limited = await cache.setThumbnailCacheSettings({
+      location: null,
+      maxBytes: 16 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    expect(limited).toMatchObject({
+      entryCount: 2,
+      usedBytes: 16 * 1024 * 1024,
+    });
+    expect(fileSystem.has(path.join(cacheDirectory, oldEntry))).toBe(false);
+    expect(fileSystem.has(path.join(cacheDirectory, middleEntry))).toBe(true);
+    expect(fileSystem.has(path.join(cacheDirectory, newestEntry))).toBe(true);
+    expect(fileSystem.has(path.join(cacheDirectory, temporaryEntry))).toBe(
+      true,
+    );
+
+    disappearingName = middleEntry;
+    await expect(cache.clearThumbnailCache()).resolves.toBe(1);
+    await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
+      entryCount: 0,
+      usedBytes: 0,
+      warning: null,
+    });
+    expect(fileSystem.has(path.join(cacheDirectory, middleEntry))).toBe(false);
+    expect(fileSystem.has(path.join(cacheDirectory, newestEntry))).toBe(false);
+    expect(fileSystem.has(path.join(cacheDirectory, temporaryEntry))).toBe(
+      true,
+    );
+    expect(temporaryStatCount).toBe(0);
+  });
+
+  it('preserves directory and non-ENOENT stat errors when listing thumbnails', async () => {
+    const missingDirectory = Object.assign(new Error('Missing directory.'), {
+      code: 'ENOENT',
+    });
+    await expect(
+      listThumbnailCacheFiles('/cache', () => Promise.reject(missingDirectory)),
+    ).rejects.toBe(missingDirectory);
+
+    const permissionError = Object.assign(new Error('Permission denied.'), {
+      code: 'EACCES',
+    });
+    await expect(
+      listThumbnailCacheFiles(
+        '/cache',
+        () => Promise.resolve([`${'a'.repeat(64)}.thumbnail.json`]),
+        () => Promise.reject(permissionError),
+      ),
+    ).rejects.toBe(permissionError);
+  });
+
+  it('expires thumbnails beyond the configured retention period', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const firstCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await firstCache.initialize();
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    await firstCache.renderThumbnail('/models/part.stl', 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'EXPIRED',
+        cacheRecipe: recipe,
+      }),
+    );
+    const hash = createHash('sha256').update('same model bytes').digest('hex');
+    const entry = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${thumbnailCacheKey(hash, recipe, 256)}.thumbnail.json`,
+    );
+    fileSystem.setModifiedAt(entry, Date.now() - 31 * 24 * 60 * 60 * 1000);
+
+    const restartedCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await restartedCache.initialize();
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({ entryCount: 0, usedBytes: 0 });
+  });
+
+  it('clears only cache-owned files in a custom location', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    const restartedCache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await restartedCache.initialize();
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({ location: path.resolve('/external/cache') });
+    const recipe = thumbnailCacheRecipe('scene/v2.2', 256);
+    await restartedCache.renderThumbnail('/models/part.stl', 256, () =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'CUSTOM',
+        cacheRecipe: recipe,
+      }),
+    );
+    const directory = path.join(
+      path.resolve('/external/cache'),
+      'printfarmer-thumbnails.v1',
+    );
+    const userFile = path.join(directory, 'keep-this-note.txt');
+    const unrelated = path.join(directory, `${'b'.repeat(64)}.scene.json`);
+    fileSystem.seed(userFile, 'user-owned file');
+    fileSystem.seed(unrelated, JSON.stringify(scene(1)));
+
+    await expect(restartedCache.clearThumbnailCache()).resolves.toBe(1);
+    expect(fileSystem.has(userFile)).toBe(true);
+    expect(fileSystem.has(unrelated)).toBe(true);
+    await expect(
+      restartedCache.getThumbnailCacheStatus(),
+    ).resolves.toMatchObject({
+      location: path.resolve('/external/cache'),
+      entryCount: 0,
+    });
+  });
+
+  it('removes only owned thumbnails when switching cache locations', async () => {
+    const sourceFiles = new Map<string, string>();
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+    });
+    await cache.initialize();
+    const oldDirectory = path.join('/user-data', CACHE_DIRECTORY);
+    const ownedThumbnail = path.join(
+      oldDirectory,
+      `${'a'.repeat(64)}.thumbnail.json`,
+    );
+    const unrelatedScene = path.join(
+      oldDirectory,
+      `${'b'.repeat(64)}.scene.json`,
+    );
+    fileSystem.seed(ownedThumbnail, 'owned thumbnail');
+    fileSystem.seed(unrelatedScene, 'unrelated cache entry');
+
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+
+    expect(fileSystem.has(ownedThumbnail)).toBe(false);
+    expect(fileSystem.has(unrelatedScene)).toBe(true);
+    await expect(cache.getThumbnailCacheStatus()).resolves.toMatchObject({
+      location: path.resolve('/external/cache'),
+      warning: null,
+    });
+  });
+
+  it('reports a warning when old-location thumbnail cleanup fails', async () => {
+    const fileSystem = memoryFileSystem(new Map());
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const reportError = vi.fn();
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+      reportError,
+    });
+    await cache.initialize();
+    const oldThumbnail = path.join(
+      '/user-data',
+      CACHE_DIRECTORY,
+      `${'c'.repeat(64)}.thumbnail.json`,
+    );
+    fileSystem.seed(oldThumbnail, 'old thumbnail');
+    const remove = fileSystem.remove.bind(fileSystem);
+    vi.spyOn(fileSystem, 'remove').mockImplementation((targetPath) =>
+      targetPath === oldThumbnail
+        ? Promise.reject(new Error('cache folder is read-only'))
+        : remove(targetPath),
+    );
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+
+    expect(fileSystem.has(oldThumbnail)).toBe(true);
+    expect(await cache.getThumbnailCacheStatus()).toMatchObject({
+      location: path.resolve('/external/cache'),
+      warning:
+        'Could not remove owned thumbnails from the previous cache location.',
+    });
+    expect(reportError).toHaveBeenCalledWith(
+      expect.stringContaining('previous cache location'),
+      expect.any(Error),
+    );
+  });
+
+  it('falls back to rendering with an explicit warning when cache storage becomes unwritable', async () => {
+    const sourceFiles = new Map([['/models/part.stl', 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const reportError = vi.fn();
+    const cache = new SceneCacheService({
+      userDataPath: '/user-data',
+      sidecar,
+      fileSystem,
+      reportError,
+    });
+    await cache.initialize();
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    vi.spyOn(fileSystem, 'writeText').mockRejectedValue(
+      new Error('disk is read-only'),
+    );
+    const render = vi.fn(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'UNCACHED',
+        cacheRecipe: thumbnailCacheRecipe('scene/v2.2', 256),
+      }),
+    );
+
+    await expect(
+      cache.renderThumbnail('/models/part.stl', 256, render),
+    ).resolves.toMatchObject({ pngBase64: 'UNCACHED' });
+    expect(render).toHaveBeenCalledOnce();
+    const status = await cache.getThumbnailCacheStatus();
+    expect(status.warning).toContain('not writable');
+    expect(reportError).toHaveBeenCalledWith(
+      expect.stringContaining('not writable'),
+      expect.any(Error),
+    );
   });
 
   it('does not cache scenes when an older sidecar omits the recipe', async () => {
@@ -598,6 +1357,8 @@ describe('SceneCacheService', () => {
       userDataPath,
       sidecar: {
         sceneCacheRecipe: () => Promise.resolve('scene/v2.2'),
+        hashModelSource: () =>
+          Promise.resolve(createHash('sha256').update(filePath).digest('hex')),
         loadSceneWithRecipe: async () => {
           await rm(filePath, { force: true });
           return { scene: expected, cacheRecipe: 'scene/v2.2' };
@@ -623,6 +1384,10 @@ describe('SceneCacheService', () => {
       userDataPath,
       sidecar: {
         sceneCacheRecipe: () => Promise.resolve('scene/v2.2'),
+        hashModelSource: () =>
+          Promise.resolve(
+            createHash('sha256').update(missingPath).digest('hex'),
+          ),
         loadSceneWithRecipe,
       },
       reportError: vi.fn(),
@@ -893,6 +1658,65 @@ describe('SceneCacheService', () => {
     await expect(
       readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('removes the scene manifest and cache when external thumbnail cleanup fails', async () => {
+    const userDataPath = '/user-data';
+    const sourcePath = '/models/part.stl';
+    const sourceFiles = new Map([[sourcePath, 'same model bytes']]);
+    const fileSystem = memoryFileSystem(sourceFiles);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const reportError = vi.fn();
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar,
+      fileSystem,
+      reportError,
+    });
+    await expect(cache.loadScene(sourcePath)).resolves.toEqual(scene(1));
+    const cacheDirectory = path.join(userDataPath, CACHE_DIRECTORY);
+    const manifestPath = path.join(cacheDirectory, 'recipe.json');
+    const sceneEntryPath = path.join(
+      cacheDirectory,
+      `${sceneCacheKey(
+        createHash('sha256').update('same model bytes').digest('hex'),
+        'scene/v2.2',
+      )}.scene.json`,
+    );
+    expect(fileSystem.has(manifestPath)).toBe(true);
+    expect(fileSystem.has(sceneEntryPath)).toBe(true);
+
+    await cache.setThumbnailCacheSettings({
+      location: '/external/cache',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+    });
+    const externalDirectory = path.join(
+      path.resolve('/external/cache'),
+      'printfarmer-thumbnails.v1',
+    );
+    const externalThumbnail = path.join(
+      externalDirectory,
+      `${'e'.repeat(64)}.thumbnail.json`,
+    );
+    fileSystem.seed(externalThumbnail, 'external thumbnail');
+    const remove = fileSystem.remove.bind(fileSystem);
+    vi.spyOn(fileSystem, 'remove').mockImplementation((targetPath) =>
+      targetPath === externalThumbnail
+        ? Promise.reject(Object.assign(new Error('locked'), { code: 'EACCES' }))
+        : remove(targetPath),
+    );
+
+    await expect(cache.purge()).rejects.toMatchObject({ code: 'EACCES' });
+    expect(fileSystem.has(manifestPath)).toBe(false);
+    expect(fileSystem.has(sceneEntryPath)).toBe(false);
+    expect(fileSystem.has(externalThumbnail)).toBe(true);
+    expect(reportError).toHaveBeenCalledWith(
+      expect.stringContaining('Could not clear thumbnail cache'),
+      expect.objectContaining({ code: 'EACCES' }),
+    );
   });
 
   it('evicts entries that survived a purge whose directory removal failed', async () => {

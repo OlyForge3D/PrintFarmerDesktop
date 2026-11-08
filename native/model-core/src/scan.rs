@@ -2,7 +2,7 @@
 //!
 //! A scan walks a source root in place and yields the model files it finds
 //! (STL/3MF/OBJ/STEP) together with a cheap fingerprint. It never opens or hashes file
-//! contents; hashing is a separate, more expensive step driven by
+//! contents (ZIP central directories only); hashing is a separate, more expensive step driven by
 //! reconciliation. Unreadable entries are skipped rather than aborting the
 //! whole scan, because network and removable roots routinely surface transient
 //! errors.
@@ -19,7 +19,7 @@ use crate::model::{FileFingerprint, ModelFormat};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredFile {
-    /// Absolute path to the file on disk.
+    /// Absolute filesystem path or ZIP member locator.
     pub path: PathBuf,
     /// Path relative to the scanned root, used as a stable display key.
     pub root_relative: PathBuf,
@@ -61,9 +61,10 @@ pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
         }
 
         let path = entry.path();
-        let Some(format) = ModelFormat::from_path(path) else {
+        let format = ModelFormat::from_path(path);
+        if format.is_none() && !crate::archive::is_zip(path) {
             continue;
-        };
+        }
 
         let metadata = match entry.metadata() {
             Ok(m) => m,
@@ -78,10 +79,24 @@ pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
             .map(Path::to_path_buf)
             .unwrap_or_else(|_| path.to_path_buf());
 
+        if crate::archive::is_zip(path) {
+            match crate::archive::discover(path, &root_relative, &metadata, cancel) {
+                Ok(files) => result.files.extend(files),
+                Err(error) => {
+                    eprintln!("failed to index ZIP {}: {error}", path.display());
+                    result.skipped_errors += 1;
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        result.cancelled = true;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
         result.files.push(DiscoveredFile {
             path: path.to_path_buf(),
             root_relative,
-            format,
+            format: format.expect("model format checked above"),
             fingerprint: FileFingerprint::from_metadata(&metadata),
         });
     }

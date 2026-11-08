@@ -392,6 +392,24 @@ export function createLoadSceneHandler(
   };
 }
 
+export function createRenderThumbnailHandler(
+  authorizeFile: (requestedPath: string) => Promise<string>,
+  sceneCache: Pick<SceneCacheService, 'renderThumbnail'>,
+  sidecar: Pick<SidecarClient, 'renderThumbnail'>,
+) {
+  return async (_event: unknown, rawRequest: unknown) => {
+    const request =
+      ipcSchemas[IpcChannel.RenderThumbnail].request.parse(rawRequest);
+    const approvedPath = await authorizeFile(request.path);
+    const raw = await sceneCache.renderThumbnail(
+      approvedPath,
+      request.size,
+      () => sidecar.renderThumbnail(approvedPath, request.size),
+    );
+    return ipcSchemas[IpcChannel.RenderThumbnail].response.parse(raw);
+  };
+}
+
 /**
  * Register all IPC handlers. Incoming payloads are validated against their Zod
  * request schemas before handlers run. Responses are validated at their trust
@@ -431,6 +449,7 @@ export function registerIpcHandlers(
       userDataPath: app.getPath('userData'),
       sidecar,
     });
+  let pendingThumbnailCacheLocation: string | null = null;
   // Eager initialization starts the sidecar so obsolete recipe namespaces are
   // evicted before the first scene request.
   void sceneCache.initialize().catch((error: unknown) => {
@@ -1307,14 +1326,72 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     IpcChannel.RenderThumbnail,
+    createRenderThumbnailHandler(authorizeRendererFile, sceneCache, sidecar),
+  );
+
+  ipcMain.handle(IpcChannel.GetThumbnailCacheSettings, async () => {
+    ipcSchemas[IpcChannel.GetThumbnailCacheSettings].request.parse(undefined);
+    return ipcSchemas[IpcChannel.GetThumbnailCacheSettings].response.parse(
+      await sceneCache.getThumbnailCacheStatus(),
+    );
+  });
+
+  ipcMain.handle(IpcChannel.ChooseThumbnailCacheLocation, async (event) => {
+    ipcSchemas[IpcChannel.ChooseThumbnailCacheLocation].request.parse(
+      undefined,
+    );
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: 'Choose thumbnail cache folder',
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+    };
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+    const selectedPath =
+      result.canceled || result.filePaths.length === 0
+        ? null
+        : result.filePaths[0]!;
+    pendingThumbnailCacheLocation = selectedPath;
+    return ipcSchemas[IpcChannel.ChooseThumbnailCacheLocation].response.parse({
+      canceled: result.canceled,
+      path: selectedPath,
+    });
+  });
+
+  ipcMain.handle(
+    IpcChannel.SetThumbnailCacheSettings,
     async (_event, rawRequest: unknown) => {
       const request =
-        ipcSchemas[IpcChannel.RenderThumbnail].request.parse(rawRequest);
-      const approvedPath = await authorizeRendererFile(request.path);
-      const raw = await sidecar.renderThumbnail(approvedPath, request.size);
-      return ipcSchemas[IpcChannel.RenderThumbnail].response.parse(raw);
+        ipcSchemas[IpcChannel.SetThumbnailCacheSettings].request.parse(
+          rawRequest,
+        );
+      const current = await sceneCache.getThumbnailCacheStatus();
+      if (
+        request.location !== null &&
+        request.location !== current.location &&
+        request.location !== pendingThumbnailCacheLocation
+      ) {
+        throw new Error(
+          'Choose the thumbnail cache folder using the native folder picker.',
+        );
+      }
+      const response = await sceneCache.setThumbnailCacheSettings(request);
+      pendingThumbnailCacheLocation = null;
+      return ipcSchemas[IpcChannel.SetThumbnailCacheSettings].response.parse(
+        response,
+      );
     },
   );
+
+  ipcMain.handle(IpcChannel.ClearThumbnailCache, async () => {
+    ipcSchemas[IpcChannel.ClearThumbnailCache].request.parse(undefined);
+    const clearedEntries = await sceneCache.clearThumbnailCache();
+    return ipcSchemas[IpcChannel.ClearThumbnailCache].response.parse({
+      clearedEntries,
+      settings: await sceneCache.getThumbnailCacheStatus(),
+    });
+  });
 
   ipcMain.handle(IpcChannel.ScanRoot, async (_event, rawRequest: unknown) => {
     const request = ipcSchemas[IpcChannel.ScanRoot].request.parse(rawRequest);

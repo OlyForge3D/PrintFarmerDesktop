@@ -29,6 +29,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.36"
 serde_json = "1"
 same-file = "1"
+tempfile = "3"
 # Pure-Rust PNG encoder (miniz_oxide/fdeflate backend) for GPU-free thumbnail
 # rendering; no C toolchain required.
 png = "0.17"
@@ -59,6 +60,3 @@ step = [
 ]
 # Enables native lib3mf validation/loading for standard 3MF files.
 lib3mf = ["dep:lib3mf-ffi"]
-
-[dev-dependencies]
-tempfile = "3"

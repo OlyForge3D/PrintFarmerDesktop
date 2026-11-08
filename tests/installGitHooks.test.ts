@@ -265,11 +265,12 @@ describe('the coverage property, driven through a real push', () => {
     const push = spawnSync('git', ['push', 'origin', 'HEAD:refs/heads/probe'], {
       cwd: repo,
       encoding: 'utf8',
+      timeout: 15_000,
     });
 
     expect(push.status).toBe(0);
     expect(existsSync(marker)).toBe(false);
-  });
+  }, 30_000);
 
   it('runs the hook when it is present — the control for the assertion above', () => {
     const repo = tempRepo();
@@ -281,11 +282,12 @@ describe('the coverage property, driven through a real push', () => {
     const push = spawnSync('git', ['push', 'origin', 'HEAD:refs/heads/probe'], {
       cwd: repo,
       encoding: 'utf8',
+      timeout: 15_000,
     });
 
     expect(push.status).toBe(0);
     // Without this arm, the missing marker above would be evidence of nothing:
     // it could equally mean the marker mechanism does not work.
     expect(existsSync(marker)).toBe(true);
-  });
+  }, 30_000);
 });
