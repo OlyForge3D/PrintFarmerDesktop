@@ -131,6 +131,7 @@ describe('application icon packaging', () => {
     await squirrel?.prepareConfig('x64');
     expect(squirrel?.config).toMatchObject({
       setupIcon: assetPath('ico'),
+      loadingGif: path.join(repoRoot, 'assets', 'installing.gif'),
     });
     const dmg = forgeConfig.makers
       ?.filter(isForgeMaker)

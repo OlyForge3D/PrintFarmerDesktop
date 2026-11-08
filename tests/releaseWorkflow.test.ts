@@ -24,6 +24,68 @@ describe('signed release workflow', () => {
     return workflow.slice(start, next < 0 ? workflow.length : next);
   }
 
+  it('preserves configured macOS makers and verifies the resulting installer', () => {
+    const archives = step('Make macOS publishable archives');
+    expect(archives).toContain(
+      'npm run make -- --skip-package --platform=darwin --arch=universal',
+    );
+    expect(archives).not.toContain('--targets');
+    const verification = step('Verify branded macOS installer');
+    expect(verification).toContain("if: runner.os == 'macOS'");
+    expect(verification).toContain('npm run verify:dmg');
+    expect(workflow.indexOf('Verify branded macOS installer')).toBeGreaterThan(
+      workflow.indexOf('Make macOS publishable archives'),
+    );
+    expect(workflow.indexOf('Verify branded macOS installer')).toBeLessThan(
+      workflow.indexOf('Generate signed update metadata'),
+    );
+  });
+
+  it('selects configured Windows makers without rebuilding the signed installer', () => {
+    expect(step('Make unsigned Windows installer')).toContain(
+      '--targets=squirrel',
+    );
+    expect(step('Make Windows portable archive')).toContain('--targets=zip');
+    expect(workflow).not.toContain('--targets=@electron-forge/');
+  });
+
+  it('exercises and verifies the DMG in the CI release-package job', () => {
+    const ci = readFileSync(
+      path.resolve(import.meta.dirname, '..', '.github', 'workflows', 'ci.yml'),
+      'utf8',
+    );
+    const packageJob = ci.slice(
+      ci.indexOf('\n  package:'),
+      ci.indexOf('\n  advisories:'),
+    );
+    for (const name of [
+      'Make macOS installers using configured makers',
+      'Verify branded macOS installer',
+    ]) {
+      const candidate = packageJob
+        .split(`- name: ${name}\n`)[1]
+        ?.split('\n      - name:')[0];
+      expect(candidate).toBeDefined();
+      expect(candidate).toContain("steps.changes.outputs.docs_only != 'true'");
+      expect(candidate).toContain(
+        "steps.changes.outputs.docs_and_tests != 'true'",
+      );
+      expect(candidate).toContain("runner.os == 'macOS'");
+      expect(candidate).not.toContain('continue-on-error');
+      expect(candidate).not.toContain('--targets');
+    }
+    expect(packageJob).toContain(
+      'npm run make -- --skip-package --platform=darwin',
+    );
+    expect(packageJob).toContain('npm run verify:dmg');
+    expect(packageJob.indexOf('Make macOS installers')).toBeGreaterThan(
+      packageJob.indexOf('run: npm run package'),
+    );
+    expect(
+      packageJob.indexOf('Verify branded macOS installer'),
+    ).toBeGreaterThan(packageJob.indexOf('Make macOS installers'));
+  });
+
   it('preflights credentials before building and signs after packaging', () => {
     const preflight = workflow.indexOf('Preflight macOS release credentials');
     const install = workflow.indexOf('Install dependencies');
