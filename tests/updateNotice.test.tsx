@@ -246,14 +246,19 @@ describe('update-available notice', () => {
           screen.getByRole('button', { name: 'Check for Updates' }),
         );
         const upToDate = await screen.findByRole<HTMLButtonElement>('button', {
-          name: 'Up to date',
+          name: 'Up to date. Check again for updates',
         });
         expect(upToDate.disabled).toBe(false);
-        expect(upToDate.title).toBe('Check again for updates');
+        expect(upToDate.hasAttribute('title')).toBe(false);
+        expect(upToDate.querySelector('.status-check-hint')?.textContent).toBe(
+          ' · Check again',
+        );
         expect(
           screen.queryByRole('button', { name: 'Check for Updates' }),
         ).toBeNull();
-        expect(screen.getAllByText('Up to date')).toHaveLength(1);
+        expect(
+          screen.getAllByText('Up to date', { exact: false }),
+        ).toHaveLength(1);
 
         fireEvent.click(upToDate);
         expect(screen.queryByText('Up to date')).toBeNull();
@@ -274,7 +279,7 @@ describe('update-available notice', () => {
         } else if (status === 'upToDate') {
           expect(
             await screen.findByRole<HTMLButtonElement>('button', {
-              name: 'Up to date',
+              name: 'Up to date. Check again for updates',
             }),
           ).toBeTruthy();
           expect(
@@ -404,7 +409,11 @@ describe('update-available notice', () => {
           updateCheck={{ kind: 'upToDate', version: '0.1.0-beta.8' }}
         />,
       );
-      expect(screen.getByRole('button', { name: 'Up to date' })).toBeTruthy();
+      expect(
+        screen.getByRole('button', {
+          name: 'Up to date. Check again for updates',
+        }),
+      ).toBeTruthy();
       expect(screen.queryByText('Check for Updates')).toBeNull();
       rerender(
         <StatusBar

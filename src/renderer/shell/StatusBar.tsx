@@ -130,15 +130,20 @@ export function StatusBar({
               onClick={onCheckForUpdates}
               disabled={updateCheck.kind === 'checking'}
               aria-live="polite"
-              title={
+              aria-label={
                 updateCheck.kind === 'upToDate'
-                  ? 'Check again for updates'
+                  ? 'Up to date. Check again for updates'
                   : undefined
               }
             >
               {updateCheck.kind === 'upToDate'
                 ? 'Up to date'
                 : 'Check for Updates'}
+              {updateCheck.kind === 'upToDate' ? (
+                <span className="status-check-hint" aria-hidden="true">
+                  {' · Check again'}
+                </span>
+              ) : null}
             </button>
           ) : null}
           <span role="status" aria-live="polite">
