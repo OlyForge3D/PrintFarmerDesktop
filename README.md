@@ -31,9 +31,15 @@ action.
 
 The library indexes STL, OBJ, 3MF, and STEP (`.step`/`.stp`) files. STEP
 indexing does not require STEP tessellation support; 3D preview of STEP models
-requires a sidecar built with the optional `step` feature. Library errors can
-be dismissed without changing imported data, or retried to refresh the catalog.
-Long diagnostic messages are available under **Error details**.
+requires a sidecar built with the optional `step` feature. Scans continue to
+index readable files when another file or folder is cloud-only, inaccessible,
+or unreadable. Oversized ZIP archives are skipped at the configured archive
+size limit. Scan feedback groups skipped files and folders by reason and offers
+expandable path details (up to 200 entries; counts cover the full scan). Use
+**Retry** to repeat the same source operation; **Dismiss** only hides its
+message and does not change the catalog. Catalog-refresh errors retry the
+catalog refresh rather than rescanning the source. Long diagnostic messages are
+available under **Error details**.
 
 The library loads one database-backed page at a time: **48 items** by default,
 with **24, 48, 96, or 192** items per page. The page-size preference is saved

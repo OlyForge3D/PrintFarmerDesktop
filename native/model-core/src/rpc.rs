@@ -548,6 +548,20 @@ pub struct ReconcileReportDto {
     pub missing: usize,
     pub hash_errors: usize,
     #[serde(default)]
+    pub scan_errors: usize,
+    #[serde(default)]
+    pub cloud_files_skipped: usize,
+    #[serde(default)]
+    pub cloud_directories_skipped: usize,
+    #[serde(default)]
+    pub skipped_entries: crate::scan::SkippedEntryCounts,
+    #[serde(default)]
+    pub scan_issues: Vec<crate::scan::ScanIssue>,
+    #[serde(default)]
+    pub scan_issues_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default)]
     pub archive_warnings: Vec<String>,
 }
 
@@ -559,6 +573,13 @@ impl From<&crate::catalog::ReconcileReport> for ReconcileReportDto {
             unchanged: r.unchanged,
             missing: r.missing,
             hash_errors: r.hash_errors,
+            scan_errors: r.scan_errors,
+            cloud_files_skipped: r.cloud_files_skipped,
+            cloud_directories_skipped: r.cloud_directories_skipped,
+            skipped_entries: r.skipped_entries.clone(),
+            scan_issues: r.scan_issues.clone(),
+            scan_issues_truncated: r.scan_issues_truncated,
+            failure: r.failure.clone(),
             archive_warnings: r.archive_warnings.clone(),
         }
     }
@@ -589,6 +610,18 @@ pub struct ImportPreviewDto {
     pub total_bytes: u64,
     pub skipped_errors: usize,
     #[serde(default)]
+    pub cloud_files_skipped: usize,
+    #[serde(default)]
+    pub cloud_directories_skipped: usize,
+    #[serde(default)]
+    pub skipped_entries: crate::scan::SkippedEntryCounts,
+    #[serde(default)]
+    pub scan_issues: Vec<crate::scan::ScanIssue>,
+    #[serde(default)]
+    pub scan_issues_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default)]
     pub archive_warnings: Vec<String>,
     pub complete: bool,
     pub formats: ImportFormatCountsDto,
@@ -602,6 +635,12 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
             model_count: preview.model_count,
             total_bytes: preview.total_bytes,
             skipped_errors: preview.skipped_errors,
+            cloud_files_skipped: preview.cloud_files_skipped,
+            cloud_directories_skipped: preview.cloud_directories_skipped,
+            skipped_entries: preview.skipped_entries.clone(),
+            scan_issues: preview.scan_issues.clone(),
+            scan_issues_truncated: preview.scan_issues_truncated,
+            failure: preview.failure.clone(),
             archive_warnings: preview.archive_warnings.clone(),
             complete: preview.complete,
             formats: ImportFormatCountsDto {
@@ -900,6 +939,7 @@ mod tests {
             missing: 2,
             hash_errors: 0,
             archive_warnings: Vec::new(),
+            ..crate::catalog::ReconcileReport::default()
         };
         let dto = ReconcileReportDto::from(&report);
         let json = serde_json::to_string(&dto).unwrap();

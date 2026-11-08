@@ -11,6 +11,7 @@ pub mod calibration;
 pub mod catalog;
 pub mod catalog_query;
 pub mod collection_change;
+mod file_availability;
 pub mod geometry;
 pub mod hash;
 pub mod limits;

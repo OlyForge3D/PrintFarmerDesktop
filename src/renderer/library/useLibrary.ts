@@ -80,6 +80,12 @@ export interface Library {
   sourceRoots: SourceRootSummary[];
   /** Best-effort scan/progress status for the current operation. */
   scanActivity: LibraryScanActivity;
+  /** Retry the last source operation, preserving its original folder and rules. */
+  retryLastOperation: () => Promise<void>;
+  retryLabel: string | null;
+  /** Hide the most recent scan feedback without changing the catalog. */
+  dismissScanFeedback: () => void;
+  scanFeedbackVisible: boolean;
   /** Prompt for a folder and prepare a read-only hierarchy preview. */
   addFolder: () => Promise<boolean>;
   /** Reconcile and organize the prepared folder using the confirmed rules. */
@@ -167,6 +173,7 @@ export function useLibrary(
   );
   const [status, setStatus] = useState<LibraryStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [retryLabel, setRetryLabel] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<ReconcileReport | null>(null);
   const [scanningPath, setScanningPath] = useState<string | null>(null);
   const [scanActivity, setScanActivity] = useState<LibraryScanActivity>({
@@ -179,6 +186,8 @@ export function useLibrary(
   const [importDraft, setImportDraft] = useState<ImportDraft | null>(null);
   const [lastImport, setLastImport] = useState<ImportRootResponse | null>(null);
   const importInFlightRef = useRef(false);
+  const retryActionRef = useRef<(() => Promise<void>) | null>(null);
+  const [scanFeedbackVisible, setScanFeedbackVisible] = useState(false);
 
   useEffect(() => {
     saveStoredSourceRoots(storedRoots);
@@ -348,6 +357,11 @@ export function useLibrary(
   );
 
   const refresh = useCallback(async () => {
+    retryActionRef.current = async () => {
+      setError(null);
+      await loadCatalog();
+    };
+    setRetryLabel('Reload catalog');
     setError(null);
     await loadCatalog();
   }, [loadCatalog]);
@@ -372,12 +386,96 @@ export function useLibrary(
     setError(null);
   }, []);
 
-  const addFolder = useCallback(async () => {
+  const retryLastOperation = useCallback(async () => {
+    if (importInFlightRef.current) return;
+    if (retryActionRef.current) {
+      await retryActionRef.current();
+    } else {
+      setError(null);
+      await loadCatalog();
+    }
+  }, [loadCatalog]);
+
+  const dismissScanFeedback = useCallback(() => {
+    setScanFeedbackVisible(false);
+  }, []);
+
+  const previewSelection = useCallback(
+    async (selection: {
+      path: string;
+      approvalId: string;
+    }): Promise<boolean> => {
+      if (importInFlightRef.current) return false;
+      importInFlightRef.current = true;
+      retryActionRef.current = () => previewSelection(selection).then(() => {});
+      setRetryLabel('Retry folder scan');
+      setError(null);
+      setScanFeedbackVisible(false);
+      setStatus('preparing');
+      setScanActivity({
+        phase: 'preparing',
+        path: selection.path,
+        label: `Preparing ${selection.path}`,
+        estimatedTotal: null,
+        backendProgressAvailable: false,
+      });
+      try {
+        const preview = await window.printFarmer.previewImport({
+          approvalId: selection.approvalId,
+        });
+        if (!preview.complete) {
+          setError(
+            preview.failure ??
+              'The folder scan did not complete, so no files were imported. Retry the scan, or check folder access if this keeps happening.',
+          );
+          return false;
+        }
+        setScanActivity({
+          phase: 'preparing',
+          path: selection.path,
+          label: 'Loading import organization choices',
+          estimatedTotal: preview.modelCount,
+          backendProgressAvailable: false,
+        });
+        const nextCollections = await window.printFarmer.listCollections();
+        const nextTags = await window.printFarmer.listTags();
+        setImportDraft({
+          rootId: rootIdForPath(selection.path),
+          approvalId: selection.approvalId,
+          path: selection.path,
+          preview,
+          collections: nextCollections,
+          tags: nextTags,
+        });
+        return true;
+      } catch (err: unknown) {
+        setError(messageOf(err));
+        return false;
+      } finally {
+        importInFlightRef.current = false;
+        setStatus('idle');
+        setScanActivity({
+          phase: 'idle',
+          path: null,
+          label: null,
+          estimatedTotal: null,
+          backendProgressAvailable: false,
+        });
+      }
+    },
+    [],
+  );
+
+  const chooseAndPreviewFolder = useCallback(async (): Promise<boolean> => {
     if (importInFlightRef.current) {
       setError('An import operation is already in progress.');
       return false;
     }
     importInFlightRef.current = true;
+    retryActionRef.current = async () => {
+      await chooseAndPreviewFolder();
+    };
+    setRetryLabel('Choose source folder');
     setError(null);
     setStatus('preparing');
     setScanActivity({
@@ -392,26 +490,8 @@ export function useLibrary(
       if (!selection) {
         return false;
       }
-      const [preview, collections, tags] = await Promise.all([
-        window.printFarmer.previewImport({ approvalId: selection.approvalId }),
-        window.printFarmer.listCollections(),
-        window.printFarmer.listTags(),
-      ]);
-      if (!preview.complete) {
-        setError(
-          `Could not inspect the entire folder (${preview.skippedErrors} filesystem errors). No files were imported.`,
-        );
-        return false;
-      }
-      setImportDraft({
-        rootId: rootIdForPath(selection.path),
-        approvalId: selection.approvalId,
-        path: selection.path,
-        preview,
-        collections,
-        tags,
-      });
-      return true;
+      importInFlightRef.current = false;
+      return await previewSelection(selection);
     } catch (err: unknown) {
       setError(messageOf(err));
       return false;
@@ -426,48 +506,61 @@ export function useLibrary(
         backendProgressAvailable: false,
       });
     }
-  }, []);
+  }, [previewSelection]);
 
-  const confirmImport = useCallback(
+  const addFolder = useCallback(
+    () => chooseAndPreviewFolder(),
+    [chooseAndPreviewFolder],
+  );
+
+  const performImport = useCallback(
     async (
+      rootId: string,
+      path: string,
+      approvalId: string,
       plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
     ): Promise<ImportRootResponse | null> => {
-      if (!importDraft) {
-        setError('No folder is ready to import.');
-        return null;
-      }
       if (importInFlightRef.current) {
         setError('An import operation is already in progress.');
         return null;
       }
       importInFlightRef.current = true;
+      retryActionRef.current = () =>
+        performImport(rootId, path, approvalId, plan).then(() => {});
+      setRetryLabel('Retry import');
       setError(null);
+      setScanFeedbackVisible(false);
       setStatus('scanning');
-      setScanningPath(importDraft.path);
+      setScanningPath(path);
       setScanActivity({
         phase: 'scanning',
-        path: importDraft.path,
-        label: `Scanning ${importDraft.path}`,
-        estimatedTotal: importDraft.preview.modelCount,
+        path,
+        label: `Scanning ${path}`,
+        estimatedTotal: importDraft?.preview.modelCount ?? null,
         backendProgressAvailable: false,
       });
       try {
         const result = await window.printFarmer.importRoot({
-          rootId: importDraft.rootId,
-          approvalId: importDraft.approvalId,
+          rootId,
+          approvalId,
           ...plan,
         });
+        if (result.report.failure) {
+          setError(result.report.failure);
+          return null;
+        }
         setLastImport(result);
         setLastReport(result.report);
-        rememberRoot(
-          importDraft.rootId,
-          importDraft.path,
-          importDraft.approvalId,
-          result.report,
-        );
+        setScanFeedbackVisible(true);
+        rememberRoot(rootId, path, approvalId, result.report);
         try {
           await loadCatalog({ preserveStatus: true, throwOnError: true });
         } catch (refreshError: unknown) {
+          retryActionRef.current = async () => {
+            setError(null);
+            await loadCatalog();
+          };
+          setRetryLabel('Reload catalog');
           setError(
             `Import completed, but the catalog could not be refreshed: ${messageOf(refreshError)}`,
           );
@@ -501,6 +594,24 @@ export function useLibrary(
     [importDraft, loadCatalog, rememberRoot],
   );
 
+  const confirmImport = useCallback(
+    async (
+      plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
+    ): Promise<ImportRootResponse | null> => {
+      if (!importDraft) {
+        setError('No folder is ready to import.');
+        return null;
+      }
+      return performImport(
+        importDraft.rootId,
+        importDraft.path,
+        importDraft.approvalId,
+        plan,
+      );
+    },
+    [importDraft, performImport],
+  );
+
   const rescanRoot = useCallback(
     async (rootId: string): Promise<ScanRootResponse | null> => {
       if (importInFlightRef.current) {
@@ -515,7 +626,10 @@ export function useLibrary(
         return null;
       }
       importInFlightRef.current = true;
+      retryActionRef.current = () => rescanRoot(rootId).then(() => {});
+      setRetryLabel('Retry scan');
       setError(null);
+      setScanFeedbackVisible(false);
       try {
         let approvalId = root.approvalId;
         if (!approvalId) {
@@ -553,8 +667,13 @@ export function useLibrary(
           rootId: root.rootId,
           approvalId,
         });
+        if (report.failure) {
+          setError(report.failure);
+          return null;
+        }
         setLastImport(null);
         setLastReport(report);
+        setScanFeedbackVisible(true);
         rememberRoot(root.rootId, root.path, approvalId, report);
         await loadCatalog({ preserveStatus: true, throwOnError: true });
         return report;
@@ -676,6 +795,10 @@ export function useLibrary(
     lastImport,
     sourceRoots,
     scanActivity,
+    retryLastOperation,
+    retryLabel: retryLabel ?? (error ? 'Reload catalog' : null),
+    dismissScanFeedback,
+    scanFeedbackVisible,
     addFolder,
     confirmImport,
     rescanRoot,

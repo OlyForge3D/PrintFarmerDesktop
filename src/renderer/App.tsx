@@ -10,6 +10,7 @@ import type {
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
 import { LibraryErrorAlert } from './library/LibraryErrorAlert';
+import { ScanFeedback } from './library/ScanFeedback';
 import { useFavorites } from './library/useFavorites';
 import { useModelTags } from './library/useModelTags';
 import { useModelCollections } from './library/useModelCollections';
@@ -39,7 +40,6 @@ import { plateHiddenObjectIds } from './viewer/plateSelection';
 import type { PlateSelection } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
-import { reconcileHeadline, reconcileDetails } from './library/sourceRoots';
 import { SourcesWorkspace } from './library/SourcesWorkspace';
 import {
   forgetImportPlan,
@@ -1488,11 +1488,6 @@ export function App(): React.JSX.Element {
                         </span>
                         <progress aria-label="Current scan progress" />
                       </>
-                    ) : library.lastReport ? (
-                      <>
-                        <strong>{reconcileHeadline(library.lastReport)}</strong>
-                        <span>{reconcileDetails(library.lastReport)}</span>
-                      </>
                     ) : null}
                   </div>
 
@@ -1502,8 +1497,20 @@ export function App(): React.JSX.Element {
                       className="library-alert"
                       onDismiss={library.dismissError}
                       onRetry={() => {
-                        void library.refresh();
+                        void library.retryLastOperation();
                       }}
+                      retryLabel={library.retryLabel}
+                    />
+                  ) : null}
+                  {library.scanFeedbackVisible && library.lastReport ? (
+                    <ScanFeedback
+                      data={library.lastReport}
+                      onRetry={() => {
+                        void library.retryLastOperation();
+                      }}
+                      retryLabel={library.retryLabel}
+                      onDismiss={library.dismissScanFeedback}
+                      className="library-scan-feedback"
                     />
                   ) : null}
 
@@ -1699,7 +1706,14 @@ export function App(): React.JSX.Element {
                 modelCount={library.totalModels}
                 busy={library.status !== 'idle'}
                 error={library.error}
+                lastReport={library.lastReport}
+                scanFeedbackVisible={library.scanFeedbackVisible}
                 onDismissError={library.dismissError}
+                onRetryScan={() => {
+                  void library.retryLastOperation();
+                }}
+                onDismissScanFeedback={library.dismissScanFeedback}
+                retryLabel={library.retryLabel}
                 scanActivity={library.scanActivity}
                 onAddFolder={beginImport}
                 onRefresh={() => {
@@ -1752,6 +1766,10 @@ export function App(): React.JSX.Element {
           busy={library.status === 'scanning'}
           error={library.error}
           onDismissError={library.dismissError}
+          onRetryScan={() => {
+            void library.retryLastOperation();
+          }}
+          retryLabel={library.retryLabel}
           onCancel={cancelImport}
           onConfirm={confirmImport}
         />

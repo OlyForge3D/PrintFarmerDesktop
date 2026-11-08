@@ -856,9 +856,14 @@ fn dispatch(
             let scan =
                 crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
             let report = reconcile_root(store, &params.root_id, &scan);
+            if let Some(error) = &report.failure {
+                return Err(format!(
+                    "could not scan without downloading cloud files: {error}"
+                ));
+            }
             let mut value = serde_json::to_value(ReconcileReportDto::from(&report))
                 .map_err(|e| format!("failed to serialize reconcile report: {e}"))?;
-            value["scanErrors"] = serde_json::json!(scan.skipped_errors);
+            value["scanErrors"] = serde_json::json!(report.scan_errors);
             Ok(value)
         }
         "previewImport" => {
@@ -2006,6 +2011,21 @@ mod tests {
                 &value["result"]
             };
             warnings.push(report["archiveWarnings"].clone());
+            assert_eq!(report["skippedEntries"]["tooLarge"], 1);
+            assert_eq!(report["scanIssues"][0]["reason"], "tooLarge");
+            assert_eq!(
+                report["scanIssues"][0]["path"],
+                path.to_string_lossy().as_ref()
+            );
+            assert_eq!(
+                report["scanIssues"][0]["limitBytes"],
+                crate::archive::MAX_ARCHIVE_BYTES
+            );
+            assert_eq!(
+                report["scanIssues"][0]["sizeBytes"],
+                crate::archive::MAX_ARCHIVE_BYTES + 1
+            );
+            assert_eq!(report["scanIssuesTruncated"], false);
             if method == "previewImport" {
                 assert_eq!(report["complete"], true);
                 assert_eq!(report["skippedErrors"], 0);

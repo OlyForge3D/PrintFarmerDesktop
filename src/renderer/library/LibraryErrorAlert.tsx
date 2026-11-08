@@ -4,7 +4,8 @@ interface LibraryErrorAlertProps {
   error: string;
   className: string;
   onDismiss: () => void;
-  onRetry?: () => void;
+  onRetry?: (() => void) | undefined;
+  retryLabel?: string | null | undefined;
 }
 
 export function LibraryErrorAlert({
@@ -12,6 +13,7 @@ export function LibraryErrorAlert({
   className,
   onDismiss,
   onRetry,
+  retryLabel,
 }: LibraryErrorAlertProps): React.JSX.Element {
   const hasDetails = error.length > 300;
   const separator = error.indexOf(':');
@@ -28,7 +30,7 @@ export function LibraryErrorAlert({
       <div className="library-error-actions">
         {onRetry ? (
           <button type="button" onClick={onRetry}>
-            Retry
+            {retryLabel ?? 'Retry'}
           </button>
         ) : null}
         <button

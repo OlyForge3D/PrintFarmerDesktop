@@ -8,9 +8,33 @@ import { preferredPath } from '../src/renderer/library/model';
 import {
   summarizeSourceRoots,
   reconcileHeadline,
+  reconcileDetails,
 } from '../src/renderer/library/sourceRoots';
 
 describe('ZIP model locators', () => {
+  it('reports cloud-only skips separately from unexpected errors and an empty scan', () => {
+    const report = {
+      added: 0,
+      changed: 0,
+      unchanged: 0,
+      missing: 0,
+      hashErrors: 0,
+      cloudFilesSkipped: 3,
+      cloudDirectoriesSkipped: 1,
+    };
+    expect(reconcileHeadline(report)).toBe('Cloud-only files were skipped');
+    expect(reconcileDetails(report)).toBe('0 added • 0 changed • 0 missing');
+    expect(reconcileHeadline({ ...report, hashErrors: 1 })).toBe(
+      'Some library files could not be indexed',
+    );
+    expect(
+      reconcileHeadline({
+        ...report,
+        cloudFilesSkipped: 0,
+        cloudDirectoriesSkipped: 0,
+      }),
+    ).toBe('Library is up to date');
+  });
   it.each([
     '/models/parts.zip',
     'C:\\models\\parts.zip',
