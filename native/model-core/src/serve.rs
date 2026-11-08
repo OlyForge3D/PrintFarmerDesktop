@@ -1976,6 +1976,55 @@ mod tests {
     }
 
     #[test]
+    fn oversized_zip_warning_is_consistent_across_preview_import_and_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized.zip");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(crate::archive::MAX_ARCHIVE_BYTES + 1)
+            .unwrap();
+        std::fs::write(dir.path().join("part.stl"), b"part").unwrap();
+        let mut store = InMemoryCatalog::new();
+        let mut warnings = Vec::new();
+        for method in ["previewImport", "importRoot", "scanRoot"] {
+            let request = serde_json::json!({
+                "id": 20,
+                "method": method,
+                "params": {
+                    "path": dir.path().to_string_lossy(),
+                    "rootId": "parts",
+                    "rules": [],
+                    "commonTags": []
+                },
+            });
+            let out = handle_line(&mut store, &request.to_string()).unwrap();
+            let value: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(value["ok"], true, "{method}: {value}");
+            let report = if method == "importRoot" {
+                &value["result"]["report"]
+            } else {
+                &value["result"]
+            };
+            warnings.push(report["archiveWarnings"].clone());
+            if method == "previewImport" {
+                assert_eq!(report["complete"], true);
+                assert_eq!(report["skippedErrors"], 0);
+                assert_eq!(report["modelCount"], 1);
+                assert!(store.models().is_empty());
+            } else {
+                assert_eq!(store.models().len(), 1);
+                assert_eq!(report["hashErrors"], 0);
+            }
+        }
+        let expected = serde_json::json!([crate::archive::size_warning(
+            &path,
+            crate::archive::MAX_ARCHIVE_BYTES + 1
+        )
+        .unwrap()]);
+        assert!(warnings.iter().all(|warning| warning == &expected));
+    }
+
+    #[test]
     fn previews_import_without_mutating_the_catalog() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Animals/Cats")).unwrap();

@@ -1121,6 +1121,7 @@ pub struct ReconcileReport {
     pub missing: usize,
     /// Files that could not be hashed (IO/permission errors).
     pub hash_errors: usize,
+    pub archive_warnings: Vec<String>,
 }
 
 pub(crate) fn finish_catalog_batch<S: CatalogStore + ?Sized, T>(
@@ -1199,7 +1200,10 @@ pub(crate) fn reconcile_root_with_hashes<S: CatalogStore + ?Sized>(
     scan: &ScanResult,
     hashes: &HashMap<PathBuf, ContentHash>,
 ) -> ReconcileReport {
-    let mut report = ReconcileReport::default();
+    let mut report = ReconcileReport {
+        archive_warnings: scan.archive_warnings.clone(),
+        ..ReconcileReport::default()
+    };
     let mut seen: Vec<PathBuf> = Vec::with_capacity(scan.files.len());
 
     for file in &scan.files {

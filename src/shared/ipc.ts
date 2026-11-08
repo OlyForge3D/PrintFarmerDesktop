@@ -628,6 +628,7 @@ export const ReconcileReport = z.object({
   missing: z.number().int().nonnegative(),
   hashErrors: z.number().int().nonnegative(),
   scanErrors: z.number().int().nonnegative().optional(),
+  archiveWarnings: z.array(z.string()).optional(),
 });
 export type ReconcileReport = z.infer<typeof ReconcileReport>;
 
@@ -661,6 +662,7 @@ export const ImportPreviewResponse = z.object({
   modelCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   skippedErrors: z.number().int().nonnegative(),
+  archiveWarnings: z.array(z.string()).optional(),
   complete: z.boolean(),
   formats: z.object({
     stl: z.number().int().nonnegative(),

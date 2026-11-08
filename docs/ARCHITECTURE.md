@@ -35,7 +35,14 @@ On platforms without portable filesystem change-time (including Windows),
 members are conservatively streamed through SHA-256 again on reconciliation.
 
 ZIP indexing uses seekable files and bounded central-directory reads, with no
-whole-archive buffering or extraction. Limits are 100,000 directory entries,
+whole-archive buffering or extraction. ZIP files larger than 512 MiB on disk
+(536,870,912 bytes) are skipped using filesystem metadata before opening,
+parsing, decompressing or hashing archive contents. Exactly 512 MiB is allowed.
+Preview, import and library scans show a warning with the archive filename,
+actual byte size and limit, while continuing with the folder's other files.
+Member access rechecks this cap, including archives that grow after preview.
+This compressed-file cap applies only to `.zip`, not standalone `.3mf` files.
+Additional limits are 100,000 directory entries,
 64 MiB central-directory data, 512 MiB per supported model member and 8 GiB of
 supported model bytes per archive. The shared 300:1 ratio limit applies above
 4 MiB. Encrypted, symlink, unsafe-path, corrupt and over-budget model members

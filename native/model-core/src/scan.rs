@@ -35,6 +35,8 @@ pub struct ScanResult {
     pub cancelled: bool,
     /// Count of entries that could not be read (permission/IO errors).
     pub skipped_errors: usize,
+    /// Expected policy skips, not filesystem failures or incomplete traversal.
+    pub archive_warnings: Vec<String>,
 }
 
 /// Recursively scan `root` for model files. `cancel` is polled between entries
@@ -80,6 +82,11 @@ pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
             .unwrap_or_else(|_| path.to_path_buf());
 
         if crate::archive::is_zip(path) {
+            if let Some(warning) = crate::archive::size_warning(path, metadata.len()) {
+                eprintln!("{warning}");
+                result.archive_warnings.push(warning);
+                continue;
+            }
             match crate::archive::discover(path, &root_relative, &metadata, cancel) {
                 Ok(files) => result.files.extend(files),
                 Err(error) => {

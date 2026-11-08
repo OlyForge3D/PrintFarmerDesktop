@@ -12,6 +12,7 @@ use crate::model::{FileFingerprint, ModelFormat};
 use crate::scan::DiscoveredFile;
 
 pub const MARKER: &str = "::zip::";
+pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 pub const MAX_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CENTRAL_DIRECTORY_BYTES: u64 = 64 * 1024 * 1024;
@@ -41,6 +42,22 @@ fn invalid(message: impl Into<String>) -> io::Error {
 pub fn is_zip(path: &Path) -> bool {
     path.extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+}
+
+pub fn size_warning(path: &Path, size: u64) -> Option<String> {
+    (size > MAX_ARCHIVE_BYTES).then(|| {
+        format!(
+            "Skipped ZIP {}: on-disk size {size} bytes exceeds the 512 MiB limit ({MAX_ARCHIVE_BYTES} bytes).",
+            path.display()
+        )
+    })
+}
+
+fn check_archive_size(path: &Path, size: u64) -> io::Result<()> {
+    match size_warning(path, size) {
+        Some(warning) => Err(invalid(warning)),
+        None => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +156,10 @@ impl std::io::Seek for ArchiveFile {
 }
 
 fn open_archive(path: &Path) -> io::Result<zip::ZipArchive<ArchiveFile>> {
+    check_archive_size(path, std::fs::metadata(path)?.len())?;
     let file = File::open(path)?;
+    // Recheck the opened file in case it changed between stat and open.
+    check_archive_size(path, file.metadata()?.len())?;
     // The ZIP library bounds neither central-directory allocation nor entry
     // count before parsing. Check the EOCD (including ZIP64) first.
     let (entries, directory_bytes) = directory_bounds(&file)?;
@@ -234,6 +254,7 @@ pub fn discover(
     metadata: &Metadata,
     cancel: &AtomicBool,
 ) -> io::Result<Vec<DiscoveredFile>> {
+    check_archive_size(path, metadata.len())?;
     let mut archive = open_archive(path)?;
     let guard = ParseGuard::default();
     let mut total = 0u64;
@@ -447,6 +468,95 @@ mod tests {
 
     fn reconcile(store: &mut dyn CatalogStore, root: &Path) -> crate::catalog::ReconcileReport {
         reconcile_root(store, "root", &scan_root(root, &AtomicBool::new(false)))
+    }
+
+    #[test]
+    fn exact_compressed_size_limit_is_allowed_and_one_byte_above_is_rejected() {
+        use std::io::{Seek, SeekFrom};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("boundary.ZIP");
+        write_zip(&path, &[("part.stl", b"part")]);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let prefix = MAX_ARCHIVE_BYTES - bytes.len() as u64;
+        let central = bytes
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x01\x02")
+            .unwrap();
+        let end = bytes.len() - 22;
+        bytes[central + 42..central + 46].copy_from_slice(&(prefix as u32).to_le_bytes());
+        bytes[end + 16..end + 20]
+            .copy_from_slice(&((prefix + central as u64) as u32).to_le_bytes());
+        let mut file = File::create(&path).unwrap();
+        // A sparse prefix exercises the actual archive parser at the boundary
+        // without allocating or writing a 512 MiB payload.
+        file.seek(SeekFrom::Start(prefix)).unwrap();
+        file.write_all(&bytes).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), MAX_ARCHIVE_BYTES);
+        let scan = scan_root(root.path(), &AtomicBool::new(false));
+        assert_eq!(scan.files.len(), 1);
+        assert!(scan.archive_warnings.is_empty());
+        assert_eq!(scan.skipped_errors, 0);
+        assert!(hash_source(&scan.files[0].path).is_ok());
+
+        file.set_len(MAX_ARCHIVE_BYTES + 1).unwrap();
+        let warning = size_warning(&path, MAX_ARCHIVE_BYTES + 1).unwrap();
+        assert_eq!(open_archive(&path).err().unwrap().to_string(), warning);
+        assert_eq!(
+            discover(
+                &path,
+                Path::new("boundary.ZIP"),
+                &file.metadata().unwrap(),
+                &AtomicBool::new(false)
+            )
+            .unwrap_err()
+            .to_string(),
+            warning
+        );
+        assert_eq!(
+            hash_source(&scan.files[0].path).unwrap_err().to_string(),
+            warning
+        );
+        assert_eq!(
+            hash_sources(&[scan.files[0].path.clone()])[0]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .to_string(),
+            warning
+        );
+        assert_eq!(
+            resolve(&scan.files[0].path).err().unwrap().to_string(),
+            warning
+        );
+    }
+
+    #[test]
+    fn oversized_invalid_zip_is_skipped_before_parsing_and_other_formats_continue() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("oversized.zip");
+        // No directory record: parsing this sparse file would fail, so the
+        // size warning rather than a ZIP error proves the guard runs first.
+        File::create(&path)
+            .unwrap()
+            .set_len(MAX_ARCHIVE_BYTES + 1)
+            .unwrap();
+        std::fs::write(root.path().join("part.stl"), b"part").unwrap();
+        File::create(root.path().join("project.3mf"))
+            .unwrap()
+            .set_len(MAX_ARCHIVE_BYTES + 1)
+            .unwrap();
+        let scan = scan_root(root.path(), &AtomicBool::new(false));
+        assert_eq!(scan.files.len(), 2);
+        assert_eq!(scan.skipped_errors, 0);
+        assert!(!scan.cancelled);
+        assert_eq!(
+            scan.archive_warnings,
+            vec![size_warning(&path, MAX_ARCHIVE_BYTES + 1).unwrap()]
+        );
+        let preview = crate::smart_import::preview_scan(&scan);
+        assert!(preview.complete);
+        assert_eq!(preview.archive_warnings, scan.archive_warnings);
     }
 
     #[test]

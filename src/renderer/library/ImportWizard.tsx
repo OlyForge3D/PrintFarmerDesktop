@@ -177,6 +177,11 @@ export function ImportWizard({
             skipped.
           </p>
         ) : null}
+        {draft.preview.archiveWarnings?.map((warning, index) => (
+          <p key={index} className="import-warning" role="status">
+            {warning}
+          </p>
+        ))}
         {draft.preview.modelCount === 0 ? (
           <p className="import-warning">
             No supported files were found. Confirming will reconcile this source

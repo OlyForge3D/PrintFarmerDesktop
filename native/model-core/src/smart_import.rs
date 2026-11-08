@@ -39,6 +39,7 @@ pub struct ImportPreview {
     pub model_count: usize,
     pub total_bytes: u64,
     pub skipped_errors: usize,
+    pub archive_warnings: Vec<String>,
     pub complete: bool,
     pub formats: ImportFormatCounts,
     pub folders: Vec<ImportFolder>,
@@ -50,6 +51,7 @@ pub fn preview_scan(scan: &ScanResult) -> ImportPreview {
     let mut preview = ImportPreview {
         model_count: scan.files.len(),
         skipped_errors: scan.skipped_errors,
+        archive_warnings: scan.archive_warnings.clone(),
         complete: !scan.cancelled && scan.skipped_errors == 0,
         ..ImportPreview::default()
     };
@@ -672,6 +674,7 @@ mod tests {
             files: Vec::new(),
             cancelled: false,
             skipped_errors: 1,
+            archive_warnings: Vec::new(),
         };
 
         let result = import_root(&mut store, "root", &incomplete, &empty_plan);

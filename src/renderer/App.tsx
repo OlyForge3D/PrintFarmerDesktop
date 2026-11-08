@@ -39,6 +39,7 @@ import { plateHiddenObjectIds } from './viewer/plateSelection';
 import type { PlateSelection } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
+import { reconcileHeadline, reconcileDetails } from './library/sourceRoots';
 import { SourcesWorkspace } from './library/SourcesWorkspace';
 import {
   forgetImportPlan,
@@ -1489,19 +1490,8 @@ export function App(): React.JSX.Element {
                       </>
                     ) : library.lastReport ? (
                       <>
-                        <strong>
-                          {library.lastReport.missing > 0
-                            ? `${library.lastReport.missing} files missing`
-                            : library.lastReport.added > 0 ||
-                                library.lastReport.changed > 0
-                              ? 'Library updated'
-                              : 'Library is up to date'}
-                        </strong>
-                        <span>
-                          {library.lastReport.added} added •{' '}
-                          {library.lastReport.changed} changed •{' '}
-                          {library.lastReport.missing} missing
-                        </span>
+                        <strong>{reconcileHeadline(library.lastReport)}</strong>
+                        <span>{reconcileDetails(library.lastReport)}</span>
                       </>
                     ) : null}
                   </div>
