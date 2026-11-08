@@ -539,7 +539,7 @@ impl From<&crate::catalog::Collection> for CollectionDto {
 
 /// Summary of one reconciliation pass over a source root, in wire form. Mirrors
 /// the `ReconcileReport` Zod schema in `src/shared/ipc.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconcileReportDto {
     pub added: usize,
@@ -547,6 +547,8 @@ pub struct ReconcileReportDto {
     pub unchanged: usize,
     pub missing: usize,
     pub hash_errors: usize,
+    #[serde(default)]
+    pub archive_warnings: Vec<String>,
 }
 
 impl From<&crate::catalog::ReconcileReport> for ReconcileReportDto {
@@ -557,6 +559,7 @@ impl From<&crate::catalog::ReconcileReport> for ReconcileReportDto {
             unchanged: r.unchanged,
             missing: r.missing,
             hash_errors: r.hash_errors,
+            archive_warnings: r.archive_warnings.clone(),
         }
     }
 }
@@ -585,6 +588,8 @@ pub struct ImportPreviewDto {
     pub model_count: usize,
     pub total_bytes: u64,
     pub skipped_errors: usize,
+    #[serde(default)]
+    pub archive_warnings: Vec<String>,
     pub complete: bool,
     pub formats: ImportFormatCountsDto,
     pub folders: Vec<ImportFolderDto>,
@@ -597,6 +602,7 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
             model_count: preview.model_count,
             total_bytes: preview.total_bytes,
             skipped_errors: preview.skipped_errors,
+            archive_warnings: preview.archive_warnings.clone(),
             complete: preview.complete,
             formats: ImportFormatCountsDto {
                 stl: preview.formats.stl,
@@ -893,6 +899,7 @@ mod tests {
             unchanged: 5,
             missing: 2,
             hash_errors: 0,
+            archive_warnings: Vec::new(),
         };
         let dto = ReconcileReportDto::from(&report);
         let json = serde_json::to_string(&dto).unwrap();

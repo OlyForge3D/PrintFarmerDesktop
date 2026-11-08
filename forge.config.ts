@@ -76,7 +76,22 @@ const config: ForgeConfig = {
     // Portable, no-install Windows build for users who would rather unzip a
     // folder than run the unsigned installer.
     new MakerZIP({}, ['win32', 'darwin']),
-    new MakerDMG({ icon: `${iconBasePath}.icns` }, ['darwin']),
+    new MakerDMG(
+      {
+        icon: `${iconBasePath}.icns`,
+        title: 'Install PrintFarmer Desktop',
+        background: path.join(repoRoot, 'assets', 'dmg', 'background.png'),
+        iconSize: 96,
+        additionalDMGOptions: {
+          window: { size: { width: 680, height: 460 } },
+        },
+        contents: ({ appPath }) => [
+          { x: 180, y: 280, type: 'file', path: appPath },
+          { x: 500, y: 280, type: 'link', path: '/Applications' },
+        ],
+      },
+      ['darwin'],
+    ),
   ],
   plugins: [
     new VitePlugin({

@@ -9,6 +9,51 @@ import {
 } from '@shared/ipc';
 
 describe('ipc contract', () => {
+  it('preserves ZIP skip warnings in preview, import and scan responses', () => {
+    const archiveWarnings = [
+      'Skipped ZIP oversized.zip: on-disk size 536870913 bytes exceeds the 512 MiB limit (536870912 bytes).',
+    ];
+    const report = {
+      added: 1,
+      changed: 0,
+      unchanged: 0,
+      missing: 0,
+      hashErrors: 0,
+      archiveWarnings,
+    };
+    expect(
+      ipcSchemas[IpcChannel.PreviewImport].response.parse({
+        modelCount: 1,
+        totalBytes: 4,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 1, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+        archiveWarnings,
+      }).archiveWarnings,
+    ).toEqual(archiveWarnings);
+    expect(
+      ipcSchemas[IpcChannel.ScanRoot].response.parse(report).archiveWarnings,
+    ).toEqual(archiveWarnings);
+    expect(
+      ipcSchemas[IpcChannel.ImportRoot].response.parse({
+        report,
+        modelsOrganized: 1,
+        collectionsCreated: 0,
+        collectionAssignments: 0,
+        tagAssignments: 0,
+        resolvedCollections: [],
+      }).report.archiveWarnings,
+    ).toEqual(archiveWarnings);
+    expect(() =>
+      ipcSchemas[IpcChannel.ScanRoot].response.parse({
+        ...report,
+        archiveWarnings: [42],
+      }),
+    ).toThrow();
+  });
+
   it('accepts a valid app info response', () => {
     const value = ipcSchemas[IpcChannel.AppInfo].response.parse({
       contractVersion: IPC_CONTRACT_VERSION,

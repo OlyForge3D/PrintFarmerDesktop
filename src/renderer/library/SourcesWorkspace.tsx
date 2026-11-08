@@ -187,6 +187,17 @@ export function SourcesWorkspace({
                       </span>
                       <small title={root.path}>{root.path}</small>
                       <small>{sourceRootDetail(root)}</small>
+                      {root.lastReport?.archiveWarnings?.map(
+                        (warning, index) => (
+                          <p
+                            key={index}
+                            className="import-warning"
+                            role="status"
+                          >
+                            {warning}
+                          </p>
+                        ),
+                      )}
                     </div>
                   </div>
                   <div className="source-root-actions">

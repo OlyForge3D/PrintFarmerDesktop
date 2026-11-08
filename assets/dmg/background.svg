@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="460" viewBox="0 0 680 460">
+  <defs>
+    <linearGradient id="header" x2="1" y2="1">
+      <stop stop-color="#102344"/>
+      <stop offset="1" stop-color="#081426"/>
+    </linearGradient>
+    <linearGradient id="body" x2="0" y2="1">
+      <stop stop-color="#f0f6ff"/>
+      <stop offset="1" stop-color="#dce8f8"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#body)" d="M0 0h680v460H0z"/>
+  <path fill="url(#header)" d="M0 0h680v174H0z"/>
+  <path d="m522 174 84-84 74 74M564 174l70-70 46 46" fill="none" stroke="#377cf5" stroke-opacity=".16" stroke-width="2"/>
+  <path d="M42 43h28M42 49h28M42 55h28" stroke="#86c7f2" stroke-width="3" stroke-linecap="round"/>
+  <text x="84" y="54" fill="#86c7f2" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600" letter-spacing="2">PRINTFARMER DESKTOP</text>
+  <text x="40" y="104" fill="#f0f6ff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="30" font-weight="600">Your next print starts here.</text>
+  <text x="42" y="139" fill="#b7cce9" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15">Drag PrintFarmer Desktop to Applications to install.</text>
+  <circle cx="180" cy="280" r="72" fill="#fff" fill-opacity=".5" stroke="#bccfea"/>
+  <circle cx="500" cy="280" r="72" fill="#fff" fill-opacity=".5" stroke="#bccfea"/>
+  <path d="M296 280h88m-13-13 13 13-13 13" fill="none" stroke="#377cf5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M40 399h600" stroke="#b8cce5"/>
+  <text x="340" y="428" text-anchor="middle" fill="#385477" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Once copied, open PrintFarmer Desktop from Applications.</text>
+</svg>

@@ -198,6 +198,9 @@ export function reconcileHeadline(report: ReconcileReport | null): string {
   if ((report.scanErrors ?? 0) > 0 || report.hashErrors > 0) {
     return 'Some library files could not be indexed';
   }
+  if (report.archiveWarnings?.length) {
+    return 'Oversized ZIP archives were skipped';
+  }
   if (report.missing > 0) {
     return `${report.missing} missing ${pluralize('file', report.missing)}`;
   }
@@ -214,7 +217,8 @@ export function reconcileDetails(
     return null;
   }
   const errors = (report.scanErrors ?? 0) + report.hashErrors;
-  return `${report.added} added • ${report.changed} changed • ${report.missing} missing${errors > 0 ? ` • ${errors} errors` : ''}`;
+  const summary = `${report.added} added • ${report.changed} changed • ${report.missing} missing${errors > 0 ? ` • ${errors} errors` : ''}`;
+  return [summary, ...(report.archiveWarnings ?? [])].join('\n');
 }
 
 function deriveSourceRoots(
