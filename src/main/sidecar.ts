@@ -332,6 +332,11 @@ export class SidecarClient {
   private serializedQueue: Promise<void> = Promise.resolve();
   private protocolChannel: SidecarChannel | null = null;
   private protocolReady: Promise<SidecarHandshake> | null = null;
+  private archiveSizeLimitProvider: (() => Promise<number>) | undefined;
+
+  setArchiveSizeLimitProvider(provider: () => Promise<number>): void {
+    this.archiveSizeLimitProvider = provider;
+  }
 
   constructor(
     private readonly createChannel: ChannelFactory,
@@ -1219,6 +1224,25 @@ export class SidecarClient {
     },
   ): Promise<unknown> {
     return this.enqueue(async (): Promise<unknown> => {
+      if (
+        this.archiveSizeLimitProvider &&
+        [
+          'scanRoot',
+          'previewImport',
+          'importRoot',
+          'hashModelSource',
+          'loadScene',
+          'loadScenePacked',
+          'renderThumbnail',
+          'extractVendorMetadata',
+          'extractVendorPlateThumbnails',
+        ].includes(method)
+      ) {
+        params = {
+          ...z.record(z.unknown()).parse(params),
+          maxArchiveBytes: await this.archiveSizeLimitProvider(),
+        };
+      }
       if (this.requireProtocolHandshake && method !== 'handshake') {
         await this.ensureProtocol();
       }

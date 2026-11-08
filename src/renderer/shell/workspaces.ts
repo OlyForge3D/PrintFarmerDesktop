@@ -6,7 +6,7 @@ import type { IconName } from '../ui/Icon';
  * skip link, focus restore, rail markup, and status label one ternary at a time.
  */
 export type WorkspaceId =
-  'library' | 'calibration' | 'uploads' | 'organization' | 'sources';
+  'library' | 'calibration' | 'uploads' | 'organization' | 'settings';
 
 /**
  * `places` are where operators do the product's work. `services` are app-level
@@ -71,12 +71,12 @@ const WORKSPACES: readonly WorkspaceDefinition[] = [
     group: 'services',
   },
   {
-    id: 'sources',
-    label: 'Sources',
-    icon: 'folder',
-    landmarkId: 'sources-main',
-    skipTarget: 'catalog sources',
-    headingSelector: '[data-sources-heading]',
+    id: 'settings',
+    label: 'Settings',
+    icon: 'settings',
+    landmarkId: 'settings-main',
+    skipTarget: 'settings',
+    headingSelector: '[data-settings-heading]',
     group: 'services',
   },
 ];

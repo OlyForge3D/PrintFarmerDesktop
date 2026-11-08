@@ -91,7 +91,21 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
 
 function installApi(api: Partial<PrintFarmerApi>): void {
   Object.defineProperty(window, 'printFarmer', {
-    value: withModelPaging(api),
+    value: withModelPaging({
+      getArchiveSettings: vi
+        .fn()
+        .mockResolvedValue({ maxArchiveBytes: 512 * 1024 * 1024 }),
+      getThumbnailCacheSettings: vi.fn().mockResolvedValue({
+        location: null,
+        effectiveLocation: '/profile/scene-cache.v1',
+        maxBytes: 512 * 1024 * 1024,
+        retentionDays: 30,
+        usedBytes: 0,
+        entryCount: 0,
+        warning: null,
+      }),
+      ...api,
+    }),
     configurable: true,
     writable: true,
   });
@@ -294,7 +308,7 @@ describe('<App />', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(listModels).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh catalog' }));
     const nextAlert = await screen.findByRole('alert');
     fireEvent.click(within(nextAlert).getByRole('button', { name: 'Retry' }));
@@ -645,7 +659,7 @@ describe('<App />', () => {
       'Choose how subfolders should organize your models as collections or tags before scanning.',
     );
     expect(dialog).toHaveTextContent(
-      'You can add or remove folders from the sidebar whenever you need.',
+      'Add folders from the library, or manage connected folders in Settings whenever you need.',
     );
     expect(dialog).not.toHaveTextContent(
       /source root|keep roots healthy|remove roots/i,
@@ -726,7 +740,7 @@ describe('<App />', () => {
 
     render(<App />);
     await screen.findByRole('button', { name: 'Select widget.stl' });
-    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
 
     fireEvent.click(
       screen.getByRole('button', {
@@ -812,7 +826,7 @@ describe('<App />', () => {
     expect(
       await screen.findByText('0 available · 1 needs attention'),
     ).toBeVisible();
-    fireEvent.click(await screen.findByRole('button', { name: /^Sources/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
     const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
     fireEvent.click(reconnect);
 
@@ -849,9 +863,9 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Scan again' })).toBeVisible(),
     );
-    expect(
-      screen.getByRole('main', { name: 'Catalog sources' }),
-    ).toHaveTextContent('536870913 bytes exceeds the 512 MiB limit');
+    expect(screen.getByRole('main', { name: 'Settings' })).toHaveTextContent(
+      '536870913 bytes exceeds the 512 MiB limit',
+    );
     fireEvent.click(screen.getByRole('button', { name: /^Library$/ }));
     expect(
       screen.getByText('Oversized ZIP archives were skipped'),
@@ -899,7 +913,7 @@ describe('<App />', () => {
     });
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /^Sources/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
     const rescan = await screen.findByRole('button', { name: 'Scan again' });
 
     fireEvent.click(rescan);

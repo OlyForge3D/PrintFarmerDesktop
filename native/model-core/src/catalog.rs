@@ -1178,7 +1178,9 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
         }
         changed_paths.push(file.path.clone());
     }
-    for (path, result) in crate::archive::hash_sources(&changed_paths) {
+    for (path, result) in
+        crate::archive::hash_sources_with_limit(&changed_paths, scan.max_archive_bytes)
+    {
         match result {
             Ok(hash) => {
                 hashes.insert(path.clone(), hash);

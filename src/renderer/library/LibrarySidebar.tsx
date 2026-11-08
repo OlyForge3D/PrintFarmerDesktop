@@ -35,7 +35,6 @@ export interface LibrarySidebarProps {
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterKey) => void;
   onAddFolder: () => void;
-  onOpenThumbnailCacheSettings?: () => void;
   collections?: Collection[];
   selectedCollections?: readonly string[];
   onCollectionsChange?: (ids: string[]) => void;
@@ -76,7 +75,6 @@ export function LibrarySidebar({
   onQueryChange,
   onFilterChange,
   onAddFolder,
-  onOpenThumbnailCacheSettings,
   collections = [],
   selectedCollections = [],
   onCollectionsChange,
@@ -195,17 +193,6 @@ export function LibrarySidebar({
             <Icon name="folder" />
             <span>{scanningFolder ? 'Scanning...' : 'Add folder'}</span>
           </button>
-          {onOpenThumbnailCacheSettings ? (
-            <button
-              type="button"
-              className="sidebar-primary-action"
-              onClick={onOpenThumbnailCacheSettings}
-              disabled={busy}
-            >
-              <Icon name="settings" />
-              <span>Thumbnail cache</span>
-            </button>
-          ) : null}
         </div>
       </aside>
     </SidebarResizer>

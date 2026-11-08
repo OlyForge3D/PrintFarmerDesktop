@@ -1,12 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ThumbnailCacheSettings } from '@shared/ipc';
+import type { ThumbnailCacheSettings as CacheSettings } from '@shared/ipc';
 import { LibraryOnboarding } from '../src/renderer/library/LibraryOnboarding';
-import { ThumbnailCacheDialog } from '../src/renderer/library/ThumbnailCacheDialog';
+import { ThumbnailCacheSettings } from '../src/renderer/library/ThumbnailCacheSettings';
 
-function settings(
-  overrides: Partial<ThumbnailCacheSettings> = {},
-): ThumbnailCacheSettings {
+function settings(overrides: Partial<CacheSettings> = {}): CacheSettings {
   return {
     location: null,
     effectiveLocation: '/profile/PrintFarmer/scene-cache.v1',
@@ -19,21 +17,21 @@ function settings(
   };
 }
 
-describe('ThumbnailCacheDialog', () => {
-  it('offers cache settings before the first model folder is added', () => {
-    const onManageThumbnailCache = vi.fn();
+describe('ThumbnailCacheSettings', () => {
+  it('keeps first-run onboarding focused on importing models', () => {
     render(
       <LibraryOnboarding
         busy={false}
         onAddFolder={vi.fn()}
-        onManageThumbnailCache={onManageThumbnailCache}
         onClose={vi.fn()}
       />,
     );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Thumbnail cache settings' }),
-    );
-    expect(onManageThumbnailCache).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole('button', { name: /Thumbnail cache/ }),
+    ).toBeNull();
+    expect(
+      screen.getByText(/manage connected folders in Settings/),
+    ).toBeVisible();
   });
 
   it('chooses a native folder and saves cache size and retention controls', async () => {
@@ -58,7 +56,7 @@ describe('ThumbnailCacheDialog', () => {
       configurable: true,
       value: { ...window.printFarmer, ...api },
     });
-    render(<ThumbnailCacheDialog onClose={vi.fn()} />);
+    render(<ThumbnailCacheSettings disabled={false} onBusyChange={vi.fn()} />);
 
     await screen.findByText('/profile/PrintFarmer/scene-cache.v1');
     fireEvent.click(screen.getByRole('button', { name: 'Choose folder…' }));
@@ -108,7 +106,7 @@ describe('ThumbnailCacheDialog', () => {
       configurable: true,
       value: { ...window.printFarmer, ...api },
     });
-    render(<ThumbnailCacheDialog onClose={vi.fn()} />);
+    render(<ThumbnailCacheSettings disabled={false} onBusyChange={vi.fn()} />);
 
     expect(
       await screen.findByText(
@@ -119,7 +117,7 @@ describe('ThumbnailCacheDialog', () => {
       screen.getByRole('button', { name: 'Clear cached thumbnails…' }),
     );
     expect(
-      screen.getByRole('alertdialog', { name: 'Confirm clearing thumbnails' }),
+      screen.getByRole('alert', { name: 'Confirm clearing thumbnails' }),
     ).toBeInTheDocument();
     expect(api.clearThumbnailCache).not.toHaveBeenCalled();
 

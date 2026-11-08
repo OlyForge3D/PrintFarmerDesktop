@@ -19,11 +19,6 @@ export interface SourcesWorkspaceProps {
   onResetCatalog: () => Promise<ResetCatalogResponse | null>;
 }
 
-/**
- * Folder access is durable configuration an operator revisits, so it is a place
- * rather than a dialog. Only the destructive reset still takes over focus,
- * because that is a decision and not a view.
- */
 export function SourcesWorkspace({
   roots,
   modelCount,
@@ -60,17 +55,16 @@ export function SourcesWorkspace({
   };
 
   return (
-    <main
-      id="sources-main"
-      className="sources-pane"
-      aria-label="Catalog sources"
+    <section
+      className="settings-sources"
+      aria-labelledby="settings-sources-heading"
       aria-busy={busy}
     >
       <header className="service-heading">
         <div>
-          <h1 data-sources-heading tabIndex={-1}>
-            Sources
-          </h1>
+          <h2 id="settings-sources-heading" tabIndex={-1}>
+            Source folders
+          </h2>
           <p>
             Which folders PrintFarmer indexes on this computer. Scans are
             read-only; original model files are never moved.
@@ -299,7 +293,7 @@ export function SourcesWorkspace({
           )}
         </section>
       </div>
-    </main>
+    </section>
   );
 }
 

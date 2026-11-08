@@ -69,6 +69,7 @@ function fakeProfiles() {
 }
 
 const noopSidecar = {
+  setArchiveSizeLimitProvider: () => undefined,
   initialize: () => Promise.resolve(),
   dispose: () => Promise.resolve(),
   disposeAll: () => Promise.resolve(),

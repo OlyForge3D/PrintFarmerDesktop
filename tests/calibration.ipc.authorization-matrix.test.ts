@@ -159,6 +159,7 @@ function harness(selectedProfileId: string | null): Harness {
     {
       get: (_target, prop) => {
         if (prop === 'then') return undefined;
+        if (prop === 'setArchiveSizeLimitProvider') return () => undefined;
         return (...args: unknown[]) => {
           downstream.push(`sidecar.${String(prop)}`);
           void args;

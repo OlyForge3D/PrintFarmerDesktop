@@ -132,6 +132,8 @@ export const IpcChannel = {
   SetThumbnailCacheSettings: 'thumbnailCache:setSettings',
   ChooseThumbnailCacheLocation: 'thumbnailCache:chooseLocation',
   ClearThumbnailCache: 'thumbnailCache:clear',
+  GetArchiveSettings: 'archive:getSettings',
+  SetArchiveSettings: 'archive:setSettings',
   ScanRoot: 'catalog:scanRoot',
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
@@ -541,6 +543,20 @@ export const RenderThumbnailResponse = z.object({
 export type RenderThumbnailResponse = z.infer<typeof RenderThumbnailResponse>;
 
 // --- thumbnailCache:* -----------------------------------------------------
+
+export const DEFAULT_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
+export const MAX_ARCHIVE_SIZE_MIB = 16384;
+export const ArchiveSettings = z
+  .object({
+    maxArchiveBytes: z
+      .number()
+      .int()
+      .min(1024 * 1024)
+      .max(MAX_ARCHIVE_SIZE_MIB * 1024 * 1024)
+      .multipleOf(1024 * 1024),
+  })
+  .strict();
+export type ArchiveSettings = z.infer<typeof ArchiveSettings>;
 
 export const ThumbnailCacheSettings = z
   .object({
@@ -8045,6 +8061,14 @@ export const ipcSchemas = {
     request: GetThumbnailCacheSettingsRequest,
     response: GetThumbnailCacheSettingsResponse,
   },
+  [IpcChannel.GetArchiveSettings]: {
+    request: z.void(),
+    response: ArchiveSettings,
+  },
+  [IpcChannel.SetArchiveSettings]: {
+    request: ArchiveSettings,
+    response: ArchiveSettings,
+  },
   [IpcChannel.SetThumbnailCacheSettings]: {
     request: SetThumbnailCacheSettingsRequest,
     response: SetThumbnailCacheSettingsResponse,
@@ -8425,6 +8449,8 @@ export interface PrintFarmerApi {
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
   getThumbnailCacheSettings(): Promise<GetThumbnailCacheSettingsResponse>;
+  getArchiveSettings(): Promise<ArchiveSettings>;
+  setArchiveSettings(request: ArchiveSettings): Promise<ArchiveSettings>;
   setThumbnailCacheSettings(
     request: SetThumbnailCacheSettingsRequest,
   ): Promise<SetThumbnailCacheSettingsResponse>;

@@ -29,7 +29,7 @@ pub struct DiscoveredFile {
 
 /// Outcome of a scan. `cancelled` is set when the caller aborted early, in
 /// which case `files` holds whatever was found before cancellation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     pub files: Vec<DiscoveredFile>,
     pub cancelled: bool,
@@ -37,12 +37,32 @@ pub struct ScanResult {
     pub skipped_errors: usize,
     /// Expected policy skips, not filesystem failures or incomplete traversal.
     pub archive_warnings: Vec<String>,
+    pub max_archive_bytes: u64,
+}
+
+impl Default for ScanResult {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            cancelled: false,
+            skipped_errors: 0,
+            archive_warnings: Vec::new(),
+            max_archive_bytes: crate::archive::MAX_ARCHIVE_BYTES,
+        }
+    }
 }
 
 /// Recursively scan `root` for model files. `cancel` is polled between entries
 /// so long scans of large trees can be stopped promptly.
 pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
-    let mut result = ScanResult::default();
+    scan_root_with_limit(root, cancel, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn scan_root_with_limit(root: &Path, cancel: &AtomicBool, max_bytes: u64) -> ScanResult {
+    let mut result = ScanResult {
+        max_archive_bytes: max_bytes,
+        ..ScanResult::default()
+    };
 
     for entry in WalkDir::new(root).follow_links(false) {
         if cancel.load(Ordering::Relaxed) {
@@ -82,12 +102,20 @@ pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
             .unwrap_or_else(|_| path.to_path_buf());
 
         if crate::archive::is_zip(path) {
-            if let Some(warning) = crate::archive::size_warning(path, metadata.len()) {
+            if let Some(warning) =
+                crate::archive::size_warning_with_limit(path, metadata.len(), max_bytes)
+            {
                 eprintln!("{warning}");
                 result.archive_warnings.push(warning);
                 continue;
             }
-            match crate::archive::discover(path, &root_relative, &metadata, cancel) {
+            match crate::archive::discover_with_limit(
+                path,
+                &root_relative,
+                &metadata,
+                cancel,
+                max_bytes,
+            ) {
                 Ok(files) => result.files.extend(files),
                 Err(error) => {
                     eprintln!("failed to index ZIP {}: {error}", path.display());

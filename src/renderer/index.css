@@ -1524,15 +1524,6 @@ select:disabled {
   transform: translateX(-50%);
 }
 
-.thumbnail-cache-dialog {
-  top: 50%;
-  bottom: auto;
-  width: min(620px, calc(100% - 48px));
-  min-height: 0;
-  max-height: calc(100% - 96px);
-  transform: translate(-50%, -50%);
-}
-
 .thumbnail-cache-content {
   overflow: auto;
 }
@@ -1683,6 +1674,7 @@ select:disabled {
 }
 
 .service-heading-actions button,
+.settings-pane button,
 .catalog-reset-trigger,
 .catalog-reset-confirmation button {
   display: inline-flex;
@@ -1700,6 +1692,7 @@ select:disabled {
 }
 
 .service-heading-actions button:hover:not(:disabled),
+.settings-pane button:hover:not(:disabled),
 .catalog-reset-confirmation button:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--surface-hover);
@@ -2162,6 +2155,7 @@ select:disabled {
 }
 
 .profile-form input,
+.settings-pane input,
 .profile-form select {
   width: 100%;
   height: 32px;
