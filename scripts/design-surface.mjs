@@ -50,7 +50,12 @@ export const DESIGN_GOVERNANCE_FILES = Object.freeze([
   'scripts/design-detector.d.mts',
   'scripts/design-detector-hook.mjs',
   'scripts/design-detector-hook.d.mts',
+  'scripts/design-baseline.mjs',
+  'scripts/design-ratchet.mjs',
+  'scripts/design-ratchet.d.mts',
+  'reports/design-baseline.json',
   '.github/workflows/design-detector.yml',
+  '.github/workflows/design-ratchet.yml',
   '.github/hooks/impeccable.json',
 ]);
 const DESIGN_GOVERNANCE_FILE_SET = new Set(DESIGN_GOVERNANCE_FILES);

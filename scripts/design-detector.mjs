@@ -163,18 +163,25 @@ export function changedPathsBetween(root, base, head) {
   return out.split('\0').filter(Boolean);
 }
 
-function allRendererPaths(root) {
+export function allRendererPaths(root) {
   const out = git(root, ['ls-files', '-z', '--', 'src/renderer', 'index.html']);
   return out.split('\0').filter(Boolean);
 }
 
-export function runDetector(root, files, toolRoot = root) {
+export function runDetector(
+  root,
+  files,
+  toolRoot = root,
+  { strict = false, noInlineIgnores = false } = {},
+) {
   const detect = join(toolRoot, DETECTOR_DIR, 'detect.mjs');
   const findings = [];
   for (let i = 0; i < files.length; i += CHUNK_SIZE) {
     const chunk = files.slice(i, i + CHUNK_SIZE);
     // cwd = repo root: the detector reads .impeccable/config.json from cwd.
-    const result = spawnSync(process.execPath, [detect, '--json', ...chunk], {
+    const args = [detect, '--json'];
+    if (noInlineIgnores) args.push('--no-inline-ignores');
+    const result = spawnSync(process.execPath, [...args, ...chunk], {
       cwd: root,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -190,7 +197,33 @@ export function runDetector(root, files, toolRoot = root) {
         `detector could not read a target: ${result.stderr.trim()}`,
       );
     }
-    findings.push(...parseDetectorOutput(result.stdout));
+    if (strict && (result.stderr?.trim() || !result.stdout?.trim())) {
+      throw new Error(
+        `detector produced incomplete output: ${(result.stderr || 'empty stdout').trim()}`,
+      );
+    }
+    const chunkFindings = parseDetectorOutput(result.stdout);
+    if (
+      strict &&
+      chunkFindings.some(
+        (finding) =>
+          !finding ||
+          typeof finding !== 'object' ||
+          typeof finding.file !== 'string' ||
+          typeof finding.antipattern !== 'string' ||
+          !finding.antipattern,
+      )
+    ) {
+      throw new Error('detector produced a malformed finding');
+    }
+    if (
+      strict &&
+      (result.status === 2) !==
+        chunkFindings.some((finding) => finding.advisory !== true)
+    ) {
+      throw new Error('detector exit status disagrees with findings');
+    }
+    findings.push(...chunkFindings);
   }
   return findings;
 }

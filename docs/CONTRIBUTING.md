@@ -36,6 +36,7 @@ Renderer/main/preload (run from the repo root):
 | `npm run format`                         | Prettier check (`format:write` fixes)              |
 | `npm run check:inert-class-field-seams`  | Guards against #270-style inert prototype seams    |
 | `npm run check:design-detector -- --all` | Scan the renderer for AI-slop design anti-patterns |
+| `npm run report:design-baseline`         | Write an observational full-source design report   |
 | `npm run test`                           | Vitest unit/component tests                        |
 | `npm run make`                           | Build platform installers                          |
 | `npm run verify:target-profiles`         | Verify the pinned printer-profile snapshot         |
@@ -94,6 +95,13 @@ Changes to the renderer's markup and styles (the set is defined in
 vendored copy of the impeccable design skill's detector in `tools/impeccable-detector/` (Apache-2.0, pinned by
 `manifest.json`):
 
+- The vendored regex engine has two local corrections: bare JSDoc `<img>`
+  references are not treated as missing-source images (unless the file also
+  contains a closing `</img>` tag, when the detector conservatively reports
+  them), and spinning `rounded-full`
+  loading-ring classes are not treated as rounded-card accent borders. Real
+  missing-image and rounded-card checks still apply. These affect changed-file
+  scans once the detector change reaches the trusted base.
 - The `Design detector` workflow scans the files a pull request changes and
   fails on any non-advisory finding. It runs the detector and manifest from the
   base commit, not from the pull request, so a change to the detector only
@@ -129,6 +137,100 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
 The detector reads source, not rendered pixels, so it catches tells like
 gradient text and purple palettes but not contrast, overflow, or density
 problems. A green check is a floor, not a design review.
+
+### Full-source observational baseline
+
+Run `npm run report:design-baseline` to write
+`reports/design-baseline.json`, or pass `-- --output <path>` to choose another
+output. It scans the same tracked renderer extensions and root `index.html`
+selected by `--all`, using the checked-out detector and manifest. It records
+the inspected HEAD, input hashes, modified or untracked inputs, Node version,
+detector provenance, effective configuration, exact selected/scanned/ignored
+files, per-file parsed design-policy status, and concrete blocking and advisory
+findings. Identical inputs, Node version, and checkout state yield the same
+report; source-byte hashes can differ across line-ending configurations.
+
+This report is observed debt, **not** approval, a WCAG or design certification,
+or a regression gate. Findings do not cause this reporting command to fail;
+scanner/configuration errors do. Existing inline and shared-config suppressions
+are honored and configured file exclusions are listed. For reproducibility,
+the command rejects `.impeccable/config.local.json`; temporarily relocate it
+outside the worktree before running. The report's static findings include
+stylesheets whether or not they are reachable: the singular
+`CalibrationConflictDialog.css` is classified separately using a literal
+reference search, which does not prove whether it can be loaded dynamically.
+The report records whether optional static HTML parser dependencies are
+available. Without them the detector falls back to regex-only HTML analysis;
+static DOM and linked-stylesheet analysis are excluded.
+
+The report excludes untracked files, renderer plain TypeScript and assets,
+main/preload UI logic, OS/native dialogs and menus, installer UI, and runtime
+states including the rendered DOM, interactions, accessibility tree, pixels,
+zoom and DPI. It neither proves every supported rule detects every occurrence
+nor replaces human review. The detector's general static rules are distinct
+from parsed design-system allowlists. In this baseline `DESIGN.md` has no
+frontmatter recognized by the detector, so its prose palette and fonts are not
+machine-enforced allowlists; inspect each report's policy status rather than
+assuming that remains true.
+
+The separate PR/merge-group changed-file CI gate remains unchanged: it uses the
+trusted base's detector and blocks on non-advisory findings in changed targets.
+The baseline report uses working-tree inputs, whose hashes and differences
+from HEAD must be considered when interpreting its commit field.
+
+### Full-source count ratchet
+
+`Design full-source ratchet` is separate from the existing changed-file gate.
+It counts **all unsuppressed blocking and advisory findings together** against
+the total in the trusted base's `reports/design-baseline.json`, and reports
+both severities. Equal or lower totals pass; an increase fails. This is not a
+per-rule, per-file or per-occurrence ratchet: replacing one finding with
+another, including a change in severity, passes at the same total. Unrelated
+changes do not fail solely because existing findings remain.
+
+The PR workflow uses `pull_request_target` so its definition comes from the
+default branch; merge-queue scans use `merge_group`. It checks out base-owned
+tooling, fetches the PR ref as Git objects without checking it out, and reads
+source directly from the target commit's blobs. A read-only token is passed to
+the fetch step only, not the scanner. The scan uses the base's policy, config,
+and approved inline suppressions; it does not install or run target code. New
+PR-supplied suppressions, detector edits, or allowance increases cannot hide
+findings in this scan. Existing line suppressions apply only when their
+associated source and directive lines are unchanged; whole-file suppressions
+remain in effect. The changed-file gate still follows its own existing
+suppression behavior.
+
+The checked-in initial report was made at its recorded commit with modified
+scanner and lockfile inputs and an untracked generator; their hashes and status
+are recorded rather than attributed to that commit. Before accepting it, the
+ratchet checks selected source hashes against the inspected commit and scanner
+hashes against the trusted base, validates the detector manifest and report
+counts, and requires the recorded Node version, regex-only HTML capability,
+config and absent design-system allowlists. Missing or incompatible inputs fail
+closed. The initial workflow and report must first land through an explicitly
+reviewed bootstrap; a `pull_request_target` workflow absent from the default
+branch cannot run on its introducing PR. Require its status only after it exists
+on the protected default branch and its PR-head and merge-queue check reporting
+have been verified live. This implementation fails closed for PRs or queues
+targeting a non-default branch rather than trusting an unprotected feature
+branch's tooling; extend its trust policy deliberately before requiring it
+there. Use repository rules that protect the workflow and
+prohibit bypasses. No PR-controlled fallback is provided.
+
+The allowance does not shrink automatically. To propose a lower ceiling, first
+commit the source fixes, use the same Node version and unchanged trusted
+scanner/config, and run `npm run report:design-baseline` with clean tracked
+inputs. Review and commit the resulting report separately. The check validates
+that a changed report's complete findings match the current scan, does not
+increase the trusted allowance, and has clean source provenance; it becomes the
+allowance only after the change is reviewed and merged. Changes to detector,
+policy, Node version or
+HTML capabilities require a separately reviewed migration and compatible
+baseline; do not silently regenerate or increase the ceiling.
+
+The ratchet covers only the static source surface described above. A zero
+total is neither WCAG compliance nor visual approval, and same-count swaps can
+hide newly introduced defects.
 
 ## Conventions
 

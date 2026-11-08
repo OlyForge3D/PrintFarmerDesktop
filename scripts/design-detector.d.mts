@@ -49,10 +49,12 @@ export function changedPathsBetween(
   base: string,
   head: string,
 ): string[];
+export function allRendererPaths(root: string): string[];
 export function runDetector(
   root: string,
   files: readonly string[],
   toolRoot?: string,
+  options?: { strict?: boolean; noInlineIgnores?: boolean },
 ): DetectorFinding[];
 export function parseArgs(argv: readonly string[]): DesignDetectorOptions;
 export function main(argv?: readonly string[], root?: string): number;

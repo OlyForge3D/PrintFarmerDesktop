@@ -16,6 +16,55 @@ const hasRounded = (line) => /\brounded(?:-\w+)?\b/.test(line);
 const hasBorderRadius = (line) => /border-radius/i.test(line);
 const isSafeElement = (line) => /<(?:blockquote|nav[\s>]|pre[\s>]|code[\s>]|a\s|input[\s>]|span[\s>])/i.test(line);
 
+// Only suppress the bare documentation token; JSX images with attributes or
+// self-closing syntax must remain visible even in ambiguous comment-like text.
+function maskJsdocForImages(content) {
+  if (/<\/img\s*>/i.test(content)) return content;
+  const chars = content.split('');
+  let state = 'code';
+  for (let i = 0; i < content.length; i++) {
+    const c = content[i];
+    const next = content[i + 1];
+    if (state === 'jsdoc' || state === 'block') {
+      if (state === 'jsdoc' && content.slice(i, i + 5).toLowerCase() === '<img>') {
+        chars.fill(' ', i, i + 5);
+        i += 4;
+      }
+      if (c === '*' && next === '/') {
+        i++;
+        state = 'code';
+      }
+    } else if (state === 'line') {
+      if (c === '\n') state = 'code';
+    } else if (state !== 'code') {
+      if (c === '\\') i++;
+      else if (c === state) state = 'code';
+      else if (c === '\n' && state !== '`') state = 'code';
+    } else if (c === '"' || c === "'" || c === '`') {
+      state = c;
+    } else if (c === '/' && next === '/') {
+      state = 'line';
+      i++;
+    } else if (c === '/' && next === '*') {
+      state = content[i + 2] === '*' ? 'jsdoc' : 'block';
+      i++;
+    }
+  }
+  return chars.join('');
+}
+
+function isSpinRingClass(match, line) {
+  const classAttr = /\b(?:class|className)\s*=\s*(?:\{\s*)?(["'`])([\s\S]*?)\1/g;
+  for (const attr of line.matchAll(classAttr)) {
+    const start = attr.index;
+    if (match.index < start || match.index >= start + attr[0].length) continue;
+    const classes = attr[2].split(/\s+/);
+    const has = (pattern) => classes.some(token => pattern.test(token));
+    return has(/(?:^|:)rounded-full$/) && has(/(?:^|:)(?:[a-z0-9]+-)*animate-spin$/);
+  }
+  return false;
+}
+
 
 /** Strip HTML to plain text — drops script/style/comments/tags so
  *  content-text analyzers don't false-positive on code or CSS. */
@@ -156,7 +205,7 @@ const REGEX_MATCHERS = [
     fmt: (m) => m[0] },
   // --- Border accent on rounded ---
   { id: 'border-accent-on-rounded', regex: /\bborder-[tb]-(\d+)\b/g,
-    test: (m, line) => hasRounded(line) && +m[1] >= 1,
+    test: (m, line) => hasRounded(line) && +m[1] >= 1 && !isSpinRingClass(m, line),
     fmt: (m) => m[0] },
   { id: 'border-accent-on-rounded', regex: /border-(?:top|bottom)\s*:\s*(\d+)px\s+solid/gi,
     test: (m, line) => +m[1] >= 3 && hasBorderRadius(line),
@@ -560,12 +609,12 @@ function extractCSSinJS(content, ext) {
 }
 
 function runRegexMatchers(lines, filePath, lineOffset = 0, blockContext = null, options = {}) {
-  const { profile, phase = 'regex-matchers' } = options || {};
+  const { profile, phase = 'regex-matchers', imageLines } = options || {};
   const findings = [];
   if (!profile) {
     for (const matcher of REGEX_MATCHERS) {
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        const line = matcher.id === 'broken-image' && imageLines ? imageLines[i] : lines[i];
         matcher.regex.lastIndex = 0;
         let m;
         while ((m = matcher.regex.exec(line)) !== null) {
@@ -591,7 +640,7 @@ function runRegexMatchers(lines, filePath, lineOffset = 0, blockContext = null, 
     }, () => {
       const matches = [];
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        const line = matcher.id === 'broken-image' && imageLines ? imageLines[i] : lines[i];
         matcher.regex.lastIndex = 0;
         let m;
         while ((m = matcher.regex.exec(line)) !== null) {
@@ -652,6 +701,7 @@ function detectText(content, filePath, options = {}) {
   findings.push(...runRegexMatchers(lines, filePath, 0, cssLike.has(ext) || null, {
     profile,
     phase: 'source',
+    imageLines: CSS_IN_JS_EXTENSIONS.has(ext) ? maskJsdocForImages(content).split('\n') : null,
   }));
   // Pseudo-element stripes (::before/::after absolute bars) carry the same
   // side-tab silhouette without any border token, so the line matchers can't

@@ -3,6 +3,7 @@
   "upstream": "https://impeccable.style (impeccable by Paul Bakaus)",
   "vendoredFrom": "the impeccable skill v4.0.3 bundled with the GitHub Copilot app (app-skills/impeccable/scripts)",
   "provenanceLimit": "No immutable upstream commit or archive digest was available when vendoring; these hashes detect drift from the vendored bytes, not that the bytes match an upstream release. Re-vendor by copying the same paths from a newer skill copy, then run `node scripts/design-detector.mjs --write-manifest`.",
+  "localModifications": "Local regex corrections suppress bare JSDoc <img> references when no closing </img> appears in the file, and exclude spinning rounded-full rings from the rounded-card accent rule.",
   "version": "4.0.3",
   "license": "Apache-2.0",
   "files": {
@@ -13,7 +14,7 @@
     "detector/design-system.mjs": "a3f995a4223e8eb8295bca41ba08ea6d4be3409597fdb163a0775ee61c5ffd35",
     "detector/detect-antipatterns.mjs": "f5240e4162b270efafd099b81d315309a6f25a83a887aedf02bf9bcf3ed5c724",
     "detector/engines/browser/detect-url.mjs": "5a2240c5a56ea6d302bd008a03b1319facc3289056d44beb45d38c3ace8252f6",
-    "detector/engines/regex/detect-text.mjs": "99a481d0d2212afac0c7ddd06306dfad38ff7823cd033d3bea8a4796f49565a5",
+    "detector/engines/regex/detect-text.mjs": "61a953c7420eda2bb10e729b061d3e6d04f5c8dfc889e07252edea1b5d50a609",
     "detector/engines/static-html/css-cascade.mjs": "c68070331a9f4e6f301a9508a61c196c61b13534a91be25a7c4cfbdcc57c7807",
     "detector/engines/static-html/detect-html.mjs": "3e8ae988cd2ec9adb20429aac1ecad7c2ea0ff97b5704a154d03355f9e656c36",
     "detector/engines/visual/screenshot-contrast.mjs": "b4520b3f001079bd175bf20d46c5197b1b8ec5fb98fdf72c50a24c0b6598ee99",

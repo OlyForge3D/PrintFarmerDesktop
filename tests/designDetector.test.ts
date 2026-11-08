@@ -79,7 +79,12 @@ describe('design surface classification', () => {
     'scripts/design-detector.d.mts',
     'scripts/design-detector-hook.mjs',
     'scripts/design-detector-hook.d.mts',
+    'scripts/design-baseline.mjs',
+    'scripts/design-ratchet.mjs',
+    'scripts/design-ratchet.d.mts',
+    'reports/design-baseline.json',
     '.github/workflows/design-detector.yml',
+    '.github/workflows/design-ratchet.yml',
     '.github/hooks/impeccable.json',
   ];
   const EXPECTED_GOVERNANCE_PREFIXES = [
@@ -251,6 +256,103 @@ describe('running the vendored detector', () => {
       partitionFindings(runDetector(root, ['src/renderer/Suppressed.tsx']))
         .blocking,
     ).toEqual([]);
+  });
+
+  it('distinguishes JSDoc image references from real JSX images without losing lines or waivers', () => {
+    const file = 'src/renderer/ImageFixture.tsx';
+    writeFileSync(
+      path.join(root, file),
+      [
+        '/** Get a React <img> element. */',
+        '/**',
+        ' * Another <img> example.',
+        ' */',
+        'const dynamic = <img src={url} alt="ok" />;',
+        'const missing = <img alt="missing" />;',
+        '// impeccable-disable-next-line broken-image -- fixture',
+        'const suppressed = <img alt="suppressed" />;',
+        '/** <img> */ const after = <img alt="after" />;',
+        'const template = `<img alt="template" />`;',
+        'const templateComment = `/** <img alt="literal" /> */`;',
+        `const quoted = "/** <img alt='quoted' /> */";`,
+      ].join('\n'),
+    );
+    const findings = runDetector(root, [file]).filter(
+      (finding) => finding.antipattern === 'broken-image',
+    );
+    expect(findings.map((finding) => finding.line)).toEqual([6, 9, 10, 11, 12]);
+    expect(findings[0]?.snippet).toContain('alt="missing"');
+    expect(findings[1]?.snippet).toContain('alt="after"');
+  });
+
+  it('uses the same source-context rules in profiling mode', () => {
+    const script = `
+      import { detectText } from './tools/impeccable-detector/detector/engines/regex/detect-text.mjs';
+      const source = '/** <img> */\\nconst a = <img alt="x" />;\\n<span className="pf-animate-spin rounded-full border-b-2" />;';
+      const normal = detectText(source, 'src/renderer/x.tsx');
+      const profiled = detectText(source, 'src/renderer/x.tsx', { profile: { events: [] } });
+      if (JSON.stringify(normal) !== JSON.stringify(profiled)) process.exit(1);
+      if (normal.length !== 1 || normal[0].antipattern !== 'broken-image' || normal[0].line !== 2) process.exit(2);
+    `;
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', script],
+      {
+        cwd: root,
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('does not hide JSX images inside comment-like text', () => {
+    const file = 'src/renderer/JsxTextFixture.tsx';
+    writeFileSync(
+      path.join(root, file),
+      [
+        'const example = <div>/** example',
+        '<img alt="missing" />',
+        '*/</div>;',
+      ].join('\n'),
+    );
+    const pairedFile = 'src/renderer/PairedImageFixture.tsx';
+    writeFileSync(
+      path.join(root, pairedFile),
+      ['const paired = <div>/** example', '<img></img>', '*/</div>;'].join(
+        '\n',
+      ),
+    );
+    const findings = runDetector(root, [file, pairedFile]).filter(
+      (finding) => finding.antipattern === 'broken-image',
+    );
+    expect(findings.map((finding) => [finding.file, finding.line])).toEqual([
+      [path.join(root, file), 2],
+      [path.join(root, pairedFile), 2],
+    ]);
+  });
+
+  it('excludes spinner rings only in the same class attribute, not real rounded cards', () => {
+    const file = 'src/renderer/SpinnerFixture.tsx';
+    writeFileSync(
+      path.join(root, file),
+      [
+        '<span className="pf-animate-spin rounded-full border-b-2" />;',
+        '<span className="animate-spin rounded-full border-t-2" />;',
+        '<div className="rounded-lg border-b-2" />;',
+        '',
+        '',
+        '<span className="animate-spin rounded-full" /><div className="rounded-lg border-b-2" />;',
+        '',
+        '',
+        '<div className="rounded-full border-b-2" />;',
+        '// impeccable-disable-next-line border-accent-on-rounded -- fixture',
+        '<div className="rounded-lg border-b-2" />;',
+      ].join('\n'),
+    );
+    const findings = runDetector(root, [file]).filter(
+      (finding) => finding.antipattern === 'border-accent-on-rounded',
+    );
+    expect(findings.map((finding) => finding.line)).toEqual([3, 6, 9]);
   });
 
   it('honors .impeccable/config.json ignoreRules, and only for the listed rule', () => {
