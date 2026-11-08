@@ -20,10 +20,18 @@ export function ThumbnailCacheSettings({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keepCacheRef = useRef<HTMLButtonElement | null>(null);
+  const clearCacheTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const clearCacheHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const focusAfterConfirmationRef = useRef<'trigger' | 'heading' | null>(null);
   const controlsDisabled = busy || loading || disabled || settings === null;
   const setWorking = (working: boolean): void => {
     setBusy(working);
     onBusyChange(working);
+  };
+
+  const cancelClearConfirmation = (): void => {
+    focusAfterConfirmationRef.current = 'trigger';
+    setConfirmClear(false);
   };
 
   const applySettings = (next: CacheSettings): void => {
@@ -56,7 +64,15 @@ export function ThumbnailCacheSettings({
   }, []);
 
   useEffect(() => {
-    if (confirmClear) keepCacheRef.current?.focus();
+    if (confirmClear) {
+      keepCacheRef.current?.focus();
+      return;
+    }
+
+    const focusTarget = focusAfterConfirmationRef.current;
+    focusAfterConfirmationRef.current = null;
+    if (focusTarget === 'trigger') clearCacheTriggerRef.current?.focus();
+    if (focusTarget === 'heading') clearCacheHeadingRef.current?.focus();
   }, [confirmClear]);
 
   const chooseLocation = async (): Promise<void> => {
@@ -115,6 +131,7 @@ export function ThumbnailCacheSettings({
     try {
       const result = await window.printFarmer.clearThumbnailCache();
       applySettings(result.settings);
+      focusAfterConfirmationRef.current = 'heading';
       setConfirmClear(false);
       setMessage(
         `Cleared ${result.clearedEntries} cached thumbnail${result.clearedEntries === 1 ? '' : 's'}.`,
@@ -232,7 +249,13 @@ export function ThumbnailCacheSettings({
         </section>
 
         <section aria-labelledby="thumbnail-cache-clear-heading">
-          <h3 id="thumbnail-cache-clear-heading">Clear cache</h3>
+          <h3
+            id="thumbnail-cache-clear-heading"
+            ref={clearCacheHeadingRef}
+            tabIndex={-1}
+          >
+            Clear cache
+          </h3>
           {confirmClear ? (
             <div
               role="alert"
@@ -240,7 +263,7 @@ export function ThumbnailCacheSettings({
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && !controlsDisabled) {
                   event.preventDefault();
-                  setConfirmClear(false);
+                  cancelClearConfirmation();
                 }
               }}
             >
@@ -259,7 +282,7 @@ export function ThumbnailCacheSettings({
                 <button
                   ref={keepCacheRef}
                   type="button"
-                  onClick={() => setConfirmClear(false)}
+                  onClick={cancelClearConfirmation}
                   disabled={controlsDisabled}
                 >
                   Keep cache
@@ -268,6 +291,7 @@ export function ThumbnailCacheSettings({
             </div>
           ) : (
             <button
+              ref={clearCacheTriggerRef}
               type="button"
               onClick={() => setConfirmClear(true)}
               disabled={controlsDisabled || !settings?.entryCount}

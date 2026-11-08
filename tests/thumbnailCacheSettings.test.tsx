@@ -123,13 +123,85 @@ describe('ThumbnailCacheSettings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep cache' }));
     expect(api.clearThumbnailCache).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Clear cached thumbnails…' }),
+    );
     fireEvent.click(
       screen.getByRole('button', { name: 'Clear cached thumbnails…' }),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Clear thumbnails' }));
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Keep cache' }),
+    );
+    const clearButton = screen.getByRole('button', {
+      name: 'Clear thumbnails',
+    });
+    clearButton.focus();
+    fireEvent.click(clearButton);
     await waitFor(() => expect(api.clearThumbnailCache).toHaveBeenCalledOnce());
     expect(await screen.findByRole('status')).toHaveTextContent(
       'Cleared 3 cached thumbnails.',
     );
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: 'Clear cache' }),
+    );
+  });
+
+  it('restores focus to the clear-cache trigger when Escape cancels confirmation', async () => {
+    const api = {
+      getThumbnailCacheSettings: vi.fn(() => Promise.resolve(settings())),
+      chooseThumbnailCacheLocation: vi.fn(),
+      setThumbnailCacheSettings: vi.fn(),
+      clearThumbnailCache: vi.fn(),
+    };
+    Object.defineProperty(window, 'printFarmer', {
+      configurable: true,
+      value: { ...window.printFarmer, ...api },
+    });
+    render(<ThumbnailCacheSettings disabled={false} onBusyChange={vi.fn()} />);
+
+    await screen.findByText('/profile/PrintFarmer/scene-cache.v1');
+    const trigger = screen.getByRole('button', {
+      name: 'Clear cached thumbnails…',
+    });
+    fireEvent.click(trigger);
+    const keepButton = screen.getByRole('button', { name: 'Keep cache' });
+    expect(document.activeElement).toBe(keepButton);
+
+    fireEvent.keyDown(keepButton, { key: 'Escape' });
+
+    expect(
+      screen.queryByRole('alert', { name: 'Confirm clearing thumbnails' }),
+    ).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Clear cached thumbnails…' }),
+    );
+    expect(api.clearThumbnailCache).not.toHaveBeenCalled();
+  });
+
+  it('keeps the confirmation open and reports an error when clearing fails', async () => {
+    const api = {
+      getThumbnailCacheSettings: vi.fn(() => Promise.resolve(settings())),
+      chooseThumbnailCacheLocation: vi.fn(),
+      setThumbnailCacheSettings: vi.fn(),
+      clearThumbnailCache: vi.fn(() =>
+        Promise.reject(new Error('Cache clear failed.')),
+      ),
+    };
+    Object.defineProperty(window, 'printFarmer', {
+      configurable: true,
+      value: { ...window.printFarmer, ...api },
+    });
+    render(<ThumbnailCacheSettings disabled={false} onBusyChange={vi.fn()} />);
+
+    await screen.findByText('/profile/PrintFarmer/scene-cache.v1');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Clear cached thumbnails…' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Clear thumbnails' }));
+
+    expect(await screen.findByText('Cache clear failed.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('alert', { name: 'Confirm clearing thumbnails' }),
+    ).toBeInTheDocument();
   });
 });
