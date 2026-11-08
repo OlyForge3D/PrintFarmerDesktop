@@ -224,21 +224,73 @@ describe('update-available notice', () => {
       ).toBeTruthy();
     });
 
-    it('says when the app is up to date', async () => {
-      installApi(
-        none,
-        vi.fn().mockResolvedValue({
+    it.each(['available', 'upToDate', 'failed'] as const)(
+      'uses the up-to-date status to check again and show %s',
+      async (status) => {
+        const response = {
           currentVersion: '0.1.0-beta.8',
           status: 'upToDate',
           available: null,
-        }),
-      );
-      render(<Harness />);
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Check for Updates' }),
-      );
-      expect(await screen.findByText('Up to date')).toBeTruthy();
-    });
+        };
+        const check = vi
+          .fn()
+          .mockResolvedValueOnce(response)
+          .mockResolvedValueOnce({
+            ...response,
+            status,
+            available: status === 'available' ? beta9.available : null,
+          });
+        installApi(none, check);
+        render(<Harness />);
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Check for Updates' }),
+        );
+        const upToDate = await screen.findByRole<HTMLButtonElement>('button', {
+          name: 'Up to date',
+        });
+        expect(upToDate.disabled).toBe(false);
+        expect(upToDate.title).toBe('Check again for updates');
+        expect(
+          screen.queryByRole('button', { name: 'Check for Updates' }),
+        ).toBeNull();
+        expect(screen.getAllByText('Up to date')).toHaveLength(1);
+
+        fireEvent.click(upToDate);
+        expect(screen.queryByText('Up to date')).toBeNull();
+        expect(screen.getByText('Checking…')).toBeTruthy();
+        expect(
+          screen.getByRole<HTMLButtonElement>('button', {
+            name: 'Check for Updates',
+          }).disabled,
+        ).toBe(true);
+
+        if (status === 'available') {
+          expect(
+            await screen.findByRole('link', { name: /available/ }),
+          ).toBeTruthy();
+          expect(
+            screen.queryByRole('button', { name: 'Check for Updates' }),
+          ).toBeNull();
+        } else if (status === 'upToDate') {
+          expect(
+            await screen.findByRole<HTMLButtonElement>('button', {
+              name: 'Up to date',
+            }),
+          ).toBeTruthy();
+          expect(
+            screen.queryByRole('button', { name: 'Check for Updates' }),
+          ).toBeNull();
+        } else {
+          expect(await screen.findByText('Check failed')).toBeTruthy();
+          expect(
+            screen.getByRole<HTMLButtonElement>('button', {
+              name: 'Check for Updates',
+            }).disabled,
+          ).toBe(false);
+        }
+        expect(check).toHaveBeenCalledTimes(2);
+      },
+    );
 
     it.each([
       [
@@ -317,13 +369,13 @@ describe('update-available notice', () => {
       [{ kind: 'checking' }, 'Checking…'],
       [{ kind: 'failed' }, 'Check failed'],
       [{ kind: 'unavailable' }, 'Installed builds only'],
-      [{ kind: 'upToDate', version: '0.1.0-beta.8' }, 'Up to date'],
     ] as const)(
       'preserves %s feedback with and without an available release',
       (updateCheck, message) => {
         const { rerender } = render(
           <StatusBar {...props} updateCheck={updateCheck} />,
         );
+
         const button = screen.getByRole<HTMLButtonElement>('button', {
           name: 'Check for Updates',
         });
@@ -344,5 +396,26 @@ describe('update-available notice', () => {
         expect(screen.getByText(message)).toBeTruthy();
       },
     );
+
+    it('does not show stale up-to-date status alongside a release notice', () => {
+      const { rerender } = render(
+        <StatusBar
+          {...props}
+          updateCheck={{ kind: 'upToDate', version: '0.1.0-beta.8' }}
+        />,
+      );
+      expect(screen.getByRole('button', { name: 'Up to date' })).toBeTruthy();
+      expect(screen.queryByText('Check for Updates')).toBeNull();
+      rerender(
+        <StatusBar
+          {...props}
+          updateCheck={{ kind: 'upToDate', version: '0.1.0-beta.8' }}
+          availableRelease={beta9.available}
+        />,
+      );
+      expect(screen.getByRole('link', { name: /available/ })).toBeTruthy();
+      expect(screen.queryByText('Up to date')).toBeNull();
+      expect(screen.queryByText('Check for Updates')).toBeNull();
+    });
   });
 });

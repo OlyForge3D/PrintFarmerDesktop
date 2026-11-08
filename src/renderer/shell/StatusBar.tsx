@@ -14,7 +14,7 @@ function updateCheckMessage(state: UpdateCheckState): string {
       // The release notice owns availability, including its dismissal.
       return '';
     case 'upToDate':
-      return 'Up to date';
+      return '';
     case 'failed':
       return 'Check failed';
     case 'unavailable':
@@ -129,8 +129,16 @@ export function StatusBar({
               className="status-item-dismiss"
               onClick={onCheckForUpdates}
               disabled={updateCheck.kind === 'checking'}
+              aria-live="polite"
+              title={
+                updateCheck.kind === 'upToDate'
+                  ? 'Check again for updates'
+                  : undefined
+              }
             >
-              Check for Updates
+              {updateCheck.kind === 'upToDate'
+                ? 'Up to date'
+                : 'Check for Updates'}
             </button>
           ) : null}
           <span role="status" aria-live="polite">
