@@ -7,7 +7,10 @@ import {
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GetAvailableReleaseResponse, PrintFarmerApi } from '@shared/ipc';
-import { StatusBar } from '../src/renderer/shell/StatusBar.js';
+import {
+  StatusBar,
+  type StatusBarProps,
+} from '../src/renderer/shell/StatusBar.js';
 import { useAvailableRelease } from '../src/renderer/shell/useAvailableRelease.js';
 
 const beta9: GetAvailableReleaseResponse = {
@@ -67,6 +70,9 @@ describe('update-available notice', () => {
     });
     expect(link.getAttribute('href')).toBe(beta9.available?.url);
     expect(link.getAttribute('target')).toBe('_blank');
+    expect(
+      screen.queryByRole('button', { name: 'Check for Updates' }),
+    ).toBeNull();
 
     fireEvent.click(
       screen.getByRole('button', {
@@ -74,6 +80,9 @@ describe('update-available notice', () => {
       }),
     );
     expect(screen.queryByRole('link', { name: /available/ })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Check for Updates' }),
+    ).toBeTruthy();
     unmount();
 
     render(<Harness />);
@@ -136,8 +145,28 @@ describe('update-available notice', () => {
           name: 'Beta 0.1.0-beta.9 available',
         }),
       ).toBeTruthy();
-      expect(screen.getByText('Update available')).toBeTruthy();
+      expect(
+        screen.queryByRole('button', { name: 'Check for Updates' }),
+      ).toBeNull();
+      expect(screen.queryByText('Update available')).toBeNull();
       expect(check).toHaveBeenCalledOnce();
+
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: 'Dismiss 0.1.0-beta.9 update notice',
+        }),
+      );
+      expect(screen.queryByRole('link', { name: /available/ })).toBeNull();
+      expect(screen.queryByText('Update available')).toBeNull();
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      );
+      expect(
+        await screen.findByRole('link', {
+          name: 'Beta 0.1.0-beta.9 available',
+        }),
+      ).toBeTruthy();
+      expect(check).toHaveBeenCalledTimes(2);
     });
 
     it('does not let an older background response overwrite a manual result', async () => {
@@ -245,5 +274,75 @@ describe('update-available notice', () => {
       );
       expect(await screen.findByText('Installed builds only')).toBeTruthy();
     });
+  });
+
+  describe('update status controls', () => {
+    const props: StatusBarProps = {
+      activity: 'Ready',
+      busy: false,
+      error: null,
+      serverProfile: null,
+      uploadsRemaining: 0,
+      sourcesNeedingAttention: 0,
+      appInfo: null,
+      onCheckForUpdates: vi.fn(),
+    };
+
+    it('restores manual checking when a release is no longer available', () => {
+      const { rerender } = render(
+        <StatusBar
+          {...props}
+          availableRelease={beta9.available}
+          updateCheck={{ kind: 'available', version: '0.1.0-beta.9' }}
+        />,
+      );
+      expect(screen.getByRole('link', { name: /available/ })).toBeTruthy();
+      expect(
+        screen.queryByRole('button', { name: 'Check for Updates' }),
+      ).toBeNull();
+      rerender(
+        <StatusBar
+          {...props}
+          availableRelease={null}
+          updateCheck={{ kind: 'available', version: '0.1.0-beta.9' }}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: 'Check for Updates' }),
+      ).toBeTruthy();
+      expect(screen.queryByText('Update available')).toBeNull();
+    });
+
+    it.each([
+      [{ kind: 'checking' }, 'Checking…'],
+      [{ kind: 'failed' }, 'Check failed'],
+      [{ kind: 'unavailable' }, 'Installed builds only'],
+      [{ kind: 'upToDate', version: '0.1.0-beta.8' }, 'Up to date'],
+    ] as const)(
+      'preserves %s feedback with and without an available release',
+      (updateCheck, message) => {
+        const { rerender } = render(
+          <StatusBar {...props} updateCheck={updateCheck} />,
+        );
+        const button = screen.getByRole<HTMLButtonElement>('button', {
+          name: 'Check for Updates',
+        });
+        expect(button.disabled).toBe(updateCheck.kind === 'checking');
+        expect(screen.getByText(message)).toBeTruthy();
+
+        rerender(
+          <StatusBar
+            {...props}
+            updateCheck={updateCheck}
+            availableRelease={beta9.available}
+          />,
+        );
+        expect(screen.getByRole('link', { name: /available/ })).toBeTruthy();
+        expect(
+          screen.queryByRole('button', { name: 'Check for Updates' }),
+        ).toBeNull();
+        expect(screen.getByText(message)).toBeTruthy();
+      },
+    );
   });
 });

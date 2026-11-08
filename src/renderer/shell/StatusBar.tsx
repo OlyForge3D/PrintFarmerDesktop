@@ -11,7 +11,8 @@ function updateCheckMessage(state: UpdateCheckState): string {
     case 'checking':
       return 'Checking…';
     case 'available':
-      return 'Update available';
+      // The release notice owns availability, including its dismissal.
+      return '';
     case 'upToDate':
       return 'Up to date';
     case 'failed':
@@ -57,6 +58,8 @@ export function StatusBar({
   onCheckForUpdates,
   updateCheck = { kind: 'idle' },
 }: StatusBarProps): React.JSX.Element {
+  const checkMessage = updateCheckMessage(updateCheck);
+
   return (
     <footer className="app-statusbar" aria-label="Application status">
       <span className="status-activity" role="status" aria-busy={busy}>
@@ -96,7 +99,11 @@ export function StatusBar({
       </span>
 
       {availableRelease ? (
-        <span className="status-item status-item--update">
+        <span
+          className="status-item status-item--update"
+          role="status"
+          aria-live="polite"
+        >
           <a href={availableRelease.url} target="_blank" rel="noreferrer">
             {availableRelease.prerelease ? 'Beta' : 'Update'}{' '}
             {availableRelease.version} available
@@ -114,18 +121,20 @@ export function StatusBar({
         </span>
       ) : null}
 
-      {onCheckForUpdates ? (
+      {onCheckForUpdates && (!availableRelease || checkMessage) ? (
         <span className="status-item status-item--check">
-          <button
-            type="button"
-            className="status-item-dismiss"
-            onClick={onCheckForUpdates}
-            disabled={updateCheck.kind === 'checking'}
-          >
-            Check for Updates
-          </button>
+          {!availableRelease ? (
+            <button
+              type="button"
+              className="status-item-dismiss"
+              onClick={onCheckForUpdates}
+              disabled={updateCheck.kind === 'checking'}
+            >
+              Check for Updates
+            </button>
+          ) : null}
           <span role="status" aria-live="polite">
-            {updateCheckMessage(updateCheck)}
+            {checkMessage}
           </span>
         </span>
       ) : null}
