@@ -74,10 +74,10 @@ exercised in CI.
 ## macOS installer artwork
 
 The drag-to-install DMG uses `assets/dmg/background.svg` as its editable source.
-On macOS, run `npx electron scripts/generate-dmg-background.mjs` to regenerate
+On macOS, run `npm run generate:dmg-background` to regenerate
 the committed 680 x 460 PNG and its double-resolution `@2x` sibling. Appdmg
 combines those into a Retina TIFF when building the installer. Use
-`--preview-dir /absolute/path` to also save a composed preview with icons and
+`npm run generate:dmg-background -- --preview-dir /absolute/path` to also save a composed preview with icons and
 labels; this is illustrative, not a Finder screenshot.
 
 Keep the artwork's icon centers and dimensions aligned with the `MakerDMG`

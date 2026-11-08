@@ -41,6 +41,12 @@ describe('application icon packaging', () => {
       path.join(repoRoot, 'assets', 'dmg', 'background.png'),
     );
     expect(config.iconSize).toBe(96);
+    const { scripts } = JSON.parse(
+      readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(scripts['generate:dmg-background']).toBe(
+      'electron scripts/generate-dmg-background.mjs',
+    );
     expect(config.additionalDMGOptions?.window?.size).toEqual({
       width: 680,
       height: 460,

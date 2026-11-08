@@ -1,4 +1,4 @@
-// Run on macOS: npx electron scripts/generate-dmg-background.mjs
+// Run on macOS: npm run generate:dmg-background
 // Optional: --preview-dir /absolute/path for a composed layout (not Finder).
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
