@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -125,7 +126,7 @@ function readJson(path) {
 }
 
 export function buildBaseline(root = process.cwd()) {
-  root = resolve(root);
+  root = realpathSync(resolve(root));
   const head = git(root, ['rev-parse', '--verify', 'HEAD^{commit}']);
   const rendererPaths = allRendererPaths(root);
   const targets = designSurfacePaths(rendererPaths).sort(compare);

@@ -225,7 +225,7 @@ describe('running the vendored detector', () => {
   let root: string;
 
   beforeAll(() => {
-    root = mkdtempSync(path.join(tmpdir(), 'design-detector-'));
+    root = realpathSync(mkdtempSync(path.join(tmpdir(), 'design-detector-')));
     cpSync(path.join(repoRoot, DETECTOR_DIR), path.join(root, DETECTOR_DIR), {
       recursive: true,
     });

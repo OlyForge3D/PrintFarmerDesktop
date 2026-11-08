@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,8 +21,8 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let fixture: string;
 let base: string;
 
-function command(program: string, args: string[]) {
-  return spawnSync(program, args, { cwd: fixture, encoding: 'utf8' });
+function command(program: string, args: string[], env = process.env) {
+  return spawnSync(program, args, { cwd: fixture, encoding: 'utf8', env });
 }
 function git(...args: string[]) {
   const result = command('git', args);
@@ -93,6 +94,26 @@ beforeEach(() => {
 afterEach(() => rmSync(fixture, { recursive: true, force: true }));
 
 describe('design count ratchet', () => {
+  it('scans findings when the temporary directory uses a filesystem alias', () => {
+    const temp = path.join(fixture, 'temp');
+    const alias = path.join(fixture, 'temp-alias');
+    mkdirSync(temp);
+    symlinkSync(temp, alias, 'junction');
+    writeFileSync(
+      path.join(fixture, 'src/renderer/Test.tsx'),
+      'export const A = () => <img alt="missing" />;\n',
+    );
+    const head = commit('finding');
+    const result = command(
+      process.execPath,
+      ['scripts/design-ratchet.mjs', fixture, base, head, fixture],
+      { ...process.env, TMPDIR: alias, TMP: alias, TEMP: alias },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/total \([1-9]\d* blocking/);
+    expect(result.stderr).not.toContain('Finding outside target scope');
+  });
+
   it('uses a trusted event and fetches target objects without checking them out', () => {
     const workflow = readFileSync(
       path.join(repo, '.github/workflows/design-ratchet.yml'),

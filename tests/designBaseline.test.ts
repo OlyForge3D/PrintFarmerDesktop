@@ -97,11 +97,25 @@ beforeEach(() => {
     '-qm',
     'fixture',
   ]);
-});
+}, 30_000);
 
 afterEach(() => rmSync(fixture, { recursive: true, force: true }));
 
 describe('full-source design baseline', () => {
+  it('accepts a repository root reached through a filesystem alias', () => {
+    const alias = path.join(fixture, 'root-alias');
+    symlinkSync(fixture, alias, 'junction');
+    const result = command(process.execPath, [
+      '--input-type=module',
+      '-e',
+      'import { buildBaseline } from "./scripts/design-baseline.mjs"; console.log(JSON.stringify(buildBaseline(process.argv[1]).counts));',
+      alias,
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    const counts = JSON.parse(result.stdout) as BaselineReport['counts'];
+    expect(counts.blocking).toBeGreaterThan(0);
+  });
+
   it('enumerates tracked eligible sources, reports real findings, and is stable', () => {
     writeFileSync(path.join(fixture, 'src/renderer/Untracked.tsx'), '<div />');
     const first = baseline();

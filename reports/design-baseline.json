@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "purpose": "Observed source findings, not approval, certification, or a regression gate.",
-  "inspectedCommit": "0ebf18cafc17766373eaf557d828e96330c8e8cc",
+  "inspectedCommit": "9b7affb8aa5eeaf18424a15a7c837ab09d205e80",
   "provenance": {
     "node": "v24.13.1",
     "detector": {
@@ -39,9 +39,9 @@
       "DESIGN.md": "891b744d4cec75f8a0d842a739b45ddc5b6c2a03a3392294c22d83c6bec91a11",
       "index.html": "110488cc8ff92304bfddc67facd50b0757982c298192bd86ce919ceec1cea622",
       "package-lock.json": "af90c515c4006739fc7087bb1c9dc49f5156932b6fa4ca6a6c6987ebbeb66ab5",
-      "scripts/design-baseline.mjs": "8fcb12dace3694da4ddb9512486f8ebc30dfd212a2e20a3c018db270dcafb086",
+      "scripts/design-baseline.mjs": "fd5e3addedc32d62bb25d0d6f5fc92f9f8a46db0bdb525468c0518f70ead3c14",
       "scripts/design-detector.mjs": "726f88d74df216be4240640f8737045f1943191f5670669f5d719b5641fae8e5",
-      "scripts/design-ratchet.mjs": "ecbf9ef4c24773653c95a8d6289c82ffea04f2d909d6099c361151cc1e0095ab",
+      "scripts/design-ratchet.mjs": "2b04547d9774a8d3bf6005f0c2fbe5e671a5f9dd3f8de498e600a33c9c7361bd",
       "scripts/design-surface.mjs": "c2df93e9486c5a9004af27e76ae28d801ff501d0d5e5da01ace3264ab4dfed29",
       "src/renderer/App.tsx": "7887cda9d945b5fa57e7861cf1a8ba2d89db31afc9b42a34c7ae7a704a8ab9fa",
       "src/renderer/calibration/CalibrationConflictDialog.css": "478734a7de8d60a9cdeb411973d7feae733fed9d6fddfba2af80e8b8bd98bae4",
@@ -130,15 +130,10 @@
       "tools/impeccable-detector/manifest.json": "bd914aaa7648163b955271f73408137f2f3ab12867c6c9c42693bb5530e05b8d"
     },
     "trackedInputsChangedFromCommit": [
-      "package-lock.json",
-      "scripts/design-detector.mjs",
-      "scripts/design-surface.mjs",
-      "tools/impeccable-detector/manifest.json"
-    ],
-    "untrackedInputs": [
       "scripts/design-baseline.mjs",
       "scripts/design-ratchet.mjs"
     ],
+    "untrackedInputs": [],
     "localConfig": "absent",
     "effectiveConfig": {
       "ignoreRules": [],

@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -300,7 +301,7 @@ export function scanRatchet(repo, base, head, toolRoot) {
   const targets = designSurfacePaths([...headTree.keys()]).sort(compare);
   if (!targets.includes('index.html'))
     throw new Error('Missing root index.html');
-  const temp = mkdtempSync(resolve(tmpdir(), 'design-ratchet-'));
+  const temp = realpathSync(mkdtempSync(resolve(tmpdir(), 'design-ratchet-')));
   try {
     for (const [file] of baseTree) {
       if (policyPath(file)) put(temp, file, blob(repo, baseTree, file));
