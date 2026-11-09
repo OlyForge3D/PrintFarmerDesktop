@@ -60,7 +60,8 @@ directory reads and hashing. This also prevents hydration when content is
 evicted after metadata inspection; the documented `EDEADLK` materialization
 denial is an expected cloud skip. Policy setup/restoration failures are surfaced
 rather than silently enabling downloads. A failed scan report keeps previously
-collected skipped-path details alongside its fatal `failure`; the renderer shows
+collected skipped-path details, including cloud skips discovered during hashing
+before a policy restore failure, alongside its fatal `failure`; the renderer shows
 both the failure and those diagnostics without recording a successful scan or
 mutating the catalog. A later scan of another root remains independently usable.
 Explicit viewer operations are not

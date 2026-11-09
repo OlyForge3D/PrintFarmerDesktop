@@ -45,13 +45,21 @@ pub(crate) fn without_materialization<T>(
     {
         let mut guard = macos::PolicyGuard::enter()?;
         let outcome = operation();
-        guard.restore()?;
-        outcome
+        restore_policy_outcome(outcome, || guard.restore())
     }
     #[cfg(not(target_os = "macos"))]
     {
         operation()
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn restore_policy_outcome<T>(
+    outcome: io::Result<T>,
+    restore: impl FnOnce() -> io::Result<()>,
+) -> io::Result<T> {
+    restore()?;
+    outcome
 }
 
 #[cfg(target_os = "macos")]

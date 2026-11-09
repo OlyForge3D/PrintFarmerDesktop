@@ -1162,14 +1162,13 @@ pub fn reconcile_root<S: CatalogStore + ?Sized>(
         return failed_scan_report(scan, error.clone(), 0);
     }
     let staged = hash_changed_files(store, root_id, scan);
-    reconcile_staged(store, root_id, scan, staged)
+    reconcile_staged(store, root_id, staged)
 }
 
 fn reconcile_staged<S: CatalogStore + ?Sized>(
     store: &mut S,
     root_id: &str,
-    scan: &ScanResult,
-    staged: std::io::Result<StagedHashes>,
+    staged: Result<StagedHashes, HashStageFailure>,
 ) -> ReconcileReport {
     match staged {
         Ok(staged) => {
@@ -1180,7 +1179,7 @@ fn reconcile_staged<S: CatalogStore + ?Sized>(
         }
         Err(error) => {
             eprintln!("failed to reconcile without downloading files: {error}");
-            failed_scan_report(scan, error.to_string(), 1)
+            failed_scan_report(&error.scan, error.to_string(), 1)
         }
     }
 }
@@ -1203,10 +1202,19 @@ fn failed_scan_report(
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct StagedHashes {
     pub hashes: HashMap<PathBuf, ContentHash>,
     pub errors: usize,
     pub scan: ScanResult,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub(crate) struct HashStageFailure {
+    #[source]
+    error: std::io::Error,
+    scan: Box<ScanResult>,
 }
 
 /// Stage hashes without catalog mutation. Expected dataless failures remove
@@ -1215,21 +1223,35 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
     store: &S,
     root_id: &str,
     scan: &ScanResult,
-) -> std::io::Result<StagedHashes> {
-    crate::file_availability::without_materialization(|| {
-        stage_hashes(store, root_id, scan, |paths| {
-            crate::archive::hash_sources_with_limit(paths, scan.max_archive_bytes)
+) -> Result<StagedHashes, HashStageFailure> {
+    let max_archive_bytes = scan.max_archive_bytes;
+    retain_hash_diagnostics(scan, |scan| {
+        crate::file_availability::without_materialization(|| {
+            stage_hashes(store, root_id, scan, |paths| {
+                crate::archive::hash_sources_with_limit(paths, max_archive_bytes)
+            })
         })
+    })
+}
+
+fn retain_hash_diagnostics(
+    scan: &ScanResult,
+    operation: impl FnOnce(&mut ScanResult) -> std::io::Result<StagedHashes>,
+) -> Result<StagedHashes, HashStageFailure> {
+    // Policy restoration can discard the hashes, but must not discard diagnostics.
+    let mut scan = scan.clone();
+    operation(&mut scan).map_err(|error| HashStageFailure {
+        error,
+        scan: Box::new(scan),
     })
 }
 
 fn stage_hashes<S: CatalogStore + ?Sized>(
     store: &S,
     root_id: &str,
-    scan: &ScanResult,
+    scan: &mut ScanResult,
     hash_sources: impl FnOnce(&[PathBuf]) -> Vec<(PathBuf, std::io::Result<ContentHash>)>,
 ) -> std::io::Result<StagedHashes> {
-    let mut scan = scan.clone();
     let mut hashes = HashMap::new();
     let mut errors = 0;
     let mut changed_paths = Vec::new();
@@ -1297,7 +1319,7 @@ fn stage_hashes<S: CatalogStore + ?Sized>(
     Ok(StagedHashes {
         hashes,
         errors,
-        scan,
+        scan: scan.clone(),
     })
 }
 
@@ -3826,10 +3848,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("cloud.stl"), b"cloud");
         write(&dir.path().join("local.stl"), b"local");
-        let scan = scan(dir.path());
+        let mut scan = scan(dir.path());
         let store = InMemoryCatalog::new();
         let staged = crate::file_availability::without_materialization(|| {
-            stage_hashes(&store, "root", &scan, |paths| {
+            stage_hashes(&store, "root", &mut scan, |paths| {
                 paths
                     .iter()
                     .map(|path| {
@@ -3862,7 +3884,7 @@ mod tests {
         write(&dir.path().join("denied.stl"), b"denied");
         write(&dir.path().join("local.stl"), b"local");
         let store = InMemoryCatalog::new();
-        let staged = stage_hashes(&store, "root", &scan(dir.path()), |paths| {
+        let staged = stage_hashes(&store, "root", &mut scan(dir.path()), |paths| {
             paths
                 .iter()
                 .map(|path| {
@@ -3943,8 +3965,10 @@ mod tests {
         let report = reconcile_staged(
             &mut store,
             "root",
-            &scan,
-            Err(std::io::Error::other(failure)),
+            Err(HashStageFailure {
+                error: std::io::Error::other(failure),
+                scan: Box::new(scan.clone()),
+            }),
         );
         assert_eq!(report.failure.as_deref(), Some(failure));
         assert_eq!(report.added + report.changed + report.unchanged, 0);
@@ -3954,6 +3978,70 @@ mod tests {
         assert!(store.models().is_empty());
         let wire = serde_json::to_value(crate::rpc::ReconcileReportDto::from(&report)).unwrap();
         assert_eq!(wire["failure"], failure);
+        assert_eq!(
+            wire["scanIssues"][0]["path"],
+            cloud.to_string_lossy().as_ref()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hash_time_cloud_skip_survives_policy_restore_failure_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = dir.path().join("cloud.stl");
+        write(&cloud, b"cloud");
+        write(&dir.path().join("local.stl"), b"local");
+        let scan = scan(dir.path());
+        assert!(scan.cloud_files.is_empty());
+        assert!(scan.scan_issues.is_empty());
+        let mut store = InMemoryCatalog::new();
+        let failure = "could not restore dataless materialization policy";
+        let staged = retain_hash_diagnostics(&scan, |scan| {
+            let outcome = crate::file_availability::without_materialization(|| {
+                let staged = stage_hashes(&store, "root", scan, |paths| {
+                    paths
+                        .iter()
+                        .map(|path| {
+                            let result = if path == &cloud {
+                                Err(std::io::Error::from_raw_os_error(11))
+                            } else {
+                                crate::hash::hash_file(path)
+                            };
+                            (path.clone(), result)
+                        })
+                        .collect()
+                })?;
+                assert_eq!(staged.hashes.len(), 1);
+                assert_eq!(staged.scan.cloud_files, vec![cloud.clone()]);
+                Ok(staged)
+            });
+            crate::file_availability::restore_policy_outcome(outcome, || {
+                Err(std::io::Error::other(failure))
+            })
+        });
+        assert!(staged.is_err());
+        let report = reconcile_staged(&mut store, "root", staged);
+        assert_eq!(report.failure.as_deref(), Some(failure));
+        assert_eq!(
+            report.added + report.changed + report.unchanged + report.missing,
+            0
+        );
+        assert_eq!(report.cloud_files_skipped, 1);
+        assert_eq!(report.skipped_entries.cloud_only, 1);
+        assert_eq!(report.scan_errors, 1);
+        assert_eq!(report.hash_errors, 0);
+        assert_eq!(report.scan_issues.len(), 1);
+        assert_eq!(report.scan_issues[0].path, cloud.to_string_lossy());
+        assert_eq!(
+            report.scan_issues[0].reason,
+            crate::scan::ScanIssueReason::CloudOnly
+        );
+        assert!(store.models().is_empty());
+        assert!(store.get_location("root", &cloud).is_none());
+        let wire = serde_json::to_value(crate::rpc::ReconcileReportDto::from(&report)).unwrap();
+        assert_eq!(wire["failure"], failure);
+        assert_eq!(wire["cloudFilesSkipped"], 1);
+        assert_eq!(wire["skippedEntries"]["cloudOnly"], 1);
         assert_eq!(
             wire["scanIssues"][0]["path"],
             cloud.to_string_lossy().as_ref()
