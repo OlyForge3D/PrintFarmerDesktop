@@ -56,10 +56,20 @@ describe('shell navigation', () => {
     expect(
       screen.queryByRole('heading', { name: 'Thumbnail cache' }),
     ).toBeNull();
-    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+    const sidebar = screen.getByRole('complementary', {
+      name: 'Library navigation',
+    });
+    expect(within(sidebar).queryByText('Sources')).not.toBeInTheDocument();
+    expect(
+      within(sidebar).queryByRole('button', { name: 'Add folder' }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
     const settings = await screen.findByRole('main', { name: 'Settings' });
+    expect(
+      within(settings).getByRole('button', { name: 'Add source folder' }),
+    ).toBeEnabled();
+    expect(within(settings).getByLabelText('Catalog summary')).toBeVisible();
     expect(
       within(settings).getByRole('heading', {
         name: 'Source folders',
@@ -231,8 +241,7 @@ describe('shell navigation', () => {
   /*
    * The onboarding nudge appears on exactly the runs that have no source roots
    * yet. Locking the rail behind it would strand a first run on the one place
-   * that cannot help, and it would narrow the #222 escape path that the old
-   * sidebar button deliberately kept open.
+   * that cannot help. Settings must remain reachable for source management.
    */
   it('keeps the rail usable while the onboarding nudge is open, and answers it', async () => {
     installApi({ listModels: vi.fn().mockResolvedValue([]) });

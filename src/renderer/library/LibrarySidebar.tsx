@@ -9,7 +9,6 @@ import {
 } from 'react';
 import type { Collection, Tag } from '@shared/ipc';
 import type { FilterKey } from './filter';
-import type { SourceRootSummary } from './sourceRoots';
 import { Icon, type IconName } from '../ui/Icon';
 
 export const FILTER_LABELS: Record<FilterKey, string> = {
@@ -29,12 +28,8 @@ export interface LibrarySidebarProps {
   query: string;
   filter: FilterKey;
   counts: LibraryCounts;
-  scanningFolder: string | null;
-  busy: boolean;
-  sourceRoots: SourceRootSummary[];
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterKey) => void;
-  onAddFolder: () => void;
   collections?: Collection[];
   selectedCollections?: readonly string[];
   onCollectionsChange?: (ids: string[]) => void;
@@ -69,12 +64,8 @@ export function LibrarySidebar({
   query,
   filter,
   counts,
-  scanningFolder,
-  busy,
-  sourceRoots,
   onQueryChange,
   onFilterChange,
-  onAddFolder,
   collections = [],
   selectedCollections = [],
   onCollectionsChange,
@@ -180,20 +171,6 @@ export function LibrarySidebar({
             Tag and collection scopes are combined.
           </p>
         ) : null}
-
-        <div className="sidebar-sources">
-          <p className="sidebar-section-label">Sources</p>
-          <SourceHealth roots={sourceRoots} scanningFolder={scanningFolder} />
-          <button
-            type="button"
-            className="sidebar-primary-action"
-            onClick={onAddFolder}
-            disabled={busy}
-          >
-            <Icon name="folder" />
-            <span>{scanningFolder ? 'Scanning...' : 'Add folder'}</span>
-          </button>
-        </div>
       </aside>
     </SidebarResizer>
   );
@@ -348,44 +325,6 @@ function NavigationSection({
         ))}
       </ul>
     </section>
-  );
-}
-
-function SourceHealth({
-  roots,
-  scanningFolder,
-}: {
-  roots: SourceRootSummary[];
-  scanningFolder: string | null;
-}): React.JSX.Element {
-  const attentionCount = roots.filter(
-    (root) => root.status !== 'available',
-  ).length;
-  const availableCount = roots.length - attentionCount;
-  const headline = scanningFolder
-    ? `Scanning ${scanningFolder}`
-    : roots.length === 0
-      ? 'No source folders'
-      : attentionCount > 0
-        ? `${attentionCount} ${attentionCount === 1 ? 'source needs' : 'sources need'} attention`
-        : `${roots.length} ${roots.length === 1 ? 'source' : 'sources'} healthy`;
-  const detail =
-    roots.length === 0
-      ? 'Add a folder to index local model files.'
-      : `${availableCount} available · ${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`;
-  return (
-    <div className="sidebar-source-health" role="status" aria-live="polite">
-      <span
-        className={`source-root-dot ${
-          attentionCount > 0 ? 'missing' : roots.length > 0 ? 'available' : ''
-        }`}
-        aria-hidden="true"
-      />
-      <span>
-        <strong>{headline}</strong>
-        <small>{detail}</small>
-      </span>
-    </div>
   );
 }
 

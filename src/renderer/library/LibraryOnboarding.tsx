@@ -112,8 +112,8 @@ export function LibraryOnboarding({
               <div>
                 <strong>Manage your folders</strong>
                 <span>
-                  Add folders from the library, or manage connected folders in
-                  Settings whenever you need.
+                  Add more folders or manage connected folders in Settings
+                  whenever you need.
                 </span>
               </div>
             </li>
