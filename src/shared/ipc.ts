@@ -750,6 +750,7 @@ export const ImportPreviewResponse = z.object({
   foldersTruncated: z.boolean(),
   foldersTotal: z.number().int().nonnegative().optional(),
   nextFolderOffset: z.number().int().nonnegative().optional(),
+  previewId: z.string().min(1).max(128).optional(),
   organization: z
     .object({
       affectedModels: z.number().int().nonnegative(),
@@ -836,6 +837,7 @@ export const ImportPreviewRequest = z
   .object({
     approvalId: z.string().uuid(),
     folderOffset: z.number().int().nonnegative().optional(),
+    previewId: z.string().min(1).max(128).optional(),
     rules: z.array(ImportRule).max(1000).optional(),
     commonTags: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
     policies: z.array(ImportPolicy).max(1000).optional(),

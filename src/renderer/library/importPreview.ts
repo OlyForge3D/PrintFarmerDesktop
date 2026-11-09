@@ -12,7 +12,7 @@ export async function previewAllImportFolders(
   let offset = 0;
   while (page.foldersTruncated) {
     const next = page.nextFolderOffset;
-    if (next === undefined || next <= offset) {
+    if (next === undefined || next <= offset || !first.previewId) {
       throw new Error(
         'Folder discovery is incomplete. Update the sidecar and retry the scan.',
       );
@@ -21,9 +21,11 @@ export async function previewAllImportFolders(
     page = await window.printFarmer.previewImport({
       ...request,
       folderOffset: offset,
+      previewId: first.previewId,
     });
     if (
       !page.complete ||
+      page.previewId !== first.previewId ||
       page.foldersTotal !== first.foldersTotal ||
       page.modelCount !== first.modelCount
     ) {

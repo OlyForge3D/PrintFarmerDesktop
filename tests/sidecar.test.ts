@@ -767,6 +767,7 @@ describe('SidecarClient', () => {
 
     const options = {
       folderOffset: 500,
+      previewId: 'snapshot-1',
       policies: [
         {
           relativePath: 'Miniatures',

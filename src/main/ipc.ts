@@ -1464,6 +1464,7 @@ export function registerIpcHandlers(
       const approvedPath = await approvals.resolve(request.approvalId);
       const raw = await sidecar.previewImport(approvedPath, {
         folderOffset: request.folderOffset,
+        previewId: request.previewId,
         rules: request.rules,
         commonTags: request.commonTags,
         policies: request.policies,

@@ -323,7 +323,13 @@ describe('folder import policy forwarding', () => {
   const policies = [{ relativePath: 'Miniatures', mode: 'disabled', tags: [] }];
 
   it('authorizes discovery pages and forwards the full preview policy set', async () => {
-    const options = { folderOffset: 500, policies, rules: [], commonTags: [] };
+    const options = {
+      folderOffset: 500,
+      previewId: 'snapshot-1',
+      policies,
+      rules: [],
+      commonTags: [],
+    };
     const denied = harness();
     await expect(
       denied.handlers.get(IpcChannel.PreviewImport)!(

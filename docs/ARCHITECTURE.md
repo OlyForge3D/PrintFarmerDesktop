@@ -40,7 +40,12 @@ generate automatic tags. Corrupt recipes block confirmation rather than
 silently replacing user choices.
 
 Folder discovery is paged in batches of at most 500, with total and next-offset
-fields. The renderer assembles the hierarchy separately from the visible,
+fields. Truncated previews return a `previewId` for a single scan snapshot;
+subsequent pages must reuse that ID with the same approved path and options,
+avoiding repeated filesystem traversal and organization evaluation. The sidecar
+bounds snapshots to four entries / 32 MiB with a 120-second lifetime. Missing,
+expired, evicted, or mismatched IDs fail closed and require a new preview.
+The renderer assembles the hierarchy separately from the visible,
 collapsed tree. Native policy preview and import evaluate every discovered file
 independently of these pages. Preview does no content hashing: affected and
 unmatched counts describe file locations; actual import deduplicates by hash.

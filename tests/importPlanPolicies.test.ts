@@ -303,12 +303,14 @@ describe('full folder discovery paging', () => {
         foldersTotal: 602,
         foldersTruncated: true,
         nextFolderOffset: 500,
+        previewId: 'snapshot-1',
       })
       .mockResolvedValueOnce({
         ...preview,
         folders: folders.slice(500),
         foldersTotal: 602,
         foldersTruncated: false,
+        previewId: 'snapshot-1',
       });
     Object.defineProperty(window, 'printFarmer', {
       configurable: true,
@@ -320,6 +322,7 @@ describe('full folder discovery paging', () => {
     expect(api.mock.calls[1]?.[0]).toEqual({
       approvalId: 'approval',
       folderOffset: 500,
+      previewId: 'snapshot-1',
     });
     expect(result.foldersTruncated).toBe(false);
   });
@@ -342,8 +345,42 @@ describe('full folder discovery paging', () => {
         foldersTotal: 502,
         foldersTruncated: true,
         nextFolderOffset: 500,
+        previewId: 'snapshot-1',
       })
-      .mockResolvedValueOnce({ ...preview, foldersTotal: 503 });
+      .mockResolvedValueOnce({
+        ...preview,
+        foldersTotal: 503,
+        previewId: 'snapshot-1',
+      });
+    await expect(
+      previewAllImportFolders({ approvalId: 'approval' }),
+    ).rejects.toThrow('changed');
+  });
+
+  it('rejects missing or changed snapshot identity instead of mixing scans', async () => {
+    const first = {
+      ...preview,
+      foldersTotal: 502,
+      foldersTruncated: true,
+      nextFolderOffset: 500,
+    };
+    const api = vi.fn().mockResolvedValue(first);
+    Object.defineProperty(window, 'printFarmer', {
+      configurable: true,
+      value: { previewImport: api },
+    });
+    await expect(
+      previewAllImportFolders({ approvalId: 'approval' }),
+    ).rejects.toThrow('incomplete');
+    expect(api).toHaveBeenCalledTimes(1);
+    api
+      .mockReset()
+      .mockResolvedValueOnce({ ...first, previewId: 'snapshot-1' })
+      .mockResolvedValueOnce({
+        ...preview,
+        foldersTotal: 502,
+        previewId: 'snapshot-2',
+      });
     await expect(
       previewAllImportFolders({ approvalId: 'approval' }),
     ).rejects.toThrow('changed');

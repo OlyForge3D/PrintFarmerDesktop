@@ -63,6 +63,7 @@ export function ImportWizard({
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
   const importButtonRef = useRef<HTMLButtonElement | null>(null);
+  const folderEditorRef = useRef<HTMLElement | null>(null);
   const wasBusyRef = useRef(false);
   const previewRequestRef = useRef(0);
   const completedPreviewKeyRef = useRef<string | null>(null);
@@ -134,6 +135,39 @@ export function ImportWizard({
       folder.collectionTargetUnresolved,
   );
   const validationError = policyValidationError(choices);
+  const folderValidationIssues = useMemo(() => {
+    const isolatedChoices: ImportChoices = {
+      ...choices,
+      folders: [],
+      policies: [],
+      legacyRules: [],
+      legacyIgnoredPaths: [],
+    };
+    delete isolatedChoices.recipeError;
+    const issues = new Map<string, string>();
+    for (const folder of choices.folders) {
+      const message = policyValidationError({
+        ...isolatedChoices,
+        folders: [folder],
+      });
+      if (message) issues.set(folder.relativePath, message);
+    }
+    const visiblePaths = new Set(
+      choices.folders.map((folder) => folder.relativePath),
+    );
+    for (const policy of choices.policies) {
+      if (visiblePaths.has(policy.relativePath)) continue;
+      const message = policyValidationError({
+        ...isolatedChoices,
+        policies: [policy],
+      });
+      if (message) issues.set(policy.relativePath, message);
+    }
+    return issues;
+  }, [choices]);
+  const selectedFolderValidationError = selectedFolder
+    ? folderValidationIssues.get(selectedFolder.relativePath)
+    : undefined;
   const canCopyFolderPolicy =
     selectedFolder !== undefined &&
     (selectedFolder.mode === 'collection' ||
@@ -350,6 +384,25 @@ export function ImportWizard({
     setSelectedPaths(new Set());
   };
 
+  const inspectInvalidFolder = (relativePath: string): void => {
+    const expanded = new Set(expandedPaths);
+    let ancestor = relativePath;
+    while (ancestor.includes('/')) {
+      ancestor = ancestor.slice(0, ancestor.lastIndexOf('/'));
+      expanded.add(ancestor);
+    }
+    const revealedFolders = visibleFolderTree(folderTree, expanded);
+    const index = revealedFolders.findIndex(
+      ({ folder }) => folder.relativePath === relativePath,
+    );
+    setExpandedPaths(expanded);
+    setFolderPage(Math.max(0, Math.floor(index / folderPageSize)));
+    setSelectedFolderPath(relativePath);
+    window.requestAnimationFrame(() =>
+      folderEditorRef.current?.querySelector<HTMLElement>('select')?.focus(),
+    );
+  };
+
   const setFolderSelected = (path: string, selected: boolean): void => {
     setSelectedPaths((current) => {
       const next = new Set(current);
@@ -553,6 +606,42 @@ export function ImportWizard({
                   legacy rules/ignores
                 </span>
               </div>
+              {validationError && !choices.recipeError ? (
+                <div
+                  className="import-policy-alert"
+                  role="alert"
+                  aria-label="Source organization errors"
+                >
+                  <strong>Import blocked: review source organization</strong>
+                  {folderValidationIssues.size ? (
+                    <ul>
+                      {[...folderValidationIssues].map(([path, message]) => (
+                        <li key={path}>
+                          <span>
+                            <strong>{path || 'Source folder'}</strong>:{' '}
+                            {message}
+                          </span>{' '}
+                          {foldersByPath.has(path) ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => inspectInvalidFolder(path)}
+                            >
+                              Review policy for {path}
+                            </button>
+                          ) : (
+                            <span>
+                              Saved policy for a folder absent from this scan.
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <span>{validationError}</span>
+                  )}
+                </div>
+              ) : null}
               {choices.recipeError ? (
                 <div className="import-policy-alert" role="alert">
                   <strong>Saved organization choices need attention</strong>
@@ -674,7 +763,12 @@ export function ImportWizard({
                       >
                         Previous 100
                       </button>
-                      <span>
+                      <span
+                        role="status"
+                        aria-label="Folder page"
+                        aria-live="polite"
+                        aria-atomic="true"
+                      >
                         Showing{' '}
                         {visibleFolders.length
                           ? (
@@ -687,7 +781,8 @@ export function ImportWizard({
                           (currentFolderPage + 1) * folderPageSize,
                           visibleFolders.length,
                         ).toLocaleString()}{' '}
-                        of {visibleFolders.length.toLocaleString()} visible
+                        of {visibleFolders.length.toLocaleString()} visible ·
+                        Page {currentFolderPage + 1} of {folderPageCount}
                       </span>
                       <button
                         type="button"
@@ -785,6 +880,9 @@ export function ImportWizard({
                               </span>
                               <span className="import-policy-state">
                                 {context.label}
+                                {folderValidationIssues.has(folder.relativePath)
+                                  ? ' · Policy error'
+                                  : ''}
                               </span>
                             </div>
                           );
@@ -793,6 +891,7 @@ export function ImportWizard({
                     </div>
                   </div>
                   <section
+                    ref={folderEditorRef}
                     className="import-folder-editor"
                     aria-label={
                       selectedFolder
@@ -1095,9 +1194,10 @@ export function ImportWizard({
                             nearest configured ancestor policy, if any.
                           </p>
                         ) : null}
-                        {validationError ? (
+                        {selectedFolderValidationError ? (
                           <p className="import-field-error" role="alert">
-                            {validationError}
+                            Policy error for {selectedFolder.relativePath}:{' '}
+                            {selectedFolderValidationError}
                           </p>
                         ) : null}
                       </>

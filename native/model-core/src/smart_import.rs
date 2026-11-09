@@ -58,6 +58,7 @@ pub struct ImportPreview {
     pub folders_total: usize,
     pub folders_truncated: bool,
     pub next_folder_offset: Option<usize>,
+    pub preview_id: Option<String>,
     pub organization: Option<ImportOrganizationPreview>,
 }
 
@@ -66,7 +67,15 @@ pub fn preview_scan(scan: &ScanResult) -> ImportPreview {
 }
 
 pub fn preview_scan_page(scan: &ScanResult, folder_offset: usize) -> ImportPreview {
-    let mut folders = BTreeMap::<PathBuf, usize>::new();
+    let folders = preview_folders(scan);
+    preview_scan_page_from_folders(scan, folder_offset, &folders)
+}
+
+pub fn preview_scan_page_from_folders(
+    scan: &ScanResult,
+    folder_offset: usize,
+    folders: &[ImportFolder],
+) -> ImportPreview {
     let mut preview = ImportPreview {
         model_count: scan.files.len(),
         skipped_errors: scan.skipped_errors,
@@ -78,9 +87,13 @@ pub fn preview_scan_page(scan: &ScanResult, folder_offset: usize) -> ImportPrevi
         failure: scan.failure.clone(),
         archive_warnings: scan.archive_warnings.clone(),
         complete: !scan.cancelled && scan.failure.is_none(),
+        folders_total: folders.len(),
+        folders_truncated: folders.len().saturating_sub(folder_offset) > MAX_IMPORT_FOLDERS,
+        next_folder_offset: None,
+        folders: Vec::new(),
+        organization: None,
         ..ImportPreview::default()
     };
-
     for file in &scan.files {
         preview.total_bytes = preview.total_bytes.saturating_add(file.fingerprint.size);
         match file.format {
@@ -89,7 +102,43 @@ pub fn preview_scan_page(scan: &ScanResult, folder_offset: usize) -> ImportPrevi
             ModelFormat::Obj => preview.formats.obj += 1,
             ModelFormat::Step => preview.formats.step += 1,
         }
+    }
+    preview.next_folder_offset = preview
+        .folders_truncated
+        .then_some(folder_offset.saturating_add(MAX_IMPORT_FOLDERS));
+    preview.folders = folders
+        .iter()
+        .skip(folder_offset)
+        .take(MAX_IMPORT_FOLDERS)
+        .cloned()
+        .collect();
+    preview
+}
 
+pub fn preview_snapshot_page(
+    base: &ImportPreview,
+    folder_offset: usize,
+    folders: &[ImportFolder],
+) -> ImportPreview {
+    let mut preview = base.clone();
+    preview.folders_total = folders.len();
+    preview.folders_truncated = folders.len().saturating_sub(folder_offset) > MAX_IMPORT_FOLDERS;
+    preview.next_folder_offset = preview
+        .folders_truncated
+        .then_some(folder_offset.saturating_add(MAX_IMPORT_FOLDERS));
+    preview.folders = folders
+        .iter()
+        .skip(folder_offset)
+        .take(MAX_IMPORT_FOLDERS)
+        .cloned()
+        .collect();
+    preview
+}
+
+pub fn preview_folders(scan: &ScanResult) -> Vec<ImportFolder> {
+    let mut folders = BTreeMap::<PathBuf, usize>::new();
+
+    for file in &scan.files {
         let mut current = file.root_relative.parent();
         while let Some(folder) = current {
             if folder.as_os_str().is_empty() {
@@ -100,15 +149,8 @@ pub fn preview_scan_page(scan: &ScanResult, folder_offset: usize) -> ImportPrevi
         }
     }
 
-    preview.folders_total = folders.len();
-    preview.folders_truncated = folders.len().saturating_sub(folder_offset) > MAX_IMPORT_FOLDERS;
-    preview.next_folder_offset = preview
-        .folders_truncated
-        .then_some(folder_offset.saturating_add(MAX_IMPORT_FOLDERS));
-    preview.folders = folders
+    folders
         .into_iter()
-        .skip(folder_offset)
-        .take(MAX_IMPORT_FOLDERS)
         .filter_map(|(relative_path, model_count)| {
             let name = relative_path.file_name()?.to_string_lossy().into_owned();
             Some(ImportFolder {
@@ -118,8 +160,7 @@ pub fn preview_scan_page(scan: &ScanResult, folder_offset: usize) -> ImportPrevi
                 model_count,
             })
         })
-        .collect();
-    preview
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1567,6 +1608,34 @@ mod tests {
         assert_eq!(organization.affected_models, 1);
         assert_eq!(organization.samples[0].relative_path, paths[500]);
         assert_eq!(organization.new_tags, vec!["late"]);
+    }
+
+    #[test]
+    fn snapshot_paging_preserves_incomplete_scan_status() {
+        let folders: Vec<_> = (0..501)
+            .map(|index| ImportFolder {
+                relative_path: PathBuf::from(format!("folder-{index:04}")),
+                name: format!("folder-{index:04}"),
+                depth: 1,
+                model_count: 1,
+            })
+            .collect();
+        let base = ImportPreview {
+            complete: false,
+            skipped_errors: 1,
+            folders_total: folders.len(),
+            folders_truncated: true,
+            next_folder_offset: Some(MAX_IMPORT_FOLDERS),
+            ..ImportPreview::default()
+        };
+
+        let second_page = preview_snapshot_page(&base, MAX_IMPORT_FOLDERS, &folders);
+
+        assert!(!second_page.complete);
+        assert_eq!(second_page.skipped_errors, 1);
+        assert_eq!(second_page.folders.len(), 1);
+        assert_eq!(second_page.folders_total, 501);
+        assert!(!second_page.folders_truncated);
     }
 
     #[test]

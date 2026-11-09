@@ -135,6 +135,148 @@ afterEach(() => {
 });
 
 describe('folder policy tree and preview', () => {
+  it('locates invalid policies across pages without blaming the selected valid folder', async () => {
+    const invalidPath = 'Folder-105/Project';
+    const folders = Array.from({ length: 110 }, (_, index) => ({
+      relativePath: `Folder-${String(index).padStart(3, '0')}`,
+      name: `Folder-${String(index).padStart(3, '0')}`,
+      depth: 1,
+      modelCount: 1,
+    }));
+    folders.push({
+      relativePath: invalidPath,
+      name: 'Project',
+      depth: 2,
+      modelCount: 1,
+    });
+    localStorage.setItem(
+      recipeKey,
+      JSON.stringify({
+        rules: [],
+        ignoredPaths: [],
+        commonTags: [],
+        policies: [
+          {
+            relativePath: invalidPath,
+            mode: 'organize',
+            collectionName: '{missing}',
+            tags: [],
+            pattern: '{maker}/**',
+          },
+        ],
+      }),
+    );
+    const previewImport = installPreview();
+    render(
+      <ImportWizard
+        draft={{ ...draft, preview: { ...preview, folders } }}
+        busy={false}
+        error={null}
+        onCancel={vi.fn()}
+        onDismissError={vi.fn()}
+        onConfirm={createConfirmImport()}
+      />,
+    );
+    await waitForPreview(previewImport);
+    const validEditor = screen.getByRole('region', {
+      name: 'Policy editor for Folder-000',
+    });
+    expect(within(validEditor).queryByRole('alert')).toBeNull();
+    const sourceErrors = screen.getByRole('alert', {
+      name: 'Source organization errors',
+    });
+    expect(sourceErrors).toHaveTextContent(invalidPath);
+    expect(sourceErrors).toHaveTextContent(
+      'Output placeholders must be named captures',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Import 6 files' }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole('button', {
+        name: `Edit policy for ${invalidPath}`,
+      }),
+    ).toBeNull();
+
+    fireEvent.click(
+      within(sourceErrors).getByRole('button', {
+        name: `Review policy for ${invalidPath}`,
+      }),
+    );
+    const invalidEditor = screen.getByRole('region', {
+      name: `Policy editor for ${invalidPath}`,
+    });
+    expect(within(invalidEditor).getByRole('alert')).toHaveTextContent(
+      `Policy error for ${invalidPath}`,
+    );
+    const invalidRow = screen
+      .getByRole('button', {
+        name: `Edit policy for ${invalidPath}`,
+      })
+      .closest('[role="listitem"]');
+    expect(invalidRow).toHaveTextContent('Policy error');
+    expect(
+      screen.getByRole('status', { name: 'Folder page' }),
+    ).toHaveTextContent('Page 2 of 2');
+    await waitFor(() =>
+      expect(
+        within(invalidEditor).getByRole('combobox', {
+          name: `Folder organization for ${invalidPath}`,
+        }),
+      ).toHaveFocus(),
+    );
+    fireEvent.change(
+      within(invalidEditor).getByRole('textbox', {
+        name: `Recipe collection name for ${invalidPath}`,
+      }),
+      { target: { value: '{maker}' } },
+    );
+    expect(
+      screen.queryByRole('alert', { name: 'Source organization errors' }),
+    ).toBeNull();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 6 files' }),
+      ).toBeEnabled(),
+    );
+  });
+
+  it('announces page ranges while keeping paging controls focused', () => {
+    installPreview();
+    const folders = Array.from({ length: 205 }, (_, index) => ({
+      relativePath: `Folder-${index}`,
+      name: `Folder-${index}`,
+      depth: 1,
+      modelCount: 1,
+    }));
+    render(
+      <ImportWizard
+        draft={{ ...draft, preview: { ...preview, folders } }}
+        busy={false}
+        error={null}
+        onCancel={vi.fn()}
+        onDismissError={vi.fn()}
+        onConfirm={createConfirmImport()}
+      />,
+    );
+    const status = screen.getByRole('status', { name: 'Folder page' });
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveAttribute('aria-atomic', 'true');
+    expect(status).toHaveTextContent('Showing 1–100 of 205 visible');
+    expect(status).toHaveTextContent('Page 1 of 3');
+    const next = screen.getByRole('button', { name: 'Next 100' });
+    next.focus();
+    fireEvent.click(next);
+    expect(status).toHaveTextContent('Showing 101–200 of 205 visible');
+    expect(status).toHaveTextContent('Page 2 of 3');
+    expect(next).toHaveFocus();
+    fireEvent.click(next);
+    expect(status).toHaveTextContent('Showing 201–205 of 205 visible');
+    expect(status).toHaveTextContent('Page 3 of 3');
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 100' }));
+    expect(status).toHaveTextContent('Page 2 of 3');
+  });
+
   it('starts collapsed and keeps the selected full path available after collapse', async () => {
     const previewImport = installPreview();
     renderWizard();

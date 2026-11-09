@@ -657,6 +657,8 @@ pub struct ImportPreviewDto {
     pub folders_total: usize,
     pub folders_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_folder_offset: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization: Option<ImportOrganizationPreviewDto>,
@@ -720,6 +722,7 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
                 .collect(),
             folders_total: preview.folders_total,
             folders_truncated: preview.folders_truncated,
+            preview_id: preview.preview_id.clone(),
             next_folder_offset: preview.next_folder_offset,
             organization: preview.organization.as_ref().map(|organization| {
                 ImportOrganizationPreviewDto {

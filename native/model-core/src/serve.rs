@@ -29,6 +29,8 @@
 //!   reconciles it into the catalog, and returns a [`crate::rpc::ReconcileReportDto`].
 //! - `previewImport` — scans cheap file metadata and returns paged folder
 //!   suggestions plus a full-source organization preview without mutation.
+//!   Truncated previews return a short-lived `previewId`; subsequent pages use
+//!   that token and the same options to read the identical scan snapshot.
 //! - `importRoot` — scans, reconciles, and applies explicit folder organization
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
@@ -50,7 +52,9 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -172,7 +176,7 @@ struct ScanRootParams {
     max_archive_bytes: crate::archive::ArchiveSizeLimit,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ImportRuleKindParam {
     Collection,
@@ -214,7 +218,7 @@ fn build_import_plan(
     }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportRuleParam {
     relative_path: String,
@@ -240,7 +244,7 @@ struct ImportRootParams {
     policies: Vec<ImportPolicyParam>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ImportPolicyModeParam {
     Organize,
@@ -256,7 +260,7 @@ impl From<ImportPolicyModeParam> for crate::smart_import::ImportPolicyMode {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 struct ImportPolicyParam {
@@ -281,11 +285,202 @@ struct PreviewImportParams {
     #[serde(default)]
     folder_offset: usize,
     #[serde(default)]
+    preview_id: Option<String>,
+    #[serde(default)]
     rules: Vec<ImportRuleParam>,
     #[serde(default)]
     common_tags: Vec<String>,
     #[serde(default)]
     policies: Vec<ImportPolicyParam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewImportOptions {
+    path: String,
+    max_archive_bytes: u64,
+    rules: Vec<ImportRuleParam>,
+    common_tags: Vec<String>,
+    policies: Vec<ImportPolicyParam>,
+}
+
+impl From<&PreviewImportParams> for PreviewImportOptions {
+    fn from(params: &PreviewImportParams) -> Self {
+        Self {
+            path: params.path.clone(),
+            max_archive_bytes: params.max_archive_bytes.0,
+            rules: params.rules.clone(),
+            common_tags: params.common_tags.clone(),
+            policies: params.policies.clone(),
+        }
+    }
+}
+
+struct ImportPreviewSnapshot {
+    id: String,
+    created_at: Instant,
+    options: PreviewImportOptions,
+    folders: Vec<crate::smart_import::ImportFolder>,
+    base: crate::smart_import::ImportPreview,
+    bytes: usize,
+}
+
+const MAX_IMPORT_PREVIEW_SNAPSHOTS: usize = 4;
+const MAX_IMPORT_PREVIEW_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const IMPORT_PREVIEW_SNAPSHOT_TTL: Duration = Duration::from_secs(120);
+static IMPORT_PREVIEW_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(0);
+static IMPORT_PREVIEW_SNAPSHOTS: OnceLock<Mutex<Vec<ImportPreviewSnapshot>>> = OnceLock::new();
+
+fn import_preview_snapshots() -> &'static Mutex<Vec<ImportPreviewSnapshot>> {
+    IMPORT_PREVIEW_SNAPSHOTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn import_preview_snapshot_id() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        IMPORT_PREVIEW_SNAPSHOT_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn preview_snapshot_bytes(
+    base: &crate::smart_import::ImportPreview,
+    folders: &Vec<crate::smart_import::ImportFolder>,
+    options: &PreviewImportOptions,
+) -> Result<usize, String> {
+    let response_bytes = serde_json::to_vec(&ImportPreviewDto::from(base))
+        .map_err(|error| format!("failed to size import preview snapshot: {error}"))?
+        .len();
+    let folder_bytes = folders
+        .capacity()
+        .saturating_mul(std::mem::size_of::<crate::smart_import::ImportFolder>())
+        .saturating_add(folders.iter().fold(0usize, |total, folder| {
+            total
+                .saturating_add(folder.relative_path.as_os_str().len().saturating_mul(4))
+                .saturating_add(folder.name.capacity())
+        }));
+    let rule_bytes = options
+        .rules
+        .capacity()
+        .saturating_mul(std::mem::size_of::<ImportRuleParam>())
+        .saturating_add(options.rules.iter().fold(0usize, |total, rule| {
+            total
+                .saturating_add(rule.relative_path.capacity())
+                .saturating_add(rule.name.capacity())
+                .saturating_add(rule.collection_id.as_ref().map_or(0, String::capacity))
+        }));
+    let policy_bytes = options
+        .policies
+        .capacity()
+        .saturating_mul(std::mem::size_of::<ImportPolicyParam>())
+        .saturating_add(options.policies.iter().fold(0usize, |total, policy| {
+            total
+                .saturating_add(policy.relative_path.capacity())
+                .saturating_add(policy.collection_name.as_ref().map_or(0, String::capacity))
+                .saturating_add(policy.collection_id.as_ref().map_or(0, String::capacity))
+                .saturating_add(policy.pattern.as_ref().map_or(0, String::capacity))
+                .saturating_add(
+                    policy
+                        .tags
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<String>())
+                        .saturating_add(policy.tags.iter().map(String::capacity).sum::<usize>()),
+                )
+        }));
+    let common_tag_bytes = options
+        .common_tags
+        .capacity()
+        .saturating_mul(std::mem::size_of::<String>())
+        .saturating_add(
+            options
+                .common_tags
+                .iter()
+                .map(String::capacity)
+                .sum::<usize>(),
+        );
+    Ok(std::mem::size_of::<ImportPreviewSnapshot>()
+        .saturating_add(response_bytes)
+        .saturating_add(folder_bytes)
+        .saturating_add(rule_bytes)
+        .saturating_add(policy_bytes)
+        .saturating_add(common_tag_bytes)
+        .saturating_add(options.path.capacity()))
+}
+
+fn cache_import_preview_snapshot(
+    options: PreviewImportOptions,
+    mut base: crate::smart_import::ImportPreview,
+    folders: Vec<crate::smart_import::ImportFolder>,
+) -> Result<String, String> {
+    base.folders.clear();
+    base.folders.shrink_to_fit();
+    let bytes = preview_snapshot_bytes(&base, &folders, &options)?;
+    if bytes > MAX_IMPORT_PREVIEW_CACHE_BYTES {
+        return Err(format!(
+            "folder preview snapshot exceeds the {} MiB pagination cache limit",
+            MAX_IMPORT_PREVIEW_CACHE_BYTES / (1024 * 1024)
+        ));
+    }
+    let id = import_preview_snapshot_id();
+    base.preview_id = Some(id.clone());
+    let mut snapshots = import_preview_snapshots()
+        .lock()
+        .map_err(|_| "import preview pagination cache is unavailable".to_string())?;
+    let now = Instant::now();
+    snapshots
+        .retain(|snapshot| now.duration_since(snapshot.created_at) < IMPORT_PREVIEW_SNAPSHOT_TTL);
+    while snapshots.len() >= MAX_IMPORT_PREVIEW_SNAPSHOTS
+        || snapshots
+            .iter()
+            .map(|snapshot| snapshot.bytes)
+            .sum::<usize>()
+            .saturating_add(bytes)
+            > MAX_IMPORT_PREVIEW_CACHE_BYTES
+    {
+        if snapshots.is_empty() {
+            break;
+        }
+        snapshots.remove(0);
+    }
+    snapshots.push(ImportPreviewSnapshot {
+        id: id.clone(),
+        created_at: now,
+        options,
+        folders,
+        base,
+        bytes,
+    });
+    Ok(id)
+}
+
+fn import_preview_snapshot_page(
+    id: &str,
+    options: &PreviewImportOptions,
+    folder_offset: usize,
+) -> Result<crate::smart_import::ImportPreview, String> {
+    let mut snapshots = import_preview_snapshots()
+        .lock()
+        .map_err(|_| "import preview pagination cache is unavailable".to_string())?;
+    let now = Instant::now();
+    snapshots
+        .retain(|snapshot| now.duration_since(snapshot.created_at) < IMPORT_PREVIEW_SNAPSHOT_TTL);
+    let snapshot = snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == id)
+        .ok_or_else(|| {
+            "import preview snapshot expired or was evicted; restart the preview from page one"
+                .to_string()
+        })?;
+    if &snapshot.options != options {
+        return Err("import preview options changed; restart the preview from page one".into());
+    }
+    if folder_offset >= snapshot.folders.len() {
+        return Err("import preview page offset is outside the snapshot".into());
+    }
+    Ok(crate::smart_import::preview_snapshot_page(
+        &snapshot.base,
+        folder_offset,
+        &snapshot.folders,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -969,13 +1164,31 @@ fn dispatch(
         "previewImport" => {
             let params: PreviewImportParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid previewImport params: {e}"))?;
+            let options = PreviewImportOptions::from(&params);
+            if let Some(preview_id) = params.preview_id.as_deref() {
+                let preview =
+                    import_preview_snapshot_page(preview_id, &options, params.folder_offset)?;
+                return serde_json::to_value(ImportPreviewDto::from(&preview))
+                    .map_err(|e| format!("failed to serialize import preview: {e}"));
+            }
+            if params.folder_offset != 0 {
+                return Err(
+                    "folderOffset requires a previewId; restart the preview from page one".into(),
+                );
+            }
             let scan = crate::scan::scan_root_with_limit(
                 &PathBuf::from(&params.path),
                 &AtomicBool::new(false),
                 params.max_archive_bytes.0,
             );
-            let plan = build_import_plan(params.rules, params.common_tags, params.policies);
-            let mut preview = crate::smart_import::preview_scan_page(&scan, params.folder_offset);
+            let plan = build_import_plan(
+                params.rules.clone(),
+                params.common_tags.clone(),
+                params.policies.clone(),
+            );
+            let folders = crate::smart_import::preview_folders(&scan);
+            let mut preview =
+                crate::smart_import::preview_scan_page_from_folders(&scan, 0, &folders);
             preview.organization = Some(match plan {
                 Ok(plan) => match crate::smart_import::preview_organization(store, &scan, &plan) {
                     Ok(organization) => organization,
@@ -1001,6 +1214,10 @@ fn dispatch(
                     errors: vec![error.to_string()],
                 },
             });
+            if preview.folders_truncated {
+                let preview_id = cache_import_preview_snapshot(options, preview.clone(), folders)?;
+                preview.preview_id = Some(preview_id);
+            }
             serde_json::to_value(ImportPreviewDto::from(&preview))
                 .map_err(|e| format!("failed to serialize import preview: {e}"))
         }
@@ -1672,6 +1889,20 @@ fn retarget_not_configured() -> RetargetError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{MutexGuard, OnceLock};
+
+    static PREVIEW_SNAPSHOT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn preview_snapshot_test_guard() -> MutexGuard<'static, ()> {
+        PREVIEW_SNAPSHOT_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
+    fn clear_preview_snapshots() {
+        import_preview_snapshots().lock().unwrap().clear();
+    }
 
     /// Convenience wrapper: dispatch a single line against a throwaway in-memory
     /// catalog. Stateful methods that need a shared store across calls construct
@@ -2249,6 +2480,245 @@ mod tests {
             serde_json::json!([])
         );
         assert!(store.models().is_empty());
+    }
+
+    #[test]
+    fn preview_pages_reuse_the_initial_bounded_snapshot_without_rescanning() {
+        let _guard = preview_snapshot_test_guard();
+        clear_preview_snapshots();
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..501 {
+            std::fs::create_dir_all(dir.path().join(format!("folder-{index:04}"))).unwrap();
+            std::fs::write(
+                dir.path().join(format!("folder-{index:04}/part.stl")),
+                b"part",
+            )
+            .unwrap();
+        }
+        let mut store = InMemoryCatalog::new();
+        let first_request = serde_json::json!({
+            "id": 25,
+            "method": "previewImport",
+            "params": {
+                "path": dir.path().to_string_lossy(),
+                "commonTags": ["snapshot"]
+            }
+        });
+        let first_out = handle_line(&mut store, &first_request.to_string()).unwrap();
+        let first: Value = serde_json::from_str(&first_out).unwrap();
+
+        assert_eq!(first["result"]["folders"].as_array().unwrap().len(), 500);
+        assert_eq!(first["result"]["foldersTotal"], 501);
+        assert_eq!(first["result"]["foldersTruncated"], true);
+        assert!(first["result"]["previewId"].is_string());
+
+        std::fs::remove_dir_all(dir.path().join("folder-0500")).unwrap();
+        let second_request = serde_json::json!({
+            "id": 26,
+            "method": "previewImport",
+            "params": {
+                "path": dir.path().to_string_lossy(),
+                "folderOffset": 500,
+                "previewId": first["result"]["previewId"],
+                "commonTags": ["snapshot"]
+            }
+        });
+        let second_out = handle_line(&mut store, &second_request.to_string()).unwrap();
+        let second: Value = serde_json::from_str(&second_out).unwrap();
+
+        assert_eq!(second["ok"], true, "{second}");
+        assert_eq!(second["result"]["foldersTotal"], 501);
+        assert_eq!(second["result"]["folders"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            second["result"]["folders"][0]["relativePath"],
+            "folder-0500"
+        );
+        assert_eq!(second["result"]["previewId"], first["result"]["previewId"]);
+        assert_eq!(
+            second["result"]["organization"]["newTags"],
+            serde_json::json!(["snapshot"])
+        );
+        clear_preview_snapshots();
+    }
+
+    #[test]
+    fn preview_snapshot_is_bound_to_options_and_nonzero_offset_needs_token() {
+        let _guard = preview_snapshot_test_guard();
+        clear_preview_snapshots();
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..501 {
+            std::fs::create_dir_all(dir.path().join(format!("folder-{index:04}"))).unwrap();
+            std::fs::write(
+                dir.path().join(format!("folder-{index:04}/part.stl")),
+                b"part",
+            )
+            .unwrap();
+        }
+        let mut store = InMemoryCatalog::new();
+        let first_request = serde_json::json!({
+            "id": 27,
+            "method": "previewImport",
+            "params": { "path": dir.path().to_string_lossy() }
+        });
+        let output = handle_line(&mut store, &first_request.to_string()).unwrap();
+        let first: Value = serde_json::from_str(&output).unwrap();
+        let token = first["result"]["previewId"].clone();
+
+        let mismatch_request = serde_json::json!({
+            "id": 28,
+            "method": "previewImport",
+            "params": {
+                "path": dir.path().to_string_lossy(),
+                "folderOffset": 500,
+                "previewId": token,
+                "commonTags": ["changed"]
+            }
+        });
+        let mismatch_out = handle_line(&mut store, &mismatch_request.to_string()).unwrap();
+        let mismatch: Value = serde_json::from_str(&mismatch_out).unwrap();
+        assert_eq!(mismatch["ok"], false);
+        assert!(mismatch["error"]
+            .as_str()
+            .unwrap()
+            .contains("options changed"));
+
+        let path_mismatch_request = serde_json::json!({
+            "id": 30,
+            "method": "previewImport",
+            "params": {
+                "path": dir.path().join("different").to_string_lossy(),
+                "folderOffset": 500,
+                "previewId": first["result"]["previewId"]
+            }
+        });
+        let path_mismatch_out =
+            handle_line(&mut store, &path_mismatch_request.to_string()).unwrap();
+        let path_mismatch: Value = serde_json::from_str(&path_mismatch_out).unwrap();
+        assert_eq!(path_mismatch["ok"], false);
+        assert!(path_mismatch["error"]
+            .as_str()
+            .unwrap()
+            .contains("options changed"));
+
+        let missing_token_request = serde_json::json!({
+            "id": 29,
+            "method": "previewImport",
+            "params": {
+                "path": dir.path().to_string_lossy(),
+                "folderOffset": 500
+            }
+        });
+        let missing_token_out =
+            handle_line(&mut store, &missing_token_request.to_string()).unwrap();
+        let missing_token: Value = serde_json::from_str(&missing_token_out).unwrap();
+        assert_eq!(missing_token["ok"], false);
+        assert!(missing_token["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires a previewId"));
+        clear_preview_snapshots();
+    }
+
+    fn snapshot_test_options(path: &str) -> PreviewImportOptions {
+        PreviewImportOptions {
+            path: path.into(),
+            max_archive_bytes: crate::archive::MAX_ARCHIVE_BYTES,
+            rules: Vec::new(),
+            common_tags: Vec::new(),
+            policies: Vec::new(),
+        }
+    }
+
+    fn snapshot_test_folders() -> Vec<crate::smart_import::ImportFolder> {
+        vec![
+            crate::smart_import::ImportFolder {
+                relative_path: PathBuf::from("first"),
+                name: "first".into(),
+                depth: 1,
+                model_count: 1,
+            },
+            crate::smart_import::ImportFolder {
+                relative_path: PathBuf::from("second"),
+                name: "second".into(),
+                depth: 1,
+                model_count: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn preview_snapshot_expiration_fails_closed_and_releases_retained_cache() {
+        let _guard = preview_snapshot_test_guard();
+        clear_preview_snapshots();
+        let options = snapshot_test_options("expired-preview");
+        let id = cache_import_preview_snapshot(
+            options.clone(),
+            crate::smart_import::ImportPreview::default(),
+            snapshot_test_folders(),
+        )
+        .unwrap();
+        {
+            let mut snapshots = import_preview_snapshots().lock().unwrap();
+            snapshots[0].created_at =
+                Instant::now() - IMPORT_PREVIEW_SNAPSHOT_TTL - Duration::from_secs(1);
+        }
+
+        let result = import_preview_snapshot_page(&id, &options, 1);
+
+        assert!(result.unwrap_err().contains("expired or was evicted"));
+        assert!(import_preview_snapshots().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn preview_snapshot_count_eviction_fails_closed_for_oldest_token() {
+        let _guard = preview_snapshot_test_guard();
+        clear_preview_snapshots();
+        let mut ids = Vec::new();
+        let mut options = Vec::new();
+        for index in 0..=MAX_IMPORT_PREVIEW_SNAPSHOTS {
+            let current_options = snapshot_test_options(&format!("preview-{index}"));
+            let id = cache_import_preview_snapshot(
+                current_options.clone(),
+                crate::smart_import::ImportPreview::default(),
+                snapshot_test_folders(),
+            )
+            .unwrap();
+            ids.push(id);
+            options.push(current_options);
+        }
+
+        let oldest = import_preview_snapshot_page(&ids[0], &options[0], 1);
+        let newest = import_preview_snapshot_page(ids.last().unwrap(), options.last().unwrap(), 1);
+
+        assert!(oldest.unwrap_err().contains("expired or was evicted"));
+        assert!(newest.is_ok());
+        assert_eq!(
+            import_preview_snapshots().lock().unwrap().len(),
+            MAX_IMPORT_PREVIEW_SNAPSHOTS
+        );
+        clear_preview_snapshots();
+    }
+
+    #[test]
+    fn oversized_preview_snapshot_is_rejected_before_cache_insertion() {
+        let _guard = preview_snapshot_test_guard();
+        clear_preview_snapshots();
+        let long_name = "x".repeat(9 * 1024 * 1024);
+        let folders = vec![crate::smart_import::ImportFolder {
+            relative_path: PathBuf::from(&long_name),
+            name: long_name,
+            depth: 1,
+            model_count: 1,
+        }];
+
+        let result = cache_import_preview_snapshot(
+            snapshot_test_options("too-large"),
+            crate::smart_import::ImportPreview::default(),
+            folders,
+        );
+
+        assert!(result.unwrap_err().contains("pagination cache limit"));
+        assert!(import_preview_snapshots().lock().unwrap().is_empty());
     }
 
     #[test]
