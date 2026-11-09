@@ -39,6 +39,12 @@ pub struct ImportPreview {
     pub model_count: usize,
     pub total_bytes: u64,
     pub skipped_errors: usize,
+    pub cloud_files_skipped: usize,
+    pub cloud_directories_skipped: usize,
+    pub skipped_entries: crate::scan::SkippedEntryCounts,
+    pub scan_issues: Vec<crate::scan::ScanIssue>,
+    pub scan_issues_truncated: bool,
+    pub failure: Option<String>,
     pub archive_warnings: Vec<String>,
     pub complete: bool,
     pub formats: ImportFormatCounts,
@@ -51,8 +57,14 @@ pub fn preview_scan(scan: &ScanResult) -> ImportPreview {
     let mut preview = ImportPreview {
         model_count: scan.files.len(),
         skipped_errors: scan.skipped_errors,
+        cloud_files_skipped: scan.cloud_files.len(),
+        cloud_directories_skipped: scan.cloud_directories.len(),
+        skipped_entries: scan.skipped_entries.clone(),
+        scan_issues: scan.scan_issues.clone(),
+        scan_issues_truncated: scan.scan_issues_truncated,
+        failure: scan.failure.clone(),
         archive_warnings: scan.archive_warnings.clone(),
-        complete: !scan.cancelled && scan.skipped_errors == 0,
+        complete: !scan.cancelled && scan.failure.is_none(),
         ..ImportPreview::default()
     };
 
@@ -141,19 +153,14 @@ pub enum ImportError {
     InvalidRelativePath,
     #[error("collection id must contain 1 to 256 characters")]
     InvalidCollectionId,
-    #[error(
-        "import scan was incomplete ({skipped_errors} filesystem errors, cancelled: {cancelled})"
-    )]
-    IncompleteScan {
-        skipped_errors: usize,
-        cancelled: bool,
-    },
+    #[error("import was cancelled; the catalog was not changed")]
+    Cancelled,
     #[error("collection '{id}' no longer exists")]
     UnknownCollection { id: String },
     #[error("collection name '{name}' matches {matches} collections; select one by id")]
     AmbiguousCollectionName { name: String, matches: usize },
-    #[error("failed to hash {errors} model files; the catalog was not changed")]
-    HashFailures { errors: usize },
+    #[error("failed to protect scan from cloud downloads: {0}")]
+    AvailabilityPolicy(String),
     #[error("catalog transaction failed: {0}")]
     CatalogTransaction(String),
     #[error("failed to assign model '{hash}' to collection '{collection}'")]
@@ -243,30 +250,36 @@ pub fn import_root(
     scan: &ScanResult,
     plan: &ImportPlan,
 ) -> Result<ImportResult, ImportError> {
-    if scan.cancelled || scan.skipped_errors > 0 {
-        return Err(ImportError::IncompleteScan {
-            skipped_errors: scan.skipped_errors,
-            cancelled: scan.cancelled,
-        });
+    if let Some(error) = &scan.failure {
+        return Err(ImportError::AvailabilityPolicy(error.clone()));
+    }
+    if scan.cancelled {
+        return Err(ImportError::Cancelled);
     }
     let resolved_rules = resolved_rules(store, &plan.rules)?;
-    let (hashes, hash_errors) = hash_changed_files(store, root_id, scan);
-    if hash_errors > 0 {
-        return Err(ImportError::HashFailures {
-            errors: hash_errors,
-        });
-    }
+    let staged = hash_changed_files(store, root_id, scan)
+        .map_err(|error| ImportError::AvailabilityPolicy(error.to_string()))?;
+    let scan = &staged.scan;
+    let hashes = &staged.hashes;
     store
         .begin_batch()
         .map_err(ImportError::CatalogTransaction)?;
 
     let outcome = (|| {
-        let report = reconcile_root_with_hashes(store, root_id, scan, &hashes);
-        if report.hash_errors > 0 {
-            return Err(ImportError::HashFailures {
-                errors: report.hash_errors,
-            });
-        }
+        let mut report = reconcile_root_with_hashes(store, root_id, scan, hashes);
+        report.hash_errors = staged.errors;
+        let imported_paths: BTreeSet<_> = scan
+            .files
+            .iter()
+            .filter_map(|file| {
+                let known = store.get_location(root_id, &file.path)?;
+                (known.available
+                    && known.fingerprint == file.fingerprint
+                    && (hashes.contains_key(&file.path)
+                        || !crate::archive::requires_content_revalidation(&file.path)))
+                .then_some(&file.path)
+            })
+            .collect();
         let models = store.models();
         let mut created_collection_ids = HashMap::<String, String>::new();
 
@@ -283,7 +296,11 @@ pub fn import_root(
             let relevant_locations: Vec<_> = model
                 .locations
                 .iter()
-                .filter(|location| location.root_id == root_id && location.available)
+                .filter(|location| {
+                    location.root_id == root_id
+                        && location.available
+                        && imported_paths.contains(&location.path)
+                })
                 .collect();
             if relevant_locations.is_empty() {
                 continue;
@@ -546,13 +563,13 @@ mod tests {
     }
 
     #[test]
-    fn preview_marks_traversal_errors_as_incomplete() {
+    fn preview_allows_partial_traversal_and_reports_errors() {
         let preview = preview_scan(&ScanResult {
             skipped_errors: 1,
             ..Default::default()
         });
 
-        assert!(!preview.complete);
+        assert!(preview.complete);
         assert_eq!(preview.skipped_errors, 1);
     }
 
@@ -663,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_scan_cannot_mutate_or_reconcile_catalog() {
+    fn cancelled_scan_cannot_mutate_or_reconcile_catalog() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("part.stl"), b"part");
         let scan = scan_root(dir.path(), &AtomicBool::new(false));
@@ -673,25 +690,20 @@ mod tests {
         let incomplete = ScanResult {
             max_archive_bytes: scan.max_archive_bytes,
             files: Vec::new(),
-            cancelled: false,
+            cancelled: true,
             skipped_errors: 1,
             archive_warnings: Vec::new(),
+            ..ScanResult::default()
         };
 
         let result = import_root(&mut store, "root", &incomplete, &empty_plan);
 
-        assert_eq!(
-            result,
-            Err(ImportError::IncompleteScan {
-                skipped_errors: 1,
-                cancelled: false,
-            })
-        );
+        assert_eq!(result, Err(ImportError::Cancelled));
         assert!(store.models()[0].locations[0].available);
     }
 
     #[test]
-    fn hash_failure_aborts_before_any_catalog_mutation() {
+    fn hash_failure_is_reported_while_readable_files_are_organized() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("existing.stl"), b"existing");
         let initial_scan = scan_root(dir.path(), &AtomicBool::new(false));
@@ -705,13 +717,135 @@ mod tests {
         fs::remove_file(disappearing).unwrap();
         let tagged_plan = ImportPlan::new([], ["should-not-apply".to_string()]).unwrap();
 
-        assert_eq!(
-            import_root(&mut store, "root", &next_scan, &tagged_plan),
-            Err(ImportError::HashFailures { errors: 1 })
-        );
+        let result = import_root(&mut store, "root", &next_scan, &tagged_plan).unwrap();
+        assert_eq!(result.report.hash_errors, 1);
+        assert_eq!(result.report.unchanged, 1);
         assert_eq!(store.models().len(), 1);
         assert!(store.models()[0].locations[0].available);
-        assert!(store.all_tags().is_empty());
+        assert_eq!(store.all_tags()[0].name, "should-not-apply");
+    }
+
+    #[test]
+    fn mixed_cloud_and_readable_models_import_and_report_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("local.stl"), b"local");
+        write(&dir.path().join("cloud.stl"), b"cloud");
+        write(&dir.path().join("cloud.zip"), b"not a local archive");
+        let scan =
+            crate::scan::scan_root_with_metadata(dir.path(), &AtomicBool::new(false), |path| {
+                let cloud = path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("cloud");
+                Ok((fs::symlink_metadata(path)?, cloud))
+            });
+        let preview = preview_scan(&scan);
+        assert!(preview.complete);
+        assert_eq!(preview.model_count, 1);
+        assert_eq!(preview.cloud_files_skipped, 2);
+        let mut store = InMemoryCatalog::new();
+        let result = import_root(&mut store, "root", &scan, &ImportPlan::default()).unwrap();
+        assert_eq!(result.report.added, 1);
+        assert_eq!(result.report.cloud_files_skipped, 2);
+        assert_eq!(result.report.hash_errors, 0);
+        assert_eq!(
+            store.models()[0].hash,
+            crate::hash::hash_reader(&b"local"[..]).unwrap()
+        );
+    }
+
+    #[test]
+    fn all_cloud_folder_is_complete_and_marks_known_files_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("part.stl");
+        write(&path, b"part");
+        let mut store = InMemoryCatalog::new();
+        let initial = scan_root(dir.path(), &AtomicBool::new(false));
+        import_root(&mut store, "root", &initial, &ImportPlan::default()).unwrap();
+        let cloud =
+            crate::scan::scan_root_with_metadata(dir.path(), &AtomicBool::new(false), |path| {
+                Ok((fs::symlink_metadata(path)?, path.is_file()))
+            });
+        let preview = preview_scan(&cloud);
+        assert!(preview.complete);
+        assert_eq!(preview.model_count, 0);
+        assert_eq!(preview.cloud_files_skipped, 1);
+        let result = import_root(&mut store, "root", &cloud, &ImportPlan::default()).unwrap();
+        assert_eq!(result.report.cloud_files_skipped, 1);
+        assert!(!store.models()[0].locations[0].available);
+        let restored = import_root(&mut store, "root", &initial, &ImportPlan::default()).unwrap();
+        assert_eq!(restored.report.unchanged, 1);
+        assert!(store.models()[0].locations[0].available);
+    }
+
+    #[test]
+    fn file_metadata_errors_allow_partial_import_without_marking_other_files_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("denied.stl"), b"denied");
+        let mut store = InMemoryCatalog::new();
+        let initial = scan_root(dir.path(), &AtomicBool::new(false));
+        import_root(&mut store, "root", &initial, &ImportPlan::default()).unwrap();
+        write(&dir.path().join("local.stl"), b"local");
+        let scan =
+            crate::scan::scan_root_with_metadata(dir.path(), &AtomicBool::new(false), |path| {
+                if path.ends_with("denied.stl") {
+                    return Err(std::io::ErrorKind::PermissionDenied.into());
+                }
+                Ok((fs::symlink_metadata(path)?, false))
+            });
+        assert!(preview_scan(&scan).complete);
+        let result = import_root(&mut store, "root", &scan, &ImportPlan::default()).unwrap();
+        assert_eq!(result.report.added, 1);
+        assert_eq!(result.report.scan_errors, 1);
+        assert_eq!(result.report.missing, 0);
+        assert_eq!(store.models().len(), 2);
+        assert!(store
+            .models()
+            .iter()
+            .all(|model| model.locations[0].available));
+    }
+
+    #[test]
+    fn failed_subtree_is_preserved_while_healthy_subtree_imports_and_reconciles() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join("denied/old.stl");
+        let missing = dir.path().join("healthy/missing.stl");
+        write(&hidden, b"hidden");
+        write(&missing, b"missing");
+        let mut store = InMemoryCatalog::new();
+        let initial = scan_root(dir.path(), &AtomicBool::new(false));
+        import_root(&mut store, "root", &initial, &ImportPlan::default()).unwrap();
+        fs::remove_file(&missing).unwrap();
+        write(&dir.path().join("healthy/new.stl"), b"new");
+        let scan =
+            crate::scan::scan_root_with_metadata(dir.path(), &AtomicBool::new(false), |path| {
+                if path.ends_with("denied") {
+                    return Err(std::io::ErrorKind::PermissionDenied.into());
+                }
+                assert_ne!(path, hidden);
+                Ok((fs::symlink_metadata(path)?, false))
+            });
+        assert!(preview_scan(&scan).complete);
+        let plan = ImportPlan::new([], ["readable-only".to_string()]).unwrap();
+        let result = import_root(&mut store, "root", &scan, &plan).unwrap();
+        assert_eq!(result.report.added, 1);
+        assert_eq!(result.report.missing, 1);
+        assert_eq!(result.report.scan_errors, 1);
+        assert_eq!(result.report.skipped_entries.permission_denied, 1);
+        assert_eq!(
+            result.report.scan_issues[0].kind,
+            crate::scan::ScanEntryKind::Folder
+        );
+        assert_eq!(
+            result.report.scan_issues[0].path,
+            dir.path().join("denied").to_string_lossy()
+        );
+        assert!(store.get_location("root", &hidden).unwrap().available);
+        assert!(!store.get_location("root", &missing).unwrap().available);
+        assert_eq!(result.models_organized, 1);
+        let hidden_hash = store.get_location("root", &hidden).unwrap().hash;
+        assert!(store.tags_for_model(&hidden_hash).is_empty());
     }
 
     #[test]

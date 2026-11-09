@@ -11,6 +11,7 @@ import {
 import { basename, formatBytes } from './model';
 import { Icon } from '../ui/Icon';
 import { LibraryErrorAlert } from './LibraryErrorAlert';
+import { ScanFeedback } from './ScanFeedback';
 
 export interface ImportWizardProps {
   draft: ImportDraft;
@@ -18,6 +19,8 @@ export interface ImportWizardProps {
   error: string | null;
   onCancel: () => void;
   onDismissError: () => void;
+  onRetryScan?: () => void;
+  retryLabel?: string | null;
   onConfirm: (plan: ImportPlan, remember: boolean) => Promise<boolean>;
 }
 
@@ -28,6 +31,8 @@ export function ImportWizard({
   onCancel,
   onDismissError,
   onConfirm,
+  onRetryScan,
+  retryLabel,
 }: ImportWizardProps): React.JSX.Element {
   const [choices, setChoices] = useState<ImportChoices>(() =>
     bindKnownCollections(
@@ -36,6 +41,7 @@ export function ImportWizard({
     ),
   );
   const [remember, setRemember] = useState(true);
+  const [scanFeedbackDismissed, setScanFeedbackDismissed] = useState(false);
   const dialogRef = useRef<HTMLElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const plan = useMemo(() => buildImportPlan(choices), [choices]);
@@ -108,6 +114,10 @@ export function ImportWizard({
     };
   }, [busy, onCancel]);
 
+  useEffect(() => {
+    setScanFeedbackDismissed(false);
+  }, [draft.preview]);
+
   const updateFolder = (
     relativePath: string,
     update: (folder: ImportFolderChoice) => ImportFolderChoice,
@@ -149,257 +159,266 @@ export function ImportWizard({
           </button>
         </header>
 
-        <div className="import-summary" aria-label="Import summary">
-          <SummaryStat label="Model files" value={draft.preview.modelCount} />
-          <SummaryStat
-            label="Size"
-            value={formatBytes(draft.preview.totalBytes)}
-          />
-          <SummaryStat label="STL" value={draft.preview.formats.stl} />
-          <SummaryStat label="3MF" value={draft.preview.formats.threeMf} />
-          <SummaryStat label="OBJ" value={draft.preview.formats.obj} />
-          {draft.preview.formats.step !== undefined ? (
-            <SummaryStat label="STEP" value={draft.preview.formats.step} />
-          ) : null}
-        </div>
-
-        {error ? (
-          <LibraryErrorAlert
-            error={error}
-            className="import-alert"
-            onDismiss={onDismissError}
-          />
-        ) : null}
-        {draft.preview.skippedErrors > 0 ? (
-          <p className="import-warning">
-            {draft.preview.skippedErrors} unreadable filesystem{' '}
-            {draft.preview.skippedErrors === 1 ? 'entry was' : 'entries were'}{' '}
-            skipped.
-          </p>
-        ) : null}
-        {draft.preview.archiveWarnings?.map((warning, index) => (
-          <p key={index} className="import-warning" role="status">
-            {warning}
-          </p>
-        ))}
-        {draft.preview.modelCount === 0 ? (
-          <p className="import-warning">
-            No supported files were found. Confirming will reconcile this source
-            and mark its previously cataloged files as missing.
-          </p>
-        ) : null}
-        {draft.preview.foldersTruncated ? (
-          <p className="import-warning">
-            Folder choices are limited to the first 500 paths. All supported
-            models will still be imported.
-          </p>
-        ) : null}
-
         <div className="import-body">
-          <section className="import-section">
-            <div className="import-section-heading">
-              <div>
-                <h3>Whole import</h3>
-                <p>Apply a collection and optional tags to every model.</p>
+          <div className="import-summary" aria-label="Import summary">
+            <SummaryStat label="Model files" value={draft.preview.modelCount} />
+            <SummaryStat
+              label="Size"
+              value={formatBytes(draft.preview.totalBytes)}
+            />
+            <SummaryStat label="STL" value={draft.preview.formats.stl} />
+            <SummaryStat label="3MF" value={draft.preview.formats.threeMf} />
+            <SummaryStat label="OBJ" value={draft.preview.formats.obj} />
+            {draft.preview.formats.step !== undefined ? (
+              <SummaryStat label="STEP" value={draft.preview.formats.step} />
+            ) : null}
+          </div>
+
+          {error ? (
+            <LibraryErrorAlert
+              error={error}
+              className="import-alert"
+              onDismiss={onDismissError}
+              onRetry={onRetryScan}
+              retryLabel={retryLabel}
+            />
+          ) : null}
+          {!scanFeedbackDismissed ? (
+            <ScanFeedback
+              data={draft.preview}
+              onRetry={onRetryScan}
+              retryLabel={retryLabel}
+              onDismiss={() => setScanFeedbackDismissed(true)}
+              className="import-scan-feedback"
+            />
+          ) : null}
+          {draft.preview.modelCount === 0 ? (
+            <p className="import-warning">
+              No locally available supported files were found.
+              {(draft.preview.cloudDirectoriesSkipped ?? 0) > 0 ||
+              (draft.preview.cloudFilesSkipped ?? 0) > 0 ||
+              (draft.preview.skippedEntries?.permissionDenied ?? 0) > 0 ||
+              (draft.preview.skippedEntries?.unreadable ?? 0) > 0 ||
+              (draft.preview.skippedEntries?.tooLarge ?? 0) > 0
+                ? ' Previously cataloged files will be preserved where availability could not be determined.'
+                : ' Confirming will reconcile this source and mark previously cataloged files confirmed missing as unavailable.'}
+            </p>
+          ) : null}
+          {draft.preview.foldersTruncated ? (
+            <p className="import-warning">
+              Folder choices are limited to the first 500 paths. All supported
+              models will still be imported.
+            </p>
+          ) : null}
+
+          <div className="import-content">
+            <section className="import-section">
+              <div className="import-section-heading">
+                <div>
+                  <h3>Whole import</h3>
+                  <p>Apply a collection and optional tags to every model.</p>
+                </div>
               </div>
-            </div>
-            <div className="import-root-rule">
-              <label className="import-root-toggle">
+              <div className="import-root-rule">
+                <label className="import-root-toggle">
+                  <input
+                    type="checkbox"
+                    checked={choices.rootCollection}
+                    disabled={busy}
+                    onChange={(event) =>
+                      setChoices((current) => ({
+                        ...current,
+                        rootCollection: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Add all models to collection</span>
+                </label>
                 <input
-                  type="checkbox"
-                  checked={choices.rootCollection}
+                  type="text"
+                  aria-label="Import collection name"
+                  aria-invalid={
+                    choices.rootCollection &&
+                    !validOrganizationName(choices.rootCollectionName)
+                  }
+                  value={choices.rootCollectionName}
+                  maxLength={128}
+                  list="known-import-collections"
+                  disabled={busy || !choices.rootCollection}
+                  onChange={(event) =>
+                    setChoices((current) => {
+                      const name = event.target.value;
+                      return withRootCollectionTarget(
+                        { ...current, rootCollectionName: name },
+                        inferredCollectionTarget(name, draft.collections),
+                      );
+                    })
+                  }
+                />
+                <CollectionTargetPicker
+                  label="Choose import collection"
+                  name={choices.rootCollectionName}
+                  collectionId={choices.rootCollectionId}
+                  unresolved={Boolean(choices.rootCollectionTargetUnresolved)}
+                  collections={draft.collections}
+                  disabled={busy || !choices.rootCollection}
+                  onSelect={(collection) =>
+                    setChoices((current) =>
+                      collection
+                        ? withRootCollectionTarget(
+                            {
+                              ...current,
+                              rootCollectionName: collection.name,
+                            },
+                            { collectionId: collection.id },
+                          )
+                        : withRootCollectionTarget(current, {}),
+                    )
+                  }
+                />
+              </div>
+              <label className="import-common-tags">
+                <span>Tags for all models</span>
+                <input
+                  type="text"
+                  aria-label="Tags for all imported models"
+                  value={choices.commonTagsText}
+                  maxLength={2048}
                   disabled={busy}
+                  placeholder="terrain, printable, customer-a"
                   onChange={(event) =>
                     setChoices((current) => ({
                       ...current,
-                      rootCollection: event.target.checked,
+                      commonTagsText: event.target.value,
                     }))
                   }
                 />
-                <span>Add all models to collection</span>
+                <small
+                  className={commonTagsError ? 'import-field-error' : undefined}
+                  role={commonTagsError ? 'alert' : undefined}
+                >
+                  {commonTagsError ?? 'Separate tags with commas.'}
+                </small>
               </label>
-              <input
-                type="text"
-                aria-label="Import collection name"
-                aria-invalid={
-                  choices.rootCollection &&
-                  !validOrganizationName(choices.rootCollectionName)
-                }
-                value={choices.rootCollectionName}
-                maxLength={128}
-                list="known-import-collections"
-                disabled={busy || !choices.rootCollection}
-                onChange={(event) =>
-                  setChoices((current) => {
-                    const name = event.target.value;
-                    return withRootCollectionTarget(
-                      { ...current, rootCollectionName: name },
-                      inferredCollectionTarget(name, draft.collections),
-                    );
-                  })
-                }
-              />
-              <CollectionTargetPicker
-                label="Choose import collection"
-                name={choices.rootCollectionName}
-                collectionId={choices.rootCollectionId}
-                unresolved={Boolean(choices.rootCollectionTargetUnresolved)}
-                collections={draft.collections}
-                disabled={busy || !choices.rootCollection}
-                onSelect={(collection) =>
-                  setChoices((current) =>
-                    collection
-                      ? withRootCollectionTarget(
-                          {
-                            ...current,
-                            rootCollectionName: collection.name,
-                          },
-                          { collectionId: collection.id },
-                        )
-                      : withRootCollectionTarget(current, {}),
-                  )
-                }
-              />
-            </div>
-            <label className="import-common-tags">
-              <span>Tags for all models</span>
-              <input
-                type="text"
-                aria-label="Tags for all imported models"
-                value={choices.commonTagsText}
-                maxLength={2048}
-                disabled={busy}
-                placeholder="terrain, printable, customer-a"
-                onChange={(event) =>
-                  setChoices((current) => ({
-                    ...current,
-                    commonTagsText: event.target.value,
-                  }))
-                }
-              />
-              <small
-                className={commonTagsError ? 'import-field-error' : undefined}
-                role={commonTagsError ? 'alert' : undefined}
-              >
-                {commonTagsError ?? 'Separate tags with commas.'}
-              </small>
-            </label>
-          </section>
+            </section>
 
-          <section className="import-section import-folder-section">
-            <div className="import-section-heading">
-              <div>
-                <h3>Folder rules</h3>
-                <p>
-                  Top-level folders become collections; deeper folders become
-                  tags. Review or override each suggestion.
-                </p>
+            <section className="import-section import-folder-section">
+              <div className="import-section-heading">
+                <div>
+                  <h3>Folder rules</h3>
+                  <p>
+                    Top-level folders become collections; deeper folders become
+                    tags. Review or override each suggestion.
+                  </p>
+                </div>
+                <span>{draft.preview.folders.length} folders</span>
               </div>
-              <span>{draft.preview.folders.length} folders</span>
-            </div>
-            {choices.folders.length ? (
-              <div className="import-rule-list" role="list">
-                {choices.folders.map((folder) => (
-                  <div
-                    className="import-rule-row"
-                    role="listitem"
-                    key={folder.relativePath}
-                  >
+              {choices.folders.length ? (
+                <div className="import-rule-list" role="list">
+                  {choices.folders.map((folder) => (
                     <div
-                      className="import-rule-path"
-                      style={{ paddingLeft: `${(folder.depth - 1) * 16}px` }}
+                      className="import-rule-row"
+                      role="listitem"
+                      key={folder.relativePath}
                     >
-                      <Icon name="folder" />
-                      <span title={folder.relativePath}>
-                        {folder.relativePath}
-                      </span>
-                      <small>{folder.modelCount}</small>
-                    </div>
-                    <select
-                      aria-label={`Organization for ${folder.relativePath}`}
-                      value={folder.mode}
-                      disabled={busy}
-                      onChange={(event) =>
-                        updateFolder(folder.relativePath, (current) => {
-                          const mode = event.target.value as
-                            'collection' | 'tag' | 'ignore';
-                          return withFolderCollectionTarget(
-                            { ...current, mode },
-                            mode === 'collection'
-                              ? inferredCollectionTarget(
-                                  current.name,
-                                  draft.collections,
-                                )
-                              : {},
-                          );
-                        })
-                      }
-                    >
-                      <option value="collection">Collection</option>
-                      <option value="tag">Tag</option>
-                      <option value="ignore">Ignore</option>
-                    </select>
-                    <input
-                      type="text"
-                      aria-label={`Name for ${folder.relativePath}`}
-                      aria-invalid={
-                        folder.mode !== 'ignore' &&
-                        !validOrganizationName(folder.name)
-                      }
-                      value={folder.name}
-                      maxLength={128}
-                      list={
-                        folder.mode === 'collection'
-                          ? 'known-import-collections'
-                          : folder.mode === 'tag'
-                            ? 'known-import-tags'
-                            : undefined
-                      }
-                      disabled={busy || folder.mode === 'ignore'}
-                      onChange={(event) =>
-                        updateFolder(folder.relativePath, (current) => {
-                          const name = event.target.value;
-                          return withFolderCollectionTarget(
-                            { ...current, name },
-                            current.mode === 'collection'
-                              ? inferredCollectionTarget(
-                                  name,
-                                  draft.collections,
-                                )
-                              : {},
-                          );
-                        })
-                      }
-                    />
-                    {folder.mode === 'collection' ? (
-                      <CollectionTargetPicker
-                        label={`Choose collection for ${folder.relativePath}`}
-                        name={folder.name}
-                        collectionId={folder.collectionId}
-                        unresolved={Boolean(folder.collectionTargetUnresolved)}
-                        collections={draft.collections}
+                      <div
+                        className="import-rule-path"
+                        style={{ paddingLeft: `${(folder.depth - 1) * 16}px` }}
+                      >
+                        <Icon name="folder" />
+                        <span title={folder.relativePath}>
+                          {folder.relativePath}
+                        </span>
+                        <small>{folder.modelCount}</small>
+                      </div>
+                      <select
+                        aria-label={`Organization for ${folder.relativePath}`}
+                        value={folder.mode}
                         disabled={busy}
-                        onSelect={(collection) =>
-                          updateFolder(folder.relativePath, (current) =>
-                            collection
-                              ? withFolderCollectionTarget(
-                                  { ...current, name: collection.name },
-                                  { collectionId: collection.id },
-                                )
-                              : withFolderCollectionTarget(current, {}),
-                          )
+                        onChange={(event) =>
+                          updateFolder(folder.relativePath, (current) => {
+                            const mode = event.target.value as
+                              'collection' | 'tag' | 'ignore';
+                            return withFolderCollectionTarget(
+                              { ...current, mode },
+                              mode === 'collection'
+                                ? inferredCollectionTarget(
+                                    current.name,
+                                    draft.collections,
+                                  )
+                                : {},
+                            );
+                          })
+                        }
+                      >
+                        <option value="collection">Collection</option>
+                        <option value="tag">Tag</option>
+                        <option value="ignore">Ignore</option>
+                      </select>
+                      <input
+                        type="text"
+                        aria-label={`Name for ${folder.relativePath}`}
+                        aria-invalid={
+                          folder.mode !== 'ignore' &&
+                          !validOrganizationName(folder.name)
+                        }
+                        value={folder.name}
+                        maxLength={128}
+                        list={
+                          folder.mode === 'collection'
+                            ? 'known-import-collections'
+                            : folder.mode === 'tag'
+                              ? 'known-import-tags'
+                              : undefined
+                        }
+                        disabled={busy || folder.mode === 'ignore'}
+                        onChange={(event) =>
+                          updateFolder(folder.relativePath, (current) => {
+                            const name = event.target.value;
+                            return withFolderCollectionTarget(
+                              { ...current, name },
+                              current.mode === 'collection'
+                                ? inferredCollectionTarget(
+                                    name,
+                                    draft.collections,
+                                  )
+                                : {},
+                            );
+                          })
                         }
                       />
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="import-no-folders">
-                Models are directly inside the selected folder.
-              </p>
-            )}
-          </section>
+                      {folder.mode === 'collection' ? (
+                        <CollectionTargetPicker
+                          label={`Choose collection for ${folder.relativePath}`}
+                          name={folder.name}
+                          collectionId={folder.collectionId}
+                          unresolved={Boolean(
+                            folder.collectionTargetUnresolved,
+                          )}
+                          collections={draft.collections}
+                          disabled={busy}
+                          onSelect={(collection) =>
+                            updateFolder(folder.relativePath, (current) =>
+                              collection
+                                ? withFolderCollectionTarget(
+                                    { ...current, name: collection.name },
+                                    { collectionId: collection.id },
+                                  )
+                                : withFolderCollectionTarget(current, {}),
+                            )
+                          }
+                        />
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="import-no-folders">
+                  Models are directly inside the selected folder.
+                </p>
+              )}
+            </section>
+          </div>
         </div>
 
         <footer className="import-footer">
@@ -433,7 +452,7 @@ export function ImportWizard({
                 ? 'Importing...'
                 : draft.preview.modelCount === 0
                   ? 'Reconcile source'
-                  : `Import ${draft.preview.modelCount} files`}
+                  : `Import ${draft.preview.modelCount} ${draft.preview.modelCount === 1 ? 'file' : 'files'}`}
             </button>
           </div>
         </footer>

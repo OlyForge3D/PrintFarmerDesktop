@@ -38,8 +38,9 @@ ZIP indexing uses seekable files and bounded central-directory reads, with no
 whole-archive buffering or extraction. ZIP files larger than 512 MiB on disk
 (536,870,912 bytes) are skipped using filesystem metadata before opening,
 parsing, decompressing or hashing archive contents. Exactly 512 MiB is allowed.
-Preview, import and library scans show a warning with the archive filename,
-actual byte size and limit, while continuing with the folder's other files.
+Preview, import and library scans aggregate expected archive skips; collapsed
+details carry the archive path, actual size and effective limit, while indexing
+the folder's readable files.
 Member access rechecks this cap, including archives that grow after preview.
 This compressed-file cap applies only to `.zip`, not standalone `.3mf` files.
 Additional limits are 100,000 directory entries,
@@ -47,9 +48,33 @@ Additional limits are 100,000 directory entries,
 supported model bytes per archive. The shared 300:1 ratio limit applies above
 4 MiB. Encrypted, symlink, unsafe-path, corrupt and over-budget model members
 reject indexing that archive; scan errors appear in source-root status and
-details are logged by the sidecar. Incomplete scans do not declare unseen
-locations missing; successful rescans reconcile member changes/removals and
-archive deletion using normal catalog availability semantics.
+details are logged by the sidecar and included in scan results. Failed entries
+and subtrees preserve their existing catalog locations; successful parts of a
+partial scan still reconcile changes/removals. Cancellation does not import.
+
+On macOS, scanning recognizes File Provider placeholders using the synthetic
+`SF_DATALESS` BSD metadata flag, not size, extension, block count or permissions.
+Scan and import I/O run under thread-scoped
+`IOPOL_MATERIALIZE_DATALESS_FILES_OFF`, including directory enumeration, ZIP
+directory reads and hashing. This also prevents hydration when content is
+evicted after metadata inspection; the documented `EDEADLK` materialization
+denial is an expected cloud skip. Policy setup/restoration failures are surfaced
+rather than silently enabling downloads. A failed scan report keeps previously
+collected skipped-path details, including cloud skips discovered during hashing
+before a policy restore failure, alongside its fatal `failure`; the renderer shows
+both the failure and those diagnostics without recording a successful scan or
+mutating the catalog. A later scan of another root remains independently usable.
+Explicit viewer operations are not
+subject to this scan-scoped policy. Network files without the dataless signal
+continue through the normal supported filesystem path.
+
+Cloud-only sources are counted separately from permission/read failures and
+oversized ZIPs. Confirmed cloud-only known locations become unavailable without
+deleting their model identities or organization. Unknown availability under
+failed paths stays unchanged; those paths are not inferred missing. Preview and
+import carry reason counts for all skipped entries, plus at most 200 path-specific
+details and an explicit truncation flag. Skipped directories count as folders,
+never as an invented number of model files beneath them.
 
 Archive locations use a reserved `::zip::` path component plus central-directory
 index and member name. These are locators, not filesystem paths: main authorizes

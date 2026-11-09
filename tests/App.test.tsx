@@ -311,7 +311,9 @@ describe('<App />', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh catalog' }));
     const nextAlert = await screen.findByRole('alert');
-    fireEvent.click(within(nextAlert).getByRole('button', { name: 'Retry' }));
+    fireEvent.click(
+      within(nextAlert).getByRole('button', { name: 'Reload catalog' }),
+    );
     await waitFor(() => expect(listModels).toHaveBeenCalledTimes(3));
     const retryAlert = await screen.findByRole('alert');
     fireEvent.click(
@@ -863,14 +865,21 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Scan again' })).toBeVisible(),
     );
-    expect(screen.getByRole('main', { name: 'Settings' })).toHaveTextContent(
-      '536870913 bytes exceeds the 512 MiB limit',
-    );
+    expect(
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('Oversized ZIP archives: 1 skipped (512 MB limit)');
     fireEvent.click(screen.getByRole('button', { name: /^Library$/ }));
     expect(
-      screen.getByText('Oversized ZIP archives were skipped'),
-    ).toBeVisible();
-    expect(screen.getByText(/0 added.*536870913 bytes/)).toBeVisible();
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('1 file indexed');
+    fireEvent.click(
+      screen.getByText('Show skipped paths and details', {
+        selector: 'summary',
+      }),
+    );
+    expect(
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('oversized.zip');
   });
 
   it('shows a scan error alert and clears scanning state after a rescan failure', async () => {
@@ -2003,7 +2012,7 @@ describe('<App />', () => {
     addFolder.focus();
     fireEvent.click(addFolder);
     fireEvent.click(
-      await screen.findByRole('button', { name: 'Import 1 files' }),
+      await screen.findByRole('button', { name: 'Import 1 file' }),
     );
 
     await waitFor(() =>

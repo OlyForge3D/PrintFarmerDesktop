@@ -15,6 +15,7 @@ import type {
 } from '@shared/ipc';
 import { modelPage, withModelPaging } from './helpers/libraryPage';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
+import { ScanFeedback } from '../src/renderer/library/ScanFeedback.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { PropertiesInspector } from '../src/renderer/library/PropertiesInspector.js';
 import { LibrarySidebar } from '../src/renderer/library/LibrarySidebar.js';
@@ -282,9 +283,24 @@ describe('useLibrary', () => {
     const previewImport = vi.fn().mockResolvedValue({
       modelCount: 1,
       totalBytes: 2048,
-      skippedErrors: 0,
+      skippedErrors: 1,
       archiveWarnings: [warning],
       complete: true,
+      skippedEntries: {
+        cloudOnly: 0,
+        permissionDenied: 0,
+        unreadable: 1,
+        tooLarge: 0,
+      },
+      scanIssues: [
+        {
+          path: 'C:\\models\\restricted',
+          kind: 'folder',
+          reason: 'unreadable',
+          detail: 'Access to this subtree failed.',
+        },
+      ],
+      scanIssuesTruncated: false,
       formats: { stl: 1, threeMf: 0, obj: 0 },
       folders: [],
       foldersTruncated: false,
@@ -297,6 +313,21 @@ describe('useLibrary', () => {
         missing: 0,
         hashErrors: 0,
         archiveWarnings: [warning],
+        skippedEntries: {
+          cloudOnly: 0,
+          permissionDenied: 0,
+          unreadable: 1,
+          tooLarge: 0,
+        },
+        scanIssues: [
+          {
+            path: 'C:\\models\\restricted',
+            kind: 'folder',
+            reason: 'unreadable',
+            detail: 'Access to this subtree failed.',
+          },
+        ],
+        scanIssuesTruncated: false,
       },
       modelsOrganized: 1,
       collectionsCreated: 1,
@@ -334,6 +365,10 @@ describe('useLibrary', () => {
     expect(result.current.importDraft?.preview.archiveWarnings).toEqual([
       warning,
     ]);
+    expect(result.current.importDraft?.preview.skippedErrors).toBe(1);
+    expect(result.current.importDraft?.preview.scanIssues?.[0]?.kind).toBe(
+      'folder',
+    );
     expect(result.current.error).toBeNull();
 
     await act(async () => {
@@ -348,8 +383,8 @@ describe('useLibrary', () => {
     expect(reconcileHeadline(result.current.lastImport!.report)).toBe(
       'Oversized ZIP archives were skipped',
     );
-    expect(reconcileDetails(result.current.lastImport!.report)).toContain(
-      warning,
+    expect(reconcileDetails(result.current.lastImport!.report)).toBe(
+      '1 added • 0 changed • 0 missing',
     );
 
     expect(importRoot).toHaveBeenCalledWith({
@@ -371,6 +406,20 @@ describe('useLibrary', () => {
       .mockResolvedValueOnce([])
       .mockRejectedValueOnce(new Error('refresh offline'))
       .mockRejectedValueOnce(new Error('still offline'));
+    const importRoot = vi.fn().mockResolvedValue({
+      report: {
+        added: 1,
+        changed: 0,
+        unchanged: 0,
+        missing: 0,
+        hashErrors: 0,
+      },
+      modelsOrganized: 0,
+      collectionsCreated: 0,
+      collectionAssignments: 0,
+      tagAssignments: 0,
+      resolvedCollections: [],
+    });
     installApi({
       openFolder: vi.fn().mockResolvedValue({
         path: 'C:\\models',
@@ -385,20 +434,7 @@ describe('useLibrary', () => {
         folders: [],
         foldersTruncated: false,
       }),
-      importRoot: vi.fn().mockResolvedValue({
-        report: {
-          added: 1,
-          changed: 0,
-          unchanged: 0,
-          missing: 0,
-          hashErrors: 0,
-        },
-        modelsOrganized: 0,
-        collectionsCreated: 0,
-        collectionAssignments: 0,
-        tagAssignments: 0,
-        resolvedCollections: [],
-      }),
+      importRoot,
       listModels,
       listCollections: vi.fn().mockResolvedValue([]),
       listTags: vi.fn().mockResolvedValue([]),
@@ -418,15 +454,14 @@ describe('useLibrary', () => {
     expect(completed).not.toBeNull();
     expect(result.current.importDraft).toBeNull();
     expect(result.current.lastImport?.report.added).toBe(1);
+    expect(result.current.retryLabel).toBe('Reload catalog');
     expect(result.current.error).toContain(
       'Import completed, but the catalog could not be refreshed: refresh offline',
     );
-    act(() => result.current.dismissError());
-    expect(result.current.error).toBeNull();
-    expect(result.current.lastImport?.report.added).toBe(1);
-    expect(listModels).toHaveBeenCalledTimes(2);
 
-    await act(async () => result.current.refresh());
+    await act(async () => result.current.retryLastOperation());
+    expect(importRoot).toHaveBeenCalledTimes(1);
+    expect(listModels).toHaveBeenCalledTimes(3);
     expect(result.current.error).toBe('still offline');
   });
 
@@ -551,7 +586,107 @@ describe('useLibrary', () => {
     await act(async () => result.current.addFolder());
 
     expect(result.current.importDraft).toBeNull();
-    expect(result.current.error).toContain('2 filesystem errors');
+    expect(result.current.error).toBe(
+      'The folder scan did not complete, so no files were imported. Retry the scan, or check folder access if this keeps happening.',
+    );
+  });
+
+  it('retries an incomplete preview on the same folder and leaves catalog work out of Dismiss', async () => {
+    let finishPreview!: (value: {
+      modelCount: number;
+      totalBytes: number;
+      skippedErrors: number;
+      complete: boolean;
+      formats: { stl: number; threeMf: number; obj: number };
+      folders: [];
+      foldersTruncated: boolean;
+    }) => void;
+    const retriedPreview = new Promise<{
+      modelCount: number;
+      totalBytes: number;
+      skippedErrors: number;
+      complete: boolean;
+      formats: { stl: number; threeMf: number; obj: number };
+      folders: [];
+      foldersTruncated: boolean;
+    }>((resolve) => {
+      finishPreview = resolve;
+    });
+    const selection = {
+      path: 'C:\\OneDrive\\Models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    };
+    const openFolder = vi.fn().mockResolvedValue(selection);
+    const previewImport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        modelCount: 0,
+        totalBytes: 0,
+        skippedErrors: 0,
+        complete: false,
+        failure: 'The folder scan could not be prepared.',
+        formats: { stl: 0, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      })
+      .mockReturnValueOnce(retriedPreview);
+    const listCollections = vi.fn().mockResolvedValue([]);
+    const listTags = vi.fn().mockResolvedValue([]);
+    const listModels = vi.fn().mockResolvedValue([]);
+    installApi({
+      openFolder,
+      previewImport,
+      listModels,
+      listCollections,
+      listTags,
+    });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
+    listCollections.mockClear();
+    listTags.mockClear();
+    await act(async () => result.current.addFolder());
+    expect(result.current.error).toBe('The folder scan could not be prepared.');
+    expect(result.current.retryLabel).toBe('Retry folder scan');
+    expect(listCollections).not.toHaveBeenCalled();
+    act(() => result.current.dismissError());
+    expect(result.current.error).toBeNull();
+    expect(previewImport).toHaveBeenCalledTimes(1);
+
+    let retry!: Promise<void>;
+    act(() => {
+      retry = result.current.retryLastOperation();
+    });
+    expect(result.current.status).toBe('preparing');
+    expect(result.current.scanActivity.path).toBe(selection.path);
+    expect(result.current.scanActivity.label).toContain(selection.path);
+    expect(previewImport).toHaveBeenNthCalledWith(2, {
+      approvalId: selection.approvalId,
+    });
+    expect(listCollections).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishPreview({
+        modelCount: 1,
+        totalBytes: 1,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 1, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      });
+      await retry;
+    });
+    expect(openFolder).toHaveBeenCalledTimes(1);
+    expect(previewImport).toHaveBeenCalledTimes(2);
+    expect(listCollections).toHaveBeenCalledTimes(1);
+    expect(listTags).toHaveBeenCalledTimes(1);
+    expect(result.current.importDraft?.path).toBe(selection.path);
+
+    act(() => result.current.dismissScanFeedback());
+    expect(result.current.importDraft?.path).toBe(selection.path);
+    expect(previewImport).toHaveBeenCalledTimes(2);
+    expect(listCollections).toHaveBeenCalledTimes(1);
   });
 
   it('exposes the selected folder path while an import is running', async () => {
@@ -624,6 +759,128 @@ describe('useLibrary', () => {
     expect(result.current.scanningPath).toBeNull();
   });
 
+  it('retries a completed partial import on its source and replaces its report', async () => {
+    const selection = {
+      path: 'C:\\OneDrive\\Models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    };
+    const firstResult: ImportRootResponse = {
+      report: {
+        added: 1,
+        changed: 0,
+        unchanged: 2,
+        missing: 0,
+        hashErrors: 0,
+        cloudFilesSkipped: 1,
+        cloudDirectoriesSkipped: 1,
+        skippedEntries: {
+          cloudOnly: 2,
+          permissionDenied: 0,
+          unreadable: 0,
+          tooLarge: 0,
+        },
+        scanIssues: [
+          {
+            path: 'C:\\OneDrive\\Models\\online.stl',
+            kind: 'file',
+            reason: 'cloudOnly',
+            detail: 'The file is online-only.',
+          },
+        ],
+        scanIssuesTruncated: false,
+      },
+      modelsOrganized: 3,
+      collectionsCreated: 0,
+      collectionAssignments: 0,
+      tagAssignments: 0,
+      resolvedCollections: [],
+    };
+    const replacementResult: ImportRootResponse = {
+      ...firstResult,
+      report: {
+        added: 0,
+        changed: 1,
+        unchanged: 1,
+        missing: 0,
+        hashErrors: 0,
+      },
+    };
+    let finishRetry!: (value: ImportRootResponse) => void;
+    const retryPromise = new Promise<ImportRootResponse>((resolve) => {
+      finishRetry = resolve;
+    });
+    const openFolder = vi.fn().mockResolvedValue(selection);
+    const previewImport = vi.fn().mockResolvedValue({
+      modelCount: 3,
+      totalBytes: 3,
+      skippedErrors: 0,
+      complete: true,
+      formats: { stl: 3, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    });
+    const importRoot = vi
+      .fn()
+      .mockResolvedValueOnce(firstResult)
+      .mockReturnValueOnce(retryPromise);
+    const listModels = vi.fn().mockResolvedValue([]);
+    installApi({
+      openFolder,
+      previewImport,
+      importRoot,
+      listModels,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
+    await act(async () => result.current.addFolder());
+    const plan = {
+      rules: [
+        { relativePath: '', kind: 'collection' as const, name: 'Models' },
+      ],
+      commonTags: ['printable'],
+    };
+    await act(async () => result.current.confirmImport(plan));
+    expect(result.current.lastReport).toEqual(firstResult.report);
+    const firstReport = result.current.lastReport;
+    expect(firstReport).not.toBeNull();
+    expect(
+      (firstReport?.added ?? 0) +
+        (firstReport?.changed ?? 0) +
+        (firstReport?.unchanged ?? 0),
+    ).toBe(3);
+
+    act(() => result.current.dismissScanFeedback());
+    expect(result.current.scanFeedbackVisible).toBe(false);
+    expect(importRoot).toHaveBeenCalledTimes(1);
+    expect(previewImport).toHaveBeenCalledTimes(1);
+
+    let retry!: Promise<void>;
+    act(() => {
+      retry = result.current.retryLastOperation();
+    });
+    expect(result.current.status).toBe('scanning');
+    expect(result.current.scanningPath).toBe(selection.path);
+    expect(result.current.retryLabel).toBe('Retry import');
+    expect(importRoot).toHaveBeenNthCalledWith(2, {
+      rootId: rootIdForPath(selection.path),
+      approvalId: selection.approvalId,
+      ...plan,
+    });
+    await act(async () => {
+      finishRetry(replacementResult);
+      await retry;
+    });
+    expect(openFolder).toHaveBeenCalledTimes(1);
+    expect(previewImport).toHaveBeenCalledTimes(1);
+    expect(result.current.lastReport).toEqual(replacementResult.report);
+    expect(result.current.lastImport?.report).toEqual(replacementResult.report);
+    expect(result.current.scanFeedbackVisible).toBe(true);
+    expect(importRoot).toHaveBeenCalledTimes(2);
+  });
+
   it('does not scan when the folder dialog is cancelled', async () => {
     const openFolder = vi.fn().mockResolvedValue(null);
     const previewImport = vi.fn();
@@ -692,6 +949,72 @@ describe('useLibrary', () => {
     });
     expect(result.current.lastReport?.unchanged).toBe(1);
     expect(result.current.sourceRoots[0]?.status).toBe('available');
+  });
+
+  it('retains skipped paths and the catalog when a scan has a fatal policy failure', async () => {
+    const report = {
+      added: 0,
+      changed: 0,
+      unchanged: 0,
+      missing: 0,
+      hashErrors: 0,
+      failure: 'Could not restore dataless materialization policy.',
+      cloudFilesSkipped: 1,
+      scanIssues: [
+        {
+          path: 'C:\\models\\cloud.stl',
+          kind: 'file',
+          reason: 'cloudOnly',
+          detail: 'Online-only file.',
+        },
+      ],
+    };
+    const listModels = vi.fn().mockResolvedValue([model()]);
+    const scanRoot = vi.fn().mockResolvedValue(report);
+    const openFolder = vi.fn().mockResolvedValue({
+      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
+    installApi({ listModels, scanRoot, openFolder });
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.sourceRoots).toHaveLength(1));
+
+    await act(async () => {
+      expect(await result.current.rescanRoot('root-1')).toBeNull();
+    });
+
+    expect(result.current.error).toBe(report.failure);
+    expect(result.current.lastReport).toEqual(report);
+    expect(result.current.scanFeedbackVisible).toBe(true);
+    expect(result.current.models).toHaveLength(1);
+    expect(result.current.retryLabel).toBe('Retry scan');
+    expect(listModels).toHaveBeenCalledOnce();
+  });
+
+  it('labels fatal scan feedback without implying files were successfully indexed', () => {
+    render(
+      <ScanFeedback
+        data={{
+          added: 0,
+          failure: 'Could not restore dataless materialization policy.',
+          cloudFilesSkipped: 1,
+          scanIssues: [
+            {
+              path: 'C:\\models\\cloud.stl',
+              kind: 'file',
+              reason: 'cloudOnly',
+              detail: 'Online-only file.',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('Scan stopped; catalog unchanged.');
+    expect(screen.queryByText(/files? indexed/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Show skipped paths and details'));
+    expect(screen.getByText('C:\\models\\cloud.stl')).toBeVisible();
   });
 
   it('excludes removed source roots from the bounded library query', async () => {
@@ -782,7 +1105,43 @@ describe('smart import', () => {
     forgetImportPlan(draft.rootId);
   });
 
-  it('shows the skipped ZIP filename, actual size and limit without disabling import', () => {
+  it('explains all-cloud-only folders without describing them as empty', () => {
+    const onConfirm = vi.fn().mockResolvedValue(true);
+    render(
+      <ImportWizard
+        draft={{
+          ...draft,
+          preview: {
+            ...draft.preview,
+            modelCount: 0,
+            cloudFilesSkipped: 4,
+            cloudDirectoriesSkipped: 1,
+          },
+        }}
+        busy={false}
+        error={null}
+        onDismissError={vi.fn()}
+        onCancel={vi.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+    expect(
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('Cloud-only: 5 entries (4 files, 1 folder)');
+    expect(
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('Make cloud-only items available locally');
+    expect(
+      screen.getByText(/No locally available supported files/),
+    ).toHaveTextContent('preserved where availability could not be determined');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(
+      screen.queryByRole('status', { name: 'Scan results' }),
+    ).not.toBeInTheDocument();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('summarizes legacy oversized ZIP warnings and keeps per-file details collapsed', () => {
     const warning =
       'Skipped ZIP oversized.zip: on-disk size 536870913 bytes exceeds the 512 MiB limit (536870912 bytes).';
     render(
@@ -798,14 +1157,93 @@ describe('smart import', () => {
         onConfirm={vi.fn().mockResolvedValue(true)}
       />,
     );
-    expect(screen.getByRole('status')).toHaveTextContent(warning);
+    const feedback = screen.getByRole('status', { name: 'Scan results' });
+    expect(feedback).toHaveTextContent(
+      'Oversized ZIP archives: 1 skipped (512 MB limit)',
+    );
+    const details = screen.getByText('Show skipped paths and details');
+    expect(details.closest('details')).not.toHaveProperty('open', true);
+    fireEvent.click(details);
+    expect(feedback).toHaveTextContent('oversized.zip');
+    expect(feedback).toHaveTextContent('Size: 512 MB · limit: 512 MB');
+    expect(feedback).not.toHaveTextContent(warning);
     expect(
       screen.getByRole('button', { name: 'Import 3 files' }),
     ).toBeEnabled();
   });
 
+  it('shows bounded path-specific scan reasons and the configured ZIP limit', () => {
+    render(
+      <ImportWizard
+        draft={{
+          ...draft,
+          preview: {
+            ...draft.preview,
+            skippedEntries: {
+              cloudOnly: 1,
+              permissionDenied: 1,
+              unreadable: 1,
+              tooLarge: 1,
+            },
+            scanIssues: [
+              {
+                path: 'C:\\Models\\online.stl',
+                kind: 'file',
+                reason: 'cloudOnly',
+                detail: 'The file is not available offline.',
+              },
+              {
+                path: 'C:\\Models\\restricted',
+                kind: 'folder',
+                reason: 'permissionDenied',
+                detail: 'Access was denied.',
+              },
+              {
+                path: 'C:\\Models\\damaged.stl',
+                kind: 'file',
+                reason: 'unreadable',
+                detail: 'The file could not be read.',
+              },
+              {
+                path: 'C:\\Models\\large.zip',
+                kind: 'file',
+                reason: 'tooLarge',
+                detail: 'The ZIP is over the configured limit.',
+                sizeBytes: 128 * 1024 * 1024,
+                limitBytes: 64 * 1024 * 1024,
+              },
+            ],
+            scanIssuesTruncated: true,
+          },
+        }}
+        busy={false}
+        error={null}
+        onDismissError={vi.fn()}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(true)}
+      />,
+    );
+    const feedback = screen.getByRole('status', { name: 'Scan results' });
+    expect(feedback).toHaveTextContent('Cloud-only: 1 entry');
+    expect(feedback).toHaveTextContent('Permission denied: 1');
+    expect(feedback).toHaveTextContent('Unreadable: 1');
+    expect(feedback).toHaveTextContent(
+      'Oversized ZIP archives: 1 skipped (64 MB limit)',
+    );
+    expect(feedback).not.toHaveTextContent('512 MB limit');
+    fireEvent.click(screen.getByText('Show skipped paths and details'));
+    expect(feedback).toHaveTextContent(
+      'Path details are limited to the first 200 entries',
+    );
+    expect(feedback).toHaveTextContent('C:\\Models\\online.stl');
+    expect(feedback).toHaveTextContent('Make it available on this device');
+    expect(feedback).toHaveTextContent('Check its permissions');
+    expect(feedback).toHaveTextContent('Size: 128 MB · limit: 64 MB');
+  });
+
   it('dismisses an import error without cancelling the prepared import', () => {
     const onDismissError = vi.fn();
+    const onRetryScan = vi.fn();
     const onCancel = vi.fn();
     render(
       <ImportWizard
@@ -819,6 +1257,8 @@ describe('smart import', () => {
         busy={false}
         error="Import failed"
         onDismissError={onDismissError}
+        onRetryScan={onRetryScan}
+        retryLabel="Retry import"
         onCancel={onCancel}
         onConfirm={vi.fn().mockResolvedValue(true)}
       />,
@@ -827,10 +1267,13 @@ describe('smart import', () => {
     expect(screen.getByText('STEP')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent('Import failed');
     expect(screen.queryByText('Error details')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry import' }));
+    expect(onRetryScan).toHaveBeenCalledTimes(1);
     fireEvent.click(
       screen.getByRole('button', { name: 'Dismiss library error' }),
     );
     expect(onDismissError).toHaveBeenCalledTimes(1);
+    expect(onRetryScan).toHaveBeenCalledTimes(1);
     expect(onCancel).not.toHaveBeenCalled();
     expect(screen.getByRole('dialog')).toBeVisible();
   });

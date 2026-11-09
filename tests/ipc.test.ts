@@ -54,6 +54,52 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('accepts additive scan summaries and old sidecars without them', () => {
+    const oldPreview = {
+      modelCount: 0,
+      totalBytes: 0,
+      skippedErrors: 0,
+      complete: true,
+      formats: { stl: 0, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    };
+    expect(
+      ipcSchemas[IpcChannel.PreviewImport].response.parse(oldPreview).complete,
+    ).toBe(true);
+
+    const summary = {
+      cloudOnly: 2,
+      permissionDenied: 1,
+      unreadable: 3,
+      tooLarge: 1,
+    };
+    const issue = {
+      path: 'C:\\Models\\large.zip',
+      kind: 'file',
+      reason: 'tooLarge',
+      detail: 'The archive exceeded its configured limit.',
+      sizeBytes: 128 * 1024 * 1024,
+      limitBytes: 64 * 1024 * 1024,
+    };
+    const parsed = ipcSchemas[IpcChannel.PreviewImport].response.parse({
+      ...oldPreview,
+      skippedEntries: summary,
+      scanIssues: [issue],
+      scanIssuesTruncated: true,
+    });
+    expect(parsed.scanIssues?.[0]).toMatchObject({
+      sizeBytes: 128 * 1024 * 1024,
+      limitBytes: 64 * 1024 * 1024,
+    });
+    expect(() =>
+      ipcSchemas[IpcChannel.PreviewImport].response.parse({
+        ...oldPreview,
+        scanIssues: [{ ...issue, reason: 'unreadable', sizeBytes: 12 }],
+      }),
+    ).toThrow();
+  });
+
   it('accepts a valid app info response', () => {
     const value = ipcSchemas[IpcChannel.AppInfo].response.parse({
       contractVersion: IPC_CONTRACT_VERSION,

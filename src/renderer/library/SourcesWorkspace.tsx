@@ -1,19 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ResetCatalogResponse } from '@shared/ipc';
+import type { ReconcileReport, ResetCatalogResponse } from '@shared/ipc';
 import { Icon } from '../ui/Icon';
 import { reconcileHeadline, type SourceRootSummary } from './sourceRoots';
 import type { LibraryScanActivity } from './useLibrary';
 import { LibraryErrorAlert } from './LibraryErrorAlert';
+import { ScanFeedback } from './ScanFeedback';
 
 export interface SourcesWorkspaceProps {
   roots: SourceRootSummary[];
   modelCount: number;
   busy: boolean;
   error: string | null;
+  lastReport: ReconcileReport | null;
+  scanFeedbackVisible: boolean;
   scanActivity: LibraryScanActivity;
   onAddFolder: () => void;
   onRefresh: () => void;
   onDismissError: () => void;
+  onRetryScan: () => void;
+  retryLabel: string | null;
+  onDismissScanFeedback: () => void;
   onRescanRoot: (rootId: string) => void;
   onRemoveRoot: (rootId: string) => void;
   onResetCatalog: () => Promise<ResetCatalogResponse | null>;
@@ -24,10 +30,15 @@ export function SourcesWorkspace({
   modelCount,
   busy,
   error,
+  lastReport,
+  scanFeedbackVisible,
   scanActivity,
   onAddFolder,
   onRefresh,
   onDismissError,
+  onRetryScan,
+  retryLabel,
+  onDismissScanFeedback,
   onRescanRoot,
   onRemoveRoot,
   onResetCatalog,
@@ -103,7 +114,17 @@ export function SourcesWorkspace({
           error={error}
           className="catalog-sources-alert error"
           onDismiss={onDismissError}
-          onRetry={onRefresh}
+          onRetry={onRetryScan}
+          retryLabel={retryLabel}
+        />
+      ) : null}
+      {scanFeedbackVisible && lastReport ? (
+        <ScanFeedback
+          data={lastReport}
+          onRetry={onRetryScan}
+          retryLabel={retryLabel}
+          onDismiss={onDismissScanFeedback}
+          className="catalog-sources-scan-feedback"
         />
       ) : null}
       {resetSummary ? (
@@ -181,17 +202,6 @@ export function SourcesWorkspace({
                       </span>
                       <small title={root.path}>{root.path}</small>
                       <small>{sourceRootDetail(root)}</small>
-                      {root.lastReport?.archiveWarnings?.map(
-                        (warning, index) => (
-                          <p
-                            key={index}
-                            className="import-warning"
-                            role="status"
-                          >
-                            {warning}
-                          </p>
-                        ),
-                      )}
                     </div>
                   </div>
                   <div className="source-root-actions">

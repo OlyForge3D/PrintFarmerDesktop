@@ -216,7 +216,10 @@ fn open_archive_with_limit(
 }
 
 fn invalid_zip(error: zip::result::ZipError) -> io::Error {
-    invalid(format!("ZIP source error: {error}"))
+    match error {
+        zip::result::ZipError::Io(error) => error,
+        error => invalid(format!("ZIP source error: {error}")),
+    }
 }
 
 fn directory_bounds(mut file: &File) -> io::Result<(u64, u64)> {
@@ -449,7 +452,11 @@ pub fn hash_sources_with_limit(
             Ok(archive) => archive,
             Err(error) => {
                 for (path, _) in members {
-                    results.push((path, Err(invalid(error.to_string()))));
+                    let copy = match error.raw_os_error() {
+                        Some(code) => io::Error::from_raw_os_error(code),
+                        None => io::Error::new(error.kind(), error.to_string()),
+                    };
+                    results.push((path, Err(copy)));
                 }
                 continue;
             }
@@ -759,7 +766,8 @@ mod tests {
         let scan = scan_root(root.path(), &AtomicBool::new(false));
         assert_eq!(
             crate::catalog::hash_changed_files(&store, "root", &scan)
-                .0
+                .unwrap()
+                .hashes
                 .len(),
             usize::from(!cfg!(unix))
         );
@@ -1072,7 +1080,8 @@ mod tests {
         let scan = scan_root(root.path(), &AtomicBool::new(false));
         assert_eq!(
             crate::catalog::hash_changed_files(&store, "root", &scan)
-                .0
+                .unwrap()
+                .hashes
                 .len(),
             usize::from(!cfg!(unix))
         );
@@ -1093,7 +1102,8 @@ mod tests {
         let scan = scan_root(root.path(), &AtomicBool::new(false));
         assert_eq!(
             crate::catalog::hash_changed_files(&store, "root", &scan)
-                .0
+                .unwrap()
+                .hashes
                 .len(),
             usize::from(!cfg!(unix))
         );

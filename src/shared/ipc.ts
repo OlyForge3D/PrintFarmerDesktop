@@ -655,6 +655,46 @@ export const LogicalModel = z.object({
 export type LogicalModel = z.infer<typeof LogicalModel>;
 
 /** Summary of one reconciliation pass over a source root. */
+export const ScanSkippedEntries = z
+  .object({
+    cloudOnly: z.number().int().nonnegative(),
+    permissionDenied: z.number().int().nonnegative(),
+    unreadable: z.number().int().nonnegative(),
+    tooLarge: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ScanSkippedEntries = z.infer<typeof ScanSkippedEntries>;
+
+const ScanIssueBase = {
+  path: z.string(),
+  kind: z.enum(['file', 'folder']),
+  detail: z.string(),
+};
+
+export const ScanIssue = z.discriminatedUnion('reason', [
+  z.object({ ...ScanIssueBase, reason: z.literal('cloudOnly') }).strict(),
+  z
+    .object({ ...ScanIssueBase, reason: z.literal('permissionDenied') })
+    .strict(),
+  z.object({ ...ScanIssueBase, reason: z.literal('unreadable') }).strict(),
+  z
+    .object({
+      ...ScanIssueBase,
+      reason: z.literal('tooLarge'),
+      sizeBytes: z.number().int().nonnegative().optional(),
+      limitBytes: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+]);
+export type ScanIssue = z.infer<typeof ScanIssue>;
+
+/** Details for skipped paths are capped by the sidecar; counts cover the full scan. */
+const ScanIssueSummaryFields = {
+  skippedEntries: ScanSkippedEntries.optional(),
+  scanIssues: z.array(ScanIssue).max(200).optional(),
+  scanIssuesTruncated: z.boolean().optional(),
+};
+
 export const ReconcileReport = z.object({
   added: z.number().int().nonnegative(),
   changed: z.number().int().nonnegative(),
@@ -662,7 +702,11 @@ export const ReconcileReport = z.object({
   missing: z.number().int().nonnegative(),
   hashErrors: z.number().int().nonnegative(),
   scanErrors: z.number().int().nonnegative().optional(),
+  cloudFilesSkipped: z.number().int().nonnegative().optional(),
+  cloudDirectoriesSkipped: z.number().int().nonnegative().optional(),
+  failure: z.string().optional(),
   archiveWarnings: z.array(z.string()).optional(),
+  ...ScanIssueSummaryFields,
 });
 export type ReconcileReport = z.infer<typeof ReconcileReport>;
 
@@ -696,8 +740,12 @@ export const ImportPreviewResponse = z.object({
   modelCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   skippedErrors: z.number().int().nonnegative(),
+  cloudFilesSkipped: z.number().int().nonnegative().optional(),
+  cloudDirectoriesSkipped: z.number().int().nonnegative().optional(),
+  ...ScanIssueSummaryFields,
   archiveWarnings: z.array(z.string()).optional(),
   complete: z.boolean(),
+  failure: z.string().optional(),
   formats: z.object({
     stl: z.number().int().nonnegative(),
     threeMf: z.number().int().nonnegative(),

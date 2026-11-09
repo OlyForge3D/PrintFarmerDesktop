@@ -886,7 +886,7 @@ fn dispatch(
             let report = reconcile_root(store, &params.root_id, &scan);
             let mut value = serde_json::to_value(ReconcileReportDto::from(&report))
                 .map_err(|e| format!("failed to serialize reconcile report: {e}"))?;
-            value["scanErrors"] = serde_json::json!(scan.skipped_errors);
+            value["scanErrors"] = serde_json::json!(report.scan_errors);
             Ok(value)
         }
         "previewImport" => {
@@ -2013,6 +2013,54 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_archive_keeps_preview_import_and_scan_rpc_successful() {
+        let dir = tempfile::tempdir().unwrap();
+        let failed = dir.path().join("corrupt.zip");
+        std::fs::write(&failed, b"not a ZIP archive").unwrap();
+        std::fs::write(dir.path().join("local.stl"), b"local").unwrap();
+        for method in ["previewImport", "importRoot", "scanRoot"] {
+            let mut store = InMemoryCatalog::new();
+            let request = serde_json::json!({
+                "id": 21,
+                "method": method,
+                "params": {
+                    "path": dir.path().to_string_lossy(),
+                    "rootId": "root",
+                    "rules": [],
+                    "commonTags": []
+                }
+            });
+            let value: Value =
+                serde_json::from_str(&handle_line(&mut store, &request.to_string()).unwrap())
+                    .unwrap();
+            assert_eq!(value["ok"], true, "{method}: {value}");
+            let report = if method == "importRoot" {
+                &value["result"]["report"]
+            } else {
+                &value["result"]
+            };
+            assert_eq!(report["skippedEntries"]["unreadable"], 1);
+            assert_eq!(report["scanIssues"][0]["reason"], "unreadable");
+            assert_eq!(
+                report["scanIssues"][0]["path"],
+                failed.to_string_lossy().as_ref()
+            );
+            assert!(!report["scanIssues"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .is_empty());
+            if method == "previewImport" {
+                assert_eq!(report["complete"], true);
+                assert_eq!(report["modelCount"], 1);
+                assert!(store.models().is_empty());
+            } else {
+                assert_eq!(report["added"], 1);
+                assert_eq!(store.models().len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn oversized_zip_warning_is_consistent_across_preview_import_and_scan() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("oversized.zip");
@@ -2043,6 +2091,21 @@ mod tests {
                 &value["result"]
             };
             warnings.push(report["archiveWarnings"].clone());
+            assert_eq!(report["skippedEntries"]["tooLarge"], 1);
+            assert_eq!(report["scanIssues"][0]["reason"], "tooLarge");
+            assert_eq!(
+                report["scanIssues"][0]["path"],
+                path.to_string_lossy().as_ref()
+            );
+            assert_eq!(
+                report["scanIssues"][0]["limitBytes"],
+                crate::archive::MAX_ARCHIVE_BYTES
+            );
+            assert_eq!(
+                report["scanIssues"][0]["sizeBytes"],
+                crate::archive::MAX_ARCHIVE_BYTES + 1
+            );
+            assert_eq!(report["scanIssuesTruncated"], false);
             if method == "previewImport" {
                 assert_eq!(report["complete"], true);
                 assert_eq!(report["skippedErrors"], 0);
