@@ -1129,6 +1129,11 @@ select:disabled {
 .scan-feedback-actions button {
   min-height: 28px;
   padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
 }
 
 .scan-feedback-details {

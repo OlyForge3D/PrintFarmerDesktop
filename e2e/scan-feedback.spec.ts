@@ -5,11 +5,14 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { execFileSync } from 'node:child_process';
 import {
   closeSync,
   copyFileSync,
   existsSync,
   ftruncateSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -48,22 +51,26 @@ test('many skipped ZIPs keep import actions reachable while details scroll', asy
     path.join(modelFixtureDirectory, modelFixtureName),
     path.join(source, 'local.obj'),
   );
-  for (let index = 0; index < 225; index += 1) {
-    const file = openSync(
-      path.join(source, `archive-${index}-${'long-name-'.repeat(12)}.zip`),
-      'w',
-    );
-    try {
-      // Sparse fixtures: metadata crosses the cap without allocating ZIP data.
-      ftruncateSync(file, 512 * 1024 * 1024 + 1);
-    } finally {
-      closeSync(file);
-    }
-  }
   const log = createPackagedProcessLog();
   const trace = createPackagedStartupTrace();
   let launched: Awaited<ReturnType<typeof electron.launch>> | null = null;
   try {
+    const archivePath = (index: number) =>
+      path.join(source, `archive-${index}-${'long-name-'.repeat(12)}.zip`);
+    const firstArchive = archivePath(0);
+    const file = openSync(firstArchive, 'w');
+    try {
+      // NTFS needs an explicit sparse flag before extending the file.
+      if (process.platform === 'win32') {
+        execFileSync('fsutil.exe', ['sparse', 'setflag', firstArchive]);
+      }
+      ftruncateSync(file, 512 * 1024 * 1024 + 1);
+    } finally {
+      closeSync(file);
+    }
+    for (let index = 1; index < 225; index += 1) {
+      linkSync(firstArchive, archivePath(index));
+    }
     const result = await launchInstrumentedElectronTestApp<
       Page,
       ElectronApplication
@@ -173,6 +180,13 @@ test('many skipped ZIPs keep import actions reachable while details scroll', asy
           (await page.evaluate(() => window.printFarmer.listModels())).length,
       )
       .toBe(1);
+    await expect(page.locator('.scan-feedback-actions button')).toHaveCount(2);
+    const contrast = await new AxeBuilder({ page })
+      .setLegacyMode()
+      .include('.scan-feedback')
+      .withRules(['color-contrast'])
+      .analyze();
+    expect(contrast.violations).toEqual([]);
     await page.screenshot({
       path: testInfo.outputPath('scan-import-completed.png'),
     });
