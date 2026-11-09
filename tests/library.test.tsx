@@ -950,6 +950,46 @@ describe('useLibrary', () => {
     expect(result.current.sourceRoots[0]?.status).toBe('available');
   });
 
+  it('retains skipped paths and the catalog when a scan has a fatal policy failure', async () => {
+    const report = {
+      added: 0,
+      changed: 0,
+      unchanged: 0,
+      missing: 0,
+      hashErrors: 0,
+      failure: 'Could not restore dataless materialization policy.',
+      cloudFilesSkipped: 1,
+      scanIssues: [
+        {
+          path: 'C:\\models\\cloud.stl',
+          kind: 'file',
+          reason: 'cloudOnly',
+          detail: 'Online-only file.',
+        },
+      ],
+    };
+    const listModels = vi.fn().mockResolvedValue([model()]);
+    const scanRoot = vi.fn().mockResolvedValue(report);
+    const openFolder = vi.fn().mockResolvedValue({
+      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
+    installApi({ listModels, scanRoot, openFolder });
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.sourceRoots).toHaveLength(1));
+
+    await act(async () => {
+      expect(await result.current.rescanRoot('root-1')).toBeNull();
+    });
+
+    expect(result.current.error).toBe(report.failure);
+    expect(result.current.lastReport).toEqual(report);
+    expect(result.current.scanFeedbackVisible).toBe(true);
+    expect(result.current.models).toHaveLength(1);
+    expect(result.current.retryLabel).toBe('Retry scan');
+    expect(listModels).toHaveBeenCalledOnce();
+  });
+
   it('excludes removed source roots from the bounded library query', async () => {
     const queryModels = vi
       .fn<PrintFarmerApi['queryModels']>()

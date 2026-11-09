@@ -162,27 +162,25 @@ impl ScanResult {
 /// Recursively scan `root` for model files. `cancel` is polled between entries
 /// so long scans of large trees can be stopped promptly.
 pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
-    match crate::file_availability::without_materialization(|| {
-        Ok(scan_root_with_metadata(root, cancel, |path| {
+    let mut result = ScanResult::default();
+    let protected = crate::file_availability::without_materialization(|| {
+        result = scan_root_with_metadata(root, cancel, |path| {
             let metadata = std::fs::symlink_metadata(path)?;
             let cloud_only = crate::file_availability::is_cloud_only(&metadata);
             Ok((metadata, cloud_only))
-        }))
-    }) {
-        Ok(result) => result,
-        Err(error) => {
-            eprintln!(
-                "failed to scan {} without downloading files: {error}",
-                root.display()
-            );
-            ScanResult {
-                skipped_errors: 1,
-                failure: Some(error.to_string()),
-                failed_paths: vec![root.to_path_buf()],
-                ..ScanResult::default()
-            }
-        }
+        });
+        Ok(())
+    });
+    if let Err(error) = protected {
+        eprintln!(
+            "failed to scan {} without downloading files: {error}",
+            root.display()
+        );
+        result.skipped_errors += 1;
+        result.failure = Some(error.to_string());
+        result.failed_paths.push(root.to_path_buf());
     }
+    result
 }
 
 pub(crate) fn scan_root_with_metadata(

@@ -382,6 +382,48 @@ describe('RetargetArtifactService', () => {
     });
   });
 
+  it('reports a fatal scan result as a refresh warning without undoing a saved model', async () => {
+    const { service, showSaveDialog, sourceHash, root, sidecar } =
+      await fixture();
+    const preflight = (await service.preflight(1, {
+      modelHash: sourceHash,
+      rootId: 'root-1',
+      profileId,
+      objectExclusion: false,
+    })) as { status: 'ok'; value: { token: string } };
+    await service.build(1, {
+      token: preflight.value.token,
+      profileId,
+      objectExclusion: false,
+    });
+    const destination = path.join(root, 'saved.3mf');
+    showSaveDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePath: destination,
+    });
+    const listed = await sidecar.listModels();
+    for (const model of listed) {
+      for (const location of model.locations) {
+        location.path = await realpath(location.path);
+      }
+    }
+    sidecar.listModels.mockResolvedValue(listed);
+    sidecar.scanRoot.mockResolvedValueOnce({
+      failure: 'Could not restore dataless materialization policy.',
+    });
+    await expect(
+      service.saveAs(1, preflight.value.token, {} as BrowserWindow),
+    ).resolves.toMatchObject({
+      status: 'ok',
+      refreshWarning: {
+        code: 'internalError',
+        message: 'The model was saved, but the catalog could not be refreshed.',
+      },
+    });
+    expect(sidecar.scanRoot).toHaveBeenCalledOnce();
+    expect(await readFile(destination, 'utf8')).toBe('retargeted');
+  });
+
   it('preserves source bytes through sidecar failure, recovery, validation failure, and restart', async () => {
     const first = await fixture();
     const firstPreflight = (await first.service.preflight(1, {

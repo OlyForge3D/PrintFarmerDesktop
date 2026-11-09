@@ -667,13 +667,13 @@ export function useLibrary(
           rootId: root.rootId,
           approvalId,
         });
+        setLastImport(null);
+        setLastReport(report);
+        setScanFeedbackVisible(true);
         if (report.failure) {
           setError(report.failure);
           return null;
         }
-        setLastImport(null);
-        setLastReport(report);
-        setScanFeedbackVisible(true);
         rememberRoot(root.rootId, root.path, approvalId, report);
         await loadCatalog({ preserveStatus: true, throwOnError: true });
         return report;

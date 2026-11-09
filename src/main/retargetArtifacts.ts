@@ -490,7 +490,13 @@ export class RetargetArtifactService {
         }))
         .find((item) => isWithin(item.rootPath, destination));
       if (!root) return null;
-      await this.options.sidecar.scanRoot(root.rootId, root.rootPath);
+      const report = z
+        .object({ failure: z.string().optional() })
+        .passthrough()
+        .parse(await this.options.sidecar.scanRoot(root.rootId, root.rootPath));
+      if (report.failure) {
+        throw new Error(report.failure);
+      }
       return null;
     } catch {
       return electronFailure(

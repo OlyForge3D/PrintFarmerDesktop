@@ -856,11 +856,6 @@ fn dispatch(
             let scan =
                 crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
             let report = reconcile_root(store, &params.root_id, &scan);
-            if let Some(error) = &report.failure {
-                return Err(format!(
-                    "could not scan without downloading cloud files: {error}"
-                ));
-            }
             let mut value = serde_json::to_value(ReconcileReportDto::from(&report))
                 .map_err(|e| format!("failed to serialize reconcile report: {e}"))?;
             value["scanErrors"] = serde_json::json!(report.scan_errors);
@@ -1978,6 +1973,54 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("invalid scanRoot params"));
+    }
+
+    #[test]
+    fn unreadable_archive_keeps_preview_import_and_scan_rpc_successful() {
+        let dir = tempfile::tempdir().unwrap();
+        let failed = dir.path().join("corrupt.zip");
+        std::fs::write(&failed, b"not a ZIP archive").unwrap();
+        std::fs::write(dir.path().join("local.stl"), b"local").unwrap();
+        for method in ["previewImport", "importRoot", "scanRoot"] {
+            let mut store = InMemoryCatalog::new();
+            let request = serde_json::json!({
+                "id": 21,
+                "method": method,
+                "params": {
+                    "path": dir.path().to_string_lossy(),
+                    "rootId": "root",
+                    "rules": [],
+                    "commonTags": []
+                }
+            });
+            let value: Value =
+                serde_json::from_str(&handle_line(&mut store, &request.to_string()).unwrap())
+                    .unwrap();
+            assert_eq!(value["ok"], true, "{method}: {value}");
+            let report = if method == "importRoot" {
+                &value["result"]["report"]
+            } else {
+                &value["result"]
+            };
+            assert_eq!(report["skippedEntries"]["unreadable"], 1);
+            assert_eq!(report["scanIssues"][0]["reason"], "unreadable");
+            assert_eq!(
+                report["scanIssues"][0]["path"],
+                failed.to_string_lossy().as_ref()
+            );
+            assert!(!report["scanIssues"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .is_empty());
+            if method == "previewImport" {
+                assert_eq!(report["complete"], true);
+                assert_eq!(report["modelCount"], 1);
+                assert!(store.models().is_empty());
+            } else {
+                assert_eq!(report["added"], 1);
+                assert_eq!(store.models().len(), 1);
+            }
+        }
     }
 
     #[test]

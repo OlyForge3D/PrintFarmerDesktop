@@ -1159,13 +1159,19 @@ pub fn reconcile_root<S: CatalogStore + ?Sized>(
     scan: &ScanResult,
 ) -> ReconcileReport {
     if let Some(error) = &scan.failure {
-        return ReconcileReport {
-            scan_errors: scan.skipped_errors,
-            failure: Some(error.clone()),
-            ..ReconcileReport::default()
-        };
+        return failed_scan_report(scan, error.clone(), 0);
     }
-    match hash_changed_files(store, root_id, scan) {
+    let staged = hash_changed_files(store, root_id, scan);
+    reconcile_staged(store, root_id, scan, staged)
+}
+
+fn reconcile_staged<S: CatalogStore + ?Sized>(
+    store: &mut S,
+    root_id: &str,
+    scan: &ScanResult,
+    staged: std::io::Result<StagedHashes>,
+) -> ReconcileReport {
+    match staged {
         Ok(staged) => {
             let mut report =
                 reconcile_root_with_hashes(store, root_id, &staged.scan, &staged.hashes);
@@ -1174,12 +1180,26 @@ pub fn reconcile_root<S: CatalogStore + ?Sized>(
         }
         Err(error) => {
             eprintln!("failed to reconcile without downloading files: {error}");
-            ReconcileReport {
-                scan_errors: scan.skipped_errors + 1,
-                failure: Some(error.to_string()),
-                ..ReconcileReport::default()
-            }
+            failed_scan_report(scan, error.to_string(), 1)
         }
+    }
+}
+
+fn failed_scan_report(
+    scan: &ScanResult,
+    failure: String,
+    additional_errors: usize,
+) -> ReconcileReport {
+    ReconcileReport {
+        scan_errors: scan.skipped_errors + additional_errors,
+        failure: Some(failure),
+        archive_warnings: scan.archive_warnings.clone(),
+        cloud_files_skipped: scan.cloud_files.len(),
+        cloud_directories_skipped: scan.cloud_directories.len(),
+        skipped_entries: scan.skipped_entries.clone(),
+        scan_issues: scan.scan_issues.clone(),
+        scan_issues_truncated: scan.scan_issues_truncated,
+        ..ReconcileReport::default()
     }
 }
 
@@ -3860,6 +3880,81 @@ mod tests {
         assert_eq!(
             staged.scan.scan_issues[0].path,
             dir.path().join("denied.stl").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn ordinary_hash_failure_keeps_partial_reconcile_report_successful() {
+        let dir = tempfile::tempdir().unwrap();
+        let failed = dir.path().join("failed.stl");
+        write(&failed, b"old");
+        let mut store = InMemoryCatalog::new();
+        reconcile_root(&mut store, "root", &scan(dir.path()));
+        write(&failed, b"changed");
+        write(&dir.path().join("local.stl"), b"local");
+        let next = scan(dir.path());
+        fs::remove_file(&failed).unwrap();
+
+        let report = reconcile_root(&mut store, "root", &next);
+
+        assert!(report.failure.is_none());
+        assert_eq!(report.added, 1);
+        assert_eq!(report.hash_errors, 1);
+        assert_eq!(report.missing, 0);
+        assert_eq!(report.skipped_entries.unreadable, 1);
+        assert_eq!(report.scan_issues[0].path, failed.to_string_lossy());
+        assert!(store.get_location("root", &failed).unwrap().available);
+    }
+
+    #[test]
+    fn systemic_policy_failure_stops_reconciliation_without_mutation() {
+        let mut store = InMemoryCatalog::new();
+        let scan = ScanResult {
+            failure: Some("could not restore dataless materialization policy".to_string()),
+            skipped_errors: 1,
+            ..ScanResult::default()
+        };
+        let report = reconcile_root(&mut store, "root", &scan);
+        assert_eq!(report.failure, scan.failure);
+        assert!(store.models().is_empty());
+        let healthy = tempfile::tempdir().unwrap();
+        write(&healthy.path().join("local.stl"), b"local");
+        let next = reconcile_root(
+            &mut store,
+            "healthy-root",
+            &scan_root(healthy.path(), &AtomicBool::new(false)),
+        );
+        assert!(next.failure.is_none());
+        assert_eq!(next.added, 1);
+        assert_eq!(store.models()[0].locations[0].root_id, "healthy-root");
+    }
+
+    #[test]
+    fn second_policy_failure_preserves_collected_skip_details_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("local.stl"), b"local");
+        let mut scan = scan(dir.path());
+        let cloud = dir.path().join("cloud.stl");
+        scan.cloud_skip(&cloud, false);
+        let mut store = InMemoryCatalog::new();
+        let failure = "could not restore dataless materialization policy";
+        let report = reconcile_staged(
+            &mut store,
+            "root",
+            &scan,
+            Err(std::io::Error::other(failure)),
+        );
+        assert_eq!(report.failure.as_deref(), Some(failure));
+        assert_eq!(report.added + report.changed + report.unchanged, 0);
+        assert_eq!(report.cloud_files_skipped, 1);
+        assert_eq!(report.scan_issues, scan.scan_issues);
+        assert_eq!(report.skipped_entries, scan.skipped_entries);
+        assert!(store.models().is_empty());
+        let wire = serde_json::to_value(crate::rpc::ReconcileReportDto::from(&report)).unwrap();
+        assert_eq!(wire["failure"], failure);
+        assert_eq!(
+            wire["scanIssues"][0]["path"],
+            cloud.to_string_lossy().as_ref()
         );
     }
 
