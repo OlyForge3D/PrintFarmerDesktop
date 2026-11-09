@@ -1905,7 +1905,8 @@ describe('<App />', () => {
     const progress = within(dialog).getByRole('status', {
       name: 'Import progress',
     });
-    expect(progress).toHaveTextContent('Importing 2,277 files');
+    expect(progress).toHaveTextContent('Importing source');
+    expect(progress).toHaveTextContent('2,277 files found during preview.');
     await waitFor(() =>
       expect(progress).toHaveTextContent(
         'Rescanning the source folder and applying organization rules',
@@ -1914,7 +1915,7 @@ describe('<App />', () => {
     expect(within(dialog).getByRole('progressbar')).not.toHaveAttribute(
       'value',
     );
-    expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expect(progress.closest('[aria-busy="true"]')).toBeNull();
     expect(importRoot).toHaveBeenCalledTimes(1);
 
     gateRefresh = true;
@@ -2014,7 +2015,7 @@ describe('<App />', () => {
       expect(within(dialog).queryByRole('progressbar')).not.toBeInTheDocument(),
     );
     expect(dialog).toHaveTextContent('The source folder could not be scanned.');
-    expect(dialog).toHaveAttribute('aria-busy', 'false');
+    expect(dialog.querySelector('[aria-busy="true"]')).toBeNull();
     expect(
       within(dialog).getByRole('status', { name: 'Import progress' }),
     ).toBeEmptyDOMElement();

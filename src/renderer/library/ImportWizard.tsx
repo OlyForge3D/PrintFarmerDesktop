@@ -57,6 +57,8 @@ export function ImportWizard({
   const dialogRef = useRef<HTMLElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
+  const importButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasBusyRef = useRef(false);
   const plan = useMemo(() => buildImportPlan(choices), [choices]);
   const namedRulesAreValid =
     (!choices.rootCollection ||
@@ -94,6 +96,13 @@ export function ImportWizard({
       if (event.key !== 'Tab') {
         return;
       }
+      if (busy) {
+        // Every control is disabled while importing; the progress region is
+        // the only focus stop that keeps focus inside the modal.
+        event.preventDefault();
+        progressRef.current?.focus();
+        return;
+      }
       const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
       );
@@ -116,7 +125,7 @@ export function ImportWizard({
         dialogRef.current &&
         !dialogRef.current.contains(event.target)
       ) {
-        cancelRef.current?.focus();
+        (busy ? progressRef.current : cancelRef.current)?.focus();
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -134,8 +143,20 @@ export function ImportWizard({
   useEffect(() => {
     if (!busy) {
       setStartedAt(null);
+      if (wasBusyRef.current) {
+        wasBusyRef.current = false;
+        // The import ended without closing the wizard (a failure). Move focus
+        // off the now-empty progress region to the error's action, or to the
+        // re-enabled Import button.
+        const target =
+          dialogRef.current?.querySelector<HTMLElement>(
+            '.import-alert button',
+          ) ?? importButtonRef.current;
+        target?.focus();
+      }
       return;
     }
+    wasBusyRef.current = true;
     setStartedAt((current) => current ?? Date.now());
     // Every dialog control is disabled while importing, so keep focus inside
     // the dialog on the progress region instead of letting it fall to <body>.
@@ -182,7 +203,6 @@ export function ImportWizard({
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-wizard-title"
-        aria-busy={busy}
       >
         <header className="import-header">
           <div>
@@ -203,7 +223,9 @@ export function ImportWizard({
           </button>
         </header>
 
-        <div className="import-body">
+        {/* aria-busy stays off the progress live region so stage changes are
+            announced while the import runs. */}
+        <div className="import-body" aria-busy={busy}>
           <div className="import-summary" aria-label="Import summary">
             <SummaryStat label="Model files" value={draft.preview.modelCount} />
             <SummaryStat
@@ -497,7 +519,7 @@ export function ImportWizard({
           ) : null}
         </div>
 
-        <footer className="import-footer">
+        <footer className="import-footer" aria-busy={busy}>
           <label>
             <input
               type="checkbox"
@@ -518,6 +540,7 @@ export function ImportWizard({
             </button>
             <button
               type="button"
+              ref={importButtonRef}
               className="import-primary"
               disabled={!canImport}
               onClick={() => {
@@ -558,16 +581,24 @@ function importProgressText(
       detail: 'Import finished. Loading the updated catalog.',
     };
   }
-  const heading =
+  if (stage === 'checking') {
+    return {
+      heading: 'Checking library',
+      detail:
+        'The import did not finish normally. Checking the catalog before reporting the error.',
+    };
+  }
+  // The preview count can be stale: importRoot rescans the source itself.
+  const previewCount =
     modelCount === 0
-      ? 'Reconciling source'
-      : `Importing ${modelCount.toLocaleString()} ${modelCount === 1 ? 'file' : 'files'}`;
+      ? 'No model files were found during preview.'
+      : `${modelCount.toLocaleString()} ${modelCount === 1 ? 'file' : 'files'} found during preview.`;
   return {
-    heading,
+    heading: modelCount === 0 ? 'Reconciling source' : 'Importing source',
     detail:
       stage === 'importing'
-        ? 'Rescanning the source folder and applying organization rules. Large libraries can take several minutes; per-file progress is not available.'
-        : 'Starting import.',
+        ? `${previewCount} Rescanning the source folder and applying organization rules. Large libraries can take several minutes; per-file progress is not available.`
+        : `${previewCount} Starting import.`,
   };
 }
 

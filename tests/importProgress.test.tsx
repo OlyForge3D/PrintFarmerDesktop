@@ -98,7 +98,7 @@ describe('import wizard progress', () => {
     );
     expect(progressStatus()).toBeEmptyDOMElement();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'false');
+    expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-busy');
   });
 
   it('shows an indeterminate state immediately on submit and ignores repeat clicks', async () => {
@@ -122,16 +122,32 @@ describe('import wizard progress', () => {
     fireEvent.click(importButton);
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
-    expect(progressStatus()).toHaveTextContent('Importing 2,277 files');
+    expect(progressStatus()).toHaveTextContent('Importing source');
+    expect(progressStatus()).toHaveTextContent(
+      '2,277 files found during preview.',
+    );
     expect(progressStatus()).toHaveTextContent('Starting import.');
     const bar = screen.getByRole('progressbar');
     expect(bar).not.toHaveAttribute('value');
     expect(bar).not.toHaveAttribute('aria-valuenow');
-    expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true');
+    // The live region must not sit inside an aria-busy subtree, or stage
+    // changes may not be announced until the import ends.
+    expect(progressStatus().closest('[aria-busy="true"]')).toBeNull();
+    expect(document.querySelector('.import-body')).toHaveAttribute(
+      'aria-busy',
+      'true',
+    );
     expect(screen.getByRole('button', { name: 'Importing...' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
     expect(screen.getByRole('dialog')).not.toHaveTextContent(/\d+\s*%/);
-    expect(document.activeElement).toBe(progressStatus().parentElement);
+    const region = progressStatus().parentElement;
+    expect(document.activeElement).toBe(region);
+    // Tab and Shift+Tab stay on the progress region while every control is
+    // disabled, instead of escaping the modal.
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(region);
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(region);
 
     await act(async () => {
       pending.resolve(false);
@@ -139,9 +155,33 @@ describe('import wizard progress', () => {
     });
     expect(progressStatus()).toBeEmptyDOMElement();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Import 2277 files' }),
-    ).toBeEnabled();
+    const reenabled = screen.getByRole('button', { name: 'Import 2277 files' });
+    expect(reenabled).toBeEnabled();
+    expect(reenabled).toHaveFocus();
+  });
+
+  it('moves focus to the error action when an import fails in place', async () => {
+    const pending = deferred<boolean>();
+    const props = {
+      draft,
+      busy: false,
+      onCancel: vi.fn(),
+      onDismissError: vi.fn(),
+      onRetryScan: vi.fn(),
+      retryLabel: 'Retry import',
+      onConfirm: vi.fn().mockReturnValue(pending.promise),
+    };
+    const { rerender } = render(<ImportWizard {...props} error={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 2277 files' }));
+    rerender(<ImportWizard {...props} error="Scan policy refused root." />);
+    await act(async () => {
+      pending.resolve(false);
+      await pending.promise;
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Scan policy refused root.',
+    );
+    expect(screen.getByRole('button', { name: 'Retry import' })).toHaveFocus();
   });
 
   it('clears the running state when the confirm handler throws', async () => {
@@ -161,9 +201,9 @@ describe('import wizard progress', () => {
     await waitFor(() =>
       expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(),
     );
-    expect(
-      screen.getByRole('button', { name: 'Import 2277 files' }),
-    ).toBeEnabled();
+    const reenabled = screen.getByRole('button', { name: 'Import 2277 files' });
+    expect(reenabled).toBeEnabled();
+    expect(reenabled).toHaveFocus();
   });
 
   it('reports truthful stages and a running elapsed time without a percentage', () => {
@@ -223,6 +263,29 @@ describe('import wizard progress', () => {
       />,
     );
     expect(progressStatus()).toHaveTextContent('Reconciling source');
+    expect(progressStatus()).toHaveTextContent(
+      'No model files were found during preview.',
+    );
+  });
+
+  it('does not claim success while checking the catalog after a failure', () => {
+    render(
+      <ImportWizard
+        draft={draft}
+        busy
+        importStage="checking"
+        error={null}
+        onCancel={vi.fn()}
+        onDismissError={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+    expect(progressStatus()).toHaveTextContent('Checking library');
+    expect(progressStatus()).toHaveTextContent(
+      'The import did not finish normally.',
+    );
+    expect(progressStatus()).not.toHaveTextContent('Import finished');
+    expect(progressStatus()).not.toHaveTextContent('Rescanning');
   });
 });
 
@@ -303,15 +366,32 @@ describe('library import stages', () => {
     expect(result.current.importDraft).not.toBeNull();
   });
 
-  it('clears the import stage when the import request rejects', async () => {
-    const importRoot = vi.fn().mockRejectedValue(new Error('sidecar exited'));
-    const { listModels } = setup(importRoot);
+  it('reports a checking stage during recovery and clears it when the import request rejects', async () => {
+    const importGate = deferred<ImportRootResponse>();
+    const importRoot = vi.fn().mockReturnValue(importGate.promise);
+    const { listModels, refreshGate, gateRefresh } = setup(importRoot);
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(listModels).toHaveBeenCalled());
     await act(async () => result.current.addFolder());
-    await act(async () =>
-      result.current.confirmImport({ rules: [], commonTags: [] }),
+
+    let confirm!: Promise<ImportRootResponse | null>;
+    act(() => {
+      confirm = result.current.confirmImport({ rules: [], commonTags: [] });
+    });
+    gateRefresh.on = true;
+    await act(async () => {
+      importGate.reject(new Error('sidecar exited'));
+      await importGate.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(result.current.scanActivity.importStage).toBe('checking'),
     );
+    expect(result.current.status).toBe('scanning');
+
+    await act(async () => {
+      refreshGate.resolve([]);
+      await confirm;
+    });
     expect(result.current.error).toBe('sidecar exited');
     expect(result.current.status).toBe('idle');
     expect(result.current.scanActivity.importStage).toBeUndefined();

@@ -46,7 +46,7 @@ export interface LibraryScanActivity {
   importStage?: ImportStage;
 }
 
-export type ImportStage = 'importing' | 'refreshing';
+export type ImportStage = 'importing' | 'refreshing' | 'checking';
 
 export interface ImportDraft {
   rootId: string;
@@ -583,6 +583,11 @@ export function useLibrary(
         return result;
       } catch (err: unknown) {
         const importError = messageOf(err);
+        setScanActivity((current) => ({
+          ...current,
+          label: 'Checking library',
+          importStage: 'checking',
+        }));
         try {
           await loadCatalog({ preserveStatus: true, throwOnError: true });
           setError(importError);
