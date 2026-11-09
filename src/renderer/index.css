@@ -3379,6 +3379,15 @@ select:disabled {
   flex: 0 0 auto;
 }
 
+.status-check-hint {
+  display: none;
+}
+
+.status-item--check > button:hover .status-check-hint,
+.status-item--check > button:focus-visible .status-check-hint {
+  display: inline;
+}
+
 .status-item--check > [role='status'] {
   flex: 1 1 auto;
   min-width: 0;

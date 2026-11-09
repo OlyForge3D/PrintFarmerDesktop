@@ -262,7 +262,10 @@ Separately, installed builds show a lightweight "update available" notice in the
 status bar when a newer GitHub release with an installer for its platform is
 published on its release train. Beta builds are told about newer betas and any
 newer stable release; stable builds are told only about newer stable releases.
-The notice links to the release page and can be dismissed per version. It never
+The notice links to the release page and can be dismissed per version. While it
+is visible, it replaces the status bar's "Check for Updates" button; dismissing
+the notice restores manual checking. After a manual check finds no update, the
+button reads "Up to date" and can be clicked to check again. The notice never
 downloads or installs anything, checks GitHub at most every six hours (the last
 result is remembered across restarts), and is disabled under `npm start`.
 
