@@ -105,7 +105,7 @@ test('many skipped ZIPs keep import actions reachable while details scroll', asy
       window.setMinimumSize(480, 400);
       window.setSize(640, 520);
     }, source);
-    await page.getByRole('button', { name: /^Sources/ }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('button', { name: /Add.*folder/i }).click();
     const wizard = page.getByRole('dialog', {
       name: 'Organize models before importing',
