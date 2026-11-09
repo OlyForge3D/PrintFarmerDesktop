@@ -38,7 +38,15 @@ export interface LibraryScanActivity {
   label: string | null;
   estimatedTotal: number | null;
   backendProgressAvailable: boolean;
+  /**
+   * Renderer-observable stage of a confirmed import. The sidecar import is a
+   * single request with no incremental progress, so only stage boundaries are
+   * reported, never processed counts.
+   */
+  importStage?: ImportStage;
 }
+
+export type ImportStage = 'importing' | 'refreshing';
 
 export interface ImportDraft {
   rootId: string;
@@ -538,6 +546,7 @@ export function useLibrary(
         label: `Scanning ${path}`,
         estimatedTotal: importDraft?.preview.modelCount ?? null,
         backendProgressAvailable: false,
+        importStage: 'importing',
       });
       try {
         const result = await window.printFarmer.importRoot({
@@ -553,6 +562,11 @@ export function useLibrary(
         setLastReport(result.report);
         setScanFeedbackVisible(true);
         rememberRoot(rootId, path, approvalId, result.report);
+        setScanActivity((current) => ({
+          ...current,
+          label: 'Refreshing library',
+          importStage: 'refreshing',
+        }));
         try {
           await loadCatalog({ preserveStatus: true, throwOnError: true });
         } catch (refreshError: unknown) {

@@ -12,6 +12,7 @@ import { LibraryOnboarding } from '../src/renderer/library/LibraryOnboarding.js'
 import { CalibrationWorkspacePayload } from '@shared/ipc';
 import type {
   CalibrationWorkspaceStateRecord,
+  ImportRootResponse,
   LoadSceneResponse,
   LogicalModel,
   PrintFarmerApi,
@@ -1855,6 +1856,171 @@ describe('<App />', () => {
         }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it('keeps visible import progress from submission until the refreshed library closes the wizard', async () => {
+    const importGate = deferred<ImportRootResponse>();
+    const refreshGate = deferred<[]>();
+    let gateRefresh = false;
+    const importRoot = vi.fn().mockReturnValue(importGate.promise);
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn(() =>
+        gateRefresh ? refreshGate.promise : Promise.resolve([]),
+      ),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\Huge',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
+      previewImport: vi.fn().mockResolvedValue({
+        modelCount: 2277,
+        totalBytes: 1024,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 2277, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      }),
+      importRoot,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add folder' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Organize models before importing',
+    });
+    const importButton = screen.getByRole('button', {
+      name: 'Import 2277 files',
+    });
+    fireEvent.click(importButton);
+    fireEvent.click(importButton);
+
+    const progress = within(dialog).getByRole('status', {
+      name: 'Import progress',
+    });
+    expect(progress).toHaveTextContent('Importing 2,277 files');
+    await waitFor(() =>
+      expect(progress).toHaveTextContent(
+        'Rescanning the source folder and applying organization rules',
+      ),
+    );
+    expect(within(dialog).getByRole('progressbar')).not.toHaveAttribute(
+      'value',
+    );
+    expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expect(importRoot).toHaveBeenCalledTimes(1);
+
+    gateRefresh = true;
+    await act(async () => {
+      importGate.resolve({
+        report: {
+          added: 2277,
+          changed: 0,
+          unchanged: 0,
+          missing: 0,
+          hashErrors: 0,
+        },
+        modelsOrganized: 2277,
+        collectionsCreated: 0,
+        collectionAssignments: 0,
+        tagAssignments: 0,
+        resolvedCollections: [],
+      });
+      await importGate.promise;
+    });
+    await waitFor(() =>
+      expect(progress).toHaveTextContent('Refreshing library'),
+    );
+    expect(dialog).toBeInTheDocument();
+
+    gateRefresh = false;
+    await act(async () => {
+      refreshGate.resolve([]);
+      await refreshGate.promise;
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', {
+          name: 'Organize models before importing',
+        }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(importRoot).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears import progress and re-enables the wizard when an import fails', async () => {
+    const importGate = deferred<ImportRootResponse>();
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\Huge',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
+      previewImport: vi.fn().mockResolvedValue({
+        modelCount: 3,
+        totalBytes: 1024,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 3, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      }),
+      importRoot: vi.fn().mockReturnValue(importGate.promise),
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add folder' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Organize models before importing',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
+    expect(within(dialog).getByRole('progressbar')).toBeInTheDocument();
+
+    await act(async () => {
+      importGate.resolve({
+        report: {
+          added: 0,
+          changed: 0,
+          unchanged: 0,
+          missing: 0,
+          hashErrors: 0,
+          failure: 'The source folder could not be scanned.',
+        },
+        modelsOrganized: 0,
+        collectionsCreated: 0,
+        collectionAssignments: 0,
+        tagAssignments: 0,
+        resolvedCollections: [],
+      });
+      await importGate.promise;
+    });
+
+    await waitFor(() =>
+      expect(within(dialog).queryByRole('progressbar')).not.toBeInTheDocument(),
+    );
+    expect(dialog).toHaveTextContent('The source folder could not be scanned.');
+    expect(dialog).toHaveAttribute('aria-busy', 'false');
+    expect(
+      within(dialog).getByRole('status', { name: 'Import progress' }),
+    ).toBeEmptyDOMElement();
+    expect(
+      screen.getByRole('button', { name: 'Import 3 files' }),
+    ).toBeEnabled();
   });
 
   it('disables preview entry points while an import is being prepared', async () => {
