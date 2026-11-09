@@ -437,9 +437,12 @@ export function registerIpcHandlers(
     sharedSidecar ?? new SidecarClient(channelFactory ?? spawnSidecarChannel);
   const retargetSidecar = sharedRetargetSidecar ?? sidecar;
   const archiveSettings = new ArchiveSettingsStore(app.getPath('userData'));
-  sidecar.setArchiveSizeLimitProvider(
-    async () => (await archiveSettings.get()).maxArchiveBytes,
-  );
+  const archiveSizeLimitProvider = async () =>
+    (await archiveSettings.get()).maxArchiveBytes;
+  sidecar.setArchiveSizeLimitProvider(archiveSizeLimitProvider);
+  if (retargetSidecar !== sidecar) {
+    retargetSidecar.setArchiveSizeLimitProvider(archiveSizeLimitProvider);
+  }
   const profiles =
     profileService ??
     new ServerProfileService({
