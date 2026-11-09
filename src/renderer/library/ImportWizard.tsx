@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Collection } from '@shared/ipc';
-import type { ImportDraft } from './useLibrary';
+import type { ImportDraft, ImportStage } from './useLibrary';
 import {
   buildImportPlan,
   initialImportChoices,
@@ -16,6 +16,8 @@ import { ScanFeedback } from './ScanFeedback';
 export interface ImportWizardProps {
   draft: ImportDraft;
   busy: boolean;
+  /** Stage of the running import, or null when no import is running. */
+  importStage?: ImportStage | null;
   error: string | null;
   onCancel: () => void;
   onDismissError: () => void;
@@ -26,7 +28,8 @@ export interface ImportWizardProps {
 
 export function ImportWizard({
   draft,
-  busy,
+  busy: operationBusy,
+  importStage = null,
   error,
   onCancel,
   onDismissError,
@@ -41,9 +44,21 @@ export function ImportWizard({
     ),
   );
   const [remember, setRemember] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const busy = operationBusy || submitting;
+  const progressText = importProgressText(
+    importStage,
+    draft.preview.modelCount,
+  );
   const [scanFeedbackDismissed, setScanFeedbackDismissed] = useState(false);
   const dialogRef = useRef<HTMLElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const progressRef = useRef<HTMLDivElement | null>(null);
+  const importButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasBusyRef = useRef(false);
   const plan = useMemo(() => buildImportPlan(choices), [choices]);
   const namedRulesAreValid =
     (!choices.rootCollection ||
@@ -81,6 +96,13 @@ export function ImportWizard({
       if (event.key !== 'Tab') {
         return;
       }
+      if (busy) {
+        // Every control is disabled while importing; the progress region is
+        // the only focus stop that keeps focus inside the modal.
+        event.preventDefault();
+        progressRef.current?.focus();
+        return;
+      }
       const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
       );
@@ -103,7 +125,7 @@ export function ImportWizard({
         dialogRef.current &&
         !dialogRef.current.contains(event.target)
       ) {
-        cancelRef.current?.focus();
+        (busy ? progressRef.current : cancelRef.current)?.focus();
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -117,6 +139,48 @@ export function ImportWizard({
   useEffect(() => {
     setScanFeedbackDismissed(false);
   }, [draft.preview]);
+
+  useEffect(() => {
+    if (!busy) {
+      setStartedAt(null);
+      if (wasBusyRef.current) {
+        wasBusyRef.current = false;
+        // The import ended without closing the wizard (a failure). Move focus
+        // off the now-empty progress region to the error's action, or to the
+        // re-enabled Import button.
+        const target =
+          dialogRef.current?.querySelector<HTMLElement>(
+            '.import-alert button',
+          ) ?? importButtonRef.current;
+        target?.focus();
+      }
+      return;
+    }
+    wasBusyRef.current = true;
+    setStartedAt((current) => current ?? Date.now());
+    // Every dialog control is disabled while importing, so keep focus inside
+    // the dialog on the progress region instead of letting it fall to <body>.
+    progressRef.current?.focus();
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  const submit = async (): Promise<void> => {
+    if (submittingRef.current || busy) {
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await onConfirm(plan, remember);
+    } catch {
+      // The library owner surfaces import failures through `error`.
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
 
   const updateFolder = (
     relativePath: string,
@@ -159,7 +223,9 @@ export function ImportWizard({
           </button>
         </header>
 
-        <div className="import-body">
+        {/* aria-busy stays off the progress live region so stage changes are
+            announced while the import runs. */}
+        <div className="import-body" aria-busy={busy}>
           <div className="import-summary" aria-label="Import summary">
             <SummaryStat label="Model files" value={draft.preview.modelCount} />
             <SummaryStat
@@ -421,7 +487,39 @@ export function ImportWizard({
           </div>
         </div>
 
-        <footer className="import-footer">
+        <div
+          ref={progressRef}
+          className="import-progress"
+          tabIndex={-1}
+          data-active={busy ? 'true' : 'false'}
+        >
+          <div
+            className="import-progress-text"
+            role="status"
+            aria-live="polite"
+            aria-label="Import progress"
+          >
+            {busy ? (
+              <>
+                <strong>{progressText.heading}</strong>
+                <span>{progressText.detail}</span>
+              </>
+            ) : null}
+          </div>
+          {busy ? (
+            <>
+              <span className="import-progress-elapsed">
+                Elapsed{' '}
+                {formatElapsed(
+                  startedAt === null ? 0 : Math.max(0, now - startedAt),
+                )}
+              </span>
+              <progress aria-label={`${progressText.heading}, in progress`} />
+            </>
+          ) : null}
+        </div>
+
+        <footer className="import-footer" aria-busy={busy}>
           <label>
             <input
               type="checkbox"
@@ -442,10 +540,11 @@ export function ImportWizard({
             </button>
             <button
               type="button"
+              ref={importButtonRef}
               className="import-primary"
               disabled={!canImport}
               onClick={() => {
-                void onConfirm(plan, remember);
+                void submit();
               }}
             >
               {busy
@@ -470,6 +569,47 @@ export function ImportWizard({
       </section>
     </>
   );
+}
+
+function importProgressText(
+  stage: ImportStage | null,
+  modelCount: number,
+): { heading: string; detail: string } {
+  if (stage === 'refreshing') {
+    return {
+      heading: 'Refreshing library',
+      detail: 'Import finished. Loading the updated catalog.',
+    };
+  }
+  if (stage === 'checking') {
+    return {
+      heading: 'Checking library',
+      detail:
+        'The import did not finish normally. Checking the catalog before reporting the error.',
+    };
+  }
+  // The preview count can be stale: importRoot rescans the source itself.
+  const previewCount =
+    modelCount === 0
+      ? 'No model files were found during preview.'
+      : `${modelCount.toLocaleString()} ${modelCount === 1 ? 'file' : 'files'} found during preview.`;
+  return {
+    heading: modelCount === 0 ? 'Reconciling source' : 'Importing source',
+    detail:
+      stage === 'importing'
+        ? `${previewCount} Rescanning the source folder and applying organization rules. Large libraries can take several minutes; per-file progress is not available.`
+        : `${previewCount} Starting import.`,
+  };
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = String(total % 60).padStart(2, '0');
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`
+    : `${minutes}:${seconds}`;
 }
 
 function validOrganizationName(value: string): boolean {

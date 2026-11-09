@@ -3839,3 +3839,51 @@ textarea {
     font-size: 11px;
   }
 }
+
+.import-progress {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  outline: none;
+}
+
+.import-progress[data-active='false'] {
+  padding: 0;
+  border-top: 0;
+}
+
+.import-progress:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.import-progress-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.import-progress-text strong {
+  font-size: 12px;
+}
+
+.import-progress-text span,
+.import-progress-elapsed {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.import-progress-elapsed {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.import-progress progress {
+  grid-column: 1 / -1;
+  width: 100%;
+}

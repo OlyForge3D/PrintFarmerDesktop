@@ -1769,6 +1769,11 @@ export function App(): React.JSX.Element {
           key={library.importDraft.rootId}
           draft={library.importDraft}
           busy={library.status === 'scanning'}
+          importStage={
+            library.status === 'scanning'
+              ? (library.scanActivity.importStage ?? 'importing')
+              : null
+          }
           error={library.error}
           onDismissError={library.dismissError}
           onRetryScan={() => {
