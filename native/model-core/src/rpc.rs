@@ -251,7 +251,13 @@ impl From<&ScenePlate> for ScenePlateDto {
 
 /// Load a model file and return the renderer-facing scene DTO.
 pub fn load_scene_dto(path: &Path) -> Result<SceneMeshDto, SceneError> {
-    Ok(SceneMeshDto::from(&scene::load_scene(path)?))
+    load_scene_dto_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn load_scene_dto_with_limit(path: &Path, max_bytes: u64) -> Result<SceneMeshDto, SceneError> {
+    Ok(SceneMeshDto::from(&scene::load_scene_with_limit(
+        path, max_bytes,
+    )?))
 }
 
 /// Core model metadata in wire form. Every field is optional; absent fields are
@@ -344,7 +350,14 @@ impl From<&vendor::VendorMetadata> for VendorMetadataDto {
 
 /// Extract slicer-project (vendor) metadata and return the wire DTO.
 pub fn extract_vendor_metadata_dto(path: &Path) -> Result<VendorMetadataDto, ThreeMfError> {
-    let resolved = crate::archive::resolve(path)?;
+    extract_vendor_metadata_dto_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn extract_vendor_metadata_dto_with_limit(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<VendorMetadataDto, ThreeMfError> {
+    let resolved = crate::archive::resolve_with_limit(path, max_bytes)?;
     let path = resolved.path();
     Ok(VendorMetadataDto::from(&vendor::extract_file(path)?))
 }
@@ -384,7 +397,14 @@ pub struct VendorPlateThumbnailsDto {
 pub fn extract_vendor_plate_thumbnails_dto(
     path: &Path,
 ) -> Result<VendorPlateThumbnailsDto, ThreeMfError> {
-    let resolved = crate::archive::resolve(path)?;
+    extract_vendor_plate_thumbnails_dto_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn extract_vendor_plate_thumbnails_dto_with_limit(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<VendorPlateThumbnailsDto, ThreeMfError> {
+    let resolved = crate::archive::resolve_with_limit(path, max_bytes)?;
     let path = resolved.path();
     Ok(VendorPlateThumbnailsDto {
         thumbnails: vendor::read_plate_thumbnails_file(path)?
@@ -434,7 +454,15 @@ pub fn render_thumbnail_dto(
     path: &Path,
     size: Option<u32>,
 ) -> Result<ThumbnailDto, ThumbnailPipelineError> {
-    let mesh = scene::load_scene(path)?;
+    render_thumbnail_dto_with_limit(path, size, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn render_thumbnail_dto_with_limit(
+    path: &Path,
+    size: Option<u32>,
+    max_bytes: u64,
+) -> Result<ThumbnailDto, ThumbnailPipelineError> {
+    let mesh = scene::load_scene_with_limit(path, max_bytes)?;
     let edge = size.unwrap_or(DEFAULT_THUMBNAIL_SIZE);
     let png = thumbnail::render_png(&mesh, edge)?;
     Ok(ThumbnailDto {

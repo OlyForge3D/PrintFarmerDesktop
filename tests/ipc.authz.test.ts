@@ -186,6 +186,7 @@ function harness(options: HarnessOptions = {}): Harness {
     };
 
   const sidecar = {
+    setArchiveSizeLimitProvider: () => undefined,
     loadScene: record('sidecar', 'loadScene'),
     extractVendorMetadata: record('sidecar', 'extractVendorMetadata'),
     extractVendorPlateThumbnails: record(

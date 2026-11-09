@@ -122,6 +122,7 @@ function tokenService(options: { failExchange?: boolean } = {}) {
 }
 
 const sidecar = {
+  setArchiveSizeLimitProvider: () => undefined,
   initialize: () => Promise.resolve(),
   dispose: () => Promise.resolve(),
   disposeAll: () => Promise.resolve(),

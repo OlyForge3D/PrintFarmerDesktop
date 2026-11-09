@@ -70,11 +70,12 @@ use crate::retarget::{
     TargetReference,
 };
 use crate::rpc::{
-    extract_vendor_metadata_dto, extract_vendor_plate_thumbnails_dto, load_scene_dto,
-    render_thumbnail_dto, ApplyPullBatchDto, CollectionDto, ConflictInputDto, ConflictResolution,
-    DisposeFailedBatchDto, EnqueueOutboundOperationDto, FailOutboundBatchDto, ImportPreviewDto,
-    ImportResultDto, LogicalModelDto, OutboundState, ReconcileReportDto,
-    ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto, SyncEntityType, TagDto,
+    extract_vendor_metadata_dto_with_limit, extract_vendor_plate_thumbnails_dto_with_limit,
+    load_scene_dto_with_limit, render_thumbnail_dto_with_limit, ApplyPullBatchDto, CollectionDto,
+    ConflictInputDto, ConflictResolution, DisposeFailedBatchDto, EnqueueOutboundOperationDto,
+    FailOutboundBatchDto, ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState,
+    ReconcileReportDto, ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto,
+    SyncEntityType, TagDto,
 };
 use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
@@ -120,8 +121,11 @@ impl Response {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PathParams {
     path: String,
+    #[serde(default)]
+    max_archive_bytes: crate::archive::ArchiveSizeLimit,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,10 +154,13 @@ struct RetargetBuildParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ThumbnailParams {
     path: String,
     #[serde(default)]
     size: Option<u32>,
+    #[serde(default)]
+    max_archive_bytes: crate::archive::ArchiveSizeLimit,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +168,8 @@ struct ThumbnailParams {
 struct ScanRootParams {
     root_id: String,
     path: String,
+    #[serde(default)]
+    max_archive_bytes: crate::archive::ArchiveSizeLimit,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,6 +203,8 @@ struct ImportRuleParam {
 struct ImportRootParams {
     root_id: String,
     path: String,
+    #[serde(default)]
+    max_archive_bytes: crate::archive::ArchiveSizeLimit,
     #[serde(default)]
     rules: Vec<ImportRuleParam>,
     #[serde(default)]
@@ -811,50 +822,67 @@ fn dispatch(
         "hashModelSource" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid hashModelSource params: {e}"))?;
-            let hash = crate::archive::hash_source(Path::new(&params.path))
-                .map_err(|e| format!("failed to hash model source [archive.source_error]: {e}"))?;
+            let hash = crate::archive::hash_source_with_limit(
+                Path::new(&params.path),
+                params.max_archive_bytes.0,
+            )
+            .map_err(|e| format!("failed to hash model source [archive.source_error]: {e}"))?;
             Ok(serde_json::json!({ "hash": hash }))
         }
         "loadScene" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid loadScene params: {e}"))?;
-            let dto = load_scene_dto(&PathBuf::from(&params.path))
-                .map_err(|e| format!("failed to load scene [{}]: {e}", e.code()))?;
+            let dto =
+                load_scene_dto_with_limit(&PathBuf::from(&params.path), params.max_archive_bytes.0)
+                    .map_err(|e| format!("failed to load scene [{}]: {e}", e.code()))?;
             serde_json::to_value(dto).map_err(|e| format!("failed to serialize scene: {e}"))
         }
         "extractVendorMetadata" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid extractVendorMetadata params: {e}"))?;
-            let dto = extract_vendor_metadata_dto(&PathBuf::from(&params.path))
-                .map_err(|e| format!("failed to extract vendor metadata [{}]: {e}", e.code()))?;
+            let dto = extract_vendor_metadata_dto_with_limit(
+                &PathBuf::from(&params.path),
+                params.max_archive_bytes.0,
+            )
+            .map_err(|e| format!("failed to extract vendor metadata [{}]: {e}", e.code()))?;
             serde_json::to_value(dto)
                 .map_err(|e| format!("failed to serialize vendor metadata: {e}"))
         }
         "extractVendorPlateThumbnails" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid extractVendorPlateThumbnails params: {e}"))?;
-            let dto =
-                extract_vendor_plate_thumbnails_dto(&PathBuf::from(&params.path)).map_err(|e| {
-                    format!(
-                        "failed to extract vendor plate thumbnails [{}]: {e}",
-                        e.code()
-                    )
-                })?;
+            let dto = extract_vendor_plate_thumbnails_dto_with_limit(
+                &PathBuf::from(&params.path),
+                params.max_archive_bytes.0,
+            )
+            .map_err(|e| {
+                format!(
+                    "failed to extract vendor plate thumbnails [{}]: {e}",
+                    e.code()
+                )
+            })?;
             serde_json::to_value(dto)
                 .map_err(|e| format!("failed to serialize vendor plate thumbnails: {e}"))
         }
         "renderThumbnail" => {
             let params: ThumbnailParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid renderThumbnail params: {e}"))?;
-            let dto = render_thumbnail_dto(&PathBuf::from(&params.path), params.size)
-                .map_err(|e| format!("failed to render thumbnail [{}]: {e}", e.code()))?;
+            let dto = render_thumbnail_dto_with_limit(
+                &PathBuf::from(&params.path),
+                params.size,
+                params.max_archive_bytes.0,
+            )
+            .map_err(|e| format!("failed to render thumbnail [{}]: {e}", e.code()))?;
             serde_json::to_value(dto).map_err(|e| format!("failed to serialize thumbnail: {e}"))
         }
         "scanRoot" => {
             let params: ScanRootParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid scanRoot params: {e}"))?;
-            let scan =
-                crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
+            let scan = crate::scan::scan_root_with_limit(
+                &PathBuf::from(&params.path),
+                &AtomicBool::new(false),
+                params.max_archive_bytes.0,
+            );
             let report = reconcile_root(store, &params.root_id, &scan);
             let mut value = serde_json::to_value(ReconcileReportDto::from(&report))
                 .map_err(|e| format!("failed to serialize reconcile report: {e}"))?;
@@ -864,8 +892,11 @@ fn dispatch(
         "previewImport" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid previewImport params: {e}"))?;
-            let scan =
-                crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
+            let scan = crate::scan::scan_root_with_limit(
+                &PathBuf::from(&params.path),
+                &AtomicBool::new(false),
+                params.max_archive_bytes.0,
+            );
             let preview = crate::smart_import::preview_scan(&scan);
             serde_json::to_value(ImportPreviewDto::from(&preview))
                 .map_err(|e| format!("failed to serialize import preview: {e}"))
@@ -885,8 +916,11 @@ fn dispatch(
                 params.common_tags,
             )
             .map_err(|e| format!("invalid import plan: {e}"))?;
-            let scan =
-                crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
+            let scan = crate::scan::scan_root_with_limit(
+                &PathBuf::from(&params.path),
+                &AtomicBool::new(false),
+                params.max_archive_bytes.0,
+            );
             let result = crate::smart_import::import_root(store, &params.root_id, &scan, &plan)
                 .map_err(|e| format!("failed to import root: {e}"))?;
             serde_json::to_value(ImportResultDto::from(&result))
@@ -1423,8 +1457,11 @@ pub fn run_with_retarget<R: BufRead, W: Write>(
                 let loaded = (|| {
                     let params: PathParams = serde_json::from_value(request.params)
                         .map_err(|e| format!("invalid loadScenePacked params: {e}"))?;
-                    let scene = crate::scene::load_scene(Path::new(&params.path))
-                        .map_err(|e| format!("{}: {e}", e.code()))?;
+                    let scene = crate::scene::load_scene_with_limit(
+                        Path::new(&params.path),
+                        params.max_archive_bytes.0,
+                    )
+                    .map_err(|e| format!("{}: {e}", e.code()))?;
                     crate::scene_transport::PackedScene::from_scene(&scene)
                 })();
                 match loaded {

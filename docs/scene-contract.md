@@ -7,8 +7,8 @@
   pixel size). ZIP-member hashes are requested from the sidecar so virtual
   member paths are never treated as filesystem paths; unsupported archive
   members remain the source resolver's responsibility.
-- Thumbnail cache controls are available from the Library's **Thumbnail cache**
-  action. By default, entries share the app's `scene-cache.v1` directory under
+- Thumbnail cache controls are available in **Settings → Thumbnail cache**.
+  By default, entries share the app's `scene-cache.v1` directory under
   Electron `userData`; users may choose another folder through the native picker.
   Custom locations use a `printfarmer-thumbnails.v1` subfolder. Switching
   locations starts a fresh cache and removes only owned thumbnail entries from
