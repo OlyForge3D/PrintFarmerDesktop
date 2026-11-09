@@ -18,6 +18,7 @@ import type {
 import { LibraryPageSize as PageSizeSchema } from '@shared/ipc';
 import { defaultLibraryView, type LibraryView } from './filter';
 import { rootIdForPath } from './model';
+import { previewAllImportFolders } from './importPreview';
 import {
   filterModelsByRemovedRoots,
   loadStoredSourceRoots,
@@ -98,7 +99,7 @@ export interface Library {
   addFolder: () => Promise<boolean>;
   /** Reconcile and organize the prepared folder using the confirmed rules. */
   confirmImport: (
-    plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
+    plan: Pick<ImportRootRequest, 'rules' | 'commonTags' | 'policies'>,
   ) => Promise<ImportRootResponse | null>;
   /** Reconcile an existing source root against the current filesystem. */
   rescanRoot: (rootId: string) => Promise<ScanRootResponse | null>;
@@ -428,7 +429,7 @@ export function useLibrary(
         backendProgressAvailable: false,
       });
       try {
-        const preview = await window.printFarmer.previewImport({
+        const preview = await previewAllImportFolders({
           approvalId: selection.approvalId,
         });
         if (!preview.complete) {
@@ -526,7 +527,7 @@ export function useLibrary(
       rootId: string,
       path: string,
       approvalId: string,
-      plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
+      plan: Pick<ImportRootRequest, 'rules' | 'commonTags' | 'policies'>,
     ): Promise<ImportRootResponse | null> => {
       if (importInFlightRef.current) {
         setError('An import operation is already in progress.');
@@ -615,7 +616,7 @@ export function useLibrary(
 
   const confirmImport = useCallback(
     async (
-      plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
+      plan: Pick<ImportRootRequest, 'rules' | 'commonTags' | 'policies'>,
     ): Promise<ImportRootResponse | null> => {
       if (!importDraft) {
         setError('No folder is ready to import.');

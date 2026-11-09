@@ -729,13 +729,6 @@ export const ImportFolder = z.object({
 });
 export type ImportFolder = z.infer<typeof ImportFolder>;
 
-export const ImportPreviewRequest = z
-  .object({
-    approvalId: z.string().uuid(),
-  })
-  .strict();
-export type ImportPreviewRequest = z.infer<typeof ImportPreviewRequest>;
-
 export const ImportPreviewResponse = z.object({
   modelCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
@@ -755,6 +748,29 @@ export const ImportPreviewResponse = z.object({
   }),
   folders: z.array(ImportFolder).max(500),
   foldersTruncated: z.boolean(),
+  foldersTotal: z.number().int().nonnegative().optional(),
+  nextFolderOffset: z.number().int().nonnegative().optional(),
+  previewId: z.string().min(1).max(128).optional(),
+  organization: z
+    .object({
+      affectedModels: z.number().int().nonnegative(),
+      newCollections: z.array(z.string()).max(10000),
+      reusedCollections: z.array(z.string()).max(10000),
+      newTags: z.array(z.string()).max(10000),
+      reusedTags: z.array(z.string()).max(10000),
+      unmatchedModels: z.number().int().nonnegative(),
+      samples: z
+        .array(
+          z.object({
+            relativePath: z.string(),
+            collections: z.array(z.string()),
+            tags: z.array(z.string()),
+          }),
+        )
+        .max(10),
+      errors: z.array(z.string()).max(20),
+    })
+    .optional(),
 });
 export type ImportPreviewResponse = z.infer<typeof ImportPreviewResponse>;
 
@@ -774,9 +790,65 @@ export const ImportRule = z.discriminatedUnion('kind', [
 ]);
 export type ImportRule = z.infer<typeof ImportRule>;
 
+export const ImportPolicy = z
+  .object({
+    relativePath: z.string().max(4096),
+    mode: z.enum(['organize', 'disabled']),
+    collectionName: z.string().trim().min(1).max(128).optional(),
+    collectionId: z.string().min(1).max(256).optional(),
+    tags: z.array(z.string().trim().min(1).max(128)).max(100),
+    pattern: z.string().min(1).max(4096).optional(),
+  })
+  .strict()
+  .superRefine((policy, context) => {
+    if (
+      policy.mode === 'disabled' &&
+      (policy.collectionName !== undefined ||
+        policy.collectionId !== undefined ||
+        policy.pattern !== undefined ||
+        policy.tags.length > 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Disabled policies cannot carry organization outputs or a pattern.',
+      });
+    }
+    if (
+      policy.mode === 'organize' &&
+      !policy.collectionName &&
+      policy.tags.length === 0
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'An organization policy needs a collection or tags.',
+      });
+    }
+    if (policy.collectionId && !policy.collectionName) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A collection ID needs a collection name.',
+      });
+    }
+  });
+export type ImportPolicy = z.infer<typeof ImportPolicy>;
+
+export const ImportPreviewRequest = z
+  .object({
+    approvalId: z.string().uuid(),
+    folderOffset: z.number().int().nonnegative().optional(),
+    previewId: z.string().min(1).max(128).optional(),
+    rules: z.array(ImportRule).max(1000).optional(),
+    commonTags: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
+    policies: z.array(ImportPolicy).max(1000).optional(),
+  })
+  .strict();
+export type ImportPreviewRequest = z.infer<typeof ImportPreviewRequest>;
+
 export const ImportRootRequest = ScanRootRequest.extend({
   rules: z.array(ImportRule).max(1000),
   commonTags: z.array(z.string().trim().min(1).max(128)).max(100),
+  policies: z.array(ImportPolicy).max(1000).optional(),
 });
 export type ImportRootRequest = z.infer<typeof ImportRootRequest>;
 

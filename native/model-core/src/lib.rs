@@ -42,7 +42,7 @@ pub mod watch;
 
 /// Version of the RPC protocol spoken by this sidecar. Bumped on any
 /// breaking change to the framing or message envelope.
-pub const RPC_PROTOCOL_VERSION: u32 = 5;
+pub const RPC_PROTOCOL_VERSION: u32 = 6;
 
 /// Semantic version of the sidecar binary, sourced from Cargo at build time.
 pub fn sidecar_version() -> &'static str {

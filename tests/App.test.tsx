@@ -27,6 +27,17 @@ import { createCalibrationState } from '../src/renderer/calibration/domain';
 import { emptyWorkflowDrafts } from '../src/renderer/calibration/workspaceTypes';
 import { modelPage, withModelPaging } from './helpers/libraryPage';
 
+const organizationPreview = {
+  affectedModels: 1,
+  newCollections: ['ImportRoot'],
+  reusedCollections: [],
+  newTags: [],
+  reusedTags: [],
+  unmatchedModels: 0,
+  samples: [],
+  errors: [],
+};
+
 vi.mock('../src/renderer/retarget/RetargetWorkflow', () => ({
   RetargetWorkflow: ({ target }: { target: { rootId: string } }) => (
     <div data-testid="retarget-source-root">{target.rootId}</div>
@@ -1735,6 +1746,7 @@ describe('<App />', () => {
       }),
     );
     const previewImport = vi.fn().mockResolvedValue({
+      organization: organizationPreview,
       modelCount: 2,
       totalBytes: 3072,
       skippedErrors: 0,
@@ -1813,16 +1825,28 @@ describe('<App />', () => {
       approvalId: '11111111-1111-4111-8111-111111111111',
     });
     expect(scanRoot).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('Organization for Cats')).toHaveValue(
-      'collection',
+    expect(screen.getByLabelText('Folder organization for Cats')).toHaveValue(
+      'inherit',
+    );
+    fireEvent.change(screen.getByLabelText('Folder organization for Cats'), {
+      target: { value: 'collection' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Cats' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Edit policy for Cats/Articulated' }),
     );
     expect(
-      screen.getByLabelText('Organization for Cats/Articulated'),
-    ).toHaveValue('tag');
+      screen.getByLabelText('Folder organization for Cats/Articulated'),
+    ).toHaveValue('inherit');
 
     fireEvent.change(screen.getByLabelText('Tags for all imported models'), {
       target: { value: 'printable' },
     });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 2 files' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Import 2 files' }));
 
     await waitFor(() =>
@@ -1835,15 +1859,13 @@ describe('<App />', () => {
             kind: 'collection',
             name: 'SmartImportRoot',
           },
+        ],
+        policies: [
           {
             relativePath: 'Cats',
-            kind: 'collection',
-            name: 'Cats',
-          },
-          {
-            relativePath: 'Cats/Articulated',
-            kind: 'tag',
-            name: 'Articulated',
+            mode: 'organize',
+            collectionName: 'Cats',
+            tags: [],
           },
         ],
         commonTags: ['printable'],
@@ -1879,6 +1901,7 @@ describe('<App />', () => {
       }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 2277,
+        organization: organizationPreview,
         totalBytes: 1024,
         skippedErrors: 0,
         complete: true,
@@ -1899,6 +1922,7 @@ describe('<App />', () => {
     const importButton = screen.getByRole('button', {
       name: 'Import 2277 files',
     });
+    await waitFor(() => expect(importButton).toBeEnabled());
     fireEvent.click(importButton);
     fireEvent.click(importButton);
 
@@ -1972,6 +1996,7 @@ describe('<App />', () => {
       }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 3,
+        organization: organizationPreview,
         totalBytes: 1024,
         skippedErrors: 0,
         complete: true,
@@ -1989,6 +2014,11 @@ describe('<App />', () => {
     const dialog = await screen.findByRole('dialog', {
       name: 'Organize models before importing',
     });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 3 files' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
     expect(within(dialog).getByRole('progressbar')).toBeInTheDocument();
 
@@ -2141,6 +2171,7 @@ describe('<App />', () => {
       }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 1,
+        organization: organizationPreview,
         totalBytes: 100,
         skippedErrors: 0,
         complete: true,
@@ -2178,6 +2209,11 @@ describe('<App />', () => {
     const addFolder = screen.getByRole('button', { name: 'Add folder' });
     addFolder.focus();
     fireEvent.click(addFolder);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 1 file' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(
       await screen.findByRole('button', { name: 'Import 1 file' }),
     );

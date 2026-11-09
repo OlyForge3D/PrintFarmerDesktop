@@ -24,6 +24,45 @@ or uploads source models without an explicit user action.
 
 ## Model previews
 
+Import organization has two compatible inputs: legacy additive `rules` and
+explicit subtree `policies`. Main validates both with shared Zod schemas and
+passes only approved source paths to the sidecar. A nearest-ancestor policy
+replaces all ancestor folder policies and legacy folder rules for that
+location. Whole-import rules at the empty path and common tags remain additive.
+An explicit disabled policy is not the absence of a policy and never filters
+files or deletes existing metadata.
+
+The renderer stores version-2 source recipes with version-1 fallback migration.
+Legacy rules and selected collection IDs are retained, including currently
+absent paths, until the user edits them. Bulk subtree edits deliberately clear
+descendant exceptions, including absent paths. New folders inherit; they do not
+generate automatic tags. Corrupt recipes block confirmation rather than
+silently replacing user choices.
+
+Folder discovery is paged in batches of at most 500, with total and next-offset
+fields. Truncated previews return a `previewId` for a single scan snapshot;
+subsequent pages must reuse that ID with the same approved path and options,
+avoiding repeated filesystem traversal and organization evaluation. The sidecar
+bounds snapshots to four entries / 32 MiB with a 120-second lifetime. Missing,
+expired, evicted, or mismatched IDs fail closed and require a new preview.
+The renderer assembles the hierarchy separately from the visible,
+collapsed tree. Native policy preview and import evaluate every discovered file
+independently of these pages. Preview does no content hashing: affected and
+unmatched counts describe file locations; actual import deduplicates by hash.
+Preview returns unique new/reused metadata and bounded representative samples
+and errors. Import repeats validation against its fresh scan before mutation.
+
+Path recipes use at most 32 slash-separated segments: literals, unique
+`{identifier}` captures, and an optional final `**`. They match directories
+relative to the policy folder, case-sensitively. Captures match one segment;
+`**` matches zero or more. Outputs may reference only declared captures.
+Patterns and paths are bounded to 4096 characters and resolved organization
+names to 128 characters. Unmatched patterns produce no local metadata and do
+not inherit an older policy. Invalid patterns or resolved targets fail closed.
+Sidecar RPC version 6 is required: older binaries could ignore unknown policy
+fields, so main rejects their handshake instead of importing without the
+confirmed organization. Desktop IPC versioning is independent and unchanged.
+
 Scans also index STL, OBJ, 3MF and STEP members of `.zip` files. A member's
 identity is SHA-256 of its streamed, uncompressed bytes, so it groups with an
 extracted copy even within the same source root. A 3MF member is one model;
@@ -96,7 +135,7 @@ verify both projection modes against it. Thumbnail rendering remains unchanged.
 All renderer↔main messages are defined once in `src/shared/ipc.ts` with Zod
 schemas. The main process validates every request and response; the renderer
 gets static types. Desktop IPC is currently version 10. It is intentionally
-independent from the Rust sidecar RPC handshake (protocol version 5); bump each
+independent from the Rust sidecar RPC handshake (protocol version 6); bump each
 constant only for changes to its own wire boundary.
 
 Scene previews use `loadScenePacked`: little-endian float32 positions, uint32

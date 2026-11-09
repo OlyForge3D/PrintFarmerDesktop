@@ -117,7 +117,7 @@ try {
   const hs = await call('handshake');
   check(
     'handshake protocolVersion',
-    hs.protocolVersion === 5,
+    hs.protocolVersion === 6,
     JSON.stringify(hs),
   );
   check(

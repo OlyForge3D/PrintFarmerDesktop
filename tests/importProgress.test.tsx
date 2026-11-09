@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   act,
   fireEvent,
@@ -33,7 +33,8 @@ const largePreview: ImportPreviewResponse = {
     depth: 1,
     modelCount: 4,
   })),
-  foldersTruncated: true,
+  foldersTruncated: false,
+  foldersTotal: 500,
 };
 
 const draft: ImportDraft = {
@@ -84,6 +85,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+beforeEach(() => {
+  installApi({
+    previewImport: vi.fn().mockResolvedValue({
+      ...largePreview,
+      organization: {
+        affectedModels: 2277,
+        newCollections: ['Huge Library'],
+        reusedCollections: [],
+        newTags: [],
+        reusedTags: [],
+        unmatchedModels: 0,
+        samples: [],
+        errors: [],
+      },
+    }),
+  });
+});
+
 describe('import wizard progress', () => {
   it('shows nothing in the progress region before an import starts', () => {
     render(
@@ -118,6 +137,7 @@ describe('import wizard progress', () => {
     const importButton = screen.getByRole('button', {
       name: 'Import 2277 files',
     });
+    await waitFor(() => expect(importButton).toBeEnabled());
     fireEvent.click(importButton);
     fireEvent.click(importButton);
 
@@ -172,6 +192,11 @@ describe('import wizard progress', () => {
       onConfirm: vi.fn().mockReturnValue(pending.promise),
     };
     const { rerender } = render(<ImportWizard {...props} error={null} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 2277 files' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Import 2277 files' }));
     rerender(<ImportWizard {...props} error="Scan policy refused root." />);
     await act(async () => {
@@ -195,6 +220,11 @@ describe('import wizard progress', () => {
         onDismissError={vi.fn()}
         onConfirm={onConfirm}
       />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 2277 files' }),
+      ).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Import 2277 files' }));
     expect(screen.getByRole('progressbar')).toBeInTheDocument();

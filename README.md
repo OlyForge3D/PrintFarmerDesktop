@@ -70,6 +70,39 @@ are managed there, while the server bar keeps the active connection accessible
 for uploads and calibration. Library **Add folder** remains a contextual import
 shortcut.
 
+**Import organization** starts with a collapsed folder tree, not a tag for
+every folder. New folders inherit their nearest configured policy; by default
+they add no folder metadata. Keep the optional whole-import collection/tags,
+then select a folder to put its entire subtree into a fixed collection or add
+fixed tags. Expand only branches that need exceptions. A child policy replaces
+its parent's folder organization, while **Disabled** explicitly stops it;
+**Inherit** removes the exception. Neither setting excludes files or removes
+existing catalog tags or collection memberships.
+
+Select multiple folders to change entire subtrees together, including collapsed
+descendants and remembered exceptions for folders not currently present.
+The scope is independent of which tree rows are displayed. Previously saved
+folder rules remain visible as legacy additive choices until explicitly edited.
+Remembering preserves fixed collection identities and policies for later imports,
+including newly encountered descendant folders.
+
+Optional **path recipes** match directories relative to the selected folder.
+For example, on `Miniatures`, use `{maker}/{project}/**`, collection `{maker}`,
+and tag `miniatures`. Each named placeholder captures one directory segment;
+unused captures such as `{project}` do not create tags. Literal segments match
+exactly and case-sensitively; only a trailing `**` matches zero or more segments.
+Without `**`, the directory path must match exactly. Names are unique ASCII
+identifiers, not expressions. An unmatched recipe adds no folder metadata and
+does not fall back to its parent policy. Whole-import organization still applies.
+
+Before confirmation, the preview evaluates the full source and distinguishes
+unique **new** collections/tags from existing metadata to reuse, with example
+resolved outputs and unmatched file counts. Invalid patterns, unknown captures,
+invalid resolved names, or unresolved collection targets block import. The
+import rescans and validates again before catalog changes, so preview counts
+are estimates of file locations, not content-deduplicated model identities.
+Paging the folder hierarchy never truncates policy coverage.
+
 **Maximum ZIP size** is measured in MiB (1,048,576 bytes), defaults to 512 MiB,
 and accepts whole values from 1 to 16,384 MiB. Changes apply to the next scan,
 import review/import, or ZIP-member preview; rescan folders to update the

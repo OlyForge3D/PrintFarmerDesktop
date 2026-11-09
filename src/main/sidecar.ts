@@ -9,6 +9,8 @@ import type {
   ApplyCollectionChangeRequest,
   PreviewOrganizationDeletionRequest,
   ApplyOrganizationDeletionRequest,
+  ImportPreviewRequest,
+  ImportPolicy,
 } from '@shared/ipc';
 import { emitCalibrationLog } from './calibrationLog.js';
 import { createSidecarLineFramer } from './sidecarFraming.js';
@@ -67,7 +69,7 @@ interface PendingRequest {
 
 /** Default per-request timeout. Parsing a very large model can be slow. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-export const SIDECAR_RPC_PROTOCOL_VERSION = 5 as const;
+export const SIDECAR_RPC_PROTOCOL_VERSION = 6 as const;
 /** Imports get a longer watchdog; expiry terminates the mutating sidecar. */
 export const DEFAULT_MUTATION_TIMEOUT_MS = 15 * 60_000;
 /** Maximum wait for a killed sidecar to confirm process closure. */
@@ -485,8 +487,11 @@ export class SidecarClient {
   }
 
   /** Inspect a folder's model hierarchy without mutating the catalog. */
-  async previewImport(path: string): Promise<unknown> {
-    return this.request('previewImport', { path });
+  async previewImport(
+    path: string,
+    options: Omit<ImportPreviewRequest, 'approvalId'> = {},
+  ): Promise<unknown> {
+    return this.request('previewImport', { path, ...options });
   }
 
   /** Reconcile a folder and apply its confirmed organization rules. */
@@ -500,6 +505,7 @@ export class SidecarClient {
       collectionId?: string | undefined;
     }>,
     commonTags: string[],
+    policies?: ImportPolicy[],
   ): Promise<unknown> {
     return this.request(
       'importRoot',
@@ -508,6 +514,7 @@ export class SidecarClient {
         path,
         rules,
         commonTags,
+        ...(policies ? { policies } : {}),
       },
       {
         timeoutMs: this.mutationTimeoutMs,

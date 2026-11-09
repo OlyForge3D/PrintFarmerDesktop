@@ -1462,7 +1462,13 @@ export function registerIpcHandlers(
       const request =
         ipcSchemas[IpcChannel.PreviewImport].request.parse(rawRequest);
       const approvedPath = await approvals.resolve(request.approvalId);
-      const raw = await sidecar.previewImport(approvedPath);
+      const raw = await sidecar.previewImport(approvedPath, {
+        folderOffset: request.folderOffset,
+        previewId: request.previewId,
+        rules: request.rules,
+        commonTags: request.commonTags,
+        policies: request.policies,
+      });
       return ipcSchemas[IpcChannel.PreviewImport].response.parse(raw);
     },
   );
@@ -1475,6 +1481,7 @@ export function registerIpcHandlers(
       approvedPath,
       request.rules,
       request.commonTags,
+      request.policies,
     );
     return ipcSchemas[IpcChannel.ImportRoot].response.parse(raw);
   });

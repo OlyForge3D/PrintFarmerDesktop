@@ -402,6 +402,57 @@ describe('ipc contract', () => {
 
     expect(value.rules).toHaveLength(1);
     expect(value.rules[0]).toMatchObject({ collectionId: 'collection-1' });
+  });
+
+  it('carries paged discovery and bounded declarative subtree policies', () => {
+    const policy = {
+      relativePath: 'Miniatures',
+      mode: 'organize',
+      collectionName: '{maker}',
+      tags: ['miniatures'],
+      pattern: '{maker}/{project}/**',
+    };
+    const request = {
+      approvalId: '11111111-1111-4111-8111-111111111111',
+      policies: [policy],
+      rules: [],
+      commonTags: [],
+    };
+    expect(
+      ipcSchemas[IpcChannel.PreviewImport].request.parse({
+        ...request,
+        folderOffset: 500,
+      }),
+    ).toMatchObject({ policies: [policy], folderOffset: 500 });
+    expect(
+      ipcSchemas[IpcChannel.ImportRoot].request.parse({
+        ...request,
+        rootId: 'source',
+      }),
+    ).toMatchObject({ policies: [policy] });
+    for (const invalid of [
+      { ...policy, expression: 'arbitrary-code' },
+      { ...policy, tags: ['x'.repeat(129)] },
+      { ...policy, pattern: 'x'.repeat(4097) },
+      { ...policy, mode: 'exclude' },
+    ]) {
+      expect(() =>
+        ipcSchemas[IpcChannel.ImportRoot].request.parse({
+          ...request,
+          rootId: 'source',
+          policies: [invalid],
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      ipcSchemas[IpcChannel.PreviewImport].request.parse({
+        ...request,
+        path: '/unapproved',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects invalid import rule names and tag collection IDs', () => {
     expect(() =>
       ipcSchemas[IpcChannel.ImportRoot].request.parse({
         rootId: 'root-1',

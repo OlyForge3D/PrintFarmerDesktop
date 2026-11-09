@@ -1103,6 +1103,21 @@ describe('smart import', () => {
 
   beforeEach(() => {
     forgetImportPlan(draft.rootId);
+    installApi({
+      previewImport: vi.fn().mockResolvedValue({
+        ...draft.preview,
+        organization: {
+          affectedModels: 3,
+          newCollections: ['Models'],
+          reusedCollections: [],
+          newTags: [],
+          reusedTags: [],
+          unmatchedModels: 0,
+          samples: [],
+          errors: [],
+        },
+      }),
+    });
   });
 
   it('explains all-cloud-only folders without describing them as empty', () => {
@@ -1141,7 +1156,7 @@ describe('smart import', () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  it('summarizes legacy oversized ZIP warnings and keeps per-file details collapsed', () => {
+  it('summarizes legacy oversized ZIP warnings and keeps per-file details collapsed', async () => {
     const warning =
       'Skipped ZIP oversized.zip: on-disk size 536870913 bytes exceeds the 512 MiB limit (536870912 bytes).';
     render(
@@ -1167,9 +1182,11 @@ describe('smart import', () => {
     expect(feedback).toHaveTextContent('oversized.zip');
     expect(feedback).toHaveTextContent('Size: 512 MB · limit: 512 MB');
     expect(feedback).not.toHaveTextContent(warning);
-    expect(
-      screen.getByRole('button', { name: 'Import 3 files' }),
-    ).toBeEnabled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 3 files' }),
+      ).toBeEnabled(),
+    );
   });
 
   it('shows bounded path-specific scan reasons and the configured ZIP limit', () => {
@@ -1278,19 +1295,17 @@ describe('smart import', () => {
     expect(screen.getByRole('dialog')).toBeVisible();
   });
 
-  it('defaults top-level folders to collections and nested folders to tags', () => {
+  it('defaults new folders to inheritance without deriving folder metadata', () => {
     const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
     const plan = buildImportPlan(choices);
 
     expect(plan.rules).toEqual([
       { relativePath: '', kind: 'collection', name: 'Models' },
-      {
-        relativePath: 'Animals',
-        kind: 'collection',
-        name: 'Animals',
-      },
-      { relativePath: 'Animals/Cats', kind: 'tag', name: 'Cats' },
     ]);
+    expect(plan.policies).toEqual([]);
+    expect(choices.folders.every((folder) => folder.mode === 'inherit')).toBe(
+      true,
+    );
   });
 
   it('restores remembered choices for the same source', () => {
@@ -1367,9 +1382,12 @@ describe('smart import', () => {
   });
 
   it('remembers collection identities resolved by the import', () => {
-    const plan = buildImportPlan(
-      initialImportChoices(draft.rootId, 'Models', draft.preview),
-    );
+    const initial = initialImportChoices(draft.rootId, 'Models', draft.preview);
+    initial.folders[0] = {
+      ...initial.folders[0]!,
+      mode: 'collection',
+    };
+    const plan = buildImportPlan(initial);
     rememberImportPlan(draft.rootId, plan, [
       {
         relativePath: 'Animals',
@@ -1404,34 +1422,36 @@ describe('smart import', () => {
     expect(screen.getByLabelText('Import collection name')).toHaveValue(
       'Models',
     );
-    expect(screen.getByLabelText('Organization for Animals')).toHaveValue(
-      'collection',
+    expect(
+      screen.getByLabelText('Folder organization for Animals'),
+    ).toHaveValue('inherit');
+    expect(
+      screen.queryByRole('button', { name: 'Edit policy for Animals/Cats' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Animals' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Edit policy for Animals/Cats' }),
     );
-    expect(screen.getByLabelText('Organization for Animals/Cats')).toHaveValue(
-      'tag',
-    );
+    expect(
+      screen.getByLabelText('Folder organization for Animals/Cats'),
+    ).toHaveValue('inherit');
 
     fireEvent.change(screen.getByLabelText('Tags for all imported models'), {
       target: { value: 'printable, terrain' },
     });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 3 files' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
 
     await waitFor(() =>
       expect(onConfirm).toHaveBeenCalledWith(
         {
-          rules: [
-            { relativePath: '', kind: 'collection', name: 'Models' },
-            {
-              relativePath: 'Animals',
-              kind: 'collection',
-              name: 'Animals',
-            },
-            {
-              relativePath: 'Animals/Cats',
-              kind: 'tag',
-              name: 'Cats',
-            },
-          ],
+          rules: [{ relativePath: '', kind: 'collection', name: 'Models' }],
+          policies: [],
+          completeRecipe: true,
           ignoredPaths: [],
           commonTags: ['printable', 'terrain'],
           visibleFolderPaths: ['Animals', 'Animals/Cats'],
@@ -1496,6 +1516,9 @@ describe('smart import', () => {
       />,
     );
 
+    fireEvent.change(screen.getByLabelText('Folder organization for Animals'), {
+      target: { value: 'collection' },
+    });
     expect(
       screen.getByRole('button', { name: 'Import 3 files' }),
     ).toBeDisabled();
@@ -1508,19 +1531,25 @@ describe('smart import', () => {
       'collection-two',
     );
     expect(document.activeElement).toBe(picker);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 3 files' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
-    expect(onConfirm.mock.calls[0]?.[0].rules).toContainEqual({
+    expect(onConfirm.mock.calls[0]?.[0].policies).toContainEqual({
       relativePath: 'Animals',
-      kind: 'collection',
-      name: 'Animals',
+      mode: 'organize',
+      collectionName: 'Animals',
       collectionId: 'collection-two',
+      tags: [],
     });
     expect(onConfirm.mock.calls[0]?.[1]).toBe(true);
   });
 
-  it('requires confirmation when a remembered collection id is gone', () => {
+  it('requires confirmation when a remembered collection id is gone', async () => {
     rememberImportPlan(draft.rootId, {
       rules: [
         {
@@ -1565,12 +1594,14 @@ describe('smart import', () => {
     fireEvent.change(picker, {
       target: { value: 'replacement-collection' },
     });
-    expect(
-      screen.getByRole('button', { name: 'Import 3 files' }),
-    ).toBeEnabled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Import 3 files' }),
+      ).toBeEnabled(),
+    );
   });
 
-  it('lets the user confirm reconciliation for an empty source', () => {
+  it('lets the user confirm reconciliation for an empty source', async () => {
     const onConfirm = vi.fn().mockResolvedValue(true);
     render(
       <ImportWizard
@@ -1592,11 +1623,16 @@ describe('smart import', () => {
       />,
     );
 
-    expect(
-      screen.getByRole('button', { name: 'Reconcile source' }),
-    ).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Reconcile source' }));
-    expect(onConfirm).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Reconcile source' }),
+      ).toBeEnabled(),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reconcile source' }));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
   });
 });
 

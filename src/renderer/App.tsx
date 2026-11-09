@@ -700,13 +700,20 @@ export function App(): React.JSX.Element {
       const result = await commitFolderImport({
         rules: plan.rules,
         commonTags: plan.commonTags,
+        policies: plan.policies,
       });
       if (result && rootId) {
         releaseModal('import');
-        if (remember) {
-          rememberImportPlan(rootId, plan, result.resolvedCollections);
-        } else {
-          forgetImportPlan(rootId);
+        try {
+          if (remember) {
+            rememberImportPlan(rootId, plan, result.resolvedCollections);
+          } else {
+            forgetImportPlan(rootId);
+          }
+        } catch (error: unknown) {
+          setAppError(
+            `Import completed, but source policies could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
         setTimeout(() => {
           const previous = importReturnFocusRef.current;
