@@ -2,6 +2,7 @@ import type { ScanIssue, ScanSkippedEntries } from '@shared/ipc';
 import { formatBytes } from './model';
 
 export interface ScanFeedbackData {
+  failure?: string | undefined;
   added?: number | undefined;
   changed?: number | undefined;
   unchanged?: number | undefined;
@@ -42,6 +43,7 @@ function count(value: number | undefined): number {
 
 function hasFeedback(data: ScanFeedbackData): boolean {
   return (
+    Boolean(data.failure) ||
     count(data.skippedErrors) > 0 ||
     count(data.scanErrors) > 0 ||
     count(data.hashErrors) > 0 ||
@@ -110,8 +112,9 @@ export function ScanFeedback({
     issues.filter((issue) => issue.reason === 'tooLarge').length,
     legacyArchives.length,
   );
-  const indexedFiles =
-    data.added !== undefined
+  const indexedFiles = data.failure
+    ? undefined
+    : data.added !== undefined
       ? count(data.added) + count(data.changed) + count(data.unchanged)
       : data.modelCount;
   const visibleArchives = legacyArchives.slice(0, 200);
@@ -159,6 +162,11 @@ export function ScanFeedback({
     >
       <div className="scan-feedback-summary">
         <div className="scan-feedback-text">
+          {data.failure ? (
+            <p>
+              <strong>Scan stopped; catalog unchanged.</strong> {data.failure}
+            </p>
+          ) : null}
           {indexedFiles !== undefined ? (
             <p>
               <strong>{indexedFiles}</strong>{' '}

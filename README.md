@@ -62,6 +62,21 @@ confirmed; if the matching models or memberships change before you confirm, the
 change is refused and nothing is written. Bulk changes only edit collection
 membership — source files and other memberships are untouched.
 
+**Settings** in the workspace rail groups source folders, thumbnail cache, and
+ZIP file limits, and PrintFarmer connections. Add, scan/reconnect, or hide source folders and reset
+the local catalog there; configure thumbnail storage, size/retention limits, or
+confirm clearing cached previews without changing source files. Server profiles
+are managed there, while the server bar keeps the active connection accessible
+for uploads and calibration. Library **Add folder** remains a contextual import
+shortcut.
+
+**Maximum ZIP size** is measured in MiB (1,048,576 bytes), defaults to 512 MiB,
+and accepts whole values from 1 to 16,384 MiB. Changes apply to the next scan,
+import review/import, or ZIP-member preview; rescan folders to update the
+catalog. Files exactly at the limit are allowed; larger archives are skipped
+with the configured limit in the warning. ZIP entry-count, directory-memory,
+per-member, decompression, and indexing budgets are unchanged.
+
 Thumbnails are requested only near the viewport; queued requests are skipped
 when their cards leave the page, and the thumbnail cache retains at most 256
 entries. Selection and **Select all visible** apply to the current page.

@@ -45,6 +45,7 @@ import {
 } from './targetProfiles.js';
 import { RetargetArtifactService, type Dialogs } from './retargetArtifacts.js';
 import { SceneCacheService } from './sceneCache.js';
+import { ArchiveSettingsStore } from './archiveSettings.js';
 import {
   CalibrationHttpClient,
   CalibrationHttpError,
@@ -435,6 +436,13 @@ export function registerIpcHandlers(
   const sidecar =
     sharedSidecar ?? new SidecarClient(channelFactory ?? spawnSidecarChannel);
   const retargetSidecar = sharedRetargetSidecar ?? sidecar;
+  const archiveSettings = new ArchiveSettingsStore(app.getPath('userData'));
+  const archiveSizeLimitProvider = async () =>
+    (await archiveSettings.get()).maxArchiveBytes;
+  sidecar.setArchiveSizeLimitProvider(archiveSizeLimitProvider);
+  if (retargetSidecar !== sidecar) {
+    retargetSidecar.setArchiveSizeLimitProvider(archiveSizeLimitProvider);
+  }
   const profiles =
     profileService ??
     new ServerProfileService({
@@ -513,8 +521,11 @@ export function registerIpcHandlers(
     requestedPath: string,
   ): Promise<string> => {
     const canonicalPath = await approvals.canonicalizePickerFile(requestedPath);
-    if (approvedPickerFiles.has(canonicalPath)) return canonicalPath;
-    return (await approvals.authorizeFile(requestedPath)).canonicalPath;
+    const approvedPath = approvedPickerFiles.has(canonicalPath)
+      ? canonicalPath
+      : (await approvals.authorizeFile(requestedPath)).canonicalPath;
+    await archiveSettings.assertSourceAllowed(approvedPath);
+    return approvedPath;
   };
   const resetApprovedRootsAndArtifacts = async (): Promise<void> => {
     await approvals.reset();
@@ -1355,6 +1366,23 @@ export function registerIpcHandlers(
   ipcMain.handle(
     IpcChannel.RenderThumbnail,
     createRenderThumbnailHandler(authorizeRendererFile, sceneCache, sidecar),
+  );
+
+  ipcMain.handle(IpcChannel.GetArchiveSettings, async () => {
+    ipcSchemas[IpcChannel.GetArchiveSettings].request.parse(undefined);
+    return ipcSchemas[IpcChannel.GetArchiveSettings].response.parse(
+      await archiveSettings.get(),
+    );
+  });
+  ipcMain.handle(
+    IpcChannel.SetArchiveSettings,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.SetArchiveSettings].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.SetArchiveSettings].response.parse(
+        await archiveSettings.set(request),
+      );
+    },
   );
 
   ipcMain.handle(IpcChannel.GetThumbnailCacheSettings, async () => {

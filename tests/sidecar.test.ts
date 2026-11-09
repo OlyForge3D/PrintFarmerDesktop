@@ -90,6 +90,75 @@ function emitEmptyPackedScene(id: number, emit: (line: string) => void): void {
 }
 
 describe('SidecarClient', () => {
+  it('snapshots configured ZIP limits on each scan/import/preview request, including a respawn', async () => {
+    const { channel, sent, closeFromSidecar } = makeFakeChannel(
+      (request, emit) => {
+        emit(JSON.stringify({ id: request.id, ok: true, result: {} }));
+      },
+    );
+    const client = new SidecarClient(() => channel);
+    let limit = 1024 * 1024;
+    client.setArchiveSizeLimitProvider(() => Promise.resolve(limit));
+    await client.scanRoot('root', '/models');
+    await client.previewImport('/models');
+    limit = 1024 * 1024 * 1024;
+    closeFromSidecar(0);
+    await client.importRoot('root', '/models', [], []);
+    await client.extractVendorMetadata('/models/parts.zip/::zip::/0/part.3mf');
+    expect(
+      sent.map(
+        (line) =>
+          (JSON.parse(line) as { params: { maxArchiveBytes: number } }).params
+            .maxArchiveBytes,
+      ),
+    ).toEqual([
+      1024 * 1024,
+      1024 * 1024,
+      1024 * 1024 * 1024,
+      1024 * 1024 * 1024,
+    ]);
+    client.dispose();
+  });
+
+  it('snapshots the configured ZIP limit on each recipe-bound scene load', async () => {
+    const { channel, sent } = makeFakeChannel((request, emit) => {
+      if (request.method === 'handshake') {
+        emit(
+          JSON.stringify({
+            id: request.id,
+            ok: true,
+            result: {
+              protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+              sidecarVersion: 'test',
+              sceneCacheRecipe: 'scene/v2.2',
+            },
+          }),
+        );
+        return;
+      }
+
+      emitEmptyPackedScene(request.id, emit);
+    });
+    const client = new SidecarClient(() => channel);
+    let limit = 1024 * 1024;
+    client.setArchiveSizeLimitProvider(() => Promise.resolve(limit));
+
+    await client.loadSceneWithRecipe('C:/part.stl');
+    limit = 1024 * 1024 * 1024;
+    await client.loadSceneWithRecipe('C:/part.stl');
+
+    expect(
+      sent
+        .map((line) => JSON.parse(line) as { method: string; params: unknown })
+        .filter((request) => request.method === 'loadScenePacked')
+        .map((request) => request.params),
+    ).toEqual([
+      { path: 'C:/part.stl', maxArchiveBytes: 1024 * 1024 },
+      { path: 'C:/part.stl', maxArchiveBytes: 1024 * 1024 * 1024 },
+    ]);
+    client.dispose();
+  });
+
   it('rejects a sidecar with an incompatible protocol version', async () => {
     const { channel } = makeFakeChannel((request, emit) => {
       emit(

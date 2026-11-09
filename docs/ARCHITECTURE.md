@@ -59,7 +59,11 @@ Scan and import I/O run under thread-scoped
 directory reads and hashing. This also prevents hydration when content is
 evicted after metadata inspection; the documented `EDEADLK` materialization
 denial is an expected cloud skip. Policy setup/restoration failures are surfaced
-rather than silently enabling downloads. Explicit viewer operations are not
+rather than silently enabling downloads. A failed scan report keeps previously
+collected skipped-path details alongside its fatal `failure`; the renderer shows
+both the failure and those diagnostics without recording a successful scan or
+mutating the catalog. A later scan of another root remains independently usable.
+Explicit viewer operations are not
 subject to this scan-scoped policy. Network files without the dataless signal
 continue through the normal supported filesystem path.
 

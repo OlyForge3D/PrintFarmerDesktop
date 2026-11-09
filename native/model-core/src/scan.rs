@@ -69,7 +69,7 @@ pub struct DiscoveredFile {
 
 /// Outcome of a scan. `cancelled` is set when the caller aborted early, in
 /// which case `files` holds whatever was found before cancellation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     pub files: Vec<DiscoveredFile>,
     pub cancelled: bool,
@@ -86,6 +86,26 @@ pub struct ScanResult {
     pub failure: Option<String>,
     /// Expected policy skips, not filesystem failures or incomplete traversal.
     pub archive_warnings: Vec<String>,
+    pub max_archive_bytes: u64,
+}
+
+impl Default for ScanResult {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            cancelled: false,
+            skipped_errors: 0,
+            cloud_files: Vec::new(),
+            cloud_directories: Vec::new(),
+            failed_paths: Vec::new(),
+            skipped_entries: SkippedEntryCounts::default(),
+            scan_issues: Vec::new(),
+            scan_issues_truncated: false,
+            failure: None,
+            archive_warnings: Vec::new(),
+            max_archive_bytes: crate::archive::MAX_ARCHIVE_BYTES,
+        }
+    }
 }
 
 impl ScanResult {
@@ -162,9 +182,16 @@ impl ScanResult {
 /// Recursively scan `root` for model files. `cancel` is polled between entries
 /// so long scans of large trees can be stopped promptly.
 pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
-    let mut result = ScanResult::default();
+    scan_root_with_limit(root, cancel, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn scan_root_with_limit(root: &Path, cancel: &AtomicBool, max_bytes: u64) -> ScanResult {
+    let mut result = ScanResult {
+        max_archive_bytes: max_bytes,
+        ..ScanResult::default()
+    };
     let protected = crate::file_availability::without_materialization(|| {
-        result = scan_root_with_metadata(root, cancel, |path| {
+        result = scan_root_with_metadata_and_limit(root, cancel, max_bytes, |path| {
             let metadata = std::fs::symlink_metadata(path)?;
             let cloud_only = crate::file_availability::is_cloud_only(&metadata);
             Ok((metadata, cloud_only))
@@ -183,12 +210,30 @@ pub fn scan_root(root: &Path, cancel: &AtomicBool) -> ScanResult {
     result
 }
 
+#[cfg(test)]
 pub(crate) fn scan_root_with_metadata(
     root: &Path,
     cancel: &AtomicBool,
+    metadata_for: impl FnMut(&Path) -> std::io::Result<(std::fs::Metadata, bool)>,
+) -> ScanResult {
+    scan_root_with_metadata_and_limit(
+        root,
+        cancel,
+        crate::archive::MAX_ARCHIVE_BYTES,
+        metadata_for,
+    )
+}
+
+fn scan_root_with_metadata_and_limit(
+    root: &Path,
+    cancel: &AtomicBool,
+    max_bytes: u64,
     mut metadata_for: impl FnMut(&Path) -> std::io::Result<(std::fs::Metadata, bool)>,
 ) -> ScanResult {
-    let mut result = ScanResult::default();
+    let mut result = ScanResult {
+        max_archive_bytes: max_bytes,
+        ..ScanResult::default()
+    };
     let mut entries = WalkDir::new(root).follow_links(false).into_iter();
 
     while let Some(entry) = entries.next() {
@@ -266,7 +311,9 @@ pub(crate) fn scan_root_with_metadata(
             .unwrap_or_else(|_| path.to_path_buf());
 
         if crate::archive::is_zip(path) {
-            if let Some(warning) = crate::archive::size_warning(path, metadata.len()) {
+            if let Some(warning) =
+                crate::archive::size_warning_with_limit(path, metadata.len(), max_bytes)
+            {
                 eprintln!("{warning}");
                 result.failed_paths.push(path.to_path_buf());
                 let index = result.scan_issues.len();
@@ -278,14 +325,20 @@ pub(crate) fn scan_root_with_metadata(
                 );
                 if let Some(issue) = result.scan_issues.get_mut(index) {
                     issue.size_bytes = Some(metadata.len());
-                    issue.limit_bytes = Some(crate::archive::MAX_ARCHIVE_BYTES);
+                    issue.limit_bytes = Some(max_bytes);
                 }
                 if result.archive_warnings.len() < MAX_SCAN_ISSUES {
                     result.archive_warnings.push(warning);
                 }
                 continue;
             }
-            match crate::archive::discover(path, &root_relative, &metadata, cancel) {
+            match crate::archive::discover_with_limit(
+                path,
+                &root_relative,
+                &metadata,
+                cancel,
+                max_bytes,
+            ) {
                 Ok(files) => result.files.extend(files),
                 Err(error) => {
                     if crate::file_availability::is_cloud_error(&error) {

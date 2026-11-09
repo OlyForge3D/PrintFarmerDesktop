@@ -3,6 +3,7 @@ import {
   IpcChannel,
   ipcSchemas,
   type AppInfoResponse,
+  type ArchiveSettings,
   type CheckForUpdatesResponse,
   type GetAvailableReleaseResponse,
   type ExtractVendorMetadataRequest,
@@ -264,6 +265,19 @@ const api: PrintFarmerApi = {
       ipcSchemas[IpcChannel.GetThumbnailCacheSettings].response.parse(
         await ipcRenderer.invoke(IpcChannel.GetThumbnailCacheSettings),
       ),
+  getArchiveSettings: async (): Promise<ArchiveSettings> =>
+    ipcSchemas[IpcChannel.GetArchiveSettings].response.parse(
+      await ipcRenderer.invoke(IpcChannel.GetArchiveSettings),
+    ),
+  setArchiveSettings: async (
+    request: ArchiveSettings,
+  ): Promise<ArchiveSettings> =>
+    ipcSchemas[IpcChannel.SetArchiveSettings].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.SetArchiveSettings,
+        ipcSchemas[IpcChannel.SetArchiveSettings].request.parse(request),
+      ),
+    ),
   setThumbnailCacheSettings: async (
     request: SetThumbnailCacheSettingsRequest,
   ): Promise<SetThumbnailCacheSettingsResponse> =>

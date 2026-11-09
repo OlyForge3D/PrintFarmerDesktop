@@ -48,6 +48,97 @@ describe('workspace registry', () => {
 });
 
 describe('shell navigation', () => {
+  it('consolidates configuration in Settings without duplicating library controls', async () => {
+    installApi();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'All models', level: 1 });
+    expect(screen.queryByRole('button', { name: /^Sources/ })).toBeNull();
+    expect(
+      screen.queryByRole('heading', { name: 'Thumbnail cache' }),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    const settings = await screen.findByRole('main', { name: 'Settings' });
+    expect(
+      within(settings).getByRole('heading', {
+        name: 'Source folders',
+        level: 2,
+      }),
+    ).toBeVisible();
+    expect(
+      within(settings).getByRole('heading', {
+        name: 'Thumbnail cache',
+        level: 2,
+      }),
+    ).toBeVisible();
+    expect(
+      within(settings).getByRole('heading', {
+        name: 'PrintFarmer connections',
+        level: 2,
+      }),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Maximum size (MiB)')).toHaveValue(512),
+    );
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+
+    const manageProfiles = screen.getByRole('button', {
+      name: 'Manage server profiles',
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'Settings', level: 1 }),
+      ).toHaveFocus(),
+    );
+    manageProfiles.focus();
+    fireEvent.click(manageProfiles);
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Connect to PrintFarmer',
+    });
+    expect(dialog).toBeVisible();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close server profiles' }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Manage server profiles' }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it('holds navigation and other settings until a cache save settles, preserving errors', async () => {
+    let rejectSave: (error: Error) => void = () => {};
+    installApi({
+      setThumbnailCacheSettings: vi.fn(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectSave = reject;
+          }),
+      ),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'All models', level: 1 });
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    await screen.findByText('/profile/scene-cache.v1');
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(screen.getByRole('button', { name: 'Library' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Reset catalog' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Manage server profiles' }),
+    ).toBeDisabled();
+    act(() => {
+      rejectSave(new Error('Cache folder is not writable'));
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Cache folder is not writable',
+    );
+    expect(screen.getByRole('button', { name: 'Library' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save settings' })).toBeEnabled();
+  });
+
   it('offers every registered place in the rail and moves focus to the one it opens', async () => {
     installApi();
     render(<App />);
@@ -132,8 +223,8 @@ describe('shell navigation', () => {
     expect(statusbar).toHaveTextContent('Disconnected');
     expect(statusbar).not.toHaveTextContent('Library');
 
-    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
-    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    await screen.findByRole('heading', { name: 'Settings', level: 1 });
     expect(statusbar).not.toHaveTextContent('Sources');
   });
 
@@ -150,11 +241,11 @@ describe('shell navigation', () => {
     const onboarding = await screen.findByRole('dialog', {
       name: 'Set up your model library',
     });
-    const railSources = screen.getByRole('button', { name: /^Sources/ });
+    const railSources = screen.getByRole('button', { name: /^Settings/ });
     expect(railSources).toBeEnabled();
 
     fireEvent.click(railSources);
-    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+    await screen.findByRole('heading', { name: 'Settings', level: 1 });
     expect(onboarding).not.toBeInTheDocument();
   });
 
@@ -176,8 +267,8 @@ describe('shell navigation', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'All models', level: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
-    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    await screen.findByRole('heading', { name: 'Settings', level: 1 });
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset catalog' }));
     fireEvent.click(
@@ -214,8 +305,8 @@ describe('shell navigation', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'All models', level: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /^Sources/ }));
-    await screen.findByRole('heading', { name: 'Sources', level: 1 });
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    await screen.findByRole('heading', { name: 'Settings', level: 1 });
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset catalog' }));
     const keep = await screen.findByRole('button', { name: 'Keep catalog' });
@@ -228,9 +319,7 @@ describe('shell navigation', () => {
         screen.queryByText('Clear this local catalog?'),
       ).not.toBeInTheDocument(),
     );
-    expect(
-      screen.getByRole('main', { name: 'Catalog sources' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('main', { name: 'Settings' })).toBeInTheDocument();
   });
 });
 
@@ -240,6 +329,18 @@ function escapeForName(value: string): string {
 
 function installApi(overrides: Partial<PrintFarmerApi> = {}): void {
   const api: Partial<PrintFarmerApi> = {
+    getArchiveSettings: vi
+      .fn()
+      .mockResolvedValue({ maxArchiveBytes: 512 * 1024 * 1024 }),
+    getThumbnailCacheSettings: vi.fn().mockResolvedValue({
+      location: null,
+      effectiveLocation: '/profile/scene-cache.v1',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+      usedBytes: 2048,
+      entryCount: 3,
+      warning: null,
+    }),
     getAppInfo: vi.fn().mockResolvedValue({
       contractVersion: 2,
       appVersion: '0.1.0',

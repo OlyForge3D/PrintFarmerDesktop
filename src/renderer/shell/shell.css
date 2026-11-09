@@ -338,7 +338,7 @@
 /* Service places ------------------------------------------------------ */
 
 .uploads-pane,
-.sources-pane {
+.settings-pane {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -365,6 +365,123 @@
   letter-spacing: -0.01em;
 }
 
+.service-heading h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-pane {
+  height: 100%;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 156px minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.settings-navigation {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-navigation a {
+  padding: 8px;
+  border-radius: var(--control-radius);
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.settings-navigation a:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.settings-content {
+  display: grid;
+  min-width: 0;
+  gap: 24px;
+}
+
+.settings-sources,
+.settings-archives,
+.settings-cache,
+.settings-connections {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 14px;
+  min-width: 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-sources {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-sources .source-root-summary small {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.settings-sources .service-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.settings-cache .thumbnail-cache-content {
+  display: grid;
+  gap: 20px;
+  overflow: visible;
+}
+
+.settings-cache .thumbnail-cache-content h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.settings-archives .settings-hint {
+  max-width: 75ch;
+}
+
+.settings-pane .thumbnail-cache-field {
+  max-width: 320px;
+  margin: 0;
+}
+
+.settings-cache .thumbnail-cache-hint {
+  max-width: 75ch;
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--muted);
+}
+
+.settings-pane .thumbnail-cache-content {
+  padding: 0;
+}
+
+@media (max-width: 800px) {
+  .settings-layout {
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .settings-connections .service-heading {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}
+
 .service-heading p {
   max-width: 68ch;
   margin: 0;
@@ -378,7 +495,7 @@
 }
 
 .uploads-pane > *,
-.sources-pane > * {
+.settings-pane > * {
   max-width: 1080px;
 }
 

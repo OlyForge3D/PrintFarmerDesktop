@@ -79,10 +79,10 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       });
       await closeOnboarding.focus();
       await page.keyboard.press('Shift+Tab');
-      const cacheSettings = onboarding.getByRole('button', {
-        name: 'Thumbnail cache settings',
+      const maybeLater = onboarding.getByRole('button', {
+        name: 'Maybe later',
       });
-      await expect(cacheSettings).toBeFocused();
+      await expect(maybeLater).toBeFocused();
       await page.keyboard.press('Tab');
       await expect(closeOnboarding).toBeFocused();
       await page.keyboard.press('Tab');
@@ -92,7 +92,7 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         onboarding.getByRole('button', { name: 'Maybe later' }),
       ).toBeFocused();
       await page.keyboard.press('Tab');
-      await expect(cacheSettings).toBeFocused();
+      await expect(closeOnboarding).toBeFocused();
       await addFolder.click();
 
       const importDialog = page.getByRole('dialog', {
@@ -108,12 +108,12 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await importButton.click();
       await expect(importDialog).toHaveCount(0);
 
-      const railSources = page.getByRole('button', { name: /^Sources/ });
+      const railSources = page.getByRole('button', { name: /^Settings/ });
       await railSources.click();
-      const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+      const sourcesPane = page.getByRole('main', { name: 'Settings' });
       await expect(sourcesPane).toBeVisible();
       await expect(
-        page.getByRole('heading', { name: 'Sources', level: 1 }),
+        page.getByRole('heading', { name: 'Settings', level: 1 }),
       ).toBeFocused();
       await expectNoMaterialViolations(page, 'catalog sources', testInfo);
       await page.getByRole('button', { name: 'Reset catalog' }).click();

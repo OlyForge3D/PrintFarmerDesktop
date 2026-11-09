@@ -1217,7 +1217,9 @@ pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
     scan: &ScanResult,
 ) -> std::io::Result<StagedHashes> {
     crate::file_availability::without_materialization(|| {
-        stage_hashes(store, root_id, scan, crate::archive::hash_sources)
+        stage_hashes(store, root_id, scan, |paths| {
+            crate::archive::hash_sources_with_limit(paths, scan.max_archive_bytes)
+        })
     })
 }
 

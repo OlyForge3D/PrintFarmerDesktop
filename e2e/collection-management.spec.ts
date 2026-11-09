@@ -352,7 +352,7 @@ test('packaged collection management preserves models and source files', async (
       ).toContainText('1');
 
       // Reset clears models, sources, tags, and collections; never files.
-      await page.getByRole('button', { name: /^Sources/ }).click();
+      await page.getByRole('button', { name: /^Settings/ }).click();
       await page.getByRole('button', { name: 'Reset catalog' }).click();
       await page.getByRole('button', { name: 'Clear local catalog' }).click();
       await expect(

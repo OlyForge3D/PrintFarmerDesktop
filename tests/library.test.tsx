@@ -15,6 +15,7 @@ import type {
 } from '@shared/ipc';
 import { modelPage, withModelPaging } from './helpers/libraryPage';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
+import { ScanFeedback } from '../src/renderer/library/ScanFeedback.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { PropertiesInspector } from '../src/renderer/library/PropertiesInspector.js';
 import { LibrarySidebar } from '../src/renderer/library/LibrarySidebar.js';
@@ -988,6 +989,32 @@ describe('useLibrary', () => {
     expect(result.current.models).toHaveLength(1);
     expect(result.current.retryLabel).toBe('Retry scan');
     expect(listModels).toHaveBeenCalledOnce();
+  });
+
+  it('labels fatal scan feedback without implying files were successfully indexed', () => {
+    render(
+      <ScanFeedback
+        data={{
+          added: 0,
+          failure: 'Could not restore dataless materialization policy.',
+          cloudFilesSkipped: 1,
+          scanIssues: [
+            {
+              path: 'C:\\models\\cloud.stl',
+              kind: 'file',
+              reason: 'cloudOnly',
+              detail: 'Online-only file.',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole('status', { name: 'Scan results' }),
+    ).toHaveTextContent('Scan stopped; catalog unchanged.');
+    expect(screen.queryByText(/files? indexed/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Show skipped paths and details'));
+    expect(screen.getByText('C:\\models\\cloud.stl')).toBeVisible();
   });
 
   it('excludes removed source roots from the bounded library query', async () => {

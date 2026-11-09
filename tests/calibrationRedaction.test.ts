@@ -187,6 +187,7 @@ function fakeProfiles() {
 function fakeSidecar(overrides: Record<string, unknown> = {}) {
   const workspace = validWorkspace();
   return {
+    setArchiveSizeLimitProvider: () => undefined,
     initialize: () => Promise.resolve(),
     dispose: () => Promise.resolve(),
     disposeAll: () => Promise.resolve(),

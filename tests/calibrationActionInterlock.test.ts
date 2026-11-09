@@ -108,6 +108,7 @@ function fakeProfiles() {
 }
 
 const sidecar = {
+  setArchiveSizeLimitProvider: () => undefined,
   initialize: () => Promise.resolve(),
   dispose: () => Promise.resolve(),
   disposeAll: () => Promise.resolve(),

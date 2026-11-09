@@ -688,6 +688,7 @@ mod tests {
         let empty_plan = ImportPlan::new([], []).unwrap();
         import_root(&mut store, "root", &scan, &empty_plan).unwrap();
         let incomplete = ScanResult {
+            max_archive_bytes: scan.max_archive_bytes,
             files: Vec::new(),
             cancelled: true,
             skipped_errors: 1,

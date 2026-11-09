@@ -85,11 +85,12 @@ describe('LibrarySidebar', () => {
     expect(screen.queryByRole('button', { name: /manage/i })).toBeNull();
   });
 
-  it('exposes thumbnail cache management from the source controls', () => {
-    const onOpenThumbnailCacheSettings = vi.fn();
-    renderSidebar({ onOpenThumbnailCacheSettings });
-    fireEvent.click(screen.getByRole('button', { name: 'Thumbnail cache' }));
-    expect(onOpenThumbnailCacheSettings).toHaveBeenCalledOnce();
+  it('keeps contextual import but leaves cache management in Settings', () => {
+    renderSidebar();
+    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+    expect(
+      screen.queryByRole('button', { name: /Thumbnail cache/ }),
+    ).toBeNull();
   });
 
   it('collapses filter groups, keeps selections, and remembers the state', () => {
