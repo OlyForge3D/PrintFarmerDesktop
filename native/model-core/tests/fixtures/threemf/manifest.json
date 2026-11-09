@@ -200,6 +200,43 @@
       }
     },
     {
+      "file": "multi_scene_plate.3mf",
+      "label": "multi-scene-plate",
+      "notes": "Two named model_settings plates assigning independent build instances for rendered plate selection.",
+      "sha256": "653f801f5977105903d66a03ffe886ad3acbfbed7d2af598eb06ebe6fc835c33",
+      "byteLen": 1563,
+      "expected": {
+        "unit": "millimeter",
+        "vertexCount": 24,
+        "triangleCount": 36,
+        "objectCount": 3,
+        "buildItemCount": 3,
+        "partCount": 3,
+        "partNames": [
+          "Left plate body",
+          "Left plate accessory",
+          "Right plate body"
+        ],
+        "sceneObjectCount": 3,
+        "rootObjectIds": [
+          "plate-0/item-0/object-1",
+          "plate-0/item-1/object-2",
+          "plate-1/item-2/object-3"
+        ],
+        "plateCount": 2,
+        "boundsMin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "boundsMax": [
+          46.0,
+          10.0,
+          10.0
+        ]
+      }
+    },
+    {
       "file": "unit_inch.3mf",
       "label": "unit declaration",
       "notes": "Root model declared in inches; the reader reports the declared unit and preserves model-space coordinates (only external model parts are rescaled to the root unit).",

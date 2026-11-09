@@ -6,9 +6,9 @@
  * SOURCE-OF-TRUTH PROVENANCE
  * --------------------------
  * Repository:  OlyForge3D/PrintFarmer
- * Commit SHA:  678d3398934537ff6ee4528c2e51aaa4a244d37f
+ * Commit SHA:  1a200c299a176e3ebff46821fe1a0cfb012965ed
  * Enum source: src/infra/Domain/PrintJobEnums.cs
- *   Blob SHA:  03b56a83237d8541572be92a29a87d991b5aac9a
+ *   Blob SHA:  e5782fcf0760715d9a6a7ad5c2169e1cab894667
  *   C# type:   Farm.Infrastructure.Domain.JobBlockedReasonCode
  * Switch src:  src/infra/Services/Queue/Dispatch/DispatchSafetyGates.cs
  *   Blob SHA:  ce6b81505697916974eead591f0383a60e34b26f
@@ -34,7 +34,7 @@
  */
 
 /**
- * The 10 durable calibration blocked-reason enum values, in the exact
+ * The 11 durable calibration blocked-reason enum values, in the exact
  * declaration order of the server enum. Enum member names are serialised
  * verbatim through `JsonStringEnumConverter`, so these strings are what
  * appears on the wire in `PrintJob.BlockedReasonCode`.
@@ -50,6 +50,7 @@ export const JOB_BLOCKED_REASON_CODE_ENUM_MEMBERS = [
   'CalibrationRecordInvalid',
   'FilamentCheckFailed',
   'MissingRequiredCapability',
+  'OperatorRecoveryRequired',
 ] as const satisfies readonly string[];
 
 export type JobBlockedReasonCode =
@@ -103,9 +104,9 @@ export type JobBlockedReasonWireToken =
 export const PROVENANCE = {
   kind: 'csharp-source' as const,
   sourceRepo: 'OlyForge3D/PrintFarmer',
-  commitSha: '678d3398934537ff6ee4528c2e51aaa4a244d37f',
+  commitSha: '1a200c299a176e3ebff46821fe1a0cfb012965ed',
   sourcePath: 'src/infra/Domain/PrintJobEnums.cs',
-  blobHash: '03b56a83237d8541572be92a29a87d991b5aac9a',
+  blobHash: 'e5782fcf0760715d9a6a7ad5c2169e1cab894667',
   typeName: 'JobBlockedReasonCode',
   additionalSources: [
     {

@@ -812,10 +812,6 @@
   color: var(--muted, #8a97a3);
 }
 
-.cal-method--skipped {
-  opacity: 0.72;
-}
-
 .cal-method--skipped .cal-method-disposition {
   color: #e0a63a;
 }
@@ -826,10 +822,6 @@
  * colour swap) so the picker's order is legible without relying on colour
  * alone.
  */
-.cal-method--done {
-  opacity: 0.72;
-}
-
 .cal-method--done .cal-method-disposition {
   color: #3ea862;
 }
@@ -837,10 +829,6 @@
 .cal-method--next {
   background: color-mix(in srgb, var(--accent, #3a7be0) 8%, transparent);
   border-radius: 4px;
-}
-
-.cal-method--locked {
-  opacity: 0.55;
 }
 
 .cal-method-guided-badge {
@@ -863,7 +851,7 @@
 }
 
 .cal-method-guided-badge--next {
-  color: #fff;
+  color: #101318;
   background: var(--accent, #3a7be0);
 }
 

@@ -165,6 +165,7 @@ fn catalog() -> Vec<Authored> {
         transform_chain(),
         color_material(),
         multi_plate(),
+        multi_scene_plate(),
         unit_inch(),
         large_grid(),
         malformed_not_a_zip(),
@@ -308,6 +309,55 @@ fn multi_plate() -> Authored {
                 threemf_support::Part::bytes("Metadata/plate_1.png", png.clone()),
                 threemf_support::Part::bytes("Metadata/plate_2.png", png),
             ],
+        ),
+    }
+}
+
+fn multi_scene_plate() -> Authored {
+    let resources = [
+        box_object("1", "Left plate body", [10.0, 10.0, 10.0], ""),
+        box_object("2", "Left plate accessory", [4.0, 4.0, 4.0], ""),
+        box_object("3", "Right plate body", [6.0, 6.0, 6.0], ""),
+    ]
+    .join("\n");
+    let build = r#"    <item objectid="1"/>
+    <item objectid="2" transform="1 0 0 0 1 0 0 0 1 12 0 0"/>
+    <item objectid="3" transform="1 0 0 0 1 0 0 0 1 40 0 0"/>"#;
+    let model = model_document("millimeter", &resources, build);
+    let model_settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="plater_name" value="Left Plate"/>
+    <model_instance>
+      <metadata key="object_id" value="1"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>
+    <model_instance>
+      <metadata key="object_id" value="2"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <metadata key="plater_name" value="Right Plate"/>
+    <model_instance>
+      <metadata key="object_id" value="3"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>
+  </plate>
+</config>"#;
+
+    Authored {
+        file: "multi_scene_plate.3mf",
+        label: "multi-scene-plate",
+        notes: "Two named model_settings plates assigning independent build instances for rendered plate selection.",
+        bytes: package(
+            &model,
+            vec![threemf_support::Part::text(
+                "Metadata/model_settings.config",
+                model_settings,
+            )],
         ),
     }
 }
@@ -665,6 +715,28 @@ fn well_formed_fixtures_match_their_expected_scenes() {
             }
         }
     }
+}
+
+#[test]
+fn multi_scene_plate_fixture_assigns_named_build_instances() {
+    let bytes = fs::read(fixture_dir().join("multi_scene_plate.3mf")).expect("read fixture");
+    let mesh = threemf::parse_bytes(&bytes).expect("parse multi-scene-plate fixture");
+
+    assert_eq!(
+        mesh.plates
+            .iter()
+            .map(|plate| plate.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Left Plate", "Right Plate"]
+    );
+    assert_eq!(mesh.plates[0].root_object_ids.len(), 2);
+    assert_eq!(mesh.plates[1].root_object_ids.len(), 1);
+    assert!(mesh.plates[0].root_object_ids[0].contains("object-1"));
+    assert!(mesh.plates[0].root_object_ids[1].contains("object-2"));
+    assert!(mesh.plates[1].root_object_ids[0].contains("object-3"));
+    assert_eq!(mesh.objects[0].plate_id, mesh.plates[0].id);
+    assert_eq!(mesh.objects[1].plate_id, mesh.plates[0].id);
+    assert_eq!(mesh.objects[2].plate_id, mesh.plates[1].id);
 }
 
 #[test]

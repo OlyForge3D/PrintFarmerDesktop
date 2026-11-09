@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { test, expect, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import {
@@ -15,6 +16,7 @@ import {
   createEditableRetargetFixture,
   findPackagedExecutable,
 } from './helpers/retargetFixture';
+import { captureVisualScenario } from './helpers/visualCoverage.js';
 import { refreshCatalog } from './helpers/modelLibrary';
 import {
   attachPackagedFailureDiagnostics,
@@ -88,7 +90,8 @@ async function dismissOnboarding(page: Page): Promise<void> {
 }
 
 async function openWorkflow(page: Page, fileName: string): Promise<void> {
-  await page.getByRole('button', { name: `Select ${fileName}` }).click();
+  const select = page.getByRole('button', { name: `Select ${fileName}` });
+  if (await select.isVisible()) await select.click();
   await page
     .getByLabel('Model properties')
     .getByRole('button', { name: 'Prepare for Snapmaker U1' })
@@ -246,7 +249,34 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
       );
       expect(directPreflight).not.toHaveProperty('thrown');
       await refreshCatalog(launched.page);
+      await launched.page
+        .getByRole('button', { name: `Select ${fileName}` })
+        .click();
+      const inspector = launched.page.getByLabel('Model properties');
+      await expect(
+        inspector.getByRole('button', {
+          name: 'Prepare for Snapmaker U1',
+        }),
+      ).toBeEnabled();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'library.inspector.conditional-u1-action',
+        testInfo,
+      );
       await openWorkflow(launched.page, fileName);
+      await expect(
+        launched.page.locator('input[type="radio"]:checked'),
+      ).toHaveCount(0);
+      await expect(
+        launched.page.getByRole('button', { name: 'Build review copy' }),
+      ).toBeDisabled();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'retarget.workflow.initial-no-profile',
+        testInfo,
+      );
 
       const bundled = launched.page
         .getByRole('radio', { name: /\(bundled\)$/ })
@@ -255,13 +285,32 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
       const build = launched.page.getByRole('button', {
         name: 'Build review copy',
       });
+      await expect(bundled).toBeChecked();
       await expect(build).toBeEnabled();
+      const workflowDialog = launched.page.getByRole('dialog', {
+        name: 'Prepare for Snapmaker U1',
+      });
+      await expect(
+        workflowDialog.getByText(fileName, { exact: true }),
+      ).toBeVisible();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'retarget.workflow.bundled-preflight',
+        testInfo,
+      );
       expect(hash(fixture.file)).toBe(fixture.sha256);
       await build.click();
       await expect(
         launched.page.getByRole('heading', { name: 'Review changes' }),
       ).toBeVisible();
       await expect(launched.page.getByText('Source preserved.')).toBeVisible();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'retarget.workflow.review-copy',
+        testInfo,
+      );
       expect(hash(fixture.file)).toBe(fixture.sha256);
 
       await launched.page.getByRole('button', { name: 'Source' }).click();
@@ -283,6 +332,12 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
       await expect(
         launched.page.getByText(/Saved saved-u1\.3mf/).first(),
       ).toBeVisible();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'retarget.workflow.saved-result',
+        testInfo,
+      );
       expect(existsSync(savedOutput)).toBe(true);
       expect(hash(fixture.file)).toBe(fixture.sha256);
       await launched.page
@@ -299,18 +354,38 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
       await launched.page
         .getByRole('button', { name: 'Import U1 reference' })
         .click();
-      await expect(
-        launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
-      ).toBeChecked();
+      const importedProfileRadio = launched.page
+        .getByRole('radio', { name: /\(imported\)$/ })
+        .first();
+      await expect(importedProfileRadio).toBeChecked();
       await expect(
         launched.page.getByRole('button', { name: 'Build review copy' }),
       ).toBeEnabled();
+      const importedWorkflow = launched.page.getByRole('dialog', {
+        name: 'Prepare for Snapmaker U1',
+      });
+      await expect(
+        importedWorkflow.getByText(fileName, { exact: true }),
+      ).toBeVisible();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'retarget.workflow.imported-preflight',
+        testInfo,
+      );
       await launched.page
         .getByRole('button', { name: 'Build review copy' })
         .click();
       await expect(
         launched.page.getByRole('heading', { name: 'Review changes' }),
       ).toBeVisible();
+      await expect(launched.page.getByText('Source preserved.')).toBeVisible();
+      await expectNoMaterialViolations(launched.page);
+      await captureVisualScenario(
+        launched.page,
+        'retarget.workflow.full-view-axe',
+        testInfo,
+      );
       expect(hash(fixture.file)).toBe(fixture.sha256);
 
       const createdRoots = instanceRoots().filter(
@@ -414,3 +489,14 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
       ),
   );
 });
+
+async function expectNoMaterialViolations(page: Page): Promise<void> {
+  const results = await new AxeBuilder({ page })
+    .setLegacyMode()
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  const material = results.violations.filter((violation) =>
+    ['moderate', 'serious', 'critical'].includes(violation.impact ?? ''),
+  );
+  expect(material).toEqual([]);
+}

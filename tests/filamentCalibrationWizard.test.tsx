@@ -2381,6 +2381,47 @@ describe('FilamentCalibrationWizard polling loop', () => {
 // ---------------------------------------------------------------------------
 
 describe('FilamentCalibrationWizard sendToPrinter wire shape', () => {
+  it.each([null, 'OperatorRecoveryRequired'] as const)(
+    'preserves server-side recovery advice for blocked reason %s',
+    async (blockedReasonCode) => {
+      const reference = '88888888-8888-4888-8888-888888888801';
+      const sendMock = vi.fn().mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Dispatch remains blocked.',
+          retryable: true,
+          retryAfterSeconds: null,
+          reference,
+          blockedReasonCode,
+        },
+      });
+      mount(wizardApi({ sendCalibrationSliceToPrinter: sendMock }));
+      await openWizardAndPickPrinter();
+      await pickAllProfilesAndProceedToClone();
+      await performCloneStep();
+      await beginMethodThroughPurposeAndInputs(/Start Temperature tower/i);
+      fireEvent.click(
+        await screen.findByRole('button', { name: /Upload gcode only/i }),
+      );
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Dispatch remains blocked.');
+      expect(alert).toHaveTextContent(`Reference: ${reference}`);
+      if (blockedReasonCode === 'OperatorRecoveryRequired') {
+        expect(alert).toHaveTextContent(
+          'The job cannot be dispatched until an operator deliberately clears the block in PrintFarmer or cancels the job.',
+        );
+        expect(within(alert).queryByText('Retry.', { exact: true })).toBeNull();
+      } else {
+        expect(
+          within(alert).getByText('Retry.', { exact: true }),
+        ).toBeVisible();
+        expect(alert).not.toHaveTextContent('indeterminate pre-start');
+      }
+      expect(sendMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('sends `startPrint: true` with a non-null operatorAcknowledgement only after the operator typed START', async () => {
     const sendMock = vi.fn().mockResolvedValue({
       status: 'ok' as const,
@@ -3975,6 +4016,61 @@ describe('FilamentCalibrationWizard four-phase step UI (issue #799)', () => {
     );
     await screen.findByLabelText(/Starting nozzle temperature/i);
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('announces while the calibration slice submission is pending', async () => {
+    const submit = vi.fn(() => new Promise<never>(() => {}));
+    const api = wizardApi({
+      getCalibrationMethodGuidanceCatalog: vi.fn().mockResolvedValue({
+        status: 'ok' as const,
+        catalog: [
+          {
+            method: 'temperature_tower',
+            title: 'Temperature tower',
+            purpose: 'Measures extrusion multiplier accuracy.',
+            wikiUrl: '',
+            setupInputs: [
+              {
+                key: 'start_temp_c',
+                label: 'Starting nozzle temperature',
+                unit: '°C',
+                minimum: 190,
+                maximum: 250,
+              },
+            ],
+            measureQuantity: null,
+            steps: ['setup', 'print', 'measure'],
+          },
+        ],
+      }),
+      submitCalibrationSlice: submit,
+    });
+    mount(api);
+    await openWizardAndPickPrinter();
+    await pickAllProfilesAndProceedToClone();
+    await performCloneStep();
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Start Temperature tower/i }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Continue to inputs/i }),
+    );
+    fireEvent.change(
+      await screen.findByLabelText(/Starting nozzle temperature/i),
+      { target: { value: '220' } },
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Start slicing' }),
+    );
+
+    expect(
+      await screen.findByText(
+        'Submitting the calibration slice request. Progress will appear when the job is accepted.',
+        { selector: 'p[role="status"]' },
+      ),
+    ).toBeInTheDocument();
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
   it('populates `params` on the outgoing submitCalibrationSlice request from the collected setup inputs', async () => {

@@ -22,7 +22,7 @@ Calibration here is server-authoritative and auditable. A project binds to an ex
 
 A packaged Windows and macOS desktop application, run at a workstation beside active printers, and a companion to a PrintFarmer server rather than a replacement for one. It authenticates against that server for model and thumbnail upload, collections, and metadata sync, and treats the server as the source of truth for printer configuration.
 
-Printer Calibration walks one printer, toolhead, nozzle, and filament through nine stages, records what the operator observed at each, and produces a deterministic OrcaSlicer filament profile from the results. Stage definitions follow upstream OrcaSlicer behaviour; the app bundles no third-party calibration models and is not a wrapper around another tool.
+The current Filament Calibration workspace presents a dashboard and a filament-spool wizard. The live flow uses explicit server printer/profile context, submits slicing work, records measurements, and reports writeback/promotion outcomes. The former nine-stage printer-calibration saga, report, and profile-patch screens are not current renderer routes.
 
 The Snapmaker U1 workflow prepares a new review copy of a Bambu-targeted Orca-family 3MF from a pinned bundled snapshot. Other or unidentified printer targets are not eligible; native preflight and build enforce the same restriction as the UI. It is local-only: nothing is uploaded and no profile is downloaded at runtime.
 
@@ -30,7 +30,7 @@ Drafting works offline, but offline or stale state is never presented as readine
 
 ## Capabilities and Constraints
 
-Confirmed functionality: in-place scanning of existing STL, 3MF, and OBJ folders; a searchable virtualized library with duplicate grouping, tags, and collections; a Three.js viewer and deterministic thumbnails; upload to PrintFarmer with idempotent retry; guided printer calibration with report and profile-patch output; and Snapmaker U1 project preparation.
+Confirmed functionality: in-place scanning of existing STL, 3MF, and OBJ folders; a searchable paginated library with duplicate grouping, tags, and collections; a Three.js viewer and deterministic thumbnails; upload to PrintFarmer with idempotent retry; the current filament calibration workflow; and Snapmaker U1 project preparation.
 
 Durable constraints future work must preserve:
 
