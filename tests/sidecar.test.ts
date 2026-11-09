@@ -418,9 +418,9 @@ describe('SidecarClient', () => {
     });
   });
 
-  it('keeps Desktop IPC v10 independent from sidecar protocol v5', () => {
+  it('keeps Desktop IPC v11 independent from sidecar protocol v6', () => {
     expect(IPC_CONTRACT_VERSION).toBe(11);
-    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(5);
+    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(6);
   });
   it('resolves a handshake response', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
@@ -459,6 +459,33 @@ describe('SidecarClient', () => {
     await expect(client.handshake()).rejects.toThrow(
       `sidecar protocol mismatch: expected ${SIDECAR_RPC_PROTOCOL_VERSION}, received ${SIDECAR_RPC_PROTOCOL_VERSION + 1}`,
     );
+  });
+
+  it('refuses import policies on old sidecars that could silently ignore them', async () => {
+    const { channel, sent } = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: { protocolVersion: 5, sidecarVersion: 'before-policies' },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel, {
+      requireProtocolHandshake: true,
+    });
+    await expect(
+      client.importRoot(
+        'root',
+        '/models',
+        [],
+        [],
+        [{ relativePath: 'Miniatures', mode: 'disabled', tags: [] }],
+      ),
+    ).rejects.toThrow('sidecar protocol mismatch: expected 6, received 5');
+    expect(
+      sent.map((line) => (JSON.parse(line) as { method: string }).method),
+    ).toEqual(['handshake']);
   });
 
   it('sends a well-formed packed scene request and resolves the result', async () => {
@@ -738,14 +765,26 @@ describe('SidecarClient', () => {
     });
     const client = new SidecarClient(() => channel);
 
-    await client.previewImport('C:/models');
+    const options = {
+      folderOffset: 500,
+      policies: [
+        {
+          relativePath: 'Miniatures',
+          mode: 'organize' as const,
+          pattern: '{maker}/{project}/**',
+          collectionName: '{maker}',
+          tags: ['miniatures'],
+        },
+      ],
+    };
+    await client.previewImport('C:/models', options);
 
     const request = JSON.parse(sent[0] ?? '{}') as {
       method: string;
       params: { path: string };
     };
     expect(request.method).toBe('previewImport');
-    expect(request.params).toEqual({ path: 'C:/models' });
+    expect(request.params).toEqual({ path: 'C:/models', ...options });
   });
 
   it('sends confirmed organization rules with an import', async () => {
@@ -781,7 +820,16 @@ describe('SidecarClient', () => {
       },
     ];
 
-    await client.importRoot('root1', 'C:/models', rules, ['printable']);
+    const policies = [
+      { relativePath: 'Animals/Cats', mode: 'disabled' as const, tags: [] },
+    ];
+    await client.importRoot(
+      'root1',
+      'C:/models',
+      rules,
+      ['printable'],
+      policies,
+    );
 
     const request = JSON.parse(sent[0] ?? '{}') as {
       method: string;
@@ -793,6 +841,7 @@ describe('SidecarClient', () => {
       path: 'C:/models',
       rules,
       commonTags: ['printable'],
+      policies,
     });
   });
 

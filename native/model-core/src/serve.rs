@@ -27,8 +27,8 @@
 //!   [`crate::rpc::ThumbnailDto`] (base64 PNG + pixel dimensions).
 //! - `scanRoot` — params `{"rootId":<string>,"path":<string>}`; scans the folder,
 //!   reconciles it into the catalog, and returns a [`crate::rpc::ReconcileReportDto`].
-//! - `previewImport` — params `{"path":<string>}`; scans cheap file metadata and
-//!   returns folder/count suggestions without mutating the catalog.
+//! - `previewImport` — scans cheap file metadata and returns paged folder
+//!   suggestions plus a full-source organization preview without mutation.
 //! - `importRoot` — scans, reconciles, and applies explicit folder organization
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
@@ -77,7 +77,7 @@ use crate::rpc::{
     ReconcileReportDto, ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto,
     SyncEntityType, TagDto,
 };
-use crate::smart_import::{ImportPlan, ImportRuleKind};
+use crate::smart_import::{ImportPlan, ImportPolicyInput, ImportPolicyMode, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
 
 /// A decoded request envelope.
@@ -188,6 +188,32 @@ impl From<ImportRuleKindParam> for ImportRuleKind {
     }
 }
 
+fn build_import_plan(
+    rules: Vec<ImportRuleParam>,
+    common_tags: Vec<String>,
+    policies: Vec<ImportPolicyParam>,
+) -> Result<ImportPlan, crate::smart_import::ImportError> {
+    let plan = ImportPlan::new(
+        rules.into_iter().map(|rule| {
+            (
+                rule.relative_path,
+                ImportRuleKind::from(rule.kind),
+                rule.name,
+                rule.collection_id,
+            )
+        }),
+        common_tags,
+    )?;
+    plan.with_policies(policies.into_iter().map(|policy| ImportPolicyInput {
+        relative_path: policy.relative_path,
+        mode: ImportPolicyMode::from(policy.mode),
+        collection_name: policy.collection_name,
+        collection_id: policy.collection_id,
+        tags: policy.tags,
+        pattern: policy.pattern,
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportRuleParam {
@@ -200,6 +226,7 @@ struct ImportRuleParam {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 struct ImportRootParams {
     root_id: String,
     path: String,
@@ -209,6 +236,56 @@ struct ImportRootParams {
     rules: Vec<ImportRuleParam>,
     #[serde(default)]
     common_tags: Vec<String>,
+    #[serde(default)]
+    policies: Vec<ImportPolicyParam>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ImportPolicyModeParam {
+    Organize,
+    Disabled,
+}
+
+impl From<ImportPolicyModeParam> for crate::smart_import::ImportPolicyMode {
+    fn from(value: ImportPolicyModeParam) -> Self {
+        match value {
+            ImportPolicyModeParam::Organize => Self::Organize,
+            ImportPolicyModeParam::Disabled => Self::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct ImportPolicyParam {
+    relative_path: String,
+    mode: ImportPolicyModeParam,
+    #[serde(default)]
+    collection_name: Option<String>,
+    #[serde(default)]
+    collection_id: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    pattern: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewImportParams {
+    path: String,
+    #[serde(default)]
+    max_archive_bytes: crate::archive::ArchiveSizeLimit,
+    #[serde(default)]
+    folder_offset: usize,
+    #[serde(default)]
+    rules: Vec<ImportRuleParam>,
+    #[serde(default)]
+    common_tags: Vec<String>,
+    #[serde(default)]
+    policies: Vec<ImportPolicyParam>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -890,32 +967,48 @@ fn dispatch(
             Ok(value)
         }
         "previewImport" => {
-            let params: PathParams = serde_json::from_value(params)
+            let params: PreviewImportParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid previewImport params: {e}"))?;
             let scan = crate::scan::scan_root_with_limit(
                 &PathBuf::from(&params.path),
                 &AtomicBool::new(false),
                 params.max_archive_bytes.0,
             );
-            let preview = crate::smart_import::preview_scan(&scan);
+            let plan = build_import_plan(params.rules, params.common_tags, params.policies);
+            let mut preview = crate::smart_import::preview_scan_page(&scan, params.folder_offset);
+            preview.organization = Some(match plan {
+                Ok(plan) => match crate::smart_import::preview_organization(store, &scan, &plan) {
+                    Ok(organization) => organization,
+                    Err(error) => crate::smart_import::ImportOrganizationPreview {
+                        affected_models: 0,
+                        new_collections: Vec::new(),
+                        reused_collections: Vec::new(),
+                        new_tags: Vec::new(),
+                        reused_tags: Vec::new(),
+                        unmatched_models: 0,
+                        samples: Vec::new(),
+                        errors: vec![error.to_string()],
+                    },
+                },
+                Err(error) => crate::smart_import::ImportOrganizationPreview {
+                    affected_models: 0,
+                    new_collections: Vec::new(),
+                    reused_collections: Vec::new(),
+                    new_tags: Vec::new(),
+                    reused_tags: Vec::new(),
+                    unmatched_models: 0,
+                    samples: Vec::new(),
+                    errors: vec![error.to_string()],
+                },
+            });
             serde_json::to_value(ImportPreviewDto::from(&preview))
                 .map_err(|e| format!("failed to serialize import preview: {e}"))
         }
         "importRoot" => {
             let params: ImportRootParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid importRoot params: {e}"))?;
-            let plan = ImportPlan::new(
-                params.rules.into_iter().map(|rule| {
-                    (
-                        rule.relative_path,
-                        ImportRuleKind::from(rule.kind),
-                        rule.name,
-                        rule.collection_id,
-                    )
-                }),
-                params.common_tags,
-            )
-            .map_err(|e| format!("invalid import plan: {e}"))?;
+            let plan = build_import_plan(params.rules, params.common_tags, params.policies)
+                .map_err(|e| format!("invalid import plan: {e}"))?;
             let scan = crate::scan::scan_root_with_limit(
                 &PathBuf::from(&params.path),
                 &AtomicBool::new(false),
@@ -1594,7 +1687,7 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 7);
         assert_eq!(v["ok"], true);
-        assert_eq!(v["result"]["protocolVersion"], RPC_PROTOCOL_VERSION);
+        assert_eq!(v["result"]["protocolVersion"], 6);
         assert_eq!(v["result"]["sidecarVersion"], sidecar_version());
     }
 
@@ -2148,7 +2241,115 @@ mod tests {
         assert_eq!(value["result"]["formats"]["threeMf"], 1);
         assert_eq!(value["result"]["formats"]["step"], 1);
         assert_eq!(value["result"]["folders"][0]["relativePath"], "Animals");
+        assert_eq!(value["result"]["foldersTotal"], 2);
+        assert_eq!(value["result"]["foldersTruncated"], false);
+        assert_eq!(value["result"]["organization"]["affectedModels"], 0);
+        assert_eq!(
+            value["result"]["organization"]["samples"],
+            serde_json::json!([])
+        );
         assert!(store.models().is_empty());
+    }
+
+    #[test]
+    fn preview_policy_validation_errors_are_reported_without_failing_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Parts")).unwrap();
+        std::fs::write(dir.path().join("Parts/part.stl"), b"part").unwrap();
+        let mut store = InMemoryCatalog::new();
+        let request = serde_json::json!({
+            "id": 20,
+            "method": "previewImport",
+            "params": {
+                "path": dir.path().to_string_lossy(),
+                "policies": [{
+                    "relativePath": "Parts",
+                    "mode": "organize",
+                    "tags": ["valid"],
+                    "pattern": "parts/**/nested"
+                }]
+            }
+        });
+
+        let output = handle_line(&mut store, &request.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["ok"], true, "{value}");
+        assert_eq!(
+            value["result"]["organization"]["errors"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(value["result"]["organization"]["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("policy pattern is invalid"));
+        assert!(store.models().is_empty());
+    }
+
+    #[test]
+    fn imports_pattern_scoped_fixed_collection_id_and_returns_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Parts/One/Nested")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Parts/Two")).unwrap();
+        std::fs::write(dir.path().join("Parts/One/Nested/model.stl"), b"one").unwrap();
+        std::fs::write(dir.path().join("Parts/Two/model.stl"), b"two").unwrap();
+        let mut store = InMemoryCatalog::new();
+        let fixed = store.create_collection("Fixed collection").unwrap();
+        let request = serde_json::json!({
+            "id": 21,
+            "method": "importRoot",
+            "params": {
+                "rootId": "parts",
+                "path": dir.path().to_string_lossy(),
+                "policies": [{
+                    "relativePath": "Parts",
+                    "mode": "organize",
+                    "collectionName": "Fixed collection",
+                    "collectionId": fixed.id.clone(),
+                    "pattern": "One/**"
+                }]
+            }
+        });
+
+        let output = handle_line(&mut store, &request.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["ok"], true, "{value}");
+        assert_eq!(
+            value["result"]["resolvedCollections"][0]["relativePath"],
+            "Parts"
+        );
+        assert_eq!(
+            value["result"]["resolvedCollections"][0]["collectionId"],
+            fixed.id
+        );
+        assert_eq!(store.models().len(), 2);
+        let assigned = store
+            .models()
+            .iter()
+            .filter(|model| !store.collections_for_model(&model.hash).is_empty())
+            .count();
+        assert_eq!(assigned, 1);
+    }
+
+    #[test]
+    fn import_root_rejects_unknown_fields_so_policy_payload_cannot_be_ignored() {
+        let mut store = InMemoryCatalog::new();
+        let output = handle_line(
+            &mut store,
+            r#"{"id":22,"method":"importRoot","params":{"rootId":"root","path":".","futurePolicyField":true}}"#,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `futurePolicyField`"));
     }
 
     #[test]

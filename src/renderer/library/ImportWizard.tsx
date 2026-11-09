@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Collection } from '@shared/ipc';
+import type { Collection, ImportPreviewResponse } from '@shared/ipc';
 import type { ImportDraft, ImportStage } from './useLibrary';
 import {
+  applyPolicyToFolders,
+  bulkFolderPolicies,
   buildImportPlan,
+  forgetImportPlan,
   initialImportChoices,
+  policyValidationError,
   type ImportChoices,
   type ImportFolderChoice,
   type ImportPlan,
@@ -46,6 +50,7 @@ export function ImportWizard({
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const busy = operationBusy || submitting;
@@ -59,13 +64,59 @@ export function ImportWizard({
   const progressRef = useRef<HTMLDivElement | null>(null);
   const importButtonRef = useRef<HTMLButtonElement | null>(null);
   const wasBusyRef = useRef(false);
+  const previewRequestRef = useRef(0);
+  const completedPreviewKeyRef = useRef<string | null>(null);
+  const [previewState, setPreviewState] = useState<{
+    key: string;
+    status: 'pending' | 'ready' | 'error';
+    organization?: NonNullable<ImportPreviewResponse['organization']>;
+    error?: string;
+  } | null>(null);
+  const [previewRetry, setPreviewRetry] = useState(0);
+  const [selectedFolderPath, setSelectedFolderPath] = useState(
+    () => choices.folders[0]?.relativePath ?? '',
+  );
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [folderPage, setFolderPage] = useState(0);
   const plan = useMemo(() => buildImportPlan(choices), [choices]);
-  const namedRulesAreValid =
-    (!choices.rootCollection ||
-      validOrganizationName(choices.rootCollectionName)) &&
-    choices.folders.every((folder) =>
-      folder.mode === 'ignore' ? true : validOrganizationName(folder.name),
-    );
+  const planKey = JSON.stringify(plan);
+  const folderTree = useMemo(
+    () => buildFolderTree(choices.folders),
+    [choices.folders],
+  );
+  const visibleFolders = useMemo(
+    () => visibleFolderTree(folderTree, expandedPaths),
+    [folderTree, expandedPaths],
+  );
+  const folderPageSize = 100;
+  const folderPageCount = Math.max(
+    1,
+    Math.ceil(visibleFolders.length / folderPageSize),
+  );
+  const currentFolderPage = Math.min(folderPage, folderPageCount - 1);
+  const displayedFolders = visibleFolders.slice(
+    currentFolderPage * folderPageSize,
+    (currentFolderPage + 1) * folderPageSize,
+  );
+  const foldersByPath = useMemo(
+    () =>
+      new Map(choices.folders.map((folder) => [folder.relativePath, folder])),
+    [choices.folders],
+  );
+  useEffect(() => {
+    setFolderPage((current) => Math.min(current, folderPageCount - 1));
+  }, [folderPageCount]);
+  const selectedFolder = choices.folders.find(
+    (folder) => folder.relativePath === selectedFolderPath,
+  );
+  const selectedFolderContext = selectedFolder
+    ? folderPolicyContext(selectedFolder, choices, foldersByPath)
+    : null;
   const commonTagsError =
     plan.commonTags.length > 100
       ? 'Use no more than 100 tags.'
@@ -76,14 +127,96 @@ export function ImportWizard({
     choices.rootCollection && Boolean(choices.rootCollectionTargetUnresolved);
   const unresolvedFolders = choices.folders.filter(
     (folder) =>
-      folder.mode === 'collection' && folder.collectionTargetUnresolved,
+      (folder.mode === 'collection' ||
+        (folder.mode === 'recipe' &&
+          folder.name.trim() !== '' &&
+          !hasTemplatePlaceholder(folder.name))) &&
+      folder.collectionTargetUnresolved,
   );
+  const validationError = policyValidationError(choices);
+  const canCopyFolderPolicy =
+    selectedFolder !== undefined &&
+    (selectedFolder.mode === 'collection' ||
+      selectedFolder.mode === 'tag' ||
+      selectedFolder.mode === 'recipe');
+  const bulkPolicyError =
+    canCopyFolderPolicy && selectedFolder
+      ? policyValidationError({
+          ...choices,
+          legacyRules: [],
+          legacyIgnoredPaths: [],
+          policies: [],
+          folders: [{ ...selectedFolder, legacy: false }],
+        })
+      : null;
+  const bulkPolicyHasUnresolvedTarget = Boolean(
+    canCopyFolderPolicy && selectedFolder?.collectionTargetUnresolved,
+  );
+  const previewIsCurrent =
+    previewState?.key === planKey && previewState.status === 'ready';
   const canImport =
-    namedRulesAreValid &&
+    (!choices.rootCollection ||
+      validOrganizationName(choices.rootCollectionName)) &&
+    validationError === null &&
     commonTagsError === null &&
     !unresolvedRoot &&
     unresolvedFolders.length === 0 &&
+    previewIsCurrent &&
+    (previewState?.organization?.errors.length ?? 1) === 0 &&
     !busy;
+
+  useEffect(() => {
+    if (busy || completedPreviewKeyRef.current === planKey) return;
+    const requestId = ++previewRequestRef.current;
+    setPreviewState({ key: planKey, status: 'pending' });
+    const timer = window.setTimeout(() => {
+      void Promise.resolve()
+        .then(() =>
+          window.printFarmer.previewImport({
+            approvalId: draft.approvalId,
+            rules: plan.rules,
+            commonTags: plan.commonTags,
+            policies: plan.policies,
+          }),
+        )
+        .then((response) => {
+          if (previewRequestRef.current !== requestId) return;
+          if (!response.complete || response.failure) {
+            throw new Error(
+              response.failure ?? 'The organization preview is incomplete.',
+            );
+          }
+          if (!response.organization) {
+            throw new Error(
+              'Organization preview is unavailable. Update the desktop sidecar and retry.',
+            );
+          }
+          setPreviewState({
+            key: planKey,
+            status: 'ready',
+            organization: response.organization,
+          });
+          completedPreviewKeyRef.current = planKey;
+        })
+        .catch((cause: unknown) => {
+          if (previewRequestRef.current !== requestId) return;
+          setPreviewState({
+            key: planKey,
+            status: 'error',
+            error:
+              cause instanceof Error
+                ? cause.message
+                : 'The organization preview failed. Retry the preview.',
+          });
+        });
+    }, 400);
+    return () => {
+      window.clearTimeout(timer);
+      if (previewRequestRef.current === requestId) {
+        previewRequestRef.current += 1;
+      }
+    };
+  }, [busy, draft.approvalId, plan, planKey, previewRetry]);
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -104,7 +237,7 @@ export function ImportWizard({
         return;
       }
       const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
       );
       if (!focusable?.length) {
         return;
@@ -173,9 +306,14 @@ export function ImportWizard({
     submittingRef.current = true;
     setSubmitting(true);
     try {
+      setSubmitError(null);
       await onConfirm(plan, remember);
-    } catch {
-      // The library owner surfaces import failures through `error`.
+    } catch (cause) {
+      setSubmitError(
+        cause instanceof Error
+          ? cause.message
+          : 'The import could not be completed. Review the error and retry.',
+      );
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -189,9 +327,36 @@ export function ImportWizard({
     setChoices((current) => ({
       ...current,
       folders: current.folders.map((folder) =>
-        folder.relativePath === relativePath ? update(folder) : folder,
+        folder.relativePath === relativePath
+          ? { ...update(folder), legacy: false }
+          : folder,
       ),
     }));
+  };
+
+  const setBulkFolderMode = (mode: 'inherit' | 'disabled'): void => {
+    if (!selectedPaths.size) return;
+    setChoices((current) =>
+      bulkFolderPolicies(current, [...selectedPaths], mode),
+    );
+    setSelectedPaths(new Set());
+  };
+
+  const applySelectedFolderPolicy = (): void => {
+    if (!selectedFolder || !selectedPaths.size || !canCopyFolderPolicy) return;
+    setChoices((current) =>
+      applyPolicyToFolders(current, [...selectedPaths], selectedFolder),
+    );
+    setSelectedPaths(new Set());
+  };
+
+  const setFolderSelected = (path: string, selected: boolean): void => {
+    setSelectedPaths((current) => {
+      const next = new Set(current);
+      if (selected) next.add(path);
+      else next.delete(path);
+      return next;
+    });
   };
 
   return (
@@ -371,112 +536,577 @@ export function ImportWizard({
             <section className="import-section import-folder-section">
               <div className="import-section-heading">
                 <div>
-                  <h3>Folder rules</h3>
+                  <h3>Folder policies</h3>
                   <p>
-                    Top-level folders become collections; deeper folders become
-                    tags. Review or override each suggestion.
+                    Policies inherit down the tree. A local policy replaces
+                    inherited folder metadata.
                   </p>
                 </div>
-                <span>{draft.preview.folders.length} folders</span>
+                <span>
+                  {choices.folders.length.toLocaleString()} folders ·{' '}
+                  {plan.policies?.length ?? 0} policies ·{' '}
+                  {(
+                    choices.legacyRules.filter(
+                      (rule) => rule.relativePath !== '',
+                    ).length + choices.legacyIgnoredPaths.length
+                  ).toLocaleString()}{' '}
+                  legacy rules/ignores
+                </span>
+              </div>
+              {choices.recipeError ? (
+                <div className="import-policy-alert" role="alert">
+                  <strong>Saved organization choices need attention</strong>
+                  <span>{choices.recipeError}</span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      try {
+                        forgetImportPlan(draft.rootId);
+                        const nextChoices = bindKnownCollections(
+                          initialImportChoices(
+                            draft.rootId,
+                            basename(draft.path),
+                            draft.preview,
+                          ),
+                          draft.collections,
+                        );
+                        setChoices(nextChoices);
+                        setSelectedFolderPath(
+                          nextChoices.folders[0]?.relativePath ?? '',
+                        );
+                        setSelectedPaths(new Set());
+                        setExpandedPaths(new Set());
+                        setSubmitError(null);
+                      } catch (cause) {
+                        setSubmitError(
+                          cause instanceof Error
+                            ? cause.message
+                            : 'The saved recipe could not be discarded.',
+                        );
+                      }
+                    }}
+                  >
+                    Discard unreadable saved recipe
+                  </button>
+                </div>
+              ) : null}
+              <div className="import-tree-tools">
+                <div>
+                  <button
+                    type="button"
+                    disabled={busy || !choices.folders.length}
+                    onClick={() =>
+                      setSelectedPaths(
+                        new Set(
+                          choices.folders.map((folder) => folder.relativePath),
+                        ),
+                      )
+                    }
+                  >
+                    Select all folders in source
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !selectedPaths.size}
+                    onClick={() => setSelectedPaths(new Set())}
+                  >
+                    Clear selection
+                  </button>
+                  <span>{selectedPaths.size.toLocaleString()} selected</span>
+                </div>
+                <p>
+                  Bulk actions apply to each selected folder and every
+                  descendant, including collapsed folders and saved choices not
+                  shown in this scan.
+                </p>
+                <div>
+                  <button
+                    type="button"
+                    disabled={busy || !selectedPaths.size}
+                    onClick={() => setBulkFolderMode('disabled')}
+                  >
+                    Disable folder organization
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !selectedPaths.size}
+                    onClick={() => setBulkFolderMode('inherit')}
+                  >
+                    Clear policy; inherit
+                  </button>
+                  {selectedPaths.size && canCopyFolderPolicy ? (
+                    <button
+                      type="button"
+                      disabled={
+                        busy ||
+                        bulkPolicyError !== null ||
+                        bulkPolicyHasUnresolvedTarget
+                      }
+                      onClick={applySelectedFolderPolicy}
+                    >
+                      Apply policy to selected subtrees
+                    </button>
+                  ) : null}
+                </div>
+                {selectedPaths.size &&
+                canCopyFolderPolicy &&
+                (bulkPolicyError || bulkPolicyHasUnresolvedTarget) ? (
+                  <p className="import-field-error" role="alert">
+                    {bulkPolicyError ??
+                      'Choose a collection target before applying this policy.'}
+                  </p>
+                ) : null}
               </div>
               {choices.folders.length ? (
-                <div className="import-rule-list" role="list">
-                  {choices.folders.map((folder) => (
-                    <div
-                      className="import-rule-row"
-                      role="listitem"
-                      key={folder.relativePath}
+                <div className="import-tree-layout">
+                  <div className="import-folder-tree-container">
+                    <nav
+                      className="import-tree-pagination"
+                      aria-label="Folder tree pages"
                     >
-                      <div
-                        className="import-rule-path"
-                        style={{ paddingLeft: `${(folder.depth - 1) * 16}px` }}
-                      >
-                        <Icon name="folder" />
-                        <span title={folder.relativePath}>
-                          {folder.relativePath}
-                        </span>
-                        <small>{folder.modelCount}</small>
-                      </div>
-                      <select
-                        aria-label={`Organization for ${folder.relativePath}`}
-                        value={folder.mode}
-                        disabled={busy}
-                        onChange={(event) =>
-                          updateFolder(folder.relativePath, (current) => {
-                            const mode = event.target.value as
-                              'collection' | 'tag' | 'ignore';
-                            return withFolderCollectionTarget(
-                              { ...current, mode },
-                              mode === 'collection'
-                                ? inferredCollectionTarget(
-                                    current.name,
-                                    draft.collections,
-                                  )
-                                : {},
-                            );
-                          })
+                      <button
+                        type="button"
+                        disabled={busy || currentFolderPage === 0}
+                        onClick={() =>
+                          setFolderPage((current) => Math.max(0, current - 1))
                         }
                       >
-                        <option value="collection">Collection</option>
-                        <option value="tag">Tag</option>
-                        <option value="ignore">Ignore</option>
-                      </select>
-                      <input
-                        type="text"
-                        aria-label={`Name for ${folder.relativePath}`}
-                        aria-invalid={
-                          folder.mode !== 'ignore' &&
-                          !validOrganizationName(folder.name)
+                        Previous 100
+                      </button>
+                      <span>
+                        Showing{' '}
+                        {visibleFolders.length
+                          ? (
+                              currentFolderPage * folderPageSize +
+                              1
+                            ).toLocaleString()
+                          : '0'}
+                        –
+                        {Math.min(
+                          (currentFolderPage + 1) * folderPageSize,
+                          visibleFolders.length,
+                        ).toLocaleString()}{' '}
+                        of {visibleFolders.length.toLocaleString()} visible
+                      </span>
+                      <button
+                        type="button"
+                        disabled={
+                          busy || currentFolderPage >= folderPageCount - 1
                         }
-                        value={folder.name}
-                        maxLength={128}
-                        list={
-                          folder.mode === 'collection'
-                            ? 'known-import-collections'
-                            : folder.mode === 'tag'
-                              ? 'known-import-tags'
-                              : undefined
+                        onClick={() =>
+                          setFolderPage((current) =>
+                            Math.min(folderPageCount - 1, current + 1),
+                          )
                         }
-                        disabled={busy || folder.mode === 'ignore'}
-                        onChange={(event) =>
-                          updateFolder(folder.relativePath, (current) => {
-                            const name = event.target.value;
-                            return withFolderCollectionTarget(
-                              { ...current, name },
-                              current.mode === 'collection'
-                                ? inferredCollectionTarget(
-                                    name,
-                                    draft.collections,
+                      >
+                        Next 100
+                      </button>
+                    </nav>
+                    <div
+                      className="import-folder-tree"
+                      role="list"
+                      aria-label="Source folders"
+                    >
+                      {displayedFolders.map(
+                        ({ folder, hasChildren, expanded }) => {
+                          const context = folderPolicyContext(
+                            folder,
+                            choices,
+                            foldersByPath,
+                          );
+                          return (
+                            <div
+                              className={`import-tree-row${selectedFolderPath === folder.relativePath ? ' selected' : ''}`}
+                              role="listitem"
+                              key={folder.relativePath}
+                              style={
+                                {
+                                  '--folder-depth': folder.depth - 1,
+                                } as React.CSSProperties
+                              }
+                            >
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${folder.relativePath} and descendants`}
+                                checked={selectedPaths.has(folder.relativePath)}
+                                disabled={busy}
+                                onChange={(event) =>
+                                  setFolderSelected(
+                                    folder.relativePath,
+                                    event.target.checked,
                                   )
-                                : {},
-                            );
-                          })
-                        }
-                      />
-                      {folder.mode === 'collection' ? (
-                        <CollectionTargetPicker
-                          label={`Choose collection for ${folder.relativePath}`}
-                          name={folder.name}
-                          collectionId={folder.collectionId}
-                          unresolved={Boolean(
-                            folder.collectionTargetUnresolved,
-                          )}
-                          collections={draft.collections}
-                          disabled={busy}
-                          onSelect={(collection) =>
-                            updateFolder(folder.relativePath, (current) =>
-                              collection
-                                ? withFolderCollectionTarget(
-                                    { ...current, name: collection.name },
-                                    { collectionId: collection.id },
-                                  )
-                                : withFolderCollectionTarget(current, {}),
-                            )
-                          }
-                        />
-                      ) : null}
+                                }
+                              />
+                              {hasChildren ? (
+                                <button
+                                  type="button"
+                                  className="import-tree-disclosure"
+                                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${folder.relativePath}`}
+                                  aria-expanded={expanded}
+                                  disabled={busy}
+                                  onClick={() =>
+                                    setExpandedPaths((current) => {
+                                      const next = new Set(current);
+                                      if (next.has(folder.relativePath)) {
+                                        next.delete(folder.relativePath);
+                                      } else {
+                                        next.add(folder.relativePath);
+                                      }
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  {expanded ? '−' : '+'}
+                                </button>
+                              ) : (
+                                <span
+                                  className="import-tree-disclosure-placeholder"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <Icon name="folder" />
+                              <button
+                                type="button"
+                                className="import-tree-path"
+                                aria-label={`Edit policy for ${folder.relativePath}`}
+                                aria-pressed={
+                                  selectedFolderPath === folder.relativePath
+                                }
+                                disabled={busy}
+                                onClick={() =>
+                                  setSelectedFolderPath(folder.relativePath)
+                                }
+                              >
+                                {folder.relativePath}
+                              </button>
+                              <span className="import-tree-count">
+                                {folder.modelCount.toLocaleString()} models
+                              </span>
+                              <span className="import-policy-state">
+                                {context.label}
+                              </span>
+                            </div>
+                          );
+                        },
+                      )}
                     </div>
-                  ))}
+                  </div>
+                  <section
+                    className="import-folder-editor"
+                    aria-label={
+                      selectedFolder
+                        ? `Policy editor for ${selectedFolder.relativePath}`
+                        : 'Folder policy editor'
+                    }
+                  >
+                    {selectedFolder ? (
+                      <>
+                        <div className="import-folder-editor-heading">
+                          <div>
+                            <h4>Selected folder</h4>
+                            <code>{selectedFolder.relativePath}</code>
+                          </div>
+                          <span>
+                            {selectedFolder.modelCount.toLocaleString()} models
+                          </span>
+                        </div>
+                        {selectedFolder.legacy ? (
+                          <p className="import-legacy-note">
+                            Legacy additive choice. It remains unchanged until
+                            you edit this folder.
+                          </p>
+                        ) : null}
+                        {selectedFolder.mode === 'ignore' ? (
+                          <p className="import-legacy-note">
+                            Legacy ignore only removes the old choice here. It
+                            does not block an ancestor policy.
+                          </p>
+                        ) : null}
+                        <p className="import-inheritance-status">
+                          {selectedFolderContext?.description}
+                        </p>
+                        <label className="import-policy-mode">
+                          <span>Folder organization</span>
+                          <select
+                            aria-label={`Folder organization for ${selectedFolder.relativePath}`}
+                            value={selectedFolder.mode}
+                            disabled={busy}
+                            onChange={(event) =>
+                              updateFolder(
+                                selectedFolder.relativePath,
+                                (current) => {
+                                  const mode = event.target.value as
+                                    | 'collection'
+                                    | 'tag'
+                                    | 'inherit'
+                                    | 'disabled'
+                                    | 'recipe';
+                                  const next = { ...current, mode };
+                                  return withFolderCollectionTarget(
+                                    next,
+                                    mode === 'collection' ||
+                                      (mode === 'recipe' &&
+                                        !hasTemplatePlaceholder(next.name))
+                                      ? inferredCollectionTarget(
+                                          next.name,
+                                          draft.collections,
+                                        )
+                                      : {},
+                                  );
+                                },
+                              )
+                            }
+                          >
+                            {selectedFolder.legacy &&
+                            selectedFolder.mode === 'ignore' ? (
+                              <option value="ignore">Legacy ignore</option>
+                            ) : null}
+                            <option value="inherit">
+                              Inherit nearest folder policy
+                            </option>
+                            <option value="collection">
+                              Collection with optional tags
+                            </option>
+                            <option value="tag">One fixed tag</option>
+                            <option value="recipe">Pattern-based recipe</option>
+                            <option value="disabled">
+                              Disable folder organization
+                            </option>
+                          </select>
+                        </label>
+                        {selectedFolder.mode === 'collection' ? (
+                          <>
+                            <label className="import-policy-field">
+                              <span>Collection name</span>
+                              <input
+                                type="text"
+                                aria-label={`Collection name for ${selectedFolder.relativePath}`}
+                                value={selectedFolder.name}
+                                maxLength={128}
+                                list="known-import-collections"
+                                disabled={busy}
+                                onChange={(event) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) => {
+                                      const name = event.target.value;
+                                      return withFolderCollectionTarget(
+                                        { ...current, name },
+                                        inferredCollectionTarget(
+                                          name,
+                                          draft.collections,
+                                        ),
+                                      );
+                                    },
+                                  )
+                                }
+                              />
+                            </label>
+                            <CollectionTargetPicker
+                              label={`Choose collection for ${selectedFolder.relativePath}`}
+                              name={selectedFolder.name}
+                              collectionId={selectedFolder.collectionId}
+                              unresolved={Boolean(
+                                selectedFolder.collectionTargetUnresolved,
+                              )}
+                              collections={draft.collections}
+                              disabled={busy}
+                              onSelect={(collection) =>
+                                updateFolder(
+                                  selectedFolder.relativePath,
+                                  (current) =>
+                                    collection
+                                      ? withFolderCollectionTarget(
+                                          { ...current, name: collection.name },
+                                          { collectionId: collection.id },
+                                        )
+                                      : withFolderCollectionTarget(current, {}),
+                                )
+                              }
+                            />
+                            <label className="import-policy-field">
+                              <span>Also add tags (optional)</span>
+                              <input
+                                type="text"
+                                aria-label={`Tags for ${selectedFolder.relativePath}`}
+                                value={selectedFolder.tagsText}
+                                maxLength={2048}
+                                list="known-import-tags"
+                                disabled={busy}
+                                placeholder="miniatures, terrain"
+                                onChange={(event) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) => ({
+                                      ...current,
+                                      tagsText: event.target.value,
+                                    }),
+                                  )
+                                }
+                              />
+                            </label>
+                          </>
+                        ) : null}
+                        {selectedFolder.mode === 'tag' ? (
+                          <label className="import-policy-field">
+                            <span>Tags for this folder</span>
+                            <input
+                              type="text"
+                              aria-label={`Tags for ${selectedFolder.relativePath}`}
+                              value={selectedFolder.name}
+                              maxLength={128}
+                              list="known-import-tags"
+                              disabled={busy}
+                              placeholder="miniatures, terrain"
+                              onChange={(event) =>
+                                updateFolder(
+                                  selectedFolder.relativePath,
+                                  (current) => ({
+                                    ...current,
+                                    name: event.target.value,
+                                  }),
+                                )
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        {selectedFolder.mode === 'recipe' ? (
+                          <>
+                            <p className="import-recipe-example">
+                              Example: <code>{'{maker}/{project}/**'}</code>{' '}
+                              creates collection <code>{'{maker}'}</code> and
+                              adds tag <code>miniatures</code>.
+                            </p>
+                            <label className="import-policy-field">
+                              <span>Path pattern</span>
+                              <input
+                                type="text"
+                                aria-label={`Path pattern for ${selectedFolder.relativePath}`}
+                                value={selectedFolder.pattern}
+                                maxLength={4096}
+                                disabled={busy}
+                                placeholder="{maker}/{project}/**"
+                                onChange={(event) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) => ({
+                                      ...current,
+                                      pattern: event.target.value,
+                                    }),
+                                  )
+                                }
+                              />
+                              <small>
+                                Match paths below this folder; captures use one
+                                segment and ** may appear only at the end.
+                              </small>
+                            </label>
+                            <label className="import-policy-field">
+                              <span>Collection name (optional)</span>
+                              <input
+                                type="text"
+                                aria-label={`Recipe collection name for ${selectedFolder.relativePath}`}
+                                value={selectedFolder.name}
+                                maxLength={128}
+                                disabled={busy}
+                                placeholder="{maker}"
+                                onChange={(event) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) => {
+                                      const name = event.target.value;
+                                      const next = { ...current, name };
+                                      return withFolderCollectionTarget(
+                                        next,
+                                        hasTemplatePlaceholder(name)
+                                          ? {}
+                                          : inferredCollectionTarget(
+                                              name,
+                                              draft.collections,
+                                            ),
+                                      );
+                                    },
+                                  )
+                                }
+                              />
+                            </label>
+                            {selectedFolder.name.trim() &&
+                            !hasTemplatePlaceholder(selectedFolder.name) ? (
+                              <CollectionTargetPicker
+                                label={`Choose recipe collection for ${selectedFolder.relativePath}`}
+                                name={selectedFolder.name}
+                                collectionId={selectedFolder.collectionId}
+                                unresolved={Boolean(
+                                  selectedFolder.collectionTargetUnresolved,
+                                )}
+                                collections={draft.collections}
+                                disabled={busy}
+                                onSelect={(collection) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) =>
+                                      collection
+                                        ? withFolderCollectionTarget(
+                                            {
+                                              ...current,
+                                              name: collection.name,
+                                            },
+                                            { collectionId: collection.id },
+                                          )
+                                        : withFolderCollectionTarget(
+                                            current,
+                                            {},
+                                          ),
+                                  )
+                                }
+                              />
+                            ) : null}
+                            <label className="import-policy-field">
+                              <span>Tags (optional)</span>
+                              <textarea
+                                aria-label={`Recipe tags for ${selectedFolder.relativePath}`}
+                                value={selectedFolder.tagsText}
+                                maxLength={2048}
+                                disabled={busy}
+                                placeholder="miniatures, {project}"
+                                onChange={(event) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) => ({
+                                      ...current,
+                                      tagsText: event.target.value,
+                                    }),
+                                  )
+                                }
+                              />
+                            </label>
+                          </>
+                        ) : null}
+                        {selectedFolder.mode === 'disabled' ? (
+                          <p className="import-disabled-note">
+                            Folder metadata is disabled here. Model files are
+                            still imported and remain in this source.
+                          </p>
+                        ) : null}
+                        {selectedFolder.mode === 'inherit' ? (
+                          <p className="import-inherit-note">
+                            This folder has no local policy. It inherits the
+                            nearest configured ancestor policy, if any.
+                          </p>
+                        ) : null}
+                        {validationError ? (
+                          <p className="import-field-error" role="alert">
+                            {validationError}
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <p className="import-no-folders">
+                        Select a folder to inspect or edit its policy.
+                      </p>
+                    )}
+                  </section>
                 </div>
               ) : (
                 <p className="import-no-folders">
@@ -484,7 +1114,53 @@ export function ImportWizard({
                 </p>
               )}
             </section>
+            <section className="import-section import-organization-preview">
+              <div className="import-section-heading">
+                <div>
+                  <h3>Organization preview</h3>
+                  <p>
+                    Based on the complete source scan. Import stays unavailable
+                    until this plan is previewed successfully.
+                  </p>
+                </div>
+                <span>
+                  {previewState?.key !== planKey ||
+                  previewState.status === 'pending'
+                    ? 'Updating…'
+                    : previewState.status === 'error'
+                      ? 'Unavailable'
+                      : 'Current plan'}
+                </span>
+              </div>
+              {previewState?.key !== planKey ||
+              previewState.status === 'pending' ? (
+                <p className="import-preview-status" role="status">
+                  Calculating organization changes…
+                </p>
+              ) : previewState.status === 'error' ? (
+                <div className="import-preview-error" role="alert">
+                  <span>Preview failed: {previewState.error}</span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setPreviewRetry((current) => current + 1)}
+                  >
+                    Retry organization preview
+                  </button>
+                </div>
+              ) : previewState.organization ? (
+                <OrganizationPreview organization={previewState.organization} />
+              ) : null}
+            </section>
           </div>
+          {submitError ? (
+            <p
+              className="import-preview-error import-submit-error"
+              role="alert"
+            >
+              {submitError}
+            </p>
+          ) : null}
         </div>
 
         <div
@@ -571,6 +1247,247 @@ export function ImportWizard({
   );
 }
 
+interface FolderTreeNode {
+  folder: ImportFolderChoice;
+  children: FolderTreeNode[];
+}
+
+function buildFolderTree(
+  folders: readonly ImportFolderChoice[],
+): FolderTreeNode[] {
+  const nodes = new Map<string, FolderTreeNode>();
+  for (const folder of folders) {
+    nodes.set(folder.relativePath, { folder, children: [] });
+  }
+  const roots: FolderTreeNode[] = [];
+  for (const node of nodes.values()) {
+    const separator = node.folder.relativePath.lastIndexOf('/');
+    const parentPath =
+      separator < 0 ? '' : node.folder.relativePath.slice(0, separator);
+    const parent = nodes.get(parentPath);
+    if (parent && parent !== node) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+function visibleFolderTree(
+  roots: readonly FolderTreeNode[],
+  expandedPaths: ReadonlySet<string>,
+): Array<{
+  folder: ImportFolderChoice;
+  hasChildren: boolean;
+  expanded: boolean;
+}> {
+  const visible: Array<{
+    folder: ImportFolderChoice;
+    hasChildren: boolean;
+    expanded: boolean;
+  }> = [];
+  const visit = (nodes: readonly FolderTreeNode[]): void => {
+    for (const node of nodes) {
+      const expanded = expandedPaths.has(node.folder.relativePath);
+      visible.push({
+        folder: node.folder,
+        hasChildren: node.children.length > 0,
+        expanded,
+      });
+      if (expanded) visit(node.children);
+    }
+  };
+  visit(roots);
+  return visible;
+}
+
+function folderPolicyContext(
+  folder: ImportFolderChoice,
+  choices: ImportChoices,
+  byPath: ReadonlyMap<string, ImportFolderChoice>,
+): { label: string; description: string } {
+  const localPolicy =
+    !folder.legacy && folder.mode !== 'inherit' && folder.mode !== 'ignore';
+  if (localPolicy && folder.mode === 'disabled') {
+    return {
+      label: 'Disabled here',
+      description:
+        'Folder organization is stopped at this path. Files are still imported.',
+    };
+  }
+  if (localPolicy) {
+    return {
+      label: 'Local policy',
+      description:
+        'This local policy replaces inherited folder metadata for matching paths.',
+    };
+  }
+  let parentPath = folder.relativePath;
+  while (parentPath.includes('/')) {
+    parentPath = parentPath.slice(0, parentPath.lastIndexOf('/'));
+    const parent = byPath.get(parentPath);
+    if (
+      parent &&
+      !parent.legacy &&
+      parent.mode !== 'inherit' &&
+      parent.mode !== 'ignore'
+    ) {
+      if (parent.mode === 'disabled') {
+        const inherited = {
+          label: `Disabled by ${parent.relativePath}`,
+          description: `Folder organization is disabled by ${parent.relativePath}. Files in this subtree are still imported.`,
+        };
+        return folder.legacy
+          ? {
+              label: `Legacy ${folder.mode}`,
+              description: `This saved v1 choice is additive and remains unchanged until you edit this folder. ${inherited.description}`,
+            }
+          : inherited;
+      }
+      const inherited = {
+        label: `Inherited from ${parent.relativePath}`,
+        description: `This folder inherits its organization policy from ${parent.relativePath}. A local policy here would replace the inherited folder metadata.`,
+      };
+      return folder.legacy
+        ? {
+            label: `Legacy ${folder.mode}`,
+            description: `This saved v1 choice is additive and remains unchanged until you edit this folder. ${inherited.description}`,
+          }
+        : inherited;
+    }
+  }
+  const hasWholeImportMetadata =
+    choices.rootCollection || Boolean(choices.commonTagsText.trim());
+  const inherited = hasWholeImportMetadata
+    ? {
+        label: 'Whole import',
+        description:
+          'No folder policy applies. Whole-import collection and tags still apply.',
+      }
+    : {
+        label: 'No folder policy',
+        description:
+          'No folder policy applies here. Model files are still imported without folder metadata.',
+      };
+  return folder.legacy
+    ? {
+        label: `Legacy ${folder.mode}`,
+        description: `This saved v1 choice is additive and remains unchanged until you edit this folder. ${inherited.description}`,
+      }
+    : inherited;
+}
+
+function OrganizationPreview({
+  organization,
+}: {
+  organization: NonNullable<ImportPreviewResponse['organization']>;
+}): React.JSX.Element {
+  return (
+    <div className="import-preview-content">
+      <div className="import-preview-metrics">
+        <SummaryStat
+          label="Affected models"
+          value={organization.affectedModels.toLocaleString()}
+        />
+        <SummaryStat
+          label="Unmatched"
+          value={organization.unmatchedModels.toLocaleString()}
+        />
+        <SummaryStat
+          label="New collections"
+          value={organization.newCollections.length.toLocaleString()}
+        />
+        <SummaryStat
+          label="Reused collections"
+          value={organization.reusedCollections.length.toLocaleString()}
+        />
+        <SummaryStat
+          label="New tags"
+          value={organization.newTags.length.toLocaleString()}
+        />
+        <SummaryStat
+          label="Reused tags"
+          value={organization.reusedTags.length.toLocaleString()}
+        />
+      </div>
+      <div className="import-preview-names">
+        <OrganizationNameList
+          label="New collections"
+          names={organization.newCollections}
+        />
+        <OrganizationNameList
+          label="Reused collections"
+          names={organization.reusedCollections}
+        />
+        <OrganizationNameList label="New tags" names={organization.newTags} />
+        <OrganizationNameList
+          label="Reused tags"
+          names={organization.reusedTags}
+        />
+      </div>
+      {organization.unmatchedModels ? (
+        <p className="import-preview-status">
+          {organization.unmatchedModels.toLocaleString()} models have no
+          matching folder policy. Whole-import settings still apply.
+        </p>
+      ) : null}
+      {organization.samples.length ? (
+        <details className="import-preview-samples">
+          <summary>Example model paths and resulting organization</summary>
+          <ul>
+            {organization.samples.map((sample) => (
+              <li key={sample.relativePath}>
+                <code>{sample.relativePath}</code>
+                <span>
+                  Collections: {sample.collections.join(', ') || 'none'} · Tags:{' '}
+                  {sample.tags.join(', ') || 'none'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {organization.errors.length ? (
+        <div className="import-policy-alert" role="alert">
+          <strong>Preview reported errors; import is blocked</strong>
+          <ul>
+            {organization.errors.map((message, index) => (
+              <li key={`${index}-${message}`}>{message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OrganizationNameList({
+  label,
+  names,
+}: {
+  label: string;
+  names: readonly string[];
+}): React.JSX.Element {
+  const visible = names.slice(0, 30);
+  return (
+    <details>
+      <summary>
+        {label} ({names.length.toLocaleString()})
+      </summary>
+      {visible.length ? (
+        <ul>
+          {visible.map((name) => (
+            <li key={name}>{name}</li>
+          ))}
+          {names.length > visible.length ? (
+            <li>And {names.length - visible.length} more</li>
+          ) : null}
+        </ul>
+      ) : (
+        <p>None</p>
+      )}
+    </details>
+  );
+}
+
 function importProgressText(
   stage: ImportStage | null,
   modelCount: number,
@@ -617,6 +1534,10 @@ function validOrganizationName(value: string): boolean {
   return length > 0 && length <= 128;
 }
 
+function hasTemplatePlaceholder(value: string): boolean {
+  return /[{}]/.test(value);
+}
+
 function bindKnownCollections(
   choices: ImportChoices,
   collections: readonly Collection[],
@@ -633,7 +1554,14 @@ function bindKnownCollections(
       ? { rootCollectionName: rootTarget.resolvedName }
       : {}),
     folders: choices.folders.map((folder) => {
-      if (folder.mode !== 'collection') {
+      if (
+        folder.mode !== 'collection' &&
+        !(
+          folder.mode === 'recipe' &&
+          folder.name.trim() !== '' &&
+          !hasTemplatePlaceholder(folder.name)
+        )
+      ) {
         return withFolderCollectionTarget(folder, {});
       }
       const target = rememberedCollectionTarget(

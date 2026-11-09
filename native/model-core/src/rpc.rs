@@ -654,7 +654,33 @@ pub struct ImportPreviewDto {
     pub complete: bool,
     pub formats: ImportFormatCountsDto,
     pub folders: Vec<ImportFolderDto>,
+    pub folders_total: usize,
     pub folders_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_folder_offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<ImportOrganizationPreviewDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOrganizationPreviewDto {
+    pub affected_models: usize,
+    pub new_collections: Vec<String>,
+    pub reused_collections: Vec<String>,
+    pub new_tags: Vec<String>,
+    pub reused_tags: Vec<String>,
+    pub unmatched_models: usize,
+    pub samples: Vec<ImportOrganizationSampleDto>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOrganizationSampleDto {
+    pub relative_path: String,
+    pub collections: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
@@ -692,7 +718,29 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
                     model_count: folder.model_count,
                 })
                 .collect(),
+            folders_total: preview.folders_total,
             folders_truncated: preview.folders_truncated,
+            next_folder_offset: preview.next_folder_offset,
+            organization: preview.organization.as_ref().map(|organization| {
+                ImportOrganizationPreviewDto {
+                    affected_models: organization.affected_models,
+                    new_collections: organization.new_collections.clone(),
+                    reused_collections: organization.reused_collections.clone(),
+                    new_tags: organization.new_tags.clone(),
+                    reused_tags: organization.reused_tags.clone(),
+                    unmatched_models: organization.unmatched_models,
+                    samples: organization
+                        .samples
+                        .iter()
+                        .map(|sample| ImportOrganizationSampleDto {
+                            relative_path: sample.relative_path.clone(),
+                            collections: sample.collections.clone(),
+                            tags: sample.tags.clone(),
+                        })
+                        .collect(),
+                    errors: organization.errors.clone(),
+                }
+            }),
         }
     }
 }
