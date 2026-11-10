@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   measure:
-    name: Workers A-B (${{ matrix.mode }}-${{ matrix.sample }})
+    name: Final A-B (${{ matrix.mode }}-${{ matrix.sample }})
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -22,6 +22,8 @@ jobs:
         include:
           - { mode: original, sample: 1 }
           - { mode: original, sample: 2 }
+          - { mode: matched-delay, sample: 1 }
+          - { mode: matched-delay, sample: 2 }
           - { mode: one-worker, sample: 1 }
           - { mode: one-worker, sample: 2 }
           - { mode: one-worker, sample: 3 }
@@ -30,8 +32,6 @@ jobs:
           - { mode: one-worker, sample: 6 }
           - { mode: one-worker, sample: 7 }
           - { mode: one-worker, sample: 8 }
-          - { mode: one-worker, sample: 9 }
-          - { mode: one-worker, sample: 10 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +78,13 @@ jobs:
           Get-MpComputerStatus |
             Select-Object AMProductVersion, AntivirusSignatureVersion, RealTimeProtectionEnabled |
             ConvertTo-Json | Set-Content (Join-Path $evidence 'defender.json')
+      - name: Match prior exclusion-step delay without modifying settings
+        if: matrix.mode == 'matched-delay'
+        shell: pwsh
+        run: |
+          # Prior exclusion steps took 1-3s, median 2s, via job step timestamps.
+          # This isolates a timing/staggering hypothesis, not Mp* side effects.
+          Start-Sleep -Seconds 2
       - name: Full suite measurement (no retries)
         shell: pwsh
         env:
@@ -108,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-workers-${{ matrix.mode }}-${{ matrix.sample }}
+          name: windows-final-${{ matrix.mode }}-${{ matrix.sample }}
           path: ${{ runner.temp }}/windows-measurement
           if-no-files-found: error
           retention-days: 30
