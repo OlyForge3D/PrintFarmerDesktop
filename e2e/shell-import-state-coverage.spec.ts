@@ -187,6 +187,9 @@ test('synthetic import review displays format warnings, rules, tags and pending/
   const dialog = page.getByRole('dialog', {
     name: 'Organize models before importing',
   });
+  await dialog
+    .getByText('Skipped paths and scan details', { exact: true })
+    .click();
   await expect(
     dialog.getByText('Filesystem errors (reason unavailable): 2'),
   ).toBeVisible();
@@ -236,7 +239,7 @@ test('synthetic import review displays format warnings, rules, tags and pending/
     .getByRole('textbox', { name: 'Tags for all imported models' })
     .fill('fixture, synthetic');
   await capture(page, 'import-rules-warnings', info);
-  await dialog.getByRole('button', { name: 'Import 4 files' }).click();
+  await dialog.getByRole('button', { name: 'Import', exact: true }).click();
   await expect(
     dialog.getByRole('button', { name: 'Importing...' }),
   ).toBeDisabled();
@@ -249,7 +252,7 @@ test('synthetic import review displays format warnings, rules, tags and pending/
     'Synthetic import failed; no files changed.',
   );
   await expect(
-    dialog.getByRole('button', { name: 'Import 4 files' }),
+    dialog.getByRole('button', { name: 'Import', exact: true }),
   ).toBeEnabled();
   await dialog.getByRole('button', { name: 'Dismiss library error' }).hover();
   await capture(page, 'import-error-retry', info);

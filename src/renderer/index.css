@@ -3010,6 +3010,10 @@ select:disabled {
   color: var(--danger);
 }
 
+.import-preview-error > button {
+  color: #fff;
+}
+
 .import-submit-error {
   margin-bottom: 0;
 }

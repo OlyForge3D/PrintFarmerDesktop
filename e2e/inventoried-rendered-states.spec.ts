@@ -110,7 +110,8 @@ test('ambiguous import collection suggestions block until an identity is selecte
   await expect(picker).toHaveAttribute('aria-invalid', 'true');
   await expect(picker.locator('option')).toHaveCount(4);
   const importButton = dialog.getByRole('button', {
-    name: 'Import 2 files',
+    name: 'Import',
+    exact: true,
   });
   await expect(importButton).toBeDisabled();
   await scanSurface(page, {
