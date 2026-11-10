@@ -373,8 +373,7 @@ describe('squash-compatible combined-result proof', () => {
   });
   it('ignores inherited Git replacement overrides and local merge-driver configuration', () => {
     const repo = repository();
-    const execPath = repo.git('--exec-path');
-    vi.stubEnv('GIT_EXEC_PATH', execPath);
+    vi.stubEnv('GIT_EXEC_PATH', path.join(repo.directory, 'hostile-helpers'));
     vi.stubEnv('GIT_CONFIG_COUNT', '1');
     vi.stubEnv('GIT_CONFIG_KEY_0', 'merge.renormalize');
     vi.stubEnv('GIT_CONFIG_VALUE_0', 'true');

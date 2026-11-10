@@ -1,5 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,11 +34,7 @@ export function verifySquashGroup({
     throw new Error('Squash proof requires an exact PR number.');
   const directory = mkdtempSync(path.join(tmpdir(), 'queue-squash-'));
   const env = Object.fromEntries(
-    // The host's executable search path is toolchain selection, like PATH,
-    // not repository policy. Relocatable Git needs it to find remote-https.
-    Object.entries(process.env).filter(
-      ([key]) => !key.startsWith('GIT_') || key === 'GIT_EXEC_PATH',
-    ),
+    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
   );
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1',
@@ -41,8 +44,21 @@ export function verifySquashGroup({
     GIT_TERMINAL_PROMPT: '0',
     GIT_ATTR_NOSYSTEM: '1',
   });
+  const executableName = process.platform === 'win32' ? 'git.exe' : 'git';
+  const executable = (env.PATH ?? env.Path ?? '')
+    .split(path.delimiter)
+    .map((entry) => path.join(entry, executableName))
+    .find((candidate) => {
+      try {
+        accessSync(candidate, constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  let gitExecutable;
   const git = (...args) => {
-    const result = spawnSync('git', ['--no-replace-objects', ...args], {
+    const result = spawnSync(gitExecutable, ['--no-replace-objects', ...args], {
       cwd: directory,
       env,
       encoding: 'utf8',
@@ -56,6 +72,31 @@ export function verifySquashGroup({
     return result.stdout.trim();
   };
   try {
+    if (!executable)
+      throw new Error('Squash proof cannot locate the host Git executable.');
+    gitExecutable = realpathSync(executable);
+    // Derive helpers from the selected executable, never ambient GIT_EXEC_PATH.
+    // Relocatable bundled Git may report a stale compiled-in prefix.
+    const intrinsic = git('--exec-path');
+    const bundled = path.resolve(
+      path.dirname(gitExecutable),
+      '../libexec/git-core',
+    );
+    const helpers = [intrinsic, bundled].find(
+      (candidate) =>
+        path.isAbsolute(candidate) &&
+        existsSync(
+          path.join(
+            candidate,
+            process.platform === 'win32'
+              ? 'git-remote-https.exe'
+              : 'git-remote-https',
+          ),
+        ),
+    );
+    if (!helpers)
+      throw new Error('Squash proof cannot locate trusted Git HTTPS helpers.');
+    env.GIT_EXEC_PATH = helpers;
     git('init', '--bare', '--quiet', '--template=');
     git(
       '-c',
