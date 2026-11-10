@@ -499,8 +499,18 @@ jobs:
         run: git diff --exit-code -- native/Cargo.lock package-lock.json
 
       - name: Packaged Electron end-to-end tests
+        id: packaged_e2e
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
         run: npx playwright test --grep-invert "@gpu|@a11y"
+
+      - name: Retain macOS sidebar resize failure evidence
+        if: failure() && runner.os == 'macOS' && steps.packaged_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-resize-macos-attempt-${{ github.run_attempt }}
+          path: test-results/**/sidebar-resize-diagnostics.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Packaged accessibility (material WCAG A/AA)
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'

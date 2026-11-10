@@ -153,6 +153,25 @@ pass. CI runs each feature separately (`ci.yml`), so this is a local-check
 hazard: a change to a feature-gated module can look tested locally and only be
 exercised in CI.
 
+## Packaged sidebar resize diagnostics
+
+The collection-management packaged E2E keeps its exact 120px resize assertion.
+On a gesture/assertion failure it writes and attaches
+`sidebar-resize-diagnostics.json` before the packaged app closes. The macOS
+package CI job uploads only that file pattern after packaged E2E failure,
+retained for 14 days; unrelated test failures need not produce this artifact.
+Earlier runs had no packaged-test artifact upload, so attachments named in the
+job log were not retrievable after the hosted workspace disappeared.
+
+Evidence includes launch/pre-drag/final numeric layout snapshots, window-reported
+outer/inner and screen dimensions, separator bounds/values, and up to 32 pointer
+and capture events (with a dropped-event count). Events are passive capture-phase
+observations: inline width/value precede React's handler, and no layout reads
+are forced during the gesture. Only the numeric stored sidebar width is copied
+from preferences; no catalog data, paths, URLs or full preferences are retained.
+This is diagnostic coverage for unresolved #877, not a resize repair or proof
+that the intermittent failure is fixed.
+
 ## macOS installer artwork
 
 The drag-to-install DMG uses `assets/dmg/background.svg` as its editable source.
