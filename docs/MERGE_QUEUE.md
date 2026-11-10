@@ -31,6 +31,32 @@ The required context runs after the original source-policy checks and fails
 explicitly if they fail or skip. Only its trusted, base-owned job receives
 Actions read access; PR-controlled scripts keep their prior read permissions.
 
+### Evidence tiers
+
+GitHub omits `bypass_actors` from ruleset detail for unauthenticated callers
+and the job's `GITHUB_TOKEN`; an omitted field is **not** an empty bypass list.
+No admin-scoped secret is supplied to `pull_request` or `merge_group` jobs.
+
+- **Per-entry CI (`--event`):** verifies the effective queue rule and its
+  matching active, development-only ruleset have serialized `ALLGREEN` squash
+  parameters, then verifies membership, source containment, review, holds and
+  threads. It re-reads queue policy and entry evidence before returning.
+  Omitted bypass actors are explicitly reported as `not-checked-no-scope`,
+  not verified. If visible, bypass actors must be an explicit empty array;
+  present malformed/nonempty values, unreadable policy, or drift fail closed.
+- **Privileged admission/assessment:** the local queue checker and
+  `npm run check:protection-assumptions` require authenticated ruleset detail
+  with an explicit `bypass_actors: []`. Missing detail is a failed assessment,
+  never inferred safe from CI success. The assumption check's public tier
+  checks feature-branch ruleset coverage but lists `development.merge_queue`
+  as `not-checked-no-scope`; it makes no bypass claim either way.
+
+Non-bypassability is therefore an owner activation and privileged admission
+premise, **not an assertion made by the CI token**. CI success alone does not
+authorize admission or prove this premise remains true. Pause admission and
+roll back if the privileged policy cannot be corroborated. The native queue
+still requires the combined-result checks for every normally admitted entry.
+
 ## Owner activation (after implementation lands)
 
 Serialize settings changes with the independent merger: pause merge/enqueue
@@ -40,7 +66,8 @@ changed them. Do not copy a stale full protection document back over live state.
 
 1. Confirm this implementation is reachable from current development and
    `npm run check:merge-queue-contexts` passes against live protection. Run
-   `npm run check:protection-assumptions`; preserve all nine names and their
+   `npm run check:protection-assumptions` with an admin credential outside CI;
+   preserve all nine names and their
    app bindings. Confirm Actions is enabled, runner capacity is available and
    queue CI can finish within the 120-minute timeout.
 2. Read ruleset `20361532` again. It was disabled at implementation time.
@@ -67,7 +94,8 @@ changed them. Do not copy a stale full protection document back over live state.
    `max_entries_to_merge: 5 -> 1`, timeout `60 -> 120`. Keep unrelated rules
    if any appeared; investigate new constraints instead of deleting them.
    Confirm GET `/rules/branches/development` contains this effective queue
-   rule and full ruleset detail reports `current_user_can_bypass: "never"`.
+   rule and authenticated full ruleset detail explicitly reports
+   `bypass_actors: []` (and `current_user_can_bypass: "never"` for the owner).
 
 3. Only once the queue requirement is active, PATCH
    `/repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection/required_status_checks`
@@ -112,12 +140,21 @@ earlier source revision. Do not jump the queue or bypass it with `--admin`.
 After GitHub merges, verify the **merge commit** landed with
 `npm run check:merge-landed -- N`, not ancestry of the squashed source SHA.
 
-For the first existing authorized PR, the owner/independent merger must verify
+After re-activation, for the first existing authorized PR, the owner/independent merger must verify
 real `merge_group` runs produce all nine successful app-bound contexts at the
 entry's actual head; confirm source-review/hold verification succeeds, GitHub
 merges it without a manual freshness update and the merge commit remains
 reachable from development. No dummy PR is needed. Actual queue execution
 cannot be claimed from offline tests or pre-activation PR CI.
+Inspect the trusted `Sequencing hold` job's `--event` output: it must verify
+configuration, membership and source-head review with the job token while
+explicitly reporting bypass actors `not-checked-no-scope`. Corroborate the
+empty bypass list with the privileged assessment immediately before admission
+and again after the first real group; retain its source head, base/group SHAs
+and workflow run links as evidence. A failed or missing required context is
+not successful activation: pause admission, investigate and use rollback if
+necessary. The guard comes from the group's base SHA, so this fix must land
+under strict protection before creating that group.
 
 ## Rollback
 

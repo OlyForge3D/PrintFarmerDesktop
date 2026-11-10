@@ -6,6 +6,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   evaluateQueuePolicy,
+  QUEUE_PARAMETERS,
+  validQueueConfiguration,
   validQueueRuleset,
 } from './merge-queue-policy.mjs';
 import {
@@ -356,6 +358,44 @@ export function checkDevelopmentQueue(
 
 // Runs inside the existing required Sequencing hold context, using the base's
 // trusted scripts and a read-only token. It cannot read admin-only protection.
+function readEventQueuePolicy(api) {
+  const rules = api(
+    `/repos/${REPOSITORY}/rules/branches/development?per_page=100`,
+  );
+  const queues =
+    Array.isArray(rules) &&
+    rules.filter((rule) => rule?.type === 'merge_queue');
+  if (
+    !queues ||
+    rules.length >= 100 ||
+    queues.length !== 1 ||
+    !Number.isSafeInteger(queues[0].ruleset_id) ||
+    queues[0].ruleset_id <= 0 ||
+    !Object.entries(QUEUE_PARAMETERS).every(
+      ([key, value]) => queues[0].parameters?.[key] === value,
+    )
+  ) {
+    throw new Error('Serialized ALLGREEN development queue is not active.');
+  }
+  const ruleset = api(`/repos/${REPOSITORY}/rulesets/${queues[0].ruleset_id}`);
+  if (
+    ruleset?.id !== queues[0].ruleset_id ||
+    !validQueueConfiguration(ruleset)
+  ) {
+    throw new Error('Development queue scope or configuration is unverified.');
+  }
+  const bypassVisible = Object.hasOwn(ruleset, 'bypass_actors');
+  if (bypassVisible && !validQueueRuleset(ruleset)) {
+    throw new Error('Queue bypass actors are present or malformed.');
+  }
+  return {
+    ruleset,
+    bypass: bypassVisible
+      ? 'explicit empty bypass_actors observed'
+      : 'not-checked-no-scope: bypass actors; privileged assessment required',
+  };
+}
+
 export function verifyQueueEvent(event, api, verify) {
   const group = event.merge_group;
   const match =
@@ -365,23 +405,7 @@ export function verifyQueueEvent(event, api, verify) {
   if (!match || !sha(group.base_sha) || !sha(group.head_sha)) {
     throw new Error('Not a recognizable development merge-group event.');
   }
-  const rules = api(
-    `/repos/${REPOSITORY}/rules/branches/development?per_page=100`,
-  );
-  const queues =
-    Array.isArray(rules) && rules.filter((rule) => rule.type === 'merge_queue');
-  if (
-    !queues ||
-    rules.length >= 100 ||
-    queues.length !== 1 ||
-    !validQueueRuleset(
-      api(`/repos/${REPOSITORY}/rulesets/${queues[0].ruleset_id}`),
-    )
-  ) {
-    throw new Error(
-      'Serialized, non-bypassable development queue is not active.',
-    );
-  }
+  const policy = readEventQueuePolicy(api);
   const number = Number(match[1]);
   const pull = readQueuePull(api, number);
   assertQueuePull(pull, pull.headRefOid);
@@ -401,9 +425,12 @@ export function verifyQueueEvent(event, api, verify) {
   const again = readQueuePull(api, number);
   assertQueuePull(again, pull.headRefOid);
   assertGroupBinding(again, group);
-  if (fingerprint(pull) !== fingerprint(again))
-    throw new Error('Queue evidence changed during verification.');
-  return 'Live queue membership, source-head review, holds and threads verified for this combined result.';
+  if (
+    fingerprint(pull) !== fingerprint(again) ||
+    JSON.stringify(policy) !== JSON.stringify(readEventQueuePolicy(api))
+  )
+    throw new Error('Queue evidence or policy changed during verification.');
+  return `Live queue configuration, membership, source-head review, holds and threads verified for this combined result. ${policy.bypass}.`;
 }
 
 export function main(argv, env = process.env, run = spawnSync) {

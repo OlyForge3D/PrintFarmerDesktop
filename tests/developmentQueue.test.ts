@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -13,10 +14,12 @@ import {
   assertQueuePull,
   checkDevelopmentQueue,
   checkQueueRuns,
+  main as queueMain,
   verifyQueueEvent,
   type QueueApi,
   type QueuePull,
   type QueueRun,
+  type QueueRunner,
 } from '../scripts/check-development-queue.mjs';
 import {
   evaluateRequiredContexts,
@@ -625,6 +628,114 @@ describe('actual merge-group workflow contract', () => {
     expect(() =>
       verifyQueueEvent({ merge_group: group() }, notContained, verify),
     ).toThrow(/not contained/);
+  });
+  it.each(['omitted', 'empty'] as const)(
+    '--event accepts the live %s bypass shape without claiming invisible evidence',
+    (shape) => {
+      const { state, api } = fixture();
+      state.pull.mergeQueueEntry = entry();
+      const detail: Record<string, unknown> = ruleset();
+      if (shape === 'omitted') delete detail.bypass_actors;
+      const eventApi: QueueApi = (endpoint, fields) =>
+        endpoint.includes('/rulesets/') ? detail : api(endpoint, fields);
+      const directory = mkdtempSync(path.join(tmpdir(), 'queue-event-'));
+      const eventPath = path.join(directory, 'event.json');
+      writeFileSync(eventPath, JSON.stringify({ merge_group: group() }));
+      const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const run = vi.fn<QueueRunner>((command, args) => {
+        const fields: Record<string, string> = {};
+        for (let index = 2; index < args.length; index += 1) {
+          if (args[index] === '-f') {
+            const field = args[++index] ?? '';
+            const equals = field.indexOf('=');
+            fields[field.slice(0, equals)] = field.slice(equals + 1);
+          }
+        }
+        const value =
+          command === process.execPath
+            ? { classification: 'REVIEWED', reviewedHeadSha: head }
+            : eventApi(String(args[1]), fields);
+        const stdout = JSON.stringify(value);
+        return {
+          status: 0,
+          stdout,
+          stderr: '',
+        };
+      });
+      try {
+        expect(
+          queueMain(
+            ['--event'],
+            {
+              GH_TOKEN: 'ci-read-only',
+              GITHUB_EVENT_NAME: 'merge_group',
+              GITHUB_EVENT_PATH: eventPath,
+            },
+            run,
+          ),
+        ).toBe(0);
+        expect(output).toHaveBeenCalledWith(
+          expect.stringContaining(
+            shape === 'omitted'
+              ? 'not-checked-no-scope: bypass actors'
+              : 'explicit empty bypass_actors observed',
+          ),
+        );
+        expect(state.requests.some((url) => url.includes('/protection'))).toBe(
+          false,
+        );
+        expect(state.mutationCount).toBe(0);
+        const reviewCall = run.mock.calls.find(
+          ([command]) => command === process.execPath,
+        );
+        expect(reviewCall?.[1]).toEqual(
+          expect.arrayContaining(['--expected-head', head]),
+        );
+        expect(reviewCall?.[2].env.GH_TOKEN).toBe('ci-read-only');
+      } finally {
+        output.mockRestore();
+        rmSync(directory, { recursive: true });
+      }
+    },
+  );
+  it.each([
+    { bypass_actors: null },
+    { bypass_actors: [{ actor_type: 'OrganizationAdmin' }] },
+    { enforcement: 'disabled' },
+    { id: 2 },
+    { conditions: { ref_name: { include: ['~ALL'], exclude: [] } } },
+    { rules: [{ type: 'merge_queue', parameters: {} }] },
+  ])('refuses ambiguous or unsafe event policy %j', (override) => {
+    const { state, api } = fixture();
+    state.pull.mergeQueueEntry = entry();
+    const verify = vi.fn();
+    const changed: QueueApi = (endpoint, fields) =>
+      endpoint.includes('/rulesets/')
+        ? { ...ruleset(), ...override }
+        : api(endpoint, fields);
+    expect(() =>
+      verifyQueueEvent({ merge_group: group() }, changed, verify),
+    ).toThrow(/bypass|unverified/);
+    expect(verify).not.toHaveBeenCalled();
+  });
+  it('refuses policy drift during event verification and malformed effective parameters', () => {
+    const { state, api } = fixture();
+    state.pull.mergeQueueEntry = entry();
+    let reads = 0;
+    const drifting: QueueApi = (endpoint, fields) =>
+      endpoint.includes('/rulesets/')
+        ? { ...ruleset(), name: `read-${++reads}` }
+        : api(endpoint, fields);
+    expect(() =>
+      verifyQueueEvent({ merge_group: group() }, drifting, vi.fn()),
+    ).toThrow(/policy changed/);
+    const badRules: QueueApi = (endpoint, fields) =>
+      endpoint.includes('/rules/branches')
+        ? [{ ...rules()[0], parameters: {} }]
+        : api(endpoint, fields);
+    expect(() =>
+      verifyQueueEvent({ merge_group: group() }, badRules, vi.fn()),
+    ).toThrow(/not active/);
   });
   it('checks out the base-owned guard, never supplies an admin secret or runs it on source events', () => {
     const workflow = readFileSync(
