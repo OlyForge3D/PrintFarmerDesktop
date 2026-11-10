@@ -454,6 +454,8 @@ export function verifyQueueEvent(event, api, verify, prove = proveLiveSquash) {
     head: pull.headRefOid,
     number,
   });
+  // The event has no source SHA: exact-head freshness is established by the
+  // fetched PR ref above and the review verifier's --expected-head binding.
   verify(number, pull.headRefOid);
   const again = readQueuePull(api, number);
   assertQueuePull(again, pull.headRefOid);

@@ -22,6 +22,9 @@ import {
 } from '../scripts/merge-queue-policy.mjs';
 import failed from './fixtures/failedSquashGroup.json';
 
+// Real Git processes on Windows CI need an integration-test budget.
+vi.setConfig({ testTimeout: 30_000 });
+
 const directories: string[] = [];
 afterEach(() => {
   for (const directory of directories.splice(0))
@@ -370,6 +373,8 @@ describe('squash-compatible combined-result proof', () => {
   });
   it('ignores inherited Git replacement overrides and local merge-driver configuration', () => {
     const repo = repository();
+    const execPath = repo.git('--exec-path');
+    vi.stubEnv('GIT_EXEC_PATH', execPath);
     vi.stubEnv('GIT_CONFIG_COUNT', '1');
     vi.stubEnv('GIT_CONFIG_KEY_0', 'merge.renormalize');
     vi.stubEnv('GIT_CONFIG_VALUE_0', 'true');

@@ -27,7 +27,11 @@ export function verifySquashGroup({
     throw new Error('Squash proof requires an exact PR number.');
   const directory = mkdtempSync(path.join(tmpdir(), 'queue-squash-'));
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+    // The host's executable search path is toolchain selection, like PATH,
+    // not repository policy. Relocatable Git needs it to find remote-https.
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith('GIT_') || key === 'GIT_EXEC_PATH',
+    ),
   );
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1',
