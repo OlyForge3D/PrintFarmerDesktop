@@ -98,10 +98,10 @@ describe('<ServerProfilesDialog />', () => {
       screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toHaveAttribute('aria-modal', 'true');
     expect(
-      screen.getByText(
+      screen.queryByText(
         /HTTP is allowed for trusted LAN servers but is not encrypted/,
       ),
-    ).toBeVisible();
+    ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Profile name'), {
       target: { value: 'Production farm' },
     });
