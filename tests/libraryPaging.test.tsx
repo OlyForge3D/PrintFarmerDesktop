@@ -125,12 +125,8 @@ describe('bounded library queries', () => {
             pageSize: 48,
           }).counts
         }
-        scanningFolder={null}
-        busy={false}
-        sourceRoots={[]}
         onQueryChange={vi.fn()}
         onFilterChange={vi.fn()}
-        onAddFolder={vi.fn()}
         collections={[]}
         selectedCollections={[]}
         onCollectionsChange={vi.fn()}
@@ -321,12 +317,8 @@ describe('paging controls and lazy thumbnails', () => {
             pageSize: 48,
           }).counts
         }
-        scanningFolder={null}
-        busy={false}
-        sourceRoots={[]}
         onQueryChange={vi.fn()}
         onFilterChange={vi.fn()}
-        onAddFolder={vi.fn()}
         collections={[
           { id: 'a', name: 'A', sharedToFarm: false, memberCount: 2 },
           { id: 'b', name: 'B', sharedToFarm: false, memberCount: 3 },

@@ -658,7 +658,7 @@ export function App(): React.JSX.Element {
             'import',
             ownerEpoch,
             importReturnFocusRef,
-            '.sidebar-primary-action',
+            '.workspace h1',
           );
         }
       },
@@ -669,7 +669,7 @@ export function App(): React.JSX.Element {
           'import',
           ownerEpoch,
           importReturnFocusRef,
-          '.sidebar-primary-action',
+          '.workspace h1',
         );
       },
     );
@@ -687,9 +687,7 @@ export function App(): React.JSX.Element {
     releaseModal('import');
     setTimeout(() => {
       const previous = importReturnFocusRef.current;
-      const fallback = document.querySelector<HTMLElement>(
-        '.sidebar-primary-action',
-      );
+      const fallback = document.querySelector<HTMLElement>('.workspace h1');
       (previous?.isConnected ? previous : fallback)?.focus();
     });
   }, [dismissFolderImport, releaseModal]);
@@ -717,9 +715,7 @@ export function App(): React.JSX.Element {
         }
         setTimeout(() => {
           const previous = importReturnFocusRef.current;
-          const fallback = document.querySelector<HTMLElement>(
-            '.sidebar-primary-action',
-          );
+          const fallback = document.querySelector<HTMLElement>('.workspace h1');
           (previous?.isConnected ? previous : fallback)?.focus();
         });
         await Promise.all([modelTags.refresh(), modelCollections.refresh()]);
@@ -1158,9 +1154,7 @@ export function App(): React.JSX.Element {
     setOnboardingDismissed(true);
     setTimeout(() => {
       const previous = onboardingReturnFocusRef.current;
-      const fallback = document.querySelector<HTMLElement>(
-        '.sidebar-primary-action',
-      );
+      const fallback = document.querySelector<HTMLElement>('.workspace h1');
       (previous?.isConnected ? previous : fallback)?.focus();
     });
   }, []);
@@ -1307,12 +1301,8 @@ export function App(): React.JSX.Element {
                   query={query}
                   filter={filter}
                   counts={counts}
-                  scanningFolder={scanningFolder}
-                  busy={workspaceActionsDisabled}
-                  sourceRoots={library.sourceRoots}
                   onQueryChange={setQuery}
                   onFilterChange={setFilter}
-                  onAddFolder={beginImport}
                   collections={library.collections}
                   selectedCollections={collectionIds}
                   onCollectionsChange={setCollectionIds}

@@ -2222,12 +2222,8 @@ describe('<LibrarySidebar /> organization filters', () => {
           duplicates: 0,
           missing: 0,
         }}
-        scanningFolder={null}
-        busy={false}
-        sourceRoots={[]}
         onQueryChange={vi.fn()}
         onFilterChange={vi.fn()}
-        onAddFolder={vi.fn()}
         collections={[
           {
             id: 'collection-1',

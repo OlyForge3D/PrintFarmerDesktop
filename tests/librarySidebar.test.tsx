@@ -35,12 +35,8 @@ function renderSidebar(
       query=""
       filter="all"
       counts={counts}
-      scanningFolder={null}
-      busy={false}
-      sourceRoots={[]}
       onQueryChange={vi.fn()}
       onFilterChange={vi.fn()}
-      onAddFolder={vi.fn()}
       collections={[{ id: 'c1', name: 'Bracket set', memberCount: 2 } as never]}
       selectedCollections={[]}
       onCollectionsChange={vi.fn()}
@@ -85,9 +81,19 @@ describe('LibrarySidebar', () => {
     expect(screen.queryByRole('button', { name: /manage/i })).toBeNull();
   });
 
-  it('keeps contextual import but leaves cache management in Settings', () => {
+  it('leaves source and cache management out of Library navigation', () => {
     renderSidebar();
-    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+    const sidebar = screen.getByRole('complementary', {
+      name: 'Library navigation',
+    });
+    expect(within(sidebar).queryByText('Sources')).toBeNull();
+    expect(within(sidebar).queryByRole('status')).toBeNull();
+    expect(
+      within(sidebar).queryByRole('button', { name: /Add folder|Scanning/ }),
+    ).toBeNull();
+    expect(
+      within(sidebar).getByRole('navigation', { name: 'Model scopes' }),
+    ).toBeVisible();
     expect(
       screen.queryByRole('button', { name: /Thumbnail cache/ }),
     ).toBeNull();
@@ -210,12 +216,8 @@ describe('LibrarySidebar', () => {
         query=""
         filter="all"
         counts={counts}
-        scanningFolder={null}
-        busy={false}
-        sourceRoots={[]}
         onQueryChange={vi.fn()}
         onFilterChange={vi.fn()}
-        onAddFolder={vi.fn()}
       />,
       { container: workspace },
     );
