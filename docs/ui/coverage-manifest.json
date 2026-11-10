@@ -550,10 +550,10 @@
         },
         {
           "id": "picker-cancel",
-          "label": "Synthetic folder picker cancellation leaves Library open",
+          "label": "Synthetic folder picker cancellation leaves Source folders available",
           "coverage": {
-            "status": "scenario",
-            "scenarioId": "library.home.picker-cancel"
+            "status": "not-rendered",
+            "reason": "Folder selection is initiated from Settings > Source folders; the Library workspace no longer exposes this picker action."
           }
         },
         {
@@ -586,8 +586,8 @@
           "id": "active-scanning-source-health",
           "label": "Active scanning source status",
           "coverage": {
-            "status": "scenario",
-            "scenarioId": "library.sidebar.active-scanning-source-health"
+            "status": "not-rendered",
+            "reason": "The packaged Library sidebar does not expose active source scan status; progress is announced in Settings > Source folders and Library live status."
           }
         },
         {
@@ -1135,6 +1135,22 @@
         "src/renderer/App.tsx:230-247"
       ],
       "states": [
+        {
+          "id": "picker-cancel",
+          "label": "Canceled folder picker leaves Source folders available without starting import",
+          "coverage": {
+            "status": "scenario",
+            "scenarioId": "sources.picker-cancel"
+          }
+        },
+        {
+          "id": "active-scanning",
+          "label": "Extended active source scan remains announced across workspaces",
+          "coverage": {
+            "status": "scenario",
+            "scenarioId": "sources.active-scanning"
+          }
+        },
         {
           "id": "configured-sources",
           "label": "Configured roots and source status",
@@ -4224,16 +4240,16 @@
   ],
   "scenarios": [
     {
-      "id": "library.home.picker-cancel",
-      "surfaceId": "library.home",
+      "id": "sources.picker-cancel",
+      "surfaceId": "sources.workspace",
       "stateId": "picker-cancel",
       "testRef": "e2e/import-cancellation-coverage.spec.ts",
       "fixture": "Isolated Electron renderer with test-only dialog:openFolder returning null and import handlers that fail if reached.",
-      "trigger": "Activate Add folder and let the synthetic native-picker response cancel.",
-      "expectedState": "Library remains open, import review is never shown, and no alert is announced.",
-      "axe": "Positive-control-protected axe scan scoped to Library; not certification.",
+      "trigger": "Open Settings > Source folders, activate Add source folder, and let the synthetic native-picker response cancel.",
+      "expectedState": "Settings > Source folders remains available, import review is never shown, and no alert is announced.",
+      "axe": "Positive-control-protected axe scan scoped to Source folders; not certification.",
       "dimensionsExercised": [
-        "A canceled folder-picker response leaves Library available.",
+        "A canceled folder-picker response leaves Settings > Source folders available.",
         "No preview/import handler is allowed to perform side effects."
       ],
       "screenshotPolicy": "temporary-review-evidence"
@@ -4305,7 +4321,7 @@
       "testRef": "e2e/import-cancellation-coverage.spec.ts",
       "fixture": "Isolated Electron renderer with a synthetic one-model import preview and an importRoot handler that fails if called.",
       "trigger": "Open the synthetic import review, then activate Cancel import.",
-      "expectedState": "Import review closes, onboarding remains available, and no import error or file mutation occurs.",
+      "expectedState": "Import review closes, Settings > Source folders remains available, and no import error or file mutation occurs.",
       "axe": "Positive-control-protected whole-page axe scan after cancellation; not certification.",
       "dimensionsExercised": [
         "Cancel closes the review before catalog import is requested.",
@@ -6539,17 +6555,17 @@
       "screenshotPolicy": "temporary-review-evidence"
     },
     {
-      "id": "library.sidebar.active-scanning-source-health",
-      "surfaceId": "library.sidebar",
-      "stateId": "active-scanning-source-health",
+      "id": "sources.active-scanning",
+      "surfaceId": "sources.workspace",
+      "stateId": "active-scanning",
       "testRef": "e2e/inventoried-rendered-states.spec.ts",
-      "fixture": "Same isolated renderer and held-open synthetic source scan as library.home.active-scanning.",
-      "trigger": "Inspect the Library navigation sidebar while Reconnect remains pending and assert the scanning source-health text.",
-      "expectedState": "The sidebar exposes its active scanning indication during the held-open synthetic source scan.",
-      "axe": "Positive-control-protected axe scan scoped to the Library navigation sidebar; not certification.",
+      "fixture": "Isolated Electron renderer with a synthetic approved source root and a test-only catalog scan handler held open for eight seconds.",
+      "trigger": "Start Reconnect in Settings > Source folders and assert active progress, then switch to Library while catalog:scanRoot remains pending.",
+      "expectedState": "Settings exposes accessible scan progress and Library continues to announce the reconnect while the synthetic scan remains pending.",
+      "axe": "Positive-control-protected axe scan scoped to the visible Source folders region during the pending scan; not certification.",
       "dimensionsExercised": [
-        "The active scanning state is visible in the Library sidebar.",
-        "The test checks the scenario before the synthetic scan settles."
+        "An extended test-only scan promise remains pending across a workspace switch.",
+        "Settings progress and Library live status are checked before the synthetic scan settles."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },

@@ -42,7 +42,7 @@ async function launchScenario(
   return launched.page;
 }
 
-test('active source scan remains announced in Library and its navigation rail', async ({
+test('active source scan remains announced in Settings and Library', async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(120_000);
@@ -58,6 +58,18 @@ test('active source scan remains announced in Library and its navigation rail', 
   await expect(root).toContainText('a11y-models');
   await root.getByRole('button', { name: 'Reconnect' }).click();
   await expect(sources).toHaveAttribute('aria-busy', 'true');
+  const sourceProgress = sources
+    .getByRole('status')
+    .filter({ hasText: 'Scanning source' });
+  await expect(sourceProgress).toContainText(
+    'Reconnecting /fixtures/a11y-models',
+  );
+  await scanSurface(page, {
+    name: 'Settings active source scan',
+    present: sourceProgress,
+    testInfo,
+  });
+  await captureVisualScenario(page, 'sources.active-scanning', testInfo);
 
   await page.getByRole('button', { name: 'Library', exact: true }).click();
   const library = page.getByRole('main', { name: 'Model library' });
@@ -70,21 +82,6 @@ test('active source scan remains announced in Library and its navigation rail', 
     testInfo,
   });
   await captureVisualScenario(page, 'library.home.active-scanning', testInfo);
-
-  const sidebar = page.getByRole('complementary', {
-    name: 'Library navigation',
-  });
-  await expect(sidebar).toContainText(/Scanning/);
-  await scanSurface(page, {
-    name: 'Library sidebar active source scan',
-    present: sidebar,
-    testInfo,
-  });
-  await captureVisualScenario(
-    page,
-    'library.sidebar.active-scanning-source-health',
-    testInfo,
-  );
 });
 
 test('ambiguous import collection suggestions block until an identity is selected', async ({
@@ -94,7 +91,11 @@ test('ambiguous import collection suggestions block until an identity is selecte
   const page = await launchScenario(browserName, {
     importAmbiguityFixture: true,
   });
-  await page.getByRole('button', { name: 'Add folder' }).click();
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page
+    .getByRole('region', { name: 'Source folders', exact: true })
+    .getByRole('button', { name: 'Add source folder' })
+    .click();
   const dialog = page.getByRole('dialog', {
     name: 'Organize models before importing',
   });

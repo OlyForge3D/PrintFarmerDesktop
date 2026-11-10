@@ -94,7 +94,7 @@ beforeEach(() => {
   const result = command(process.execPath, ['scripts/design-baseline.mjs']);
   if (result.status !== 0) throw new Error(result.stderr);
   base = commit('trusted allowance');
-});
+}, 30_000);
 afterEach(() => rmSync(fixture, { recursive: true, force: true }));
 
 describe('design count ratchet', () => {

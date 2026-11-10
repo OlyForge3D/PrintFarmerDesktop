@@ -304,9 +304,10 @@ test('synthetic incomplete import is refused before review and error can be dism
     'catalog:listTags': [{ value: [] }],
   });
   await page.getByRole('button', { name: 'Maybe later' }).click();
+  await page.getByRole('button', { name: /^Settings/ }).click();
   await page
-    .getByRole('complementary', { name: 'Library navigation' })
-    .getByRole('button', { name: 'Add folder', exact: true })
+    .getByRole('region', { name: 'Source folders', exact: true })
+    .getByRole('button', { name: 'Add source folder' })
     .click();
   await expect(
     page.getByRole('dialog', { name: 'Organize models before importing' }),
