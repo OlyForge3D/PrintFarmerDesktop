@@ -201,7 +201,7 @@ function insufficientScopeFetch(): typeof globalThis.fetch {
   });
 }
 
-const apiKeyDraft = (
+const serverDraft = (
   overrides: Partial<ServerProfileDraft> = {},
 ): ServerProfileDraft => ({
   displayName: 'Farm',
@@ -243,12 +243,12 @@ describe('credential-leak: renderer-facing IPC responses', () => {
     const fs = new MemoryFileSystem();
     const profiles = service(fs);
 
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const listed = await profiles.list();
     const selected = await profiles.select(saved.id);
     const tested = await profiles.test({
       source: 'draft',
-      draft: apiKeyDraft({ id: saved.id }),
+      draft: serverDraft({ id: saved.id }),
     });
 
     // The ciphertext actually written for this profile: it too must not appear
@@ -281,7 +281,7 @@ describe('credential-leak: renderer-facing IPC responses', () => {
     // it. `baseUrl` is the normalized form, proving a real profile round-tripped
     // rather than an empty husk.
     const profiles = service(new MemoryFileSystem());
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     expect(saved).toMatchObject({
       id: '11111111-1111-4111-8111-111111111111',
@@ -305,7 +305,7 @@ describe('credential-leak: renderer-facing IPC responses', () => {
     // schema to `.passthrough()` (or `.strip()`) turns the hostile-direction
     // assertions RED.
     const profiles = service(new MemoryFileSystem());
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const singleChannels = [
       IpcChannel.SaveServerProfile,
       IpcChannel.SelectServerProfile,
@@ -362,10 +362,10 @@ describe('credential-leak: process logs', () => {
 
       const fs = new MemoryFileSystem();
       const profiles = service(fs);
-      const saved = await profiles.save(apiKeyDraft());
+      const saved = await profiles.save(serverDraft());
       await profiles.test({
         source: 'draft',
-        draft: apiKeyDraft({ id: saved.id }),
+        draft: serverDraft({ id: saved.id }),
       });
       const token = await profiles.getToken(saved.id);
       // The token retrieval genuinely returns the JWT to its main-process
@@ -392,7 +392,7 @@ describe('credential-leak: thrown error surfaces', () => {
       isEncryptionAvailable: () => false,
     });
 
-    const error = await profiles.save(apiKeyDraft()).then(
+    const error = await profiles.save(serverDraft()).then(
       () => {
         throw new Error('expected save to reject without encryption');
       },
@@ -409,7 +409,7 @@ describe('credential-leak: thrown error surfaces', () => {
   it('omits the secret when the api-key is refused for insufficient scopes', async () => {
     const profiles = service(new MemoryFileSystem(), insufficientScopeFetch());
 
-    const error = await profiles.save(apiKeyDraft()).then(
+    const error = await profiles.save(serverDraft()).then(
       () => {
         throw new Error('expected save to reject on an under-scoped key');
       },
