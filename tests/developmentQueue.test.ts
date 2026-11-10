@@ -497,6 +497,29 @@ describe('source review and combined-result evidence stay separate', () => {
       /group checks passed/,
     );
   });
+  it('distinguishes a normal waiting entry from invalid group evidence without granting readiness', () => {
+    const { state, api } = fixture();
+    state.pull.mergeQueueEntry = { ...entry(), position: 2, state: 'QUEUED' };
+    expect(() =>
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn()),
+    ).toThrow(/waiting its turn/);
+    state.pull.mergeQueueEntry = {
+      ...entry(),
+      state: 'QUEUED',
+      headCommit: null,
+    };
+    expect(() =>
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn()),
+    ).toThrow(/waiting its turn/);
+    state.pull.mergeQueueEntry = { ...entry(), state: 'QUEUED' };
+    expect(() =>
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn()),
+    ).toThrow(/waiting its turn/);
+    state.pull.mergeQueueEntry = { ...entry(), state: 'UNMERGEABLE' };
+    expect(() =>
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn()),
+    ).toThrow(/stale or unknown/);
+  });
   it('does not let an older completion hide a newer pending attempt', () => {
     const old = runs(groupHead);
     const latest = old.map((run) => ({
@@ -619,5 +642,11 @@ describe('actual merge-group workflow contract', () => {
     expect(workflow).not.toContain('MERGE_QUEUE_CONTEXTS_TOKEN');
     expect(workflow).not.toContain('pull-requests: write');
     expect(workflow).toContain('actions: read');
+    const sourceJob = workflow.split('  sequencing-hold:')[0] ?? '';
+    expect(sourceJob).not.toContain('actions: read');
+    const trustedJob = workflow.split('  sequencing-hold:')[1] ?? '';
+    expect(trustedJob).toContain('    if: always()');
+    expect(trustedJob).toContain('test "$SOURCE_POLICY_RESULT" = success');
+    expect(trustedJob).not.toContain('github.event.pull_request.head.sha');
   });
 });

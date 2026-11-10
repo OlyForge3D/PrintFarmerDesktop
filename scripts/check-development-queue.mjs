@@ -261,6 +261,18 @@ export function checkDevelopmentQueue(
   checkQueueRuns(policy.checks, readRuns(api, head), head);
   if (pull.mergeQueueEntry) {
     const entry = pull.mergeQueueEntry;
+    if (
+      Number.isSafeInteger(entry.position) &&
+      entry.position >= 1 &&
+      ['QUEUED', 'AWAITING_CHECKS'].includes(entry.state) &&
+      (entry.state === 'QUEUED' ||
+        entry.position > 1 ||
+        entry.headCommit == null)
+    ) {
+      throw new Error(
+        'Entry is waiting its turn in the serialized queue, not yet verified. Recheck later; do not rebase or bypass.',
+      );
+    }
     const group = {
       base_ref: 'refs/heads/development',
       base_sha: entry.baseCommit?.oid,

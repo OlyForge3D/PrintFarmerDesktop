@@ -63,13 +63,12 @@ on:
   merge_group:
 
 permissions:
-  actions: read
   contents: read
   pull-requests: read
 
 jobs:
-  sequencing-hold:
-    name: Sequencing hold
+  source-policy:
+    name: Source policy checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,8 +96,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run check:sequencing-hold
 
-      # Bind review to the source head, not the synthetic CI head. Execute
-      # base-owned policy code with a read-only token.
+  sequencing-hold:
+    name: Sequencing hold
+    needs: source-policy
+    # A failed/skipped dependency must fail this required context, not skip it.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require successful source policy checks
+        env:
+          SOURCE_POLICY_RESULT: ${{ needs.source-policy.result }}
+        run: test "$SOURCE_POLICY_RESULT" = success
+
+      # Only this trusted job receives Actions read access. It never checks out
+      # or executes PR/group code; review provenance is read by base-owned code.
       - name: Check out trusted queue guard
         if: github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'
         uses: actions/checkout@v4
@@ -110,6 +125,11 @@ jobs:
             scripts
             package.json
           sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        if: github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'
+        with:
+          node-version: 22
 
       - name: Verify live queue membership and source-head review
         if: github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'

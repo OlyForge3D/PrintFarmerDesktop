@@ -27,6 +27,9 @@ with a read-only token to verify live queue membership, source containment,
 review, labels and resolved threads. The local queue checker additionally
 verifies live protection, app bindings and check-run event attribution. Review
 records retain the repository's existing self-attested/owner distinction.
+The required context runs after the original source-policy checks and fails
+explicitly if they fail or skip. Only its trusted, base-owned job receives
+Actions read access; PR-controlled scripts keep their prior read permissions.
 
 ## Owner activation (after implementation lands)
 
