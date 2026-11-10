@@ -113,7 +113,37 @@ gh pr view <N> --repo OlyForge3D/PrintFarmerDesktop --json closingIssuesReferenc
 
 An empty array means it did not register.
 
-## Refuse to merge a PR that is BEHIND its base
+## Test combined changes: development merge queue
+
+The selected development policy is a **native GitHub merge queue**, not manual
+rebases for freshness and not an admin bypass. Follow [the activation and
+rollback runbook](../../../docs/MERGE_QUEUE.md). Existing strict protection stays
+in place until the reviewed implementation lands and the owner activates the queue.
+
+Before any merge action, run `npm run check:behind-base -- --pr <N>`.
+With the active, verified queue this returns **4 (queue required)** regardless
+of source-branch age. Use the reviewed source SHA, not the synthetic group SHA:
+
+```powershell
+npm run check:development-queue -- --pr <N> --head <reviewed-source-sha>
+npm run check:development-queue -- --pr <N> --head <reviewed-source-sha> --enqueue
+```
+
+Only the second command mutates membership. It uses `enqueuePullRequest` with
+`expectedHeadOid`, never a direct merge or auto-merge. The first is a fresh,
+read-only check, not authorization to merge directly. Neither waives source CI,
+current-head review, holds, conflicts, unresolved threads, or combined CI.
+An entry waiting for a group/checks fails closed; waiting is not a request to
+update the source branch. Changed source/base/group/policy requires a fresh read.
+Queue checks are attributed to the actual group's SHA and `merge_group` runs.
+The required Sequencing hold context also validates source-head review against
+live membership using trusted base code. No review is copied onto the group SHA.
+
+Never use `gh pr merge --admin`, REST merge, or direct ref writes to bypass the
+queue. GitHub serializes integration; keep the landed-commit verification below.
+The author does not merge or enqueue their own work: the independent merger does.
+
+### Compatibility before activation and on other target branches
 
 **#397: `development` has `required_status_checks.strict: true` — require a branch up to date before merging — and it does not bind.** `enforce_admins: false` exempts every admin from that rule, and the sole collaborator here is an admin, so `strict` is configured, correctly reported by GitHub, and stops nobody (`scripts/check-protection-assumptions.mjs` calls this reading `bypassable`, not `binding`). PR #322 merged BEHIND under exactly that gap: it changed a function signature, the incompatible caller lived in a file #322 never touched, and `development` was red for ~3h. No diff-based check would have caught it — only re-testing the union of both changes would have, which is what `strict` exists for and never ran.
 
@@ -128,10 +158,13 @@ npm run check:behind-base -- --pr <N>
 - exit `0` — the base is an ancestor of the PR head; safe to merge on this ground.
 - exit `1` — **BEHIND. Do not merge.** Sync by rebasing onto the latest base (not GitHub's "Update branch" button — that writes a merge commit, which `required_linear_history` forbids on this repo's normal squash-only path) and let CI re-run before merging.
 - exit `2` — undetermined (no credential, no network, refs could not be fetched). Not a pass; do not treat it as one.
+- exit `4` — active development queue required; route through the commands above,
+  never direct merge and never manual sync solely for branch age.
 
 `scripts/check-behind-base.mjs` measures this with `git merge-base --is-ancestor <base> <head>` after refreshing the base — never the `mergeable`/`mergeStateStatus` API fields, which are documented elsewhere in this repo as flapping and going permanently stale.
 
-**Before actually performing that rebase (#263): claim the sync lease first, and check no other sync is in flight.**
+**Only before activation or on a non-queue target**, claim the sync lease before
+performing that rebase (#263), and check no other sync is in flight.
 
 Rebasing onto the latest base is a `git push`, and every push launches a full CI fan-out into the
 same shared GitHub-hosted runner pool regardless of which base branch it targets — firing more than

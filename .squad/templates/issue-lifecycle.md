@@ -274,6 +274,12 @@ gh pr ready {pr-number}
 
 **Trigger:** PR is approved and CI passes.
 
+For PrintFarmerDesktop's `development`, follow `docs/MERGE_QUEUE.md` instead
+of the generic direct-merge commands below. The independent merger uses
+`npm run check:development-queue -- --pr N --head REVIEWED_SOURCE_SHA --enqueue`
+only after live queue activation and all source gates pass. Before activation,
+retain the strict freshness guard. Never use an admin queue bypass.
+
 **Merge strategies:**
 
 **GitHub (merge commit):**

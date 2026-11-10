@@ -40,22 +40,17 @@ import {
   discoverRepository,
 } from './check-merge-queue-contexts.mjs';
 import { resolveRepository } from './check-pr-closure-scope.mjs';
+import {
+  REQUIRED_CONTEXT_NAMES,
+  validQueueRuleset,
+} from './merge-queue-policy.mjs';
 
-// The eight required contexts, by name. Three sessions in one evening reported
+// The nine required contexts, by name. Three sessions in one evening reported
 // this number as seven, eight and nine, each by counting rows in a check-run
 // rollup -- which is a superset in the same units, so the wrong number looks
 // exactly like the right one. Pinning the names rather than the count means a
 // swap of one context for another cannot pass as unchanged.
-export const REQUIRED_CONTEXT_NAMES = Object.freeze([
-  'Dependency advisories',
-  'Desktop (macos-latest)',
-  'Desktop (windows-latest)',
-  'Release package (macos-latest)',
-  'Release package (windows-latest)',
-  'Sequencing hold',
-  'Sidecar (macos-latest)',
-  'Sidecar (windows-latest)',
-]);
+export { REQUIRED_CONTEXT_NAMES };
 
 export const EXPECTED_COLLABORATORS = Object.freeze([
   Object.freeze({ login: 'jpapiez', role: 'admin' }),
@@ -161,6 +156,23 @@ export function evaluateProtectionAssumptions({
   }
 
   const violations = [];
+  for (const ruleset of rulesets ?? []) {
+    if (
+      ruleset?.enforcement === 'active' &&
+      ruleset.rules?.some((rule) => rule.type === 'merge_queue') &&
+      !validQueueRuleset(ruleset)
+    ) {
+      violations.push(
+        violation(
+          'development.merge_queue',
+          'serialized, development-only, non-bypassable ALLGREEN squash queue',
+          ruleset.name ?? '(unnamed)',
+          'docs/MERGE_QUEUE.md',
+          'the active queue no longer provides the selected combined-change policy',
+        ),
+      );
+    }
+  }
 
   // The three fields below whose safe value is `false` share this hazard.
   // `guardField` raises a distinctly-worded violation when the fact is not
@@ -245,11 +257,17 @@ export function evaluateProtectionAssumptions({
     }
   }
 
-  if (protection.required_status_checks?.strict !== true) {
+  if (
+    protection.required_status_checks?.strict !== true &&
+    !(
+      protection.required_status_checks?.strict === false &&
+      rulesets?.some(validQueueRuleset)
+    )
+  ) {
     violations.push(
       violation(
         'development.required_status_checks.strict',
-        'true',
+        'true, or false with the active non-bypassable development queue',
         String(protection.required_status_checks?.strict),
         '#122',
         'a PR can merge against a trunk it was never tested against',
@@ -294,9 +312,10 @@ export function evaluateProtectionAssumptions({
       reviewsNode !== undefined && reviewsNode !== null
         ? reviewsNode.required_approving_review_count
         : undefined;
-    if (
+    if (reviewsNode === null) {
+      // REST uses null for an explicitly disabled review requirement.
+    } else if (
       reviewsNode === undefined ||
-      reviewsNode === null ||
       typeof reviewsNode !== 'object' ||
       reviewCount === undefined
     ) {
@@ -798,8 +817,13 @@ export async function fetchPublicRepositoryFacts({
     publicApi(fetchImpl, repository, '/branches?protected=true'),
   ]);
 
+  const details = await Promise.all(
+    rulesets.map((ruleset) =>
+      publicApi(fetchImpl, repository, `/rulesets/${ruleset.id}`),
+    ),
+  );
   return {
-    rulesets,
+    rulesets: details,
     protectedBranches: protectedBranches.map((b) => b.name),
   };
 }
@@ -817,6 +841,59 @@ export async function fetchPrivilegedRepositoryFacts({
     api(fetchImpl, repository, token, `/branches/${branch}/protection`),
     api(fetchImpl, repository, token, '/collaborators'),
   ]);
+  if (protection.required_pull_request_reviews == null) {
+    // REST omits this field while the dedicated subresource reports 1 and
+    // GraphQL reports requiresApprovingReviews=false (#206). The cause of
+    // that discrepancy is unknown. Read the matching rule's enabled-state.
+    const response = await fetchImpl('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {
+        authorization: `bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: `query($owner:String!,$repo:String!,$ref:String!) {
+          repository(owner:$owner,name:$repo) {
+            ref(qualifiedName:$ref) {
+              branchProtectionRule { id pattern requiresApprovingReviews requiredApprovingReviewCount }
+            }
+          }
+        }`,
+        variables: {
+          owner: repository.owner,
+          repo: repository.repo,
+          ref: `refs/heads/${branch}`,
+        },
+      }),
+    });
+    if (!response.ok)
+      throw new Error(
+        `Review enabled-state request failed: ${response.status}`,
+      );
+    const payload = await response.json();
+    const rule = payload.data?.repository?.ref?.branchProtectionRule;
+    if (
+      payload.errors ||
+      typeof rule?.requiresApprovingReviews !== 'boolean' ||
+      typeof rule.id !== 'string' ||
+      rule.id === '' ||
+      rule.pattern !== branch
+    ) {
+      throw new Error(
+        'Review enabled-state could not be corroborated; refusing a missing field as disabled.',
+      );
+    }
+    if (rule.requiresApprovingReviews === false) {
+      protection.required_pull_request_reviews = null;
+    } else {
+      const count = rule.requiredApprovingReviewCount;
+      if (!Number.isSafeInteger(count) || count < 0)
+        throw new Error('Enabled review count is unreadable.');
+      protection.required_pull_request_reviews = {
+        required_approving_review_count: count,
+      };
+    }
+  }
 
   return {
     protection,

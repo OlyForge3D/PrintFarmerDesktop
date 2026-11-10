@@ -50,6 +50,7 @@
     "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",
     "check:stacked-base": "node scripts/check-stacked-base.mjs",
     "check:merge-queue-contexts": "node scripts/check-merge-queue-contexts.mjs",
+    "check:development-queue": "node scripts/check-development-queue.mjs",
     "check:merge-landed": "node scripts/check-merge-landed.mjs",
     "check:release-tagged": "node scripts/check-release-tagged.mjs",
     "check:gate-premises": "node scripts/check-gate-premises.mjs",
