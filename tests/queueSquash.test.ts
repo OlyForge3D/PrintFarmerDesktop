@@ -443,6 +443,28 @@ describe('squash-compatible combined-result proof', () => {
       vi.unstubAllEnvs();
     }
   });
+  it.each(['git_exec_path', 'Git_Exec_Path'])(
+    'ignores the mixed-case %s helper override',
+    (key) => {
+      const repo = repository();
+      const hostile = path.join(repo.directory, 'hostile-helpers');
+      vi.stubEnv(key, hostile);
+      try {
+        if (process.platform === 'win32') {
+          expect(
+            path.resolve(
+              execFileSync('git', ['--exec-path'], {
+                encoding: 'utf8',
+              }).trim(),
+            ),
+          ).toBe(hostile);
+        }
+        expect(verifySquashGroup(repo.input).mergeBase).toBe(repo.mergeBase);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
   it.each([
     'different PR',
     'different REST head',

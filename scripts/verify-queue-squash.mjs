@@ -59,7 +59,9 @@ export function verifySquashGroup({
     throw new Error('Squash proof requires an exact PR number.');
   const directory = mkdtempSync(path.join(tmpdir(), 'queue-squash-'));
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+    Object.entries(process.env).filter(
+      ([key]) => !key.toUpperCase().startsWith('GIT_'),
+    ),
   );
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1',
