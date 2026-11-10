@@ -42,6 +42,14 @@ Renderer/main/preload (run from the repo root):
 | `npm run verify:target-profiles`         | Verify the pinned printer-profile snapshot         |
 | `npm run worktree:remove -- <path>`      | Safely force-remove a linked worktree              |
 
+Repository reachability tests use Git's tracked-file index, not transient
+untracked test directories. Stage new source and skill documents before running
+`tests/skillReferenceReachability.test.ts`; tracked references are still checked
+against the working tree, so deleted sources and unreadable skill documents fail.
+Create disposable fixtures under the OS temporary directory, not the checkout.
+Real Git/npm release-transaction tests have a scoped 30-second budget for hosted
+Windows subprocess latency; pure validation retains the 5-second default.
+
 Rust sidecar (run from `native/`):
 
 | Command                                         | Purpose                            |
