@@ -154,6 +154,7 @@ describe('the measurement scripts this change cites are executed, not merely pre
     expect(rows.some((line) => line.includes('49,150'))).toBe(true);
   });
 
+  // Two real script runs plus Git fixture commits can exceed 5s on Windows CI.
   it('runs from a branch-only checkout and still refuses a missing committed input', () => {
     const root = createBranchOnlyMentionFixture();
     try {
@@ -173,5 +174,5 @@ describe('the measurement scripts this change cites are executed, not merely pre
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

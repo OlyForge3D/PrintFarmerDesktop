@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  findGitHelpers,
   main as dryRun,
   verifySquashGroup,
   type SquashInput,
@@ -30,6 +31,64 @@ afterEach(() => {
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
   vi.restoreAllMocks();
+});
+
+describe('trusted Git helper discovery', () => {
+  function layout() {
+    const root = mkdtempSync(path.join(tmpdir(), 'git-layout-'));
+    directories.push(root);
+    const bin = path.join(root, 'ucrt64', 'bin');
+    const intrinsic = path.join(root, 'ucrt64', 'libexec', 'git-core');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(intrinsic, { recursive: true });
+    const helper =
+      process.platform === 'win32'
+        ? 'git-remote-https.exe'
+        : 'git-remote-https';
+    return { root, bin, intrinsic, helper };
+  }
+
+  it('prefers helpers in the executable-reported exec path', () => {
+    const { root, bin, intrinsic, helper } = layout();
+    writeFileSync(path.join(intrinsic, helper), '');
+    writeFileSync(path.join(bin, helper), '');
+    expect(findGitHelpers(path.join(root, 'cmd', 'git.exe'), intrinsic)).toBe(
+      intrinsic,
+    );
+  });
+
+  it('finds bundled Windows helpers in the sibling bin directory', () => {
+    const { root, bin, intrinsic, helper } = layout();
+    writeFileSync(path.join(bin, helper), '');
+    expect(findGitHelpers(path.join(root, 'cmd', 'git.exe'), intrinsic)).toBe(
+      bin,
+    );
+  });
+
+  it('finds relocatable helpers beside the selected executable', () => {
+    const { root, bin, helper } = layout();
+    writeFileSync(path.join(bin, helper), '');
+    expect(
+      findGitHelpers(path.join(bin, 'git'), path.join(root, 'stale-prefix')),
+    ).toBe(bin);
+  });
+
+  it('rejects missing helpers rather than using an inherited override', () => {
+    const { root, bin, intrinsic, helper } = layout();
+    writeFileSync(path.join(bin, helper), '');
+    vi.stubEnv('GIT_EXEC_PATH', bin);
+    try {
+      expect(() =>
+        findGitHelpers(
+          path.join(root, 'unrelated', 'git'),
+          path.join(root, 'missing'),
+        ),
+      ).toThrow(/cannot locate trusted Git HTTPS helpers/);
+      expect(findGitHelpers(path.join(bin, 'git'), intrinsic)).toBe(bin);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 function repository(conflict = false) {
@@ -384,6 +443,28 @@ describe('squash-compatible combined-result proof', () => {
       vi.unstubAllEnvs();
     }
   });
+  it.each(['git_exec_path', 'Git_Exec_Path'])(
+    'ignores the mixed-case %s helper override',
+    (key) => {
+      const repo = repository();
+      const hostile = path.join(repo.directory, 'hostile-helpers');
+      vi.stubEnv(key, hostile);
+      try {
+        if (process.platform === 'win32') {
+          expect(
+            path.resolve(
+              execFileSync('git', ['--exec-path'], {
+                encoding: 'utf8',
+              }).trim(),
+            ),
+          ).toBe(hostile);
+        }
+        expect(verifySquashGroup(repo.input).mergeBase).toBe(repo.mergeBase);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
   it.each([
     'different PR',
     'different REST head',

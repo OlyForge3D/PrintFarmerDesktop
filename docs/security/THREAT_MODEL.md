@@ -839,8 +839,9 @@ Certificate verification is never bypassed: there is no `rejectUnauthorized: fal
 its profile ID, normalized URL, auth mode, and username identity, so an envelope copied onto a
 different profile or endpoint does not decrypt into a usable credential.
 
-**Residual, accepted, and visible to the user.** HTTP LAN profiles remain supported and carry
-a persistent warning in the UI. On an HTTP profile, A3 as a LAN attacker sees the bearer
+**Residual, accepted, and visible in server configuration.** HTTP LAN profiles remain supported and carry
+a warning in the server configuration dialog, not a persistent shared-workspace banner.
+On an HTTP profile, A3 as a LAN attacker sees the bearer
 token. This is a deliberate usability trade for self-hosted setups, not an oversight.
 
 ### T3.2 — Hostile server response corrupts local state (A3)

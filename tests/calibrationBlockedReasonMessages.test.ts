@@ -34,8 +34,26 @@ import {
   KNOWN_BLOCKED_REASON_CODES,
   describeBlockedReasonCode,
 } from '../src/renderer/calibration/blockedReasonMessages';
+import { calibrationErrorText } from '../src/renderer/calibration/workspaceTypes';
 
 describe('describeBlockedReasonCode', () => {
+  it('requires deliberate operator recovery rather than retrying or regenerating the job', () => {
+    const message = describeBlockedReasonCode('OperatorRecoveryRequired');
+    expect(message).toBe(
+      'PrintFarmer blocked this job after an operator released an indeterminate pre-start dispatch claim. The job cannot be dispatched until an operator deliberately clears the block in PrintFarmer or cancels the job.',
+    );
+    expect(message).not.toMatch(/retry|re-generate|automatically/i);
+    expect(
+      calibrationErrorText({
+        message: 'Dispatch remains blocked.',
+        blockedReasonCode: 'OperatorRecoveryRequired',
+        reference: 'recovery-test-reference',
+      }),
+    ).toBe(
+      `${message} Dispatch remains blocked. Reference recovery-test-reference.`,
+    );
+  });
+
   it('returns null when no code is present', () => {
     // A caller that has no code to translate calls this with `null`,
     // `undefined`, or the empty string (all three appear on the wire in one

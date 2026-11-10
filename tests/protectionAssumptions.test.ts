@@ -1112,6 +1112,97 @@ describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', (
   });
 });
 
+describe('full protection facts include authenticated ruleset details', () => {
+  it('does not treat omitted anonymous bypass actors as an empty list', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const queueRule = {
+      type: 'merge_queue',
+      parameters: {
+        merge_method: 'SQUASH',
+        max_entries_to_build: 1,
+        min_entries_to_merge: 1,
+        max_entries_to_merge: 1,
+        min_entries_to_merge_wait_minutes: 0,
+        grouping_strategy: 'ALLGREEN',
+        check_response_timeout_minutes: 120,
+      },
+    };
+    const publicRuleset = {
+      id: 20361532,
+      name: 'development merge queue',
+      target: 'branch',
+      enforcement: 'active',
+      conditions: {
+        ref_name: { include: ['refs/heads/development'], exclude: [] },
+      },
+      rules: [queueRule],
+    };
+    const authenticatedRuleset = {
+      ...publicRuleset,
+      bypass_actors: [],
+    };
+    const fetchImpl: typeof fetch = (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      calls.push({
+        url,
+        headers: (init?.headers ?? {}) as Record<string, string>,
+      });
+      let body: unknown;
+      if (url.endsWith('/rulesets')) body = [{ id: 20361532 }];
+      else if (url.endsWith('/rulesets/20361532')) {
+        body = new Headers(init?.headers).has('authorization')
+          ? authenticatedRuleset
+          : publicRuleset;
+      } else if (url.endsWith('/branches?protected=true')) {
+        body = [{ name: 'development' }];
+      } else if (url.endsWith('/collaborators')) {
+        body = [{ login: 'jpapiez', role_name: 'admin' }];
+      } else {
+        body = {
+          ...baseline().protection,
+          required_status_checks: {
+            ...baseline().protection.required_status_checks,
+            strict: false,
+          },
+        };
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(body),
+      } as Response);
+    };
+
+    const publicFacts = await fetchPublicRepositoryFacts({
+      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+      fetchImpl,
+    });
+    expect(publicFacts.rulesets[0]).not.toHaveProperty('bypass_actors');
+
+    const facts = await fetchRepositoryFacts({
+      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+      token: 'a-token',
+      fetchImpl,
+    });
+
+    expect(facts.rulesets).toHaveLength(1);
+    expect(facts.rulesets[0]?.bypass_actors).toEqual([]);
+    expect(
+      evaluateProtectionAssumptions(facts).map(
+        (violation) => violation.assumption,
+      ),
+    ).toEqual([]);
+    expect(
+      calls.some(
+        ({ url, headers }) =>
+          url.endsWith('/rulesets/20361532') &&
+          Object.keys(headers).some(
+            (header) => header.toLowerCase() === 'authorization',
+          ),
+      ),
+    ).toBe(true);
+  });
+});
+
 // #491's acceptance test names four HTTP codes explicitly and requires that
 // "the four HTTP codes above are reproduced by a test so the scope claim
 // cannot drift again." Every test above proves the code's *logic* is right

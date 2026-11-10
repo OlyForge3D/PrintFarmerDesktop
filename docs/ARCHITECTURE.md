@@ -281,7 +281,8 @@ physical tool-change validation remain outside the desktop trust boundary.
 
 The main process probes the anonymous version and capability endpoints and
 publishes only redacted profile metadata plus explicit feature availability.
-HTTP LAN profiles remain supported with a persistent warning. A missing
+HTTP LAN profiles remain supported with a warning in server configuration,
+not a persistent shared-workspace banner. A missing
 capability/version endpoint is treated as legacy and requires explicit user
 confirmation. Legacy availability exposes only the conservative model-file and
 server-thumbnail fallback; modern idempotent upload, client thumbnails, and

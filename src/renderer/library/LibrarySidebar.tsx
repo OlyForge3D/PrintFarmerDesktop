@@ -309,7 +309,7 @@ function NavigationSection({
                   ? 'sidebar-nav-item active'
                   : 'sidebar-nav-item'
               }
-              aria-current={active === item.filter ? 'page' : undefined}
+              aria-pressed={active === item.filter}
               onClick={() => onChange(item.filter)}
             >
               <Icon name={item.icon} />

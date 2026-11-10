@@ -472,6 +472,19 @@ select:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.collection-manager-list button {
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.collection-manager-list button.danger-button {
+  color: var(--danger);
+}
+
 .collection-manager-rename {
   display: flex;
   flex: 1;
@@ -493,8 +506,15 @@ select:disabled {
 
 .collection-manager-choice label {
   display: flex;
+  min-height: 24px;
   gap: 6px;
   align-items: center;
+}
+
+.collection-manager-choice input[type='radio'] {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
 }
 
 .collection-manager-delete {
@@ -1003,12 +1023,20 @@ select:disabled {
   flex: 1;
 }
 
-.library-alert button {
+.library-alert button,
+.import-alert button {
+  min-height: 24px;
+  padding: 2px 6px;
   border: 0;
   background: transparent;
   color: var(--danger);
   cursor: pointer;
   font-weight: 600;
+}
+
+.library-alert button:hover:not(:disabled),
+.import-alert button:hover:not(:disabled) {
+  background: var(--surface-hover);
 }
 
 .library-error-alert {
@@ -1511,7 +1539,7 @@ select:disabled {
   bottom: max(24px, 3vh);
   left: 50%;
   display: flex;
-  width: min(max(90%, 600px), calc(100% - 32px));
+  width: min(920px, max(90%, 600px), calc(100% - 32px));
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -1555,6 +1583,15 @@ select:disabled {
 
 .thumbnail-cache-content {
   overflow: auto;
+}
+
+.thumbnail-cache-content section > button {
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
 }
 
 .thumbnail-cache-path {
@@ -1658,7 +1695,7 @@ select:disabled {
 .catalog-sources-alert.error {
   border-color: color-mix(in srgb, var(--danger), var(--border) 55%);
   background: color-mix(in srgb, var(--danger), transparent 90%);
-  color: #f3b2b6;
+  color: #fff;
 }
 
 .catalog-sources-alert.success {
@@ -1732,6 +1769,11 @@ select:disabled {
   background: var(--accent);
   color: #071018;
   font-weight: 650;
+}
+
+.service-heading-actions .catalog-source-primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 .catalog-sources-content {
@@ -2968,6 +3010,10 @@ select:disabled {
   color: var(--danger);
 }
 
+.import-preview-error > button {
+  color: #fff;
+}
+
 .import-submit-error {
   margin-bottom: 0;
 }
@@ -3621,6 +3667,11 @@ select:disabled {
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
+}
+
+.plate-selector-option input[type='radio'] {
+  width: 24px;
+  height: 24px;
 }
 
 .plate-selector-status {

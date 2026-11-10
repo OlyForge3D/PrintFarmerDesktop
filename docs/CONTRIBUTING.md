@@ -248,6 +248,24 @@ vendored copy of the impeccable design skill's detector in `tools/impeccable-det
   `.github/codeql/codeql-config.yml`; the upstream alerts that exclusion hides
   are tracked in #844.
 
+## Visual and accessibility coverage
+
+`docs/ui/coverage-manifest.json` maps the Layer 1 source inventory to stable
+state IDs, existing test evidence, executable screenshot candidates, and
+explicitly blocked/unverified/retired rows. Its structural counts overlap and
+must not be summed into a scenario denominator. The current candidate-only
+coverage and review procedure are documented in
+[`docs/ui/visual-accessibility-gate.md`](ui/visual-accessibility-gate.md).
+
+Run the packaged accessibility suite with
+`npx playwright test release.accessibility.spec.ts`. Screenshots are temporary
+review evidence in ignored `test-results/` and `artifacts/ui-coverage-review/`
+directories; do not commit generated PNGs. This coverage adds no golden
+approval requirement or blocking pixel-diff comparison. Behavior, layout, DOM
+and automated accessibility assertions remain enforced. Native UI, high
+contrast, real zoom/mixed DPI, and untested state combinations remain outside
+automated certification.
+
 The detector reads source, not rendered pixels, so it catches tells like
 gradient text and purple palettes but not contrast, overflow, or density
 problems. A green check is a floor, not a design review.

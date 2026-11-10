@@ -34,8 +34,8 @@
  */
 
 /**
- * Every dispatch-safety refusal code PrintFarmer emits today, verbatim from
- * `DispatchSafetyGates.MapBlockedReason`. Adding one to the server without
+ * Dispatch-safety refusal tokens and durable blocked-reason values with
+ * specific desktop wording. Adding one to the server without
  * adding it here still shows the operator something actionable (the raw
  * token, quoted), so a server-only change is not a silent regression.
  */
@@ -61,6 +61,8 @@ export const KNOWN_BLOCKED_REASON_CODES = [
   // ---- 503 codes (calibration discovery; calibrationHttp.ts:1740-1757) ---
   'profile_service_unavailable',
   'status_unavailable',
+  // Durable enum value, not a DispatchSafetyGates.MapBlockedReason token.
+  'OperatorRecoveryRequired',
 ] as const;
 
 export type KnownBlockedReasonCode =
@@ -116,6 +118,8 @@ const BLOCKED_REASON_MESSAGES: Record<KnownBlockedReasonCode, string> = {
     "PrintFarmer refused this print because its upstream OrcaSlicer profile resolver is unreachable, so PrintFarmer cannot re-check this calibration job's slicer identity. Check the OrcaSlicer service and try again.",
   status_unavailable:
     'PrintFarmer refused this print because it could not read live printer status. Check the printer connection in PrintFarmer and try again.',
+  OperatorRecoveryRequired:
+    'PrintFarmer blocked this job after an operator released an indeterminate pre-start dispatch claim. The job cannot be dispatched until an operator deliberately clears the block in PrintFarmer or cancels the job.',
 };
 
 /**

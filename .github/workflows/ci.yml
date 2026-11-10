@@ -514,7 +514,7 @@ jobs:
 
       - name: Packaged accessibility (material WCAG A/AA)
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'
-        run: npx playwright test e2e/release.accessibility.spec.ts
+        run: npx playwright test --grep "@a11y"
 
       - name: Packaged WebGL2 (host default capability report)
         if: steps.changes.outputs.docs_only != 'true' && steps.changes.outputs.docs_and_tests != 'true'

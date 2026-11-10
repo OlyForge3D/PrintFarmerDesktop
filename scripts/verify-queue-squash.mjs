@@ -15,6 +15,31 @@ const isSha = (value) =>
   typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const REMOTE = 'https://github.com/OlyForge3D/PrintFarmerDesktop.git';
 
+export function findGitHelpers(executable, intrinsic) {
+  const bundled = path.resolve(path.dirname(executable), '../libexec/git-core');
+  const candidates = [
+    intrinsic,
+    bundled,
+    path.isAbsolute(intrinsic) ? path.resolve(intrinsic, '../../bin') : '',
+    path.dirname(executable),
+  ];
+  const helpers = candidates.find(
+    (candidate) =>
+      path.isAbsolute(candidate) &&
+      existsSync(
+        path.join(
+          candidate,
+          process.platform === 'win32'
+            ? 'git-remote-https.exe'
+            : 'git-remote-https',
+        ),
+      ),
+  );
+  if (!helpers)
+    throw new Error('Squash proof cannot locate trusted Git HTTPS helpers.');
+  return helpers;
+}
+
 // Fetch objects into an isolated bare repository: never execute source code,
 // hooks, local merge drivers, replace refs, or global Git configuration.
 export function verifySquashGroup({
@@ -34,7 +59,9 @@ export function verifySquashGroup({
     throw new Error('Squash proof requires an exact PR number.');
   const directory = mkdtempSync(path.join(tmpdir(), 'queue-squash-'));
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+    Object.entries(process.env).filter(
+      ([key]) => !key.toUpperCase().startsWith('GIT_'),
+    ),
   );
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1',
@@ -78,25 +105,7 @@ export function verifySquashGroup({
     // Derive helpers from the selected executable, never ambient GIT_EXEC_PATH.
     // Relocatable bundled Git may report a stale compiled-in prefix.
     const intrinsic = git('--exec-path');
-    const bundled = path.resolve(
-      path.dirname(gitExecutable),
-      '../libexec/git-core',
-    );
-    const helpers = [intrinsic, bundled].find(
-      (candidate) =>
-        path.isAbsolute(candidate) &&
-        existsSync(
-          path.join(
-            candidate,
-            process.platform === 'win32'
-              ? 'git-remote-https.exe'
-              : 'git-remote-https',
-          ),
-        ),
-    );
-    if (!helpers)
-      throw new Error('Squash proof cannot locate trusted Git HTTPS helpers.');
-    env.GIT_EXEC_PATH = helpers;
+    env.GIT_EXEC_PATH = findGitHelpers(gitExecutable, intrinsic);
     git('init', '--bare', '--quiet', '--template=');
     git(
       '-c',

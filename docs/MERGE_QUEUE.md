@@ -69,6 +69,9 @@ repository, then requires the fetched source to equal the API/review head.
 It never checks out source files, runs source code, uses admin credentials,
 or writes remote state. Git environment overrides, global/system config,
 templates, replacement refs and external merge-driver configuration are excluded.
+HTTPS helpers are discovered from the selected Git executable and its reported
+exec path, including bundled Windows Git's sibling `bin` layout, never an
+inherited `GIT_EXEC_PATH`. Missing helpers refuse verification.
 Failure to fetch, unsupported Git options, or any ambiguity refuses verification.
 
 The group must be **exactly one commit whose sole parent is the exact event

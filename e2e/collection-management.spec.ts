@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test, type Page } from '@playwright/test';
 import {
   attachPackagedFailureDiagnostics,
   cleanupPackagedApp,
@@ -22,6 +23,10 @@ import {
   findPackagedExecutable,
   packagedSidecarPath,
 } from './helpers/retargetFixture';
+import {
+  applyPinnedRenderingProfile,
+  captureVisualScenario,
+} from './helpers/visualCoverage.js';
 import { RootApprovalStore } from '../src/main/rootApprovals';
 import { createSidebarResizeRecorder } from './helpers/sidebarResizeDiagnostics';
 
@@ -39,9 +44,17 @@ test('packaged collection management preserves models and source files', async (
   const userDataPath = path.join(root, 'user-data');
   const catalogDb = path.join(root, 'catalog.sqlite3');
   const processLog = createPackagedProcessLog();
-  const fixture = path.join(modelFixtureDirectory, modelFixtureName);
+  const fixtureSource = path.join(modelFixtureDirectory, modelFixtureName);
+  const fixtureDirectory = path.join(root, 'models');
+  const nestedFixtureDirectory = path.join(
+    fixtureDirectory,
+    `deep-layout-${'segment-'.repeat(4)}`,
+  );
+  const fixture = path.join(nestedFixtureDirectory, modelFixtureName);
+  mkdirSync(nestedFixtureDirectory, { recursive: true });
+  copyFileSync(fixtureSource, fixture);
   const originalHash = createHash('sha256')
-    .update(readFileSync(fixture))
+    .update(readFileSync(fixtureSource))
     .digest('hex');
   let launched: PackagedApp | null = null;
 
@@ -55,7 +68,7 @@ test('packaged collection management preserves models and source files', async (
       // test-only dialog hook, so this runs against a production build.
       const approved = await new RootApprovalStore({
         userDataPath,
-      }).approveFromPicker(modelFixtureDirectory);
+      }).approveFromPicker(fixtureDirectory);
       const sidecar = packagedSidecarPath(executablePath);
       const seed = spawnSync(sidecar, ['--catalog-db', catalogDb], {
         input: `${JSON.stringify({
@@ -96,6 +109,7 @@ test('packaged collection management preserves models and source files', async (
         environment: { PRINTFARMER_USER_DATA_PATH: userDataPath },
       });
       const page = launched.page;
+      await applyPinnedRenderingProfile(page);
       const resizeRecorder = await page.evaluateHandle(
         createSidebarResizeRecorder,
       );
@@ -134,8 +148,46 @@ test('packaged collection management preserves models and source files', async (
       await expect(
         tags.getByRole('checkbox', { name: 'release-e2e' }),
       ).toBeHidden();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'library.sidebar.tags-collapsed',
+        testInfo,
+      );
       await tagsToggle.click();
       await expect(tagsToggle).toHaveAttribute('aria-expanded', 'true');
+
+      const tagSearch = tags.getByRole('searchbox', {
+        name: 'Search tags',
+      });
+      await tagSearch.fill('release');
+      await expect(
+        tags.getByRole('checkbox', { name: 'release-e2e' }),
+      ).toBeVisible();
+      await tagSearch.fill('no-matching-tag');
+      await expect(tags.getByText('No matching tags.')).toBeVisible();
+
+      const collectionSearch = collections.getByRole('searchbox', {
+        name: 'Search collections',
+      });
+      await collectionSearch.fill('Release');
+      await expect(
+        collections.getByRole('checkbox', {
+          name: 'Release E2E fixtures',
+        }),
+      ).toBeVisible();
+      await collectionSearch.fill('no-matching-collection');
+      await expect(
+        collections.getByText('No matching collections.'),
+      ).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'library.sidebar.tag-collection-search',
+        testInfo,
+      );
+      await tagSearch.fill('');
+      await collectionSearch.fill('');
 
       const pane = page.locator('.library-sidebar-pane');
       const resizer = page.getByRole('separator', {
@@ -203,6 +255,8 @@ test('packaged collection management preserves models and source files', async (
         .getByRole('searchbox', { name: 'Search models' })
         .boundingBox();
       expect(searchBox!.width).toBeGreaterThan(startWidth);
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(page, 'library.sidebar.resized', testInfo);
       await page.screenshot({
         path: testInfo.outputPath('library-sidebar-resized.png'),
       });
@@ -273,10 +327,14 @@ test('packaged collection management preserves models and source files', async (
       await page.getByRole('button', { name: 'Collect all matching…' }).click();
       const dialog = page.getByRole('dialog', { name: 'Manage collections' });
       await expect(dialog).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(page, 'collections.manager-crud', testInfo);
       await page.screenshot({
         path: testInfo.outputPath('organization-desktop.png'),
       });
       await page.setViewportSize({ width: 1120, height: 700 });
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(page, 'collections.compact-layout', testInfo);
       await page.screenshot({
         path: testInfo.outputPath('organization-compact.png'),
       });
@@ -303,12 +361,16 @@ test('packaged collection management preserves models and source files', async (
       await expect(
         dialog.getByText(/1 will be added, 0 already members/),
       ).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(page, 'collections.bulk-preview', testInfo);
       await dialog
         .getByRole('button', { name: 'Confirm: add 1 membership' })
         .click();
       await expect(
         dialog.getByText(/Added 1 membership across 1 model/),
       ).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(page, 'collections.bulk-applied', testInfo);
 
       await dialog
         .getByRole('button', { name: 'Rename Test grouping' })
@@ -330,6 +392,12 @@ test('packaged collection management preserves models and source files', async (
       await expect(confirmation).toContainText('Models and source files stay');
       await expect(confirmation).toContainText('cannot be undone');
       await expect(confirmation).toContainText('PrintFarmer');
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.delete-confirmation',
+        testInfo,
+      );
       await confirmation.getByRole('button', { name: 'Keep' }).click();
       await expect(confirmation).toHaveCount(0);
       expect(
@@ -360,6 +428,12 @@ test('packaged collection management preserves models and source files', async (
       expect(
         createHash('sha256').update(readFileSync(fixture)).digest('hex'),
       ).toBe(originalHash);
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.workspace.delete-local-effects',
+        testInfo,
+      );
 
       await dialog
         .getByRole('button', { name: 'Close collection manager' })
@@ -388,6 +462,34 @@ test('packaged collection management preserves models and source files', async (
       await expect(
         organization.getByRole('row', { name: /Renamed grouping/ }),
       ).toContainText('1');
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.collections-table',
+        testInfo,
+      );
+      await organization
+        .getByRole('button', { name: 'Rename Empty shelf' })
+        .click();
+      const renameEmptyShelf = organization.getByRole('textbox', {
+        name: 'New name for Empty shelf',
+      });
+      await renameEmptyShelf.fill('Renamed empty shelf');
+      await organization.getByRole('button', { name: 'Save' }).click();
+      await expect(
+        organization.getByRole('row', { name: /Renamed empty shelf/ }),
+      ).toBeVisible();
+      await expect(
+        organization.getByText(
+          'Renamed “Empty shelf” to “Renamed empty shelf”.',
+        ),
+      ).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.workspace.inline-local-rename',
+        testInfo,
+      );
       await page.screenshot({
         path: testInfo.outputPath('organization-workspace-desktop.png'),
       });
@@ -423,7 +525,7 @@ test('packaged collection management preserves models and source files', async (
         collections.getByRole('checkbox', { name: /Renamed grouping/ }),
       ).toBeVisible();
       await expect(
-        collections.getByRole('checkbox', { name: /Empty shelf/ }),
+        collections.getByRole('checkbox', { name: /Renamed empty shelf/ }),
       ).toHaveCount(0);
       await page.getByRole('button', { name: /^Tags & Collections/ }).click();
 
@@ -431,6 +533,170 @@ test('packaged collection management preserves models and source files', async (
       await expect(
         organization.getByRole('row', { name: /release-e2e/ }),
       ).toContainText('1');
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(page, 'organization.tags-table', testInfo);
+
+      const organizationTagSearch = organization.getByRole('searchbox', {
+        name: 'Search tags',
+      });
+      await organizationTagSearch.fill('no-matching-tag');
+      await expect(organization.getByRole('status')).toContainText(
+        'No tags match these filters.',
+      );
+      await organizationTagSearch.fill('');
+
+      await organization.getByText('Collections', { exact: true }).click();
+      const organizationCollectionSearch = organization.getByRole('searchbox', {
+        name: 'Search collections',
+      });
+      await organizationCollectionSearch.fill('no-matching-collection');
+      await expect(organization.getByRole('status')).toContainText(
+        'No collections match these filters.',
+      );
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.workspace.filter-no-match',
+        testInfo,
+      );
+      await organizationCollectionSearch.fill('');
+
+      const deleteReviewFixture = await page.evaluate(async (hash) => {
+        const collections = [];
+        for (let index = 1; index <= 9; index += 1) {
+          const created = await window.printFarmer.createCollection({
+            name: `Coverage review ${String(index).padStart(2, '0')}`,
+          });
+          await window.printFarmer.addModelToCollection({
+            collectionId: created.id,
+            hash,
+          });
+          collections.push({ id: created.id, name: created.name });
+        }
+        const preview = await window.printFarmer.previewOrganizationDeletion({
+          kind: 'collection',
+          ids: collections.map((collection) => collection.id),
+          emptyOnly: false,
+        });
+        return { collections, preview };
+      }, modelHash);
+      expect(deleteReviewFixture.preview.entries).toHaveLength(9);
+      expect(deleteReviewFixture.preview.assignmentsRemoved).toBe(9);
+      expect(deleteReviewFixture.preview.serverDeletions).toBe(0);
+      expect(deleteReviewFixture.preview.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+      await organization.getByRole('button', { name: 'Refresh' }).click();
+      const reviewSearch = organization.getByRole('searchbox', {
+        name: 'Search collections',
+      });
+      await reviewSearch.fill('Coverage review');
+      await expect(
+        organization.getByRole('table').getByRole('row'),
+      ).toHaveCount(10);
+      await organization
+        .getByRole('checkbox', { name: 'Select all shown collections' })
+        .check();
+      await expect(
+        organization.getByText('9 selected', { exact: true }),
+      ).toBeVisible();
+      await organization
+        .getByRole('button', { name: 'Review deletion…' })
+        .click();
+      const overflowReview = organization.getByRole('alert');
+      await expect(overflowReview).toContainText('Delete 9 collections?');
+      await expect(overflowReview).toContainText(
+        '9 model assignments will be removed. The models themselves stay in the library.',
+      );
+      const reviewedNames = await overflowReview
+        .locator('.organization-review-list li')
+        .allTextContents();
+      expect(reviewedNames).toHaveLength(9);
+      expect(reviewedNames[8]).toBe('and 1 more');
+      for (const entry of deleteReviewFixture.preview.entries.slice(0, 8)) {
+        expect(reviewedNames.join('\n')).toContain(entry.name);
+      }
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.workspace.delete-review-overflow',
+        testInfo,
+      );
+      await overflowReview
+        .getByRole('button', { name: 'Keep collections' })
+        .click();
+      await expect(overflowReview).toHaveCount(0);
+      const collectionsAfterKeep = await page.evaluate(() =>
+        window.printFarmer.listOrganization(),
+      );
+      const remainingCollectionIds = new Set(
+        collectionsAfterKeep
+          .filter((entry) => entry.kind === 'collection')
+          .map((entry) => entry.id),
+      );
+      for (const collection of deleteReviewFixture.collections) {
+        expect(remainingCollectionIds.has(collection.id)).toBe(true);
+      }
+      await reviewSearch.fill('');
+
+      const longCollectionName = `Long ${'collection-name-'.repeat(7)}end`;
+      await organization
+        .getByRole('textbox', { name: 'New collection name' })
+        .fill(longCollectionName);
+      await organization
+        .getByRole('button', { name: 'Create collection' })
+        .click();
+      const longCollectionRow = organization
+        .getByRole('row')
+        .filter({ hasText: longCollectionName });
+      await expect(longCollectionRow).toBeVisible();
+      const renameLongCollection = longCollectionRow.getByRole('button', {
+        name: `Rename ${longCollectionName}`,
+      });
+
+      await captureVisualScenario(
+        page,
+        'organization.wide-layout-zoom',
+        testInfo,
+      );
+      await expect(renameLongCollection).toBeVisible();
+      const renameBox = await renameLongCollection.boundingBox();
+      expect(renameBox).not.toBeNull();
+      expect(renameBox!.x).toBeGreaterThanOrEqual(0);
+      expect(renameBox!.x + renameBox!.width).toBeLessThanOrEqual(720);
+      await expectNoMaterialViolations(page);
+
+      await applyPinnedRenderingProfile(
+        page,
+        'desktop-dark-720x450-2x-proxy-dsf1-en-US-UTC-reduced-motion-v1',
+      );
+      await page.getByRole('button', { name: 'Library', exact: true }).click();
+      await expect(
+        collections.getByRole('checkbox', {
+          name: new RegExp(longCollectionName),
+        }),
+      ).toBeVisible();
+      await page
+        .getByRole('button', { name: `Select ${modelFixtureName}` })
+        .click();
+      const compactLocationPath = page
+        .getByLabel('Model properties')
+        .locator('section.inspector-section')
+        .filter({
+          has: page.getByRole('heading', { name: 'File', level: 3 }),
+        })
+        .locator('.location-path')
+        .first();
+      await expect(compactLocationPath).toHaveText(
+        models[0]!.locations[0]!.path,
+      );
+      await expect(compactLocationPath).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'library.sidebar.extreme-labels-paths',
+        testInfo,
+      );
+      await page.setViewportSize({ width: 1440, height: 900 });
 
       // Reset clears models, sources, tags, and collections; never files.
       await page.getByRole('button', { name: /^Settings/ }).click();
@@ -438,7 +704,7 @@ test('packaged collection management preserves models and source files', async (
       await page.getByRole('button', { name: 'Clear local catalog' }).click();
       await expect(
         page.getByText(
-          'Catalog cleared. Removed 1 indexed model, 1 source folder, 1 tag, and 1 collection.',
+          'Catalog cleared. Removed 1 indexed model, 1 source folder, 1 tag, and 11 collections.',
         ),
       ).toBeVisible();
       expect(
@@ -452,6 +718,35 @@ test('packaged collection management preserves models and source files', async (
       ).toBe(originalHash);
       await page.getByRole('button', { name: /^Tags & Collections/ }).click();
       await expect(organization.getByText('No collections yet')).toBeVisible();
+      await expect(
+        organization.getByText(
+          'Create a collection below, then add models from the library.',
+        ),
+      ).toBeVisible();
+      await expect(
+        organization.getByRole('textbox', { name: 'New collection name' }),
+      ).toBeVisible();
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.workspace.empty-collections',
+        testInfo,
+      );
+
+      await organization.getByText('Tags', { exact: true }).click();
+      await expect(organization.getByText('No tags yet')).toBeVisible();
+      await expect(
+        organization.getByText('Add tags to a model from its inspector.'),
+      ).toBeVisible();
+      expect(await page.evaluate(() => window.printFarmer.listTags())).toEqual(
+        [],
+      );
+      await expectNoMaterialViolations(page);
+      await captureVisualScenario(
+        page,
+        'organization.workspace.empty-tags',
+        testInfo,
+      );
     },
     () => cleanupPackagedApp(launched, [root]),
     (diagnostics) =>
@@ -462,3 +757,14 @@ test('packaged collection management preserves models and source files', async (
       ),
   );
 });
+
+async function expectNoMaterialViolations(page: Page): Promise<void> {
+  const results = await new AxeBuilder({ page })
+    .setLegacyMode()
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  const material = results.violations.filter((violation) =>
+    ['moderate', 'serious', 'critical'].includes(violation.impact ?? ''),
+  );
+  expect(material).toEqual([]);
+}

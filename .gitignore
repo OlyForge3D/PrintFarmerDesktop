@@ -51,6 +51,7 @@ coverage/
 .nyc_output/
 playwright-report/
 test-results/
+/artifacts/ui-coverage-review/
 
 # E2E temp state dirs (created/cleaned by calibration.spec.ts beforeAll/afterAll)
 .pf-e2e-*/

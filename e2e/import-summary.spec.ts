@@ -112,10 +112,10 @@ test('automatic summary, responsive width and explicit stale-target recovery use
         )
         .toBe(true);
       if (width >= 1200) {
-        const ratio = await wizard.evaluate(
-          (element) => element.getBoundingClientRect().width / innerWidth,
+        const dialogWidth = await wizard.evaluate(
+          (element) => element.getBoundingClientRect().width,
         );
-        expect(ratio).toBeCloseTo(0.9, 2);
+        expect(dialogWidth).toBeCloseTo(920, 0);
       }
       for (const selector of [
         '.import-body',

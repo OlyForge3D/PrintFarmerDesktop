@@ -87,6 +87,7 @@ import {
 } from '@shared/ipc';
 import { browserCalibrationEnvironment, calibrationApi } from './api';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
+import { calibrationErrorText } from './workspaceTypes';
 import {
   ProfileSelectionSection,
   type ProfileSelectionSnapshot,
@@ -310,8 +311,15 @@ function bannerFromApiError(error: CalibrationApiError): WizardBanner {
   return {
     kind: 'error',
     title: copy.title,
-    detail: copy.detail,
-    recovery: copy.recovery,
+    detail: calibrationErrorText({
+      message: copy.detail,
+      reference: null,
+      blockedReasonCode: error.blockedReasonCode,
+    }),
+    recovery:
+      error.blockedReasonCode === 'OperatorRecoveryRequired'
+        ? null
+        : copy.recovery,
     reference: error.reference,
   };
 }
@@ -2420,6 +2428,12 @@ function FilamentCalibrationWizardInner(
             <p className="cal-hint">Reference: {banner.reference}</p>
           ) : null}
         </div>
+      ) : null}
+      {working.phase === 'submittingSlice' ? (
+        <p role="status" className="cal-hint">
+          Submitting the calibration slice request. Progress will appear when
+          the job is accepted.
+        </p>
       ) : null}
 
       <SelectStep

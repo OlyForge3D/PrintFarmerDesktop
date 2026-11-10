@@ -36,8 +36,11 @@ import {
 const serverRepo = resolveServerRepo();
 
 describe('JobBlockedReasonCode — enum vocabulary drift', () => {
-  it('snapshot has exactly 10 members (parent brief said 9 durable + None); catches a silent addition or removal', () => {
-    expect(JOB_BLOCKED_REASON_CODE_ENUM_MEMBERS.length).toBe(10);
+  it('snapshot has exactly 11 members, including the operator-recovery block', () => {
+    expect(JOB_BLOCKED_REASON_CODE_ENUM_MEMBERS.length).toBe(11);
+    expect(JOB_BLOCKED_REASON_CODE_ENUM_MEMBERS).toContain(
+      'OperatorRecoveryRequired',
+    );
   });
 
   it.skipIf(!serverRepo)(
@@ -218,36 +221,54 @@ const AGGREGATE_OR_NON_DISPATCH_CODES: ReadonlySet<string> = new Set([
   'status_unavailable',
 ]);
 
+const DURABLE_ENUM_CODES: ReadonlySet<string> = new Set([
+  'OperatorRecoveryRequired',
+]);
+
+function isKnownServerCode(code: string): boolean {
+  if (DURABLE_ENUM_CODES.has(code)) {
+    return (JOB_BLOCKED_REASON_CODE_ENUM_MEMBERS as readonly string[]).includes(
+      code,
+    );
+  }
+  return (
+    AGGREGATE_OR_NON_DISPATCH_CODES.has(code) ||
+    (JOB_BLOCKED_REASON_WIRE_TOKENS as readonly string[]).includes(code)
+  );
+}
+
 describe('Dallas renderer catalogue — coverage against wire-token snapshot', () => {
-  it('no phantom dispatch-safety codes: every non-aggregate code in KNOWN_BLOCKED_REASON_CODES is a real MapBlockedReason token', () => {
-    const wireTokenSet = new Set<string>(JOB_BLOCKED_REASON_WIRE_TOKENS);
-    const phantom: string[] = [];
-    for (const code of KNOWN_BLOCKED_REASON_CODES) {
-      if (AGGREGATE_OR_NON_DISPATCH_CODES.has(code)) continue;
-      if (!wireTokenSet.has(code)) phantom.push(code);
-    }
+  it('no phantom codes: renderer entries are known dispatch tokens, durable enum values or aggregate codes', () => {
+    const phantom = KNOWN_BLOCKED_REASON_CODES.filter(
+      (code) => !isKnownServerCode(code),
+    );
     expect(
       phantom,
-      `Dallas catalogue includes ${phantom.join(', ')} — none of which appear in DispatchSafetyGates.MapBlockedReason. Either these are aggregate codes and should be added to AGGREGATE_OR_NON_DISPATCH_CODES, or they are stale and should be removed from the renderer copy deck.`,
+      `Renderer catalogue includes unknown server codes: ${phantom.join(', ')}.`,
     ).toStrictEqual([]);
   });
 
-  it('control: adding a fabricated code to the ignore-set does not rescue a phantom in the real assertion', () => {
-    // Re-run the same predicate the previous test uses, but with a
-    // synthetic addition to KNOWN_BLOCKED_REASON_CODES. Prove the
-    // predicate flags it — otherwise the previous green is a coincidence
-    // of Dallas already covering only real tokens.
-    const wireTokenSet = new Set<string>(JOB_BLOCKED_REASON_WIRE_TOKENS);
+  it('control: the same predicate rejects a fabricated renderer code', () => {
     const synthetic = [
       ...KNOWN_BLOCKED_REASON_CODES,
       'phantom_wire_code_that_server_will_never_emit',
     ];
-    const phantom: string[] = [];
-    for (const code of synthetic) {
-      if (AGGREGATE_OR_NON_DISPATCH_CODES.has(code)) continue;
-      if (!wireTokenSet.has(code)) phantom.push(code);
-    }
+    const phantom = synthetic.filter((code) => !isKnownServerCode(code));
     expect(phantom).toContain('phantom_wire_code_that_server_will_never_emit');
+  });
+
+  it('recognises operator recovery as a durable enum value, not an invented wire token', () => {
+    expect(isKnownServerCode('OperatorRecoveryRequired')).toBe(true);
+    expect(isKnownServerCode('operator_recovery_required')).toBe(false);
+    expect(JOB_BLOCKED_REASON_WIRE_TOKENS).not.toContain(
+      'OperatorRecoveryRequired',
+    );
+    expect(JOB_BLOCKED_REASON_WIRE_TOKENS).not.toContain(
+      'operator_recovery_required',
+    );
+    for (const code of DURABLE_ENUM_CODES) {
+      expect(JOB_BLOCKED_REASON_CODE_ENUM_MEMBERS).toContain(code);
+    }
   });
 
   it('coverage report (non-fatal): wire tokens with no renderer wording, for Dallas', () => {

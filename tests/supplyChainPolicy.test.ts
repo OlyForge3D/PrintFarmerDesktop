@@ -490,7 +490,7 @@ describe('the release workflow enforces compliance before publication', () => {
       ],
       [
         'Packaged accessibility (material WCAG A/AA)',
-        'npx playwright test e2e/release.accessibility.spec.ts',
+        'npx playwright test --grep "@a11y"',
       ],
       [
         'Packaged WebGL2 (host default capability report)',
