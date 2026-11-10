@@ -62,6 +62,15 @@ export const UNINVOKED_SCRIPTS = {
 // #186 entries in .squad/decisions.md / .squad/decisions/inbox/ — rather
 // than forced into this boolean allowlist, which has no vocabulary for it.
 export const UNENFORCED_CHECKS = {
+  'check:queue-squash':
+    'Offline pre-activation content proof for an owner-supplied historical group, ' +
+    'not a standalone CI gate or live merge authorization. Its production ' +
+    'verifySquashGroup function is invoked by check:development-queue --event ' +
+    'in the required Sequencing hold context; tests/queueSquash.test.ts drives ' +
+    'that event path, built-group verification and this CLI with real Git histories. ' +
+    'The historical dry run still requires an owner to supply available objects ' +
+    'and exact identities before activation; no workflow can establish that ' +
+    'owner action by running against an arbitrary PR checkout.',
   'check:review-coverage':
     'Its judgement IS enforced in CI: tests/reviewHeadCoverage.test.ts drives ' +
     'normalizeSha, reviewCoversHead, classifyCoverage, evaluateControls, ' +

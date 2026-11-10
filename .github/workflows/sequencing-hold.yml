@@ -136,4 +136,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: .queue-trusted
+        # Base-owned code fetches base/group and refs/pull/N/head as objects
+        # into an isolated bare repo. Never check out or execute PR content.
+        # Production merge-tree invocation fails closed on unsupported Git.
         run: npm run check:development-queue -- --event
