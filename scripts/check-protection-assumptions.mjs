@@ -828,6 +828,20 @@ export async function fetchPublicRepositoryFacts({
   };
 }
 
+async function fetchPrivilegedRulesets({ repository, token, fetchImpl }) {
+  const rulesets = await api(fetchImpl, repository, token, '/rulesets');
+  if (!Array.isArray(rulesets)) {
+    throw new Error(
+      'Authenticated /rulesets response must be an array before full queue policy can be evaluated.',
+    );
+  }
+  return Promise.all(
+    rulesets.map((ruleset) =>
+      api(fetchImpl, repository, token, `/rulesets/${ruleset.id}`),
+    ),
+  );
+}
+
 // #491: the two reads that need an admin-scoped token -- branch protection
 // detail and the collaborator list. Both 401 without one (measured). Backs
 // the seven assumptions in `PRIVILEGED_ONLY_ASSUMPTIONS`.
@@ -910,14 +924,17 @@ export async function fetchRepositoryFacts({
   token,
   fetchImpl = fetch,
 }) {
-  const [publicFacts, privilegedFacts] = await Promise.all([
+  const [publicFacts, privilegedFacts, rulesets] = await Promise.all([
     fetchPublicRepositoryFacts({ repository, fetchImpl }),
     fetchPrivilegedRepositoryFacts({ repository, branch, token, fetchImpl }),
+    fetchPrivilegedRulesets({ repository, token, fetchImpl }),
   ]);
 
   return {
     protection: privilegedFacts.protection,
-    rulesets: publicFacts.rulesets,
+    // The anonymous ruleset endpoint omits `bypass_actors`; the full policy
+    // evaluator needs authenticated detail to confirm the empty bypass list.
+    rulesets,
     protectedBranches: publicFacts.protectedBranches,
     collaborators: privilegedFacts.collaborators,
   };

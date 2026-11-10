@@ -103,6 +103,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions:
+      administration: read
       actions: read
       contents: read
       pull-requests: read
