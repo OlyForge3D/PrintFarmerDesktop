@@ -6341,11 +6341,11 @@
       "stateId": "profile-connectivity-modes",
       "testRef": "e2e/calibrationA11yTests.ts",
       "fixture": "Packaged renderer with five typed mocked profile-list responses: modern HTTPS, legacy, connection error, insecure HTTP and no selected server.",
-      "trigger": "Apply each profile fixture in turn, assert its accessible status label (and insecure-HTTP warning), Axe-scan all five rendered states, then capture the no-profile control state.",
-      "expectedState": "Connected, legacy fallback, connection error, insecure transport warning and disconnected/no-profile states are all deterministically rendered and scanned; final candidate shows no selected server.",
-      "axe": "Whole-page material WCAG A/AA scan for each synthetic authority mode; not certification.",
+      "trigger": "Apply each profile fixture in turn, assert its accessible status label, Axe-scan all five rendered states, open server configuration to assert and scan the insecure-HTTP warning without restoring the removed shared banner, then capture the no-profile control state.",
+      "expectedState": "Connected, legacy fallback, connection error and disconnected/no-profile authority states plus the insecure transport warning in server configuration are deterministically rendered and scanned; final candidate shows no selected server.",
+      "axe": "Whole-page material WCAG A/AA scan for each synthetic authority mode and the insecure-HTTP configuration dialog; not certification.",
       "dimensionsExercised": [
-        "Connected, legacy fallback, connection error, insecure transport warning and disconnected/no-profile states are all deterministically rendered and scanned; final candidate shows no selected server."
+        "Connected, legacy fallback, connection error and disconnected/no-profile authority states plus the insecure transport warning in server configuration are deterministically rendered and scanned; final candidate shows no selected server."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },

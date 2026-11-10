@@ -1411,16 +1411,35 @@ test('@a11y authority bar reports connection modes and insecure transport', asyn
     await expect(authorityBar.getByRole('button')).toHaveAccessibleName(
       mode.expected,
     );
-    if (mode.label === 'insecure HTTP') {
-      await expect(authorityBar).toContainText(
-        'HTTP connection is not encrypted',
-      );
-    }
     await scanSurface(page, {
       name: `authority bar ${mode.label}`,
       present: authorityBar,
       testInfo,
     });
+    if (mode.label === 'insecure HTTP') {
+      await expect(authorityBar).not.toContainText(
+        'HTTP connection is not encrypted',
+      );
+      await authorityBar.getByRole('button').click();
+      const dialog = page.getByRole('dialog', {
+        name: 'Manage PrintFarmer connection',
+      });
+      await expect(
+        dialog.getByText(
+          'HTTP transport is not encrypted. Use only on a trusted LAN.',
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await scanSurface(page, {
+        name: 'insecure HTTP server configuration warning',
+        present: dialog,
+        testInfo,
+      });
+      await dialog
+        .getByRole('button', { name: 'Close server profiles' })
+        .click();
+      await expect(dialog).toHaveCount(0);
+    }
   }
 
   await captureVisualScenario(
