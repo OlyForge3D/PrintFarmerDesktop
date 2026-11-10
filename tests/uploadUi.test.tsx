@@ -29,6 +29,114 @@ const models: LogicalModel[] = ['a', 'b', 'c'].map((name, index) => ({
 }));
 
 describe('catalog multi-selection and upload queue UI', () => {
+  it.each([
+    [
+      'modern',
+      true,
+      'Upload selected models with idempotent retry protection.',
+    ],
+    ['no-server', false, 'Connect a PrintFarmer server profile first.'],
+    ['unavailable', false, 'Upload is disabled by the server administrator.'],
+    ['unavailable-default', false, 'Model upload is unavailable.'],
+    [
+      'legacy',
+      true,
+      'Legacy model-only upload; interrupted retries can create duplicates.',
+    ],
+  ] as const)(
+    'exposes Upload name, glyph and focus/hover description for %s',
+    async (state, enabled, detail) => {
+      const profile = legacyProfile();
+      if (state === 'modern') {
+        profile.availability.modelUpload = {
+          available: true,
+          mode: 'modern',
+          reason: null,
+        };
+      } else if (state.startsWith('unavailable')) {
+        profile.availability.modelUpload = {
+          available: false,
+          mode: 'unavailable',
+          reason: state === 'unavailable' ? detail : null,
+        };
+      }
+      const startUploadJob = vi.fn().mockResolvedValue(uploadJob());
+      installApi({
+        listServerProfiles: vi.fn().mockResolvedValue({
+          profiles: state === 'no-server' ? [] : [profile],
+          selectedProfileId: state === 'no-server' ? null : profile.id,
+        }),
+        startUploadJob,
+      });
+      render(<App />);
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Select a.stl' }),
+      );
+      const upload = screen.getByRole('button', {
+        name: 'Upload selected models to PrintFarmer',
+      });
+      await waitFor(() => {
+        expect(upload).toHaveAccessibleDescription(
+          `Upload selected models to PrintFarmer. ${detail}`,
+        );
+        if (enabled) expect(upload).toBeEnabled();
+        else expect(upload).toBeDisabled();
+      });
+      expect(upload).toHaveTextContent(/^Upload$/);
+      expect(upload.querySelector('svg')).toHaveAttribute(
+        'aria-hidden',
+        'true',
+      );
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+      const focusTarget = enabled
+        ? upload
+        : screen.getByRole('group', {
+            name: 'Upload selected models to PrintFarmer',
+          });
+      if (!enabled) {
+        expect(focusTarget).toHaveAttribute('tabindex', '0');
+        expect(focusTarget).toHaveAccessibleDescription(
+          `Upload selected models to PrintFarmer. ${detail}`,
+        );
+        fireEvent.click(upload);
+        expect(startUploadJob).not.toHaveBeenCalled();
+      }
+      fireEvent.focus(focusTarget);
+      expect(screen.getByRole('tooltip')).toHaveTextContent(detail);
+      fireEvent.keyDown(focusTarget, { key: 'Escape' });
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+      fireEvent.blur(focusTarget);
+      fireEvent.mouseEnter(upload.parentElement!);
+      expect(screen.getByRole('tooltip')).toHaveTextContent(
+        `Upload selected models to PrintFarmer. ${detail}`,
+      );
+      fireEvent.mouseLeave(upload.parentElement!);
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps actionable empty-queue guidance consistent with Upload', () => {
+    render(
+      <UploadsWorkspace
+        jobs={[]}
+        busy={false}
+        error={null}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onConfirmLegacyRetry={vi.fn()}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onGoToLibrary={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(/^Select models in the library, then choose Upload\./),
+    ).toBeVisible();
+  });
+
   it('counts queued-only work and keeps paused queued work in the remaining total', () => {
     const queued = uploadJob();
     queued.summary.queued = 3;
@@ -90,7 +198,7 @@ describe('catalog multi-selection and upload queue UI', () => {
       await screen.findByRole('button', { name: 'Select a.stl' }),
     );
     const upload = screen.getByRole('button', {
-      name: 'Upload to PrintFarmer',
+      name: 'Upload selected models to PrintFarmer',
     });
     await waitFor(() => expect(upload).toBeEnabled());
     fireEvent.click(upload);
