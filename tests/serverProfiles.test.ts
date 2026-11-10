@@ -10,6 +10,8 @@ import {
   type SecretStorage,
 } from '../src/main/serverProfiles.js';
 import type { ServerProfileDraft } from '@shared/ipc';
+import { ServerProfileCalibrationTokenProvider } from '../src/main/calibrationService.js';
+import { SyncHttpClient } from '../src/main/syncHttp.js';
 
 const NOW = Date.parse('2026-07-23T12:00:00.000Z');
 const TEST_USER_DATA_PATH = path.join(process.cwd(), 'profile-test-data');
@@ -260,6 +262,441 @@ it('builds authenticated endpoints without dropping reverse-proxy prefixes', () 
 });
 
 describe('server profiles', () => {
+  it.each(['apiKey', 'password'] as const)(
+    'tests and renames a saved %s profile without renderer secrets or selection changes',
+    async (authMode) => {
+      const fs = new MemoryFileSystem();
+      const baseline = successfulFetch();
+      const logins: unknown[] = [];
+      const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) => {
+        if (requestUrl(input).pathname === '/prefix/api/auth/login') {
+          logins.push(requestBody(init));
+          return Promise.resolve(
+            json({
+              success: true,
+              token: 'password-jwt',
+              expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+              user: { id: 'operator-1' },
+            }),
+          );
+        }
+        return baseline(input, init);
+      });
+      const profiles = service(fs, fetchImpl);
+      const selected = await profiles.save(apiKeyDraft());
+      const credentials =
+        authMode === 'apiKey'
+          ? { authMode, apiKey: 'reuse-key' }
+          : {
+              authMode,
+              username: 'operator@example.com',
+              password: 'reuse-password',
+              rememberMe: false,
+            };
+      const saved = await profiles.save(
+        apiKeyDraft({
+          credentials,
+          displayName: 'Nonselected farm',
+          baseUrl: 'https://farm.example/prefix',
+        }),
+      );
+      const beforeBinding = await profiles.getPersistedSyncBinding(saved.id);
+      const beforeContext = await profiles.getAuthenticatedContext(saved.id);
+      const before = persistedStore(fs);
+      const draft = apiKeyDraft({
+        id: saved.id,
+        displayName: 'Renamed farm',
+        baseUrl: ' HTTPS://FARM.EXAMPLE:443/prefix/// ',
+        credentials: { authMode: 'saved' },
+      });
+
+      const tested = await profiles.test({ source: 'draft', draft });
+      expect(tested).toMatchObject({
+        id: saved.id,
+        displayName: 'Renamed farm',
+        authMode,
+        ...(authMode === 'password'
+          ? { username: 'operator@example.com' }
+          : {}),
+      });
+      expect(persistedStore(fs)).toBe(before);
+      await expect(
+        profiles.revalidateAuthenticatedContext(beforeContext),
+      ).resolves.toBeUndefined();
+      const updated = await profiles.save(draft);
+      expect(await profiles.list()).toEqual({
+        profiles: [selected, updated],
+        selectedProfileId: selected.id,
+      });
+      expect(await profiles.getPersistedSyncBinding(saved.id)).toEqual(
+        beforeBinding,
+      );
+      expect(await profiles.pendingBindingTransitions()).toEqual([]);
+      await expect(
+        profiles.revalidateAuthenticatedContext(beforeContext),
+      ).rejects.toMatchObject({ code: 'AUTHENTICATION_SUPERSEDED' });
+      const afterContext = await profiles.getAuthenticatedContext(saved.id);
+      expect(afterContext.serverBinding).toBe(beforeContext.serverBinding);
+      expect(afterContext.revision).not.toBe(beforeContext.revision);
+      expect(afterContext.endpoint('/api/3d-models/upload').toString()).toBe(
+        'https://farm.example/prefix/api/3d-models/upload',
+      );
+      expect(
+        JSON.stringify({ tested, updated, list: await profiles.list() }),
+      ).not.toMatch(/reuse-key|reuse-password|encryptedSecret/);
+      expect(persistedStore(fs)).not.toMatch(/reuse-key|reuse-password/);
+
+      // Reopen the encrypted store and authenticate again, not just from cache.
+      const reopened = service(fs, fetchImpl);
+      await expect(reopened.getToken(saved.id)).resolves.toBe(
+        authMode === 'password' ? 'password-jwt' : 'short-lived-jwt',
+      );
+      expect((await reopened.list()).selectedProfileId).toBe(selected.id);
+      if (authMode === 'password') {
+        expect(logins).toHaveLength(4);
+        expect(
+          logins.every(
+            (body) =>
+              JSON.stringify(body) ===
+              JSON.stringify({
+                usernameOrEmail: 'operator@example.com',
+                password: 'reuse-password',
+                rememberMe: false,
+              }),
+          ),
+        ).toBe(true);
+      } else {
+        const exchanges = vi
+          .mocked(baseline)
+          .mock.calls.filter(
+            ([input]) =>
+              requestUrl(input).pathname ===
+              '/prefix/api/auth/api-key/exchange',
+          );
+        expect(exchanges).toHaveLength(4);
+        expect(
+          exchanges.every(
+            ([, init]) =>
+              JSON.stringify(requestBody(init)) ===
+              JSON.stringify({ apiKey: 'reuse-key' }),
+          ),
+        ).toBe(true);
+      }
+    },
+  );
+
+  it.each(['save', 'test'] as const)(
+    '%s rejects saved credentials without a matching existing endpoint before transport',
+    async (operation) => {
+      const fs = new MemoryFileSystem();
+      const fetchImpl = successfulFetch();
+      const profiles = service(fs, fetchImpl);
+      const saved = await profiles.save(apiKeyDraft());
+      const before = persistedStore(fs);
+      vi.mocked(fetchImpl).mockClear();
+      const invoke = (draft: ServerProfileDraft) =>
+        operation === 'save'
+          ? profiles.save(draft)
+          : profiles.test({ source: 'draft', draft });
+      for (const [overrides, code] of [
+        [{}, 'VALIDATION_ERROR'],
+        [{ id: '99999999-9999-4999-8999-999999999999' }, 'NOT_FOUND'],
+        [
+          { id: saved.id, baseUrl: 'https://other.example' },
+          'VALIDATION_ERROR',
+        ],
+        [
+          { id: saved.id, baseUrl: 'http://10.0.0.20/prefix' },
+          'VALIDATION_ERROR',
+        ],
+        [{ id: saved.id, baseUrl: 'https://10.0.0.20' }, 'VALIDATION_ERROR'],
+      ] as const) {
+        await expect(
+          invoke(
+            apiKeyDraft({
+              ...overrides,
+              credentials: { authMode: 'saved' },
+            }),
+          ),
+        ).rejects.toMatchObject({ code });
+      }
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(persistedStore(fs)).toBe(before);
+    },
+  );
+
+  it.each(['save', 'test'] as const)(
+    '%s rejects stale saved credentials after replacement or deletion',
+    async (operation) => {
+      for (const mutation of ['replace', 'delete'] as const) {
+        const fs = new MemoryFileSystem();
+        const baseline = successfulFetch();
+        const reached = deferred<void>();
+        const gate = deferred<Response>();
+        let exchanges = 0;
+        const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) => {
+          if (
+            requestUrl(input).pathname === '/api/auth/api-key/exchange' &&
+            ++exchanges === 2
+          ) {
+            reached.resolve();
+            return gate.promise;
+          }
+          return baseline(input, init);
+        });
+        const profiles = service(fs, fetchImpl);
+        const saved = await profiles.save(apiKeyDraft());
+        const draft = apiKeyDraft({
+          id: saved.id,
+          displayName: 'Stale rename',
+          credentials: { authMode: 'saved' },
+        });
+        const pending =
+          operation === 'save'
+            ? profiles.save(draft)
+            : profiles.test({ source: 'draft', draft });
+        // Attach rejection handling before releasing the delayed response.
+        const rejected = expect(pending).rejects.toMatchObject({
+          code:
+            operation === 'test' && mutation === 'delete'
+              ? 'NOT_FOUND'
+              : operation === 'save'
+                ? 'AUTHENTICATION_SUPERSEDED'
+                : 'VALIDATION_ERROR',
+        });
+        await reached.promise;
+        if (mutation === 'delete') {
+          await profiles.delete(saved.id);
+        } else {
+          await profiles.save(
+            apiKeyDraft({
+              id: saved.id,
+              displayName: 'Newer name',
+              credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+            }),
+          );
+        }
+        const afterMutation = persistedStore(fs);
+        gate.resolve(
+          json({
+            token: 'stale-jwt',
+            expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+            scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+          }),
+        );
+        await rejected;
+        expect(persistedStore(fs)).toBe(afterMutation);
+        if (mutation === 'replace') {
+          await expect(profiles.getToken(saved.id)).resolves.toBe(
+            'short-lived-jwt',
+          );
+        }
+      }
+    },
+  );
+
+  it('keeps saved edit failures nonmutating, including vault and atomic write failures', async () => {
+    const fs = new MemoryFileSystem();
+    const baseline = successfulFetch();
+    let rejectAuthentication = false;
+    let vaultUnavailable = false;
+    const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) =>
+      rejectAuthentication &&
+      requestUrl(input).pathname === '/api/auth/api-key/exchange'
+        ? Promise.resolve(json({}, 401))
+        : baseline(input, init),
+    );
+    const profiles = service(fs, fetchImpl, () => NOW, {
+      ...secureStorage,
+      isEncryptionAvailable: () => !vaultUnavailable,
+    });
+    const saved = await profiles.save(apiKeyDraft());
+    const draft = apiKeyDraft({
+      id: saved.id,
+      displayName: 'Never persisted',
+      credentials: { authMode: 'saved' },
+    });
+    const before = persistedStore(fs);
+    rejectAuthentication = true;
+    await expect(profiles.save(draft)).rejects.toMatchObject({
+      code: 'AUTHENTICATION_FAILED',
+    });
+    await expect(
+      profiles.test({ source: 'draft', draft }),
+    ).rejects.toMatchObject({
+      code: 'AUTHENTICATION_FAILED',
+    });
+    expect(persistedStore(fs)).toBe(before);
+    rejectAuthentication = false;
+    fs.failNextWrite(new Error('disk unavailable'));
+    await expect(profiles.save(draft)).rejects.toThrow();
+    expect(persistedStore(fs)).toBe(before);
+    vaultUnavailable = true;
+    vi.mocked(fetchImpl).mockClear();
+    await expect(profiles.save(draft)).rejects.toMatchObject({
+      code: 'ENCRYPTION_UNAVAILABLE',
+    });
+    await expect(
+      profiles.test({ source: 'draft', draft }),
+    ).rejects.toMatchObject({
+      code: 'ENCRYPTION_UNAVAILABLE',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(persistedStore(fs)).toBe(before);
+  });
+
+  it('replaces authentication identity explicitly and binds subsequent saved edits to the new principal', async () => {
+    const fs = new MemoryFileSystem();
+    const baseline = successfulFetch();
+    let principalId = 'operator-1';
+    const loginBodies: unknown[] = [];
+    const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) => {
+      if (requestUrl(input).pathname === '/api/auth/login') {
+        loginBodies.push(requestBody(init));
+        return Promise.resolve(
+          json({
+            success: true,
+            token: 'new-principal-jwt',
+            expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+            user: { id: principalId },
+          }),
+        );
+      }
+      if (requestUrl(input).pathname === '/api/auth/me') {
+        return Promise.resolve(json({ id: principalId }));
+      }
+      return baseline(input, init);
+    });
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+    const binding = await profiles.getPersistedSyncBinding(saved.id);
+    const oldContext = await profiles.getAuthenticatedContext(saved.id);
+    const invalidated = vi.fn();
+    profiles.subscribeInvalidation(invalidated);
+    principalId = 'operator-2';
+    const replacement = await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        credentials: {
+          authMode: 'password',
+          username: 'different-operator',
+          password: 'replacement-password',
+          rememberMe: true,
+        },
+      }),
+    );
+    expect(replacement).toMatchObject({
+      id: saved.id,
+      authMode: 'password',
+      username: 'different-operator',
+    });
+    const replacedBinding = await profiles.getPersistedSyncBinding(saved.id);
+    expect(replacedBinding.revision).toBe(binding.revision + 1);
+    expect(replacedBinding.binding).not.toBe(binding.binding);
+    expect(invalidated).toHaveBeenCalledOnce();
+    await expect(
+      profiles.revalidateAuthenticatedContext(oldContext),
+    ).rejects.toMatchObject({ code: 'AUTHENTICATION_SUPERSEDED' });
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Renamed new identity',
+        credentials: { authMode: 'saved' },
+      }),
+    );
+    expect(await profiles.getPersistedSyncBinding(saved.id)).toEqual(
+      replacedBinding,
+    );
+    expect(invalidated).toHaveBeenCalledOnce();
+    expect(loginBodies).toEqual(
+      Array.from({ length: 2 }, () => ({
+        usernameOrEmail: 'different-operator',
+        password: 'replacement-password',
+        rememberMe: true,
+      })),
+    );
+    expect(await profiles.list()).toMatchObject({
+      selectedProfileId: saved.id,
+      profiles: [{ id: saved.id, displayName: 'Renamed new identity' }],
+    });
+    expect((await profiles.list()).profiles).toHaveLength(1);
+    expect(persistedStore(fs)).not.toContain('replacement-password');
+    expect((await profiles.getAuthenticatedContext(saved.id)).principalId).toBe(
+      'operator-2',
+    );
+  });
+
+  it('keeps sync and calibration bound to the edited profile, not the selected one', async () => {
+    const profiles = service(new MemoryFileSystem());
+    const saved = await profiles.save(apiKeyDraft());
+    const initial = await profiles.getPersistedSyncBinding(saved.id);
+    const calibrationBinding = (
+      await profiles.getAuthenticatedContext(saved.id)
+    ).serverBinding;
+    const selected = await profiles.save(
+      apiKeyDraft({
+        baseUrl: 'https://different.example',
+      }),
+    );
+    await profiles.select(selected.id);
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Edited source farm',
+        credentials: { authMode: 'saved' },
+      }),
+    );
+    const provider = new ServerProfileCalibrationTokenProvider(profiles);
+    expect(
+      await provider.getAuthenticatedContext(saved.id, saved.baseUrl),
+    ).toMatchObject({ baseUrl: saved.baseUrl, binding: calibrationBinding });
+    const fetchImpl = vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(
+        json({
+          changes: [],
+          nextCursor: null,
+          hasMore: false,
+          serverRevision: 1,
+        }),
+      ),
+    );
+    const sync = new SyncHttpClient(profiles, { fetch: fetchImpl });
+    await sync.getChanges(
+      saved.id,
+      saved.baseUrl,
+      null,
+      50,
+      new AbortController().signal,
+    );
+    expect(requestUrl(fetchImpl.mock.calls[0]![0]).origin).toBe(saved.baseUrl);
+    expect((await profiles.list()).selectedProfileId).toBe(selected.id);
+
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        baseUrl: 'https://replacement.example',
+        credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+      }),
+    );
+    await expect(
+      provider.getAuthenticatedContext(saved.id, saved.baseUrl),
+    ).rejects.toThrow();
+    const calls = fetchImpl.mock.calls.length;
+    await expect(
+      sync.getChanges(
+        saved.id,
+        saved.baseUrl,
+        null,
+        50,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
+    expect(fetchImpl).toHaveBeenCalledTimes(calls);
+    expect((await profiles.getPersistedSyncBinding(saved.id)).revision).toBe(
+      initial.revision + 1,
+    );
+  });
+
   it('keeps persisted server binding stable across rename and token renewal', async () => {
     const profiles = service(new MemoryFileSystem());
     const saved = await profiles.save(apiKeyDraft());

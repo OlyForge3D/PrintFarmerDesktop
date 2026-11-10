@@ -465,15 +465,43 @@ export class ServerProfileService {
     if (request.source === 'draft') {
       const draft = request.draft;
       const id = draft.id ?? this.createId();
+      const savedSnapshot =
+        draft.credentials.authMode === 'saved'
+          ? await this.withMutationLock(async () => {
+              const store = await this.readStore();
+              const existing = store.profiles.find(
+                (profile) => profile.id === draft.id,
+              );
+              return {
+                secret: this.secretFromDraft(draft, existing),
+                revision: existing ? profileRevision(existing) : null,
+              };
+            })
+          : null;
       const ephemeralCacheId = this.createId();
       try {
         const probed = await this.probe(
           id,
           draft.displayName,
           draft.baseUrl,
-          this.secretFromDraft(draft),
+          savedSnapshot?.secret ?? this.secretFromDraft(draft),
           ephemeralCacheId,
         );
+        if (savedSnapshot) {
+          await this.withMutationLock(async () => {
+            const store = await this.readStore();
+            const current = store.profiles.find((profile) => profile.id === id);
+            if (!current) {
+              throw new ServerProfileError(
+                'NOT_FOUND',
+                'Server profile not found.',
+              );
+            }
+            if (profileRevision(current) !== savedSnapshot.revision) {
+              throw profileChangedError();
+            }
+          });
+        }
         return probed.profile;
       } catch (error) {
         throw unwrapProbeFailure(error);
@@ -583,7 +611,6 @@ export class ServerProfileService {
 
   async save(draft: ServerProfileDraft): Promise<RedactedProfile> {
     this.requireEncryption();
-    const secret = this.secretFromDraft(draft);
     const id = draft.id ?? this.createId();
     const expected = await this.withMutationLock(async () => {
       const store = await this.readStore();
@@ -592,12 +619,14 @@ export class ServerProfileService {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
       return {
+        secret: this.secretFromDraft(draft, existing),
         revision: existing ? profileRevision(existing) : null,
         binding: existing
           ? serverProfileBinding(existing.id, existing.baseUrl)
           : null,
       };
     });
+    const secret = expected.secret;
     let probed: ProbedProfile;
     try {
       probed = await this.probe(id, draft.displayName, draft.baseUrl, secret);
@@ -1538,7 +1567,28 @@ export class ServerProfileService {
     );
   }
 
-  private secretFromDraft(draft: ServerProfileDraft): StoredSecret {
+  private secretFromDraft(
+    draft: ServerProfileDraft,
+    existing?: StoredProfile,
+  ): StoredSecret {
+    if (draft.credentials.authMode === 'saved') {
+      if (!draft.id) {
+        throw new ServerProfileError(
+          'VALIDATION_ERROR',
+          'Saved credentials require an existing server profile.',
+        );
+      }
+      if (!existing) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      if (normalizeServerUrl(draft.baseUrl) !== existing.baseUrl) {
+        throw new ServerProfileError(
+          'VALIDATION_ERROR',
+          'Re-enter credentials when changing the server endpoint.',
+        );
+      }
+      return this.decryptSecret(existing);
+    }
     return StoredSecret.parse(
       draft.credentials.authMode === 'apiKey'
         ? {

@@ -32,6 +32,8 @@ import {
   type SecretStorage,
 } from '../src/main/serverProfiles.js';
 import type { ServerProfileDraft } from '@shared/ipc';
+import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
+import { calibrationDiagnostics } from '../src/main/calibrationDiagnostics.js';
 
 const NOW = Date.parse('2026-07-23T12:00:00.000Z');
 const USER_DATA_PATH = path.join(
@@ -204,13 +206,15 @@ const apiKeyDraft = (
   ...overrides,
 });
 
-function realService(): ServerProfileService {
+function realService(
+  fetchImpl: typeof globalThis.fetch = successfulFetch(),
+): ServerProfileService {
   let id = 0;
   return new ServerProfileService({
     userDataPath: USER_DATA_PATH,
     fileSystem: new MemoryFileSystem(),
     secretStorage: xorStorage,
-    fetch: successfulFetch(),
+    fetch: fetchImpl,
     now: () => NOW,
     createId: () =>
       id++ === 0
@@ -219,7 +223,10 @@ function realService(): ServerProfileService {
   });
 }
 
-function register(profiles: ServerProfileService): Map<string, Handler> {
+function register(
+  profiles: ServerProfileService,
+  sidecarOverrides: Record<string, unknown> = {},
+): Map<string, Handler> {
   electronState.handlers.clear();
   const noopSidecar = {
     setArchiveSizeLimitProvider: () => undefined,
@@ -231,6 +238,7 @@ function register(profiles: ServerProfileService): Map<string, Handler> {
     scanRoot: () => Promise.resolve({}),
     handshake: () => Promise.resolve({ sidecarVersion: '0' }),
     dispose: () => undefined,
+    ...sidecarOverrides,
   };
   const sceneCache = {
     loadScene: () => Promise.resolve({}),
@@ -264,7 +272,126 @@ describe('credential-leak: wired server-profile IPC handlers', () => {
   let handlers: Map<string, Handler>;
 
   beforeEach(() => {
+    vi.unstubAllGlobals();
+    calibrationDiagnostics.reset();
     handlers = register(realService());
+  });
+
+  it('cancels a queued calibration operation when an actual same-endpoint save changes principal', async () => {
+    const baseline = successfulFetch();
+    let principalId = 'operator-1';
+    const profiles = realService(
+      vi.fn<typeof globalThis.fetch>((input, init) => {
+        const url = new URL(
+          typeof input === 'string' || input instanceof URL ? input : input.url,
+        );
+        if (url.pathname === '/api/auth/me') {
+          return Promise.resolve(
+            json({ id: principalId, username: principalId }),
+          );
+        }
+        return baseline(input, init);
+      }),
+    );
+    const saved = await profiles.save(apiKeyDraft());
+    const previousBinding = await profiles.getPersistedSyncBinding(saved.id);
+    let releasePending: () => void = () => undefined;
+    let notePending: () => void = () => undefined;
+    const pendingGate = new Promise<void>((resolve) => {
+      releasePending = resolve;
+    });
+    const pendingReached = new Promise<void>((resolve) => {
+      notePending = resolve;
+    });
+    const settle = vi.fn();
+    const listPending = vi.fn(async () => {
+      notePending();
+      await pendingGate;
+      return [
+        {
+          operationId: '55555555-5555-4555-8555-555555555555',
+          profileId: saved.id,
+          projectId: '33333333-3333-4333-8333-333333333333',
+          kind: 'saveProjectDraft',
+          sequence: 1,
+          baseRevision: null,
+          idempotencyKey: 'fixture-queued-key',
+          entityType: 'CalibrationProject',
+          entityId: '33333333-3333-4333-8333-333333333333',
+          operationKind: 'Update',
+          payload: { displayName: 'Old principal draft' },
+          dependsOn: [],
+        },
+      ];
+    });
+    const transport = vi.fn<typeof globalThis.fetch>((input) => {
+      const url = new URL(
+        typeof input === 'string' || input instanceof URL ? input : input.url,
+      );
+      if (url.pathname === '/api/calibration/capabilities') {
+        return Promise.resolve(
+          json(
+            printFarmerCapabilitiesResponse({
+              effectivePermissions: ['calibration:read', 'calibration:update'],
+            }),
+          ),
+        );
+      }
+      throw new Error(`Unexpected calibration transport: ${url.pathname}`);
+    });
+    vi.stubGlobal('fetch', transport);
+    handlers = register(profiles, {
+      listCalibrationWorkspaceStates: () => Promise.resolve([]),
+      listCalibrationPendingOps: listPending,
+      settleCalibrationOp: settle,
+    });
+    await handlers.get(IpcChannel.CalibrationGetAvailability)!(senderEvent);
+    const pendingSync = Promise.resolve(
+      handlers.get(IpcChannel.CalibrationSyncNow)!(senderEvent, {
+        profileId: saved.id,
+      }),
+    );
+    await pendingReached;
+    expect(listPending).toHaveBeenCalledOnce();
+    principalId = 'operator-2';
+    await expect(
+      Promise.resolve(
+        handlers.get(IpcChannel.SaveServerProfile)!(
+          senderEvent,
+          apiKeyDraft({
+            id: saved.id,
+            credentials: {
+              authMode: 'apiKey',
+              apiKey: 'replacement-fixture-key',
+            },
+          }),
+        ),
+      ),
+    ).resolves.toMatchObject({ id: saved.id });
+    expect((await profiles.getAuthenticatedContext(saved.id)).principalId).toBe(
+      'operator-2',
+    );
+    expect((await profiles.getPersistedSyncBinding(saved.id)).revision).toBe(
+      previousBinding.revision + 1,
+    );
+    releasePending();
+    await expect(pendingSync).resolves.toMatchObject({
+      phase: 'failed',
+      pushedOperations: 0,
+      error: 'Cancelled.',
+    });
+    expect(settle).not.toHaveBeenCalled();
+    expect(
+      transport.mock.calls.every(
+        ([input]) =>
+          new URL(
+            typeof input === 'string' || input instanceof URL
+              ? input
+              : input.url,
+          ).pathname === '/api/calibration/capabilities',
+      ),
+    ).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it('registers the server-profile channels (guards the assertions below)', () => {
