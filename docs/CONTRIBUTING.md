@@ -52,6 +52,11 @@ Windows subprocess latency; pure validation retains the 5-second default.
 Repository-wide guard assertions should reuse one report when they inspect the
 same immutable tracked corpus, rather than repeating an expensive full scan
 inside each assertion. Keep small synthetic positive/negative controls separate.
+Git fixture commands that snapshot or delete repositories must finish automatic
+maintenance first: command-scoped `maintenance.autoDetach=false` and
+`gc.autoDetach=false` keep object-store lock files from changing after a
+synchronous Git parent exits. Do not copy a live repository assuming that the
+parent process's exit also joined detached maintenance.
 
 Rust sidecar (run from `native/`):
 

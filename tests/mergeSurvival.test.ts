@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,12 +30,25 @@ const repoRoot = path.resolve(
 );
 const SCRIPT = path.join(repoRoot, 'scripts', 'merge-survival.mjs');
 
-const git = (args: string[], cwd: string) =>
-  execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
+const git = (args: string[], cwd: string, env = process.env) =>
+  // A synchronous Git parent can leave detached maintenance mutating objects/
+  // after it exits. Finish that work before snapshotting or deleting fixtures.
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'maintenance.autoDetach=false',
+      '-c',
+      'gc.autoDetach=false',
+      ...args,
+    ],
+    {
+      cwd,
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ).trim();
 
 function write(cwd: string, file: string, lines: string[]) {
   writeFileSync(path.join(cwd, file), `${lines.join('\n')}\n`, 'utf8');
@@ -326,6 +346,7 @@ describe('merge survival with incomplete history', () => {
   let source: string;
   let shallowVerdict: string;
   let shallowDiff: string;
+  let fetchTrace: string;
   let branchHead: string;
   let mergeParent: string;
   let squashLanding: string;
@@ -335,6 +356,7 @@ describe('merge survival with incomplete history', () => {
     source = path.join(root, 'source');
     shallowVerdict = path.join(root, 'shallow-verdict');
     shallowDiff = path.join(root, 'shallow-diff');
+    fetchTrace = path.join(root, 'fetch-trace.jsonl');
     mkdirSync(source);
 
     git(['init', '-q', '--initial-branch=development', source], root);
@@ -374,6 +396,10 @@ describe('merge survival with incomplete history', () => {
       ],
       root,
     );
+    // The command-scoped fixture policy must win over a repository that opts
+    // into detached maintenance, not merely inherit a convenient local default.
+    git(['config', 'maintenance.autoDetach', 'true'], shallowVerdict);
+    git(['config', 'gc.autoDetach', 'true'], shallowVerdict);
     git(
       [
         'fetch',
@@ -384,6 +410,7 @@ describe('merge survival with incomplete history', () => {
         'feature:refs/remotes/origin/feature',
       ],
       shallowVerdict,
+      { ...process.env, GIT_TRACE2_EVENT: fetchTrace },
     );
     cpSync(shallowVerdict, shallowDiff, {
       recursive: true,
@@ -392,6 +419,41 @@ describe('merge survival with incomplete history', () => {
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('finishes fetch maintenance before copying the shallow object store', () => {
+    const maintenance = readFileSync(fetchTrace, 'utf8')
+      .split('\n')
+      .filter(
+        (line) =>
+          line.includes('"event":"child_start"') &&
+          line.includes('"maintenance"'),
+      );
+    expect(maintenance.length).toBeGreaterThan(0);
+    for (const child of maintenance) {
+      expect(child).not.toContain('"--detach"');
+    }
+    expect(
+      git(
+        ['config', '--local', '--get', 'maintenance.autoDetach'],
+        shallowVerdict,
+      ),
+    ).toBe('true');
+    expect(
+      git(['config', '--get', 'maintenance.autoDetach'], shallowVerdict),
+    ).toBe('false');
+    expect(git(['config', '--get', 'gc.autoDetach'], shallowVerdict)).toBe(
+      'false',
+    );
+    expect(git(['rev-parse', '--is-shallow-repository'], shallowVerdict)).toBe(
+      'true',
+    );
+    expect(git(['rev-parse', '--is-shallow-repository'], shallowDiff)).toBe(
+      'true',
+    );
+    expect(
+      readFileSync(path.join(shallowDiff, '.git', 'shallow'), 'utf8'),
+    ).toBe(readFileSync(path.join(shallowVerdict, '.git', 'shallow'), 'utf8'));
+  });
 
   it('names incomplete clone history and the full-history remedy', () => {
     const outcome = evaluateMergeSurvival(
@@ -410,6 +472,13 @@ describe('merge survival with incomplete history', () => {
     expect(
       evaluateMergeSurvival(branchHead, squashLanding, shallowVerdict).verdict,
     ).toBe('INTACT');
+    // Unshallowing the first copy must not repair the second test's history.
+    expect(git(['rev-parse', '--is-shallow-repository'], shallowDiff)).toBe(
+      'true',
+    );
+    expect(
+      evaluateMergeSurvival(branchHead, squashLanding, shallowDiff).verdict,
+    ).toBe('INDETERMINATE');
   });
 
   it('surfaces a failing path-scoped three-dot diff instead of returning clean', () => {
