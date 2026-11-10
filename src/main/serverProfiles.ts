@@ -204,6 +204,9 @@ export interface SecretStorage {
   getSelectedStorageBackend?(): string;
 }
 
+export type ProfileBindingChangeReason =
+  'identityChanged' | 'credentialsChanged';
+
 export interface ServerProfileDependencies {
   userDataPath: string;
   fileSystem?: ProfileFileSystem;
@@ -407,7 +410,11 @@ export class ServerProfileService {
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
   private readonly authGenerations = new Map<string, number>();
   private readonly profileBindingListeners = new Set<
-    (profileId: string, previousBinding: string) => Promise<void> | void
+    (
+      profileId: string,
+      previousBinding: string,
+      reason?: ProfileBindingChangeReason,
+    ) => Promise<void> | void
   >();
   private readonly invalidationListeners = new Set<
     (transition: ProfileBindingTransition) => Promise<void> | void
@@ -441,6 +448,7 @@ export class ServerProfileService {
     listener: (
       profileId: string,
       previousBinding: string,
+      reason?: ProfileBindingChangeReason,
     ) => Promise<void> | void,
   ): () => void {
     this.profileBindingListeners.add(listener);
@@ -465,15 +473,43 @@ export class ServerProfileService {
     if (request.source === 'draft') {
       const draft = request.draft;
       const id = draft.id ?? this.createId();
+      const savedSnapshot =
+        draft.credentials.authMode === 'saved'
+          ? await this.withMutationLock(async () => {
+              const store = await this.readStore();
+              const existing = store.profiles.find(
+                (profile) => profile.id === draft.id,
+              );
+              return {
+                secret: this.secretFromDraft(draft, existing),
+                revision: existing ? profileRevision(existing) : null,
+              };
+            })
+          : null;
       const ephemeralCacheId = this.createId();
       try {
         const probed = await this.probe(
           id,
           draft.displayName,
           draft.baseUrl,
-          this.secretFromDraft(draft),
+          savedSnapshot?.secret ?? this.secretFromDraft(draft),
           ephemeralCacheId,
         );
+        if (savedSnapshot) {
+          await this.withMutationLock(async () => {
+            const store = await this.readStore();
+            const current = store.profiles.find((profile) => profile.id === id);
+            if (!current) {
+              throw new ServerProfileError(
+                'NOT_FOUND',
+                'Server profile not found.',
+              );
+            }
+            if (profileRevision(current) !== savedSnapshot.revision) {
+              throw profileChangedError();
+            }
+          });
+        }
         return probed.profile;
       } catch (error) {
         throw unwrapProbeFailure(error);
@@ -583,7 +619,6 @@ export class ServerProfileService {
 
   async save(draft: ServerProfileDraft): Promise<RedactedProfile> {
     this.requireEncryption();
-    const secret = this.secretFromDraft(draft);
     const id = draft.id ?? this.createId();
     const expected = await this.withMutationLock(async () => {
       const store = await this.readStore();
@@ -592,12 +627,14 @@ export class ServerProfileService {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
       return {
+        secret: this.secretFromDraft(draft, existing),
         revision: existing ? profileRevision(existing) : null,
         binding: existing
           ? serverProfileBinding(existing.id, existing.baseUrl)
           : null,
       };
     });
+    const secret = expected.secret;
     let probed: ProbedProfile;
     try {
       probed = await this.probe(id, draft.displayName, draft.baseUrl, secret);
@@ -658,7 +695,9 @@ export class ServerProfileService {
       } else {
         store.profiles[index] = stored;
       }
-      store.selectedProfileId ??= id;
+      if (index < 0) {
+        store.selectedProfileId ??= id;
+      }
       try {
         const bindingTransition: ProfileBindingTransition | null =
           identityChanged && current
@@ -681,8 +720,23 @@ export class ServerProfileService {
       }
     });
     const newBinding = serverProfileBinding(id, tested.baseUrl);
-    if (expected.binding && expected.binding !== newBinding) {
-      await this.notifyProfileBindingChanged(id, expected.binding);
+    // Upload workers can already hold the old token past their final revision
+    // check. Endpoint identity alone cannot cancel those workers when explicit
+    // replacement credentials (even for the same principal) or a newly attested
+    // principal are committed. Saved-credential renames retain their binding.
+    if (
+      expected.binding &&
+      (expected.binding !== newBinding ||
+        draft.credentials.authMode !== 'saved' ||
+        transition !== null)
+    ) {
+      await this.notifyProfileBindingChanged(
+        id,
+        expected.binding,
+        expected.binding !== newBinding || transition !== null
+          ? 'identityChanged'
+          : 'credentialsChanged',
+      );
     }
     if (transition) {
       await this.emitInvalidation(transition).catch(() => {
@@ -1047,10 +1101,11 @@ export class ServerProfileService {
   private async notifyProfileBindingChanged(
     profileId: string,
     previousBinding: string,
+    reason: ProfileBindingChangeReason = 'identityChanged',
   ): Promise<void> {
     await Promise.allSettled(
       [...this.profileBindingListeners].map((listener) =>
-        Promise.resolve(listener(profileId, previousBinding)),
+        Promise.resolve(listener(profileId, previousBinding, reason)),
       ),
     );
   }
@@ -1538,7 +1593,28 @@ export class ServerProfileService {
     );
   }
 
-  private secretFromDraft(draft: ServerProfileDraft): StoredSecret {
+  private secretFromDraft(
+    draft: ServerProfileDraft,
+    existing?: StoredProfile,
+  ): StoredSecret {
+    if (draft.credentials.authMode === 'saved') {
+      if (!draft.id) {
+        throw new ServerProfileError(
+          'VALIDATION_ERROR',
+          'Saved credentials require an existing server profile.',
+        );
+      }
+      if (!existing) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      if (normalizeServerUrl(draft.baseUrl) !== existing.baseUrl) {
+        throw new ServerProfileError(
+          'VALIDATION_ERROR',
+          'Re-enter credentials when changing the server endpoint.',
+        );
+      }
+      return this.decryptSecret(existing);
+    }
     return StoredSecret.parse(
       draft.credentials.authMode === 'apiKey'
         ? {

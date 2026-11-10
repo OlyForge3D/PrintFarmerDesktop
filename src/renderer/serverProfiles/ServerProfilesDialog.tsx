@@ -9,16 +9,18 @@ import type {
 interface ServerProfilesDialogProps {
   profiles: ListServerProfilesResponse;
   onMutationSettled: () => void;
+  onConnectionChanged?: (id: string) => void;
   onClose: () => void;
 }
 
 export function ServerProfilesDialog({
   profiles,
   onMutationSettled,
+  onConnectionChanged,
   onClose,
 }: ServerProfilesDialogProps): React.JSX.Element {
   const [displayName, setDisplayName] = useState('');
-  const [baseUrl, setBaseUrl] = useState('http://10.0.0.20');
+  const [baseUrl, setBaseUrl] = useState('');
   const [authMode, setAuthMode] = useState<ServerAuthMode>('apiKey');
   const [apiKey, setApiKey] = useState('');
   const [username, setUsername] = useState('');
@@ -27,6 +29,13 @@ export function ServerProfilesDialog({
   const [allowLegacy, setAllowLegacy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingProfile, setEditingProfile] = useState<ServerProfile | null>(
+    null,
+  );
+  const nameRef = useRef<HTMLInputElement | null>(null);
+  const editTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const restoreEditFocusRef = useRef(false);
+  const draftRevisionRef = useRef(0);
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -85,24 +94,74 @@ export function ServerProfilesDialog({
     };
   }, []);
 
+  useEffect(() => {
+    if (!busy && restoreEditFocusRef.current) {
+      restoreEditFocusRef.current = false;
+      if (editTriggerRef.current?.isConnected) editTriggerRef.current.focus();
+      else nameRef.current?.focus();
+    }
+  }, [busy]);
+
   const invalidateTest = (): void => {
+    draftRevisionRef.current += 1;
     setTested(null);
     setAllowLegacy(false);
     setError(null);
   };
 
+  const resetForm = (): void => {
+    setEditingProfile(null);
+    setDisplayName('');
+    setBaseUrl('');
+    setAuthMode('apiKey');
+    setApiKey('');
+    setUsername('');
+    setPassword('');
+    invalidateTest();
+  };
+
+  const editProfile = (
+    profile: ServerProfile,
+    trigger: HTMLButtonElement,
+  ): void => {
+    editTriggerRef.current = trigger;
+    setEditingProfile(profile);
+    setDisplayName(profile.displayName);
+    setBaseUrl(profile.baseUrl);
+    setAuthMode(profile.authMode);
+    setUsername(profile.username ?? '');
+    setApiKey('');
+    setPassword('');
+    invalidateTest();
+    nameRef.current?.focus();
+  };
+
+  const canKeepCredentials =
+    editingProfile !== null &&
+    sameEndpoint(baseUrl, editingProfile.baseUrl) &&
+    authMode === editingProfile.authMode &&
+    (authMode === 'apiKey' || username.trim() === editingProfile.username);
+  const keepCredentials =
+    canKeepCredentials &&
+    (authMode === 'apiKey' ? apiKey === '' : password === '');
+  const insecureHttp = /^\s*http:/i.test(baseUrl);
+
   const draft = (): ServerProfileDraft => ({
+    ...(editingProfile ? { id: editingProfile.id } : {}),
     displayName,
     baseUrl,
-    credentials:
-      authMode === 'apiKey'
+    credentials: keepCredentials
+      ? { authMode: 'saved' }
+      : authMode === 'apiKey'
         ? { authMode, apiKey }
         : { authMode, username, password, rememberMe: true },
     allowLegacy,
   });
 
   const testDraft = async (): Promise<void> => {
+    if (busy) return;
     const epoch = ++operationEpochRef.current;
+    const revision = draftRevisionRef.current;
     setBusy(true);
     setError(null);
     try {
@@ -111,9 +170,11 @@ export function ServerProfilesDialog({
         draft: draft(),
       });
       if (!operationIsCurrent(epoch)) return;
+      if (draftRevisionRef.current !== revision) return;
       setTested(result);
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
+      if (draftRevisionRef.current !== revision) return;
       setTested(null);
       setError(errorMessage(cause));
     } finally {
@@ -122,18 +183,20 @@ export function ServerProfilesDialog({
   };
 
   const saveDraft = async (): Promise<void> => {
+    if (busy || !tested) return;
     const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
-      await window.printFarmer.saveServerProfile(draft());
+      const saved = await window.printFarmer.saveServerProfile(draft());
+      if (editingProfile && !keepCredentials) onConnectionChanged?.(saved.id);
       if (!operationIsCurrent(epoch)) return;
-      setTested(null);
-      setDisplayName('');
-      setApiKey('');
-      setPassword('');
+      resetForm();
+      restoreEditFocusRef.current = true;
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
+      setTested(null);
+      setAllowLegacy(false);
       setError(errorMessage(cause));
     } finally {
       onMutationSettled();
@@ -142,6 +205,7 @@ export function ServerProfilesDialog({
   };
 
   const selectProfile = async (id: string): Promise<void> => {
+    if (busy) return;
     const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
@@ -158,6 +222,7 @@ export function ServerProfilesDialog({
   };
 
   const retestProfile = async (id: string): Promise<void> => {
+    if (busy) return;
     const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
@@ -177,12 +242,17 @@ export function ServerProfilesDialog({
   };
 
   const removeProfile = async (id: string): Promise<void> => {
+    if (busy) return;
     const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
       await window.printFarmer.deleteServerProfile({ id });
       if (!operationIsCurrent(epoch)) return;
+      if (editingProfile?.id === id) {
+        resetForm();
+        restoreEditFocusRef.current = true;
+      }
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
@@ -260,6 +330,16 @@ export function ServerProfilesDialog({
                     <div className="profile-card-actions">
                       <button
                         type="button"
+                        disabled={busy}
+                        aria-label={`Edit ${profile.displayName}`}
+                        onClick={(event) =>
+                          editProfile(profile, event.currentTarget)
+                        }
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
                         disabled={
                           busy || profile.id === profiles.selectedProfileId
                         }
@@ -301,16 +381,14 @@ export function ServerProfilesDialog({
               else void testDraft();
             }}
           >
-            <h3 id="add-profile-title">Add a server</h3>
-            <p className="profile-form-hint">
-              The server address below is editable and prefilled with{' '}
-              <code>10.0.0.20</code> for convenience &mdash; nothing connects
-              until you test and save. Authenticate with a desktop API key or a
-              username and password.
-            </p>
+            <h3 id="add-profile-title">
+              {editingProfile ? 'Edit server' : 'Add a server'}
+            </h3>
             <label>
               <span>Profile name</span>
               <input
+                ref={nameRef}
+                disabled={busy}
                 required
                 maxLength={80}
                 value={displayName}
@@ -325,6 +403,10 @@ export function ServerProfilesDialog({
               <input
                 required
                 type="url"
+                disabled={busy}
+                aria-describedby={
+                  insecureHttp ? 'profile-http-warning' : undefined
+                }
                 maxLength={2048}
                 value={baseUrl}
                 onChange={(event) => {
@@ -333,9 +415,19 @@ export function ServerProfilesDialog({
                 }}
               />
             </label>
+            {insecureHttp ? (
+              <p
+                id="profile-http-warning"
+                className="profile-warning"
+                role="status"
+              >
+                HTTP is not encrypted. Use only on a trusted LAN.
+              </p>
+            ) : null}
             <label>
               <span>Authentication</span>
               <select
+                disabled={busy}
                 value={authMode}
                 onChange={(event) => {
                   setAuthMode(event.target.value as ServerAuthMode);
@@ -350,7 +442,11 @@ export function ServerProfilesDialog({
               <label>
                 <span>Desktop API key</span>
                 <input
-                  required
+                  required={!canKeepCredentials}
+                  disabled={busy}
+                  aria-describedby={
+                    canKeepCredentials ? 'saved-credential-hint' : undefined
+                  }
                   type="password"
                   autoComplete="off"
                   maxLength={4096}
@@ -367,6 +463,7 @@ export function ServerProfilesDialog({
                   <span>Username or email</span>
                   <input
                     required
+                    disabled={busy}
                     autoComplete="username"
                     maxLength={256}
                     value={username}
@@ -379,7 +476,11 @@ export function ServerProfilesDialog({
                 <label>
                   <span>Password</span>
                   <input
-                    required
+                    required={!canKeepCredentials}
+                    disabled={busy}
+                    aria-describedby={
+                      canKeepCredentials ? 'saved-credential-hint' : undefined
+                    }
                     type="password"
                     autoComplete="current-password"
                     maxLength={4096}
@@ -392,10 +493,12 @@ export function ServerProfilesDialog({
                 </label>
               </>
             )}
-            <p className="profile-security-note">
-              HTTP is allowed for trusted LAN servers but is not encrypted.
-              HTTPS certificates are always verified.
-            </p>
+            {canKeepCredentials ? (
+              <p id="saved-credential-hint" className="profile-form-hint">
+                Leave {authMode === 'apiKey' ? 'the API key' : 'the password'}{' '}
+                blank to keep the saved credential, or enter a replacement.
+              </p>
+            ) : null}
             {tested ? (
               <div
                 className={`profile-test-result ${tested.status}`}
@@ -411,6 +514,7 @@ export function ServerProfilesDialog({
                   <label className="legacy-confirmation">
                     <input
                       type="checkbox"
+                      disabled={busy}
                       checked={allowLegacy}
                       onChange={(event) => setAllowLegacy(event.target.checked)}
                     />
@@ -431,7 +535,9 @@ export function ServerProfilesDialog({
                 {busy
                   ? 'Checking...'
                   : tested
-                    ? 'Save profile'
+                    ? editingProfile
+                      ? 'Save changes'
+                      : 'Save profile'
                     : 'Test connection'}
               </button>
               {tested ? (
@@ -443,12 +549,35 @@ export function ServerProfilesDialog({
                   Test again
                 </button>
               ) : null}
+              {editingProfile ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    resetForm();
+                    editTriggerRef.current?.focus();
+                  }}
+                >
+                  Cancel editing
+                </button>
+              ) : null}
             </div>
           </form>
         </div>
       </section>
     </>
   );
+}
+
+function sameEndpoint(left: string, right: string): boolean {
+  try {
+    return (
+      new URL(left.trim()).href.replace(/\/+$/, '') ===
+      new URL(right).href.replace(/\/+$/, '')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function ProfileDetails({

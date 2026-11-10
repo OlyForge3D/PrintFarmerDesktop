@@ -195,6 +195,38 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('accepts explicit saved credentials for save and draft test without identity fields', () => {
+    const draft = {
+      id: '11111111-1111-4111-8111-111111111111',
+      displayName: 'Renamed farm',
+      baseUrl: 'https://farm.example',
+      credentials: { authMode: 'saved' },
+      allowLegacy: false,
+    };
+    expect(
+      ipcSchemas[IpcChannel.SaveServerProfile].request.parse(draft),
+    ).toEqual(draft);
+    expect(
+      ipcSchemas[IpcChannel.TestServerProfile].request.parse({
+        source: 'draft',
+        draft,
+      }),
+    ).toEqual({ source: 'draft', draft });
+    for (const extra of [
+      { apiKey: 'replacement' },
+      { password: 'replacement' },
+      { username: 'different-user' },
+      { rememberMe: false },
+    ]) {
+      expect(() =>
+        ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
+          ...draft,
+          credentials: { authMode: 'saved', ...extra },
+        }),
+      ).toThrow();
+    }
+  });
+
   it('normalizes nullable and older omitted capability fields conservatively', () => {
     const capabilities = ServerCapabilities.parse({
       architecture: 'X64',

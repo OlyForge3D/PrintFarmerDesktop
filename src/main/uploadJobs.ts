@@ -18,6 +18,7 @@ import {
 } from '@shared/ipc';
 import {
   type AuthenticatedProfileContext,
+  type ProfileBindingChangeReason,
   ServerProfileError,
   type ServerProfileService,
 } from './serverProfiles.js';
@@ -349,6 +350,7 @@ export interface UploadProfileService {
     listener: (
       profileId: string,
       previousBinding: string,
+      reason?: ProfileBindingChangeReason,
     ) => Promise<void> | void,
   ): () => void;
 }
@@ -408,8 +410,8 @@ export class UploadJobService {
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? randomUUID;
     this.unsubscribeProfileChanges =
-      options.profiles.onProfileBindingChanged?.((profileId, binding) =>
-        this.handleProfileBindingChanged(profileId, binding),
+      options.profiles.onProfileBindingChanged?.((profileId, binding, reason) =>
+        this.handleProfileBindingChanged(profileId, binding, reason),
       ) ?? null;
   }
 
@@ -856,16 +858,20 @@ export class UploadJobService {
   private async handleProfileBindingChanged(
     profileId: string,
     previousBinding: string,
+    reason: ProfileBindingChangeReason = 'identityChanged',
   ): Promise<void> {
+    const invalidateIdentity = reason === 'identityChanged';
     this.changingProfileBindings.add(profileId);
     try {
       await this.requireReady();
     } catch {
       try {
-        await this.options.sidecar.purgeRemoteModelLinks(
-          profileId,
-          previousBinding,
-        );
+        if (invalidateIdentity) {
+          await this.options.sidecar.purgeRemoteModelLinks(
+            profileId,
+            previousBinding,
+          );
+        }
       } finally {
         this.changingProfileBindings.delete(profileId);
       }
@@ -904,7 +910,7 @@ export class UploadJobService {
               setItemState(item, 'cancelled', this.isoNow(), {
                 code: 'PROFILE_CHANGED',
                 message:
-                  'The server profile endpoint changed. Create a new upload job.',
+                  'The server profile endpoint or authentication changed. Create a new upload job.',
                 retryable: false,
                 retryAfterSeconds: null,
                 duplicateRisk: false,
@@ -912,16 +918,20 @@ export class UploadJobService {
             }
           }
         }
-        draft.identities = draft.identities.filter(
-          (identity) =>
-            identity.profileId !== profileId ||
-            identity.serverBinding !== previousBinding,
-        );
+        if (invalidateIdentity) {
+          draft.identities = draft.identities.filter(
+            (identity) =>
+              identity.profileId !== profileId ||
+              identity.serverBinding !== previousBinding,
+          );
+        }
       });
-      await this.options.sidecar.purgeRemoteModelLinks(
-        profileId,
-        previousBinding,
-      );
+      if (invalidateIdentity) {
+        await this.options.sidecar.purgeRemoteModelLinks(
+          profileId,
+          previousBinding,
+        );
+      }
     } finally {
       this.changingProfileBindings.delete(profileId);
     }
