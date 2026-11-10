@@ -13,6 +13,7 @@ import { CalibrationWorkspacePayload } from '@shared/ipc';
 import type {
   CalibrationWorkspaceStateRecord,
   ImportRootResponse,
+  ImportPreviewResponse,
   LoadSceneResponse,
   LogicalModel,
   PrintFarmerApi,
@@ -1145,6 +1146,149 @@ describe('<App />', () => {
     ).toBeDisabled();
   });
 
+  describe.each(['settings', 'onboarding', 'empty library'] as const)(
+    '%s folder inspection',
+    (entry) => {
+      it.each(['success', 'error', 'incomplete', 'picker cancel'] as const)(
+        'shows accessible feedback until %s and preserves modal ownership',
+        async (outcome) => {
+          const picker = deferred<{
+            path: string;
+            approvalId: string;
+          } | null>();
+          const preview = deferred<ImportPreviewResponse>();
+          const choices = deferred<[]>();
+          const openFolder = vi.fn().mockReturnValue(picker.promise);
+          const previewImport = vi.fn().mockImplementation(() =>
+            preview.promise.then((result) => {
+              if (outcome === 'error') throw new Error('Inspection failed');
+              return result;
+            }),
+          );
+          const listCollections = vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockReturnValue(choices.promise);
+          installApi({
+            getAppInfo: vi.fn().mockResolvedValue({
+              contractVersion: 2,
+              appVersion: '0.1.0',
+              platform: 'win32',
+              electronVersion: '33.0.0',
+            }),
+            listModels: vi.fn().mockResolvedValue([]),
+            openFolder,
+            previewImport,
+            listCollections,
+            listTags: vi.fn().mockResolvedValue([]),
+          });
+          render(<App />);
+          await screen.findByRole('dialog', {
+            name: 'Set up your model library',
+          });
+          if (entry !== 'onboarding') {
+            fireEvent.click(
+              screen.getByRole('button', { name: 'Maybe later' }),
+            );
+          }
+          if (entry === 'settings') {
+            fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+          }
+          const name =
+            entry === 'settings'
+              ? 'Add source folder'
+              : 'Add your first folder';
+          const trigger = await screen.findByRole('button', { name });
+          await waitFor(() => expect(trigger).toBeEnabled());
+          trigger.focus();
+          fireEvent.click(trigger);
+          fireEvent.click(trigger);
+          expect(openFolder).toHaveBeenCalledTimes(1);
+          const status = screen.getByRole('status', {
+            name: 'Folder inspection',
+          });
+          expect(status).toBeEmptyDOMElement();
+          await act(async () => {
+            picker.resolve(
+              outcome === 'picker cancel'
+                ? null
+                : {
+                    path: 'C:\\Models\\Miniatures',
+                    approvalId: '11111111-1111-4111-8111-111111111111',
+                  },
+            );
+            await picker.promise;
+          });
+          if (outcome !== 'picker cancel') {
+            await waitFor(() =>
+              expect(status).toHaveTextContent('Inspecting folder: Miniatures'),
+            );
+            expect(status).toHaveAttribute('aria-live', 'polite');
+            expect(
+              screen.queryByText('Choosing a source folder'),
+            ).not.toBeInTheDocument();
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            if (entry !== 'onboarding') expect(trigger).toBeDisabled();
+            const settings = screen.getByRole('button', {
+              name: /^Settings/,
+            });
+            expect(settings).toBeDisabled();
+            fireEvent.click(settings);
+            expect(openFolder).toHaveBeenCalledTimes(1);
+            await act(async () => {
+              preview.resolve({
+                modelCount: 1,
+                totalBytes: 100,
+                skippedErrors: 0,
+                complete: outcome !== 'incomplete',
+                failure:
+                  outcome === 'incomplete'
+                    ? 'Folder scan incomplete'
+                    : undefined,
+                formats: { stl: 1, threeMf: 0, obj: 0 },
+                folders: [],
+                foldersTruncated: false,
+              });
+              await preview.promise;
+            });
+            if (outcome === 'success') {
+              expect(status).toHaveTextContent(
+                'Loading import organization choices.',
+              );
+              await act(async () => {
+                choices.resolve([]);
+                await choices.promise;
+              });
+              const wizard = await screen.findByRole('dialog', {
+                name: 'Organize models before importing',
+              });
+              expect(status).toBeEmptyDOMElement();
+              const cancel = within(wizard).getByRole('button', {
+                name: 'Cancel import',
+              });
+              await waitFor(() => expect(cancel).toHaveFocus());
+              fireEvent.click(cancel);
+            } else if (entry === 'settings') {
+              expect(screen.getByRole('alert')).toHaveTextContent(
+                outcome === 'error'
+                  ? 'Inspection failed'
+                  : 'Folder scan incomplete',
+              );
+            }
+          } else {
+            expect(previewImport).not.toHaveBeenCalled();
+          }
+          await waitFor(() => expect(status).toBeEmptyDOMElement());
+          await waitFor(() =>
+            expect(screen.getByRole('button', { name })).toBeEnabled(),
+          );
+          await waitFor(() =>
+            expect(screen.getByRole('button', { name })).toHaveFocus(),
+          );
+        },
+      );
+    },
+  );
   it('excludes server profiles throughout import preparation and its modal', async () => {
     const preview = deferred<{
       modelCount: number;

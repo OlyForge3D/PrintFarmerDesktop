@@ -3962,6 +3962,36 @@ select:disabled {
   animation: spin 700ms linear infinite;
 }
 
+.import-preparation-status[data-active='true'] {
+  position: fixed;
+  z-index: 110;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(480px, calc(100vw - 32px));
+  padding: 20px;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.import-preparation-status .loading-indicator {
+  flex: 0 0 auto;
+}
+
+.import-preparation-status strong {
+  overflow-wrap: anywhere;
+}
+
+.import-preparation-status p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

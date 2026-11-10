@@ -213,6 +213,12 @@ finish after the profile dialog closes. A synchronous modal owner coordinates
 profile, import, file-picker, preview, and upload-queue entry so asynchronous
 preparation cannot overlap or later remount another modal.
 
+After a source folder is selected, the shared folder-inspection status remains
+available across Settings, the empty Library, and onboarding until the complete
+hierarchy and organization choices are ready (or preparation fails). It appears
+after 150 ms to avoid flashing for instant previews, uses a polite live region
+outside busy workspace content, and does not take focus or reserve another modal.
+
 ## Snapmaker U1 retargeting
 
 The U1 workflow preserves the process boundary rather than teaching the

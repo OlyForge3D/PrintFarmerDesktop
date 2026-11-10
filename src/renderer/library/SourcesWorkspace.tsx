@@ -138,7 +138,7 @@ export function SourcesWorkspace({
           </span>
         </div>
       ) : null}
-      {scanActivity.phase !== 'idle' ? (
+      {scanActivity.phase !== 'idle' && scanActivity.phase !== 'inspecting' ? (
         <div
           className="catalog-sources-progress"
           role="status"
