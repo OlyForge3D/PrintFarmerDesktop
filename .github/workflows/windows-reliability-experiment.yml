@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   measure:
-    name: Defender A-B (${{ matrix.mode }}-${{ matrix.sample }})
+    name: Workers A-B (${{ matrix.mode }}-${{ matrix.sample }})
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -22,16 +22,16 @@ jobs:
         include:
           - { mode: original, sample: 1 }
           - { mode: original, sample: 2 }
-          - { mode: excluded, sample: 1 }
-          - { mode: excluded, sample: 2 }
-          - { mode: excluded, sample: 3 }
-          - { mode: excluded, sample: 4 }
-          - { mode: excluded, sample: 5 }
-          - { mode: excluded, sample: 6 }
-          - { mode: excluded, sample: 7 }
-          - { mode: excluded, sample: 8 }
-          - { mode: excluded, sample: 9 }
-          - { mode: excluded, sample: 10 }
+          - { mode: one-worker, sample: 1 }
+          - { mode: one-worker, sample: 2 }
+          - { mode: one-worker, sample: 3 }
+          - { mode: one-worker, sample: 4 }
+          - { mode: one-worker, sample: 5 }
+          - { mode: one-worker, sample: 6 }
+          - { mode: one-worker, sample: 7 }
+          - { mode: one-worker, sample: 8 }
+          - { mode: one-worker, sample: 9 }
+          - { mode: one-worker, sample: 10 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,23 +78,6 @@ jobs:
           Get-MpComputerStatus |
             Select-Object AMProductVersion, AntivirusSignatureVersion, RealTimeProtectionEnabled |
             ConvertTo-Json | Set-Content (Join-Path $evidence 'defender.json')
-      - name: Apply measured Defender treatment on ephemeral runner
-        if: matrix.mode == 'excluded'
-        shell: pwsh
-        run: |
-          # Only this disposable hosted VM, after dependency installation.
-          # Keep C: temp semantics: D: lacks the distinct 8.3 aliases under test.
-          # Measure real-time scanning of fixture/workspace churn; do not
-          # disable Defender or change protection on any developer machine.
-          $paths = @($env:GITHUB_WORKSPACE, (node -p "require('node:os').tmpdir()"))
-          Get-MpPreference | Select-Object ExclusionPath |
-            ConvertTo-Json -Depth 4 | Set-Content (Join-Path $env:WINDOWS_MEASUREMENT 'exclusions-before.json')
-          Add-MpPreference -ExclusionPath $paths
-          $actual = @((Get-MpPreference).ExclusionPath)
-          foreach ($path in $paths) {
-            if ($actual -notcontains $path) { throw "Defender exclusion not applied: $path" }
-          }
-          $actual | ConvertTo-Json | Set-Content (Join-Path $env:WINDOWS_MEASUREMENT 'exclusions-after.json')
       - name: Full suite measurement (no retries)
         shell: pwsh
         env:
@@ -103,10 +86,12 @@ jobs:
           $originalTemp = node -p "require('node:os').tmpdir()"
           $env:NODE_OPTIONS = "--require=$env:WINDOWS_MEASUREMENT/measure.cjs"
           $env:VITEST_JSON = Join-Path $env:WINDOWS_MEASUREMENT 'vitest.json'
-          node --input-type=module -e "import os from 'node:os'; import {createVitest} from 'vitest/node'; const v=await createVitest('test',{watch:false}); console.log(JSON.stringify({tmp:os.tmpdir(),runnerTemp:process.env.RUNNER_TEMP,pool:v.config.pool,maxWorkers:v.config.maxWorkers,fileParallelism:v.config.fileParallelism??true,isolate:v.config.isolate})); await v.close();" |
+          $workerArgs = @()
+          if ($env:EXPERIMENT_MODE -eq 'one-worker') { $workerArgs = @('--maxWorkers=1') }
+          node --input-type=module -e "import os from 'node:os'; import {createVitest} from 'vitest/node'; const v=await createVitest('test',{watch:false,...(process.env.EXPERIMENT_MODE==='one-worker'?{maxWorkers:1}:{})}); console.log(JSON.stringify({tmp:os.tmpdir(),runnerTemp:process.env.RUNNER_TEMP,pool:v.config.pool,maxWorkers:v.config.maxWorkers,fileParallelism:v.config.fileParallelism??true,isolate:v.config.isolate})); await v.close();" |
             Set-Content (Join-Path $env:WINDOWS_MEASUREMENT 'resolved.json')
           $start = Get-Date
-          npm run test -- --reporter=default --reporter=json "--outputFile.json=$env:VITEST_JSON"
+          npm run test -- --reporter=default --reporter=json "--outputFile.json=$env:VITEST_JSON" @workerArgs
           $result = $LASTEXITCODE
           @{
             mode = $env:EXPERIMENT_MODE
@@ -123,7 +108,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-defender-${{ matrix.mode }}-${{ matrix.sample }}
+          name: windows-workers-${{ matrix.mode }}-${{ matrix.sample }}
           path: ${{ runner.temp }}/windows-measurement
           if-no-files-found: error
           retention-days: 30
