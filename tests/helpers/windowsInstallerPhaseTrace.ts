@@ -105,16 +105,30 @@ export function observeWindowsInstallerFileOperation<T>(
   operation: 'unlink' | 'rename',
   run: () => T,
 ): T {
-  report(`${operation}-before`);
+  reportWithoutChangingOperation(report, `${operation}-before`);
   try {
     const result = run();
-    report(`${operation}-after`, { outcome: 'returned' });
+    reportWithoutChangingOperation(report, `${operation}-after`, {
+      outcome: 'returned',
+    });
     return result;
   } catch (error) {
-    report(`${operation}-after`, {
+    reportWithoutChangingOperation(report, `${operation}-after`, {
       outcome: 'rejected',
       errorCode: windowsInstallerFileErrorCode(error),
     });
     throw error;
+  }
+}
+
+function reportWithoutChangingOperation(
+  report: WindowsInstallerPhaseReporter,
+  phase: WindowsInstallerPhase,
+  details?: WindowsInstallerPhaseDetails,
+): void {
+  try {
+    report(phase, details);
+  } catch {
+    // Diagnostic output must not suppress or replace the file operation.
   }
 }

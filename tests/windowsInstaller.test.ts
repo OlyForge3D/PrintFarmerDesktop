@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWindowsInstallerPhaseReporter,
   observeWindowsInstallerFileOperation,
+  type WindowsInstallerPhaseReporter,
 } from './helpers/windowsInstallerPhaseTrace';
 import {
   buildVerifiedInstallerScript,
@@ -193,7 +194,15 @@ describe('descriptor-bound Windows installer launch', () => {
   it.runIf(process.platform === 'win32')(
     'prevents unlink and rename substitution after verification begins',
     async () => {
-      const reportPhase = createWindowsInstallerPhaseReporter();
+      const emitPhase = createWindowsInstallerPhaseReporter();
+      let phaseTraceWriteFailed = false;
+      const reportPhase: WindowsInstallerPhaseReporter = (phase, details) => {
+        try {
+          emitPhase(phase, details);
+        } catch {
+          phaseTraceWriteFailed = true;
+        }
+      };
       const directory = await mkdtemp(
         path.join(os.tmpdir(), 'windows-installer-race-'),
       );
@@ -293,6 +302,7 @@ describe('descriptor-bound Windows installer launch', () => {
         renameError && 'code' in renameError ? renameError.code : undefined,
       ).toMatch(/^(?:EACCES|EBUSY|EPERM)$/);
       await expect(readFile(installerPath)).resolves.toEqual(verifiedBytes);
+      expect(phaseTraceWriteFailed).toBe(false);
     },
     30_000,
   );

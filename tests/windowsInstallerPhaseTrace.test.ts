@@ -8,6 +8,7 @@ import {
   observeWindowsInstallerFileOperation,
   WINDOWS_INSTALLER_PHASE_PREFIX,
   windowsInstallerFileErrorCode,
+  type WindowsInstallerPhaseReporter,
 } from './helpers/windowsInstallerPhaseTrace';
 
 describe('Windows installer phase diagnostics', () => {
@@ -131,7 +132,7 @@ describe('Windows installer phase diagnostics', () => {
     expect(windowsInstallerFileErrorCode({ code: 'ENOENT' })).toBe('OTHER');
   });
 
-  it('does not swallow diagnostic writer failures', () => {
+  it('exposes writer failures to direct reporter callers', () => {
     const writerError = new Error('diagnostic stream unavailable');
     const report = createWindowsInstallerPhaseReporter({
       startedAt: 0,
@@ -142,5 +143,35 @@ describe('Windows installer phase diagnostics', () => {
     });
 
     expect(() => report('spawned')).toThrow(writerError);
+  });
+
+  it('does not let reporter failures suppress operations or replace their errors', () => {
+    const report: WindowsInstallerPhaseReporter = () => {
+      throw new Error('diagnostic stream unavailable');
+    };
+    const result = { unchanged: true };
+    let attempts = 0;
+
+    expect(
+      observeWindowsInstallerFileOperation(report, 'unlink', () => {
+        attempts += 1;
+        return result;
+      }),
+    ).toBe(result);
+    expect(attempts).toBe(1);
+
+    const denied = new Error('sharing violation');
+    let caught: unknown;
+    try {
+      observeWindowsInstallerFileOperation(report, 'rename', () => {
+        attempts += 1;
+        throw denied;
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(attempts).toBe(2);
+    expect(caught).toBe(denied);
   });
 });
