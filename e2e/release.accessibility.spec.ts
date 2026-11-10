@@ -241,12 +241,9 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
               name: `Select ${modelFixtureName}`,
             }),
           ).toBeVisible();
-          await expect(page.locator('.sidebar-source-health')).toContainText(
-            '1 source healthy',
-          );
           await captureVisualScenario(
             page,
-            'library.sidebar.filter-modes-counts-source-health',
+            'library.sidebar.filter-modes-counts',
             testInfo,
           );
         }
@@ -304,6 +301,15 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       });
       await expect(sourcesPane).toBeVisible();
       await expect(sourcesPane).toHaveAttribute('aria-busy', 'false');
+      const configuredRoots = sourcesPane
+        .getByRole('list', { name: 'Source folders' })
+        .getByRole('listitem');
+      await expect(configuredRoots).toHaveCount(1);
+      await expect(configuredRoots).toContainText(modelFixtureDirectory);
+      await expect(
+        configuredRoots.getByText('Available', { exact: true }),
+      ).toBeVisible();
+      await expect(configuredRoots).toContainText('1 of 1 models available');
       await expect(
         sourcesPane.getByRole('button', { name: 'Add source folder' }),
       ).toBeEnabled();

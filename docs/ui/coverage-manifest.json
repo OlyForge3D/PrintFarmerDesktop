@@ -575,11 +575,11 @@
       ],
       "states": [
         {
-          "id": "filter-modes-counts-configured-source",
-          "label": "All/favorite/type/duplicate/missing filters, counts and healthy source status",
+          "id": "filter-modes-counts",
+          "label": "All/favorite/type/duplicate/missing filters and counts",
           "coverage": {
             "status": "scenario",
-            "scenarioId": "library.sidebar.filter-modes-counts-source-health"
+            "scenarioId": "library.sidebar.filter-modes-counts"
           }
         },
         {
@@ -4335,11 +4335,11 @@
       "stateId": "configured-sources",
       "testRef": "e2e/release.accessibility.spec.ts",
       "fixture": "Imported only synthetic checked-in fixture into a disposable local catalog.",
-      "trigger": "Navigate to Settings after import and inspect Source folders.",
-      "expectedState": "Settings main and Source folders region are visible.",
+      "trigger": "Navigate to Settings after import and assert the single configured fixture root, Available status and one available model before scanning and capturing Source folders.",
+      "expectedState": "Settings main and Source folders region are visible, with exactly one configured fixture root reported Available and 1 of 1 models available.",
       "axe": "Existing material WCAG A/AA scan; not certification.",
       "dimensionsExercised": [
-        "Settings main and Source folders region are visible."
+        "Settings main and Source folders region are visible, with exactly one configured fixture root reported Available and 1 of 1 models available."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },
@@ -6378,16 +6378,16 @@
       "screenshotPolicy": "temporary-review-evidence"
     },
     {
-      "id": "library.sidebar.filter-modes-counts-source-health",
+      "id": "library.sidebar.filter-modes-counts",
       "surfaceId": "library.sidebar",
-      "stateId": "filter-modes-counts-configured-source",
+      "stateId": "filter-modes-counts",
       "testRef": "e2e/release.accessibility.spec.ts",
       "fixture": "Checked-in synthetic OBJ model imported into an isolated packaged-app catalog with its configured source root.",
-      "trigger": "Visit Favorites, STL, 3MF, OBJ, STEP, Duplicates and Missing files filters; assert each count and active filter while the Library route remains active, verify healthy source status, scan and capture the OBJ view.",
-      "expectedState": "All filter destinations stay within Library, counts match the single synthetic OBJ fixture and the configured source is reported healthy.",
-      "axe": "Whole-page material WCAG A/AA scan on every filter state, with a pending candidate for OBJ and healthy source status; not certification.",
+      "trigger": "Visit Favorites, STL, 3MF, OBJ, STEP, Duplicates and Missing files filters; assert each count and active filter while the Library route remains active, scan and capture the OBJ view. Configured source health is asserted separately in sources.configured under Settings.",
+      "expectedState": "All filter destinations stay within Library and counts match the single synthetic OBJ fixture.",
+      "axe": "Whole-page material WCAG A/AA scan on every filter state, with a pending candidate for OBJ; not certification.",
       "dimensionsExercised": [
-        "All filter destinations stay within Library, counts match the single synthetic OBJ fixture and the configured source is reported healthy."
+        "All filter destinations stay within Library and counts match the single synthetic OBJ fixture."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },

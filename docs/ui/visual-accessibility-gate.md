@@ -71,6 +71,11 @@ The finite named dimensions include:
   resizing, source scan and missing/offline health, cards/thumbnails,
   tag/collection editors, organization CRUD/review, upload lifecycle and server
   profile forms.
+
+Configured source availability is asserted and captured in Settings > Source
+folders (`sources.configured`), not the Library sidebar. Sidebar filter coverage
+checks the active destination and model counts independently.
+
 - Preview loading/error/retry, shading/projection, absent/unknown/populated vendor
   data, default/per-face materials, actual multi-scene plate selection, deep and
   malformed part trees, inherited visibility and isolated roving keyboard focus.
