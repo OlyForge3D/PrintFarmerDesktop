@@ -1,4 +1,6 @@
 import type { QueuePolicy } from './merge-queue-policy.mjs';
+import type { SquashInput } from './verify-queue-squash.mjs';
+export type SquashProof = (input: SquashInput) => void;
 export type QueueApi = (
   endpoint: string,
   fields?: Record<string, string>,
@@ -65,14 +67,17 @@ export declare function checkDevelopmentQueue(
   args: { number: number; head: string; enqueue?: boolean },
   api: QueueApi,
   verify?: (number: number, head: string) => void,
+  prove?: SquashProof,
 ): string;
 export declare function verifyQueueEvent(
   event: { merge_group: QueueGroup },
   api: QueueApi,
   verify: (number: number, head: string) => void,
+  prove?: SquashProof,
 ): string;
 export declare function main(
   argv: string[],
   env?: NodeJS.ProcessEnv,
   run?: QueueRunner,
+  prove?: SquashProof,
 ): number;

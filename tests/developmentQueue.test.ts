@@ -64,7 +64,7 @@ const group = () => ({
   base_ref: 'refs/heads/development',
   base_sha: base,
   head_sha: groupHead,
-  head_ref: 'refs/heads/gh-readonly-queue/development/pr-10-bbbbbbbb',
+  head_ref: `refs/heads/gh-readonly-queue/development/pr-10-${base}`,
 });
 const pull = (): QueuePull => ({
   id: 'PR_test',
@@ -130,7 +130,28 @@ function fixture() {
       }
       state.pullReads += 1;
       return {
-        data: { repository: { pullRequest: structuredClone(state.pull) } },
+        data: {
+          repository: {
+            pullRequest: structuredClone(state.pull),
+            mergeQueue: {
+              entries: {
+                nodes: state.pull.mergeQueueEntry
+                  ? [
+                      {
+                        id: state.pull.mergeQueueEntry.id,
+                        headCommit: state.pull.mergeQueueEntry.headCommit,
+                        pullRequest: {
+                          number: 10,
+                          headRefOid: state.pull.headRefOid,
+                        },
+                      },
+                    ]
+                  : [],
+                pageInfo: { hasNextPage: false },
+              },
+            },
+          },
+        },
       };
     }
     if (endpoint.includes('/protection')) return protection(state.strict);
@@ -156,8 +177,6 @@ function fixture() {
         status: 'completed',
         conclusion: 'success',
       };
-    if (endpoint.includes('/compare/'))
-      return { status: 'ahead', behind_by: 0 };
     throw new Error(`Unexpected request ${endpoint}`);
   };
   return { state, api };
@@ -488,17 +507,17 @@ describe('source review and combined-result evidence stay separate', () => {
     state.pull.mergeQueueEntry = entry();
     state.groupChecks = [];
     expect(() =>
-      checkDevelopmentQueue({ number: 10, head }, api, vi.fn()),
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn(), vi.fn()),
     ).toThrow(/not successful/);
     state.groupChecks = runs(groupHead);
     state.groupEvent = 'pull_request';
     expect(() =>
-      checkDevelopmentQueue({ number: 10, head }, api, vi.fn()),
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn(), vi.fn()),
     ).toThrow(/merge_group workflow/);
     state.groupEvent = 'merge_group';
-    expect(checkDevelopmentQueue({ number: 10, head }, api, vi.fn())).toMatch(
-      /group checks passed/,
-    );
+    expect(
+      checkDevelopmentQueue({ number: 10, head }, api, vi.fn(), vi.fn()),
+    ).toMatch(/group checks passed/);
   });
   it('distinguishes a normal waiting entry from invalid group evidence without granting readiness', () => {
     const { state, api } = fixture();
@@ -606,28 +625,34 @@ describe('actual merge-group workflow contract', () => {
       }),
     ).toHaveLength(9);
   });
-  it('binds trusted event verification to membership, source containment and source review', () => {
+  it('binds trusted event verification to membership, squash proof and source review', () => {
     const { state, api } = fixture();
     state.pull.mergeQueueEntry = entry();
     const verify = vi.fn();
-    expect(verifyQueueEvent({ merge_group: group() }, api, verify)).toMatch(
-      /source-head review/,
-    );
+    const proof = vi.fn();
+    expect(
+      verifyQueueEvent({ merge_group: group() }, api, verify, proof),
+    ).toMatch(/source-head review/);
     expect(verify).toHaveBeenCalledWith(10, head);
     expect(() =>
       verifyQueueEvent(
         { merge_group: { ...group(), head_sha: head } },
         api,
         verify,
+        proof,
       ),
     ).toThrow(/stale or unknown/);
-    const notContained: QueueApi = (endpoint, fields) =>
-      endpoint.includes('/compare/')
-        ? { status: 'diverged', behind_by: 1 }
-        : api(endpoint, fields);
+    expect(proof).toHaveBeenCalledWith({
+      base,
+      head,
+      group: groupHead,
+      number: 10,
+    });
     expect(() =>
-      verifyQueueEvent({ merge_group: group() }, notContained, verify),
-    ).toThrow(/not contained/);
+      verifyQueueEvent({ merge_group: group() }, api, verify, () => {
+        throw new Error('Squash tree mismatch');
+      }),
+    ).toThrow(/tree mismatch/);
   });
   it.each(['omitted', 'empty'] as const)(
     '--event accepts the live %s bypass shape without claiming invisible evidence',
@@ -672,6 +697,7 @@ describe('actual merge-group workflow contract', () => {
               GITHUB_EVENT_PATH: eventPath,
             },
             run,
+            vi.fn(),
           ),
         ).toBe(0);
         expect(output).toHaveBeenCalledWith(
@@ -727,7 +753,7 @@ describe('actual merge-group workflow contract', () => {
         ? { ...ruleset(), name: `read-${++reads}` }
         : api(endpoint, fields);
     expect(() =>
-      verifyQueueEvent({ merge_group: group() }, drifting, vi.fn()),
+      verifyQueueEvent({ merge_group: group() }, drifting, vi.fn(), vi.fn()),
     ).toThrow(/policy changed/);
     const badRules: QueueApi = (endpoint, fields) =>
       endpoint.includes('/rules/branches')

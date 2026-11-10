@@ -67,6 +67,12 @@ copies it per test instead of repeating repository initialization and four
 commits inside every callback. Copies must own their object stores, refs and
 working trees independently; retain the isolation regression when changing
 that fixture. This reduces process work without changing timeout budgets.
+The incomplete-history merge-survival fixture imports its four-commit source
+with `git fast-import`, then performs a real depth-limited clone and fetch.
+Its source is transport input, not a merge-strategy simulation: the graph/tree
+regression and shallow recovery/isolation controls must remain intact. This
+avoids repeated staging, checkout and commit processes in the setup hook;
+the complete-history merge-strategy fixtures still use ordinary Git commits.
 
 ### Hosted Windows test budgets
 
