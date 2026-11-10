@@ -629,6 +629,30 @@ describe('CI is safe to run under a merge queue', () => {
     ).toBe(0);
   });
 
+  it('retains only allowlisted resize JSON after macOS packaged E2E failure', () => {
+    const packageJob = jobsOf(ciWorkflow).find(({ key }) => key === 'package')!;
+    const body = packageJob.body.join('\n');
+    const e2eStep = body
+      .split('      - name: Packaged Electron end-to-end tests\n')[1]!
+      .split('\n      - ')[0]!;
+    expect(e2eStep).toContain('id: packaged_e2e');
+    const upload = body
+      .split('      - name: Retain macOS sidebar resize failure evidence\n')[1]!
+      .split('\n      - ')[0]!;
+    expect(upload).toContain(
+      "if: failure() && runner.os == 'macOS' && steps.packaged_e2e.outcome == 'failure'",
+    );
+    expect(upload).toContain('uses: actions/upload-artifact@v4');
+    expect(upload.match(/^\s+path: (.+)$/m)?.[1]).toBe(
+      'test-results/**/sidebar-resize-diagnostics.json',
+    );
+    expect(upload).toContain('if-no-files-found: ignore');
+    expect(upload).toContain('retention-days: 14');
+    expect(body.indexOf(upload)).toBeLessThan(
+      body.indexOf('      - name: Packaged accessibility'),
+    );
+  });
+
   it('emits exactly the seven check-run names ci.yml produces, byte-identical', () => {
     // The emitted side only. Whether these are the *required* contexts lives in
     // branch protection, which this test does not read:
