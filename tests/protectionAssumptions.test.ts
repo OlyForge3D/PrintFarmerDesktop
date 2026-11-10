@@ -1003,7 +1003,12 @@ describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', (
       });
       const body = url.includes('/collaborators')
         ? [{ login: 'jpapiez', role_name: 'admin' }]
-        : { enforce_admins: { enabled: false } };
+        : {
+            enforce_admins: { enabled: false },
+            required_pull_request_reviews: {
+              required_approving_review_count: 0,
+            },
+          };
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve(body),
@@ -1017,7 +1022,10 @@ describe('#491: fetchPrivilegedRepositoryFacts requires and forwards a token', (
     });
 
     expect(facts.collaborators).toEqual([{ login: 'jpapiez', role: 'admin' }]);
-    expect(facts.protection).toEqual({ enforce_admins: { enabled: false } });
+    expect(facts.protection).toEqual({
+      enforce_admins: { enabled: false },
+      required_pull_request_reviews: { required_approving_review_count: 0 },
+    });
     expect(calls).toHaveLength(2);
     for (const call of calls) {
       const authHeader = Object.entries(call.headers).find(

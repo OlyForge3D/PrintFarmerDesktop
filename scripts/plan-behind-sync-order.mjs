@@ -100,6 +100,7 @@ import {
 import { evaluateBehindBase } from './check-behind-base.mjs';
 import { discoverToken } from './check-merge-queue-contexts.mjs';
 import { runGh, resolveRepositorySlug } from './check-required-contexts.mjs';
+import { createQueueApi, readQueuePolicy } from './check-development-queue.mjs';
 
 /**
  * @typedef {{number: number, createdAt: string, baseRefName: string, behind: boolean}} BehindCandidate
@@ -208,7 +209,9 @@ export function formatPlan(plan, skipped, activeLease = null) {
       );
     }
   } else if (skipped.length === 0) {
-    lines.push('No open pull request is BEHIND its base. Nothing to sync.');
+    lines.push(
+      'No open pull request needs a manual base sync. Nothing to sync. Active development queue entries are excluded.',
+    );
   }
 
   // Hicks, local pre-PR review round 1: a PR whose base could not be
@@ -501,6 +504,11 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
   if (prs.length === 0) {
     return { candidates: [], skipped: [] };
   }
+  const queueManaged =
+    repository === 'OlyForge3D/PrintFarmerDesktop' &&
+    prs.some((pr) => pr.baseRefName === 'development') &&
+    readQueuePolicy(createQueueApi({ ...env, GH_TOKEN: token }, run)).mode ===
+      'queue';
 
   // fetchBase always refreshes the *same* shared local ref
   // (refs/tmp/sha-status/base, per scripts/sha-status.mjs) regardless of which
@@ -519,6 +527,9 @@ export function surveyBehindPrs(opts, env = process.env, run = spawnSync) {
   /** @type {SkippedPr[]} */
   const skipped = [];
   for (const pr of prs) {
+    // Queue-managed development PRs never acquire a manual base-sync lease.
+    // Policy-read failures propagate to main's fail-closed error boundary.
+    if (queueManaged && pr.baseRefName === 'development') continue;
     let baseState = baseCache.get(pr.baseRefName);
     if (baseState === undefined) {
       const fetched = fetchBase(`${remote}/${pr.baseRefName}`, remote);

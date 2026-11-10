@@ -1,6 +1,7 @@
 export const EXIT_UP_TO_DATE: 0;
 export const EXIT_BEHIND: 1;
 export const EXIT_UNDETERMINED: 2;
+export const EXIT_QUEUE_REQUIRED: 4;
 
 export interface BehindBaseResult {
   state: 'up-to-date' | 'behind' | 'undetermined';

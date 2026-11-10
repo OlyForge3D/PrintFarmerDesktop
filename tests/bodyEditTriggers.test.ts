@@ -115,19 +115,34 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     expect(REQUIRED_CONTEXT_NAMES).toContain('Sequencing hold');
     expect(renderedContexts(workflow, 'sequencing-hold.yml')).toEqual([
       'Sequencing hold',
+      'Source policy checks',
     ]);
     expect(workflow.match(/^ {2}[\w-]+:$/gm)).toEqual([
       '  pull_request:',
       '  merge_group:',
+      '  source-policy:',
       '  sequencing-hold:',
     ]);
-    expect(workflow).not.toMatch(/^\s+if:/m);
+    // The existing guards remain unconditional; only the additional trusted
+    // queue steps are scoped to development merge_group events.
+    const unconditional = workflow.split('  sequencing-hold:')[0];
+    expect(unconditional).not.toMatch(/^\s+if:/m);
+    expect(workflow.match(/^ {4}if: .+$/gm)).toEqual(['    if: always()']);
+    expect(
+      [...workflow.matchAll(/^ {8}if: (.+)$/gm)].map((match) => match[1]),
+    ).toEqual([
+      "github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'",
+      "github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'",
+      "github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'",
+    ]);
     expect(
       [...workflow.matchAll(/^ {8}run: (.+)$/gm)].map((m) => m[1]),
     ).toEqual([
       'npm run check:body-edit-triggers',
       'npm run check:copilot-session-trailers',
       'npm run check:sequencing-hold',
+      'test "$SOURCE_POLICY_RESULT" = success',
+      'npm run check:development-queue -- --event',
     ]);
     expect(triggersOf(workflow, 'sequencing-hold.yml')).toEqual([
       'merge_group',
@@ -153,6 +168,13 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     expect(workflow).toContain('          persist-credentials: false');
     expect(workflow).toContain(
       'permissions:\n  contents: read\n  pull-requests: read\n',
+    );
+    expect(workflow.split('  sequencing-hold:')[0]).not.toContain(
+      'actions: read',
+    );
+    expect(workflow).toContain('    needs: source-policy');
+    expect(workflow).toContain(
+      'SOURCE_POLICY_RESULT: ${{ needs.source-policy.result }}',
     );
     expect(workflow).toMatch(
       /- name: Validate Copilot session trailers\n {8}env:\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n {8}run: npm run check:copilot-session-trailers/,

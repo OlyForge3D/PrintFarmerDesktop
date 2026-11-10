@@ -16,6 +16,7 @@ import { useModelTags } from './library/useModelTags';
 import { useModelCollections } from './library/useModelCollections';
 import { ModelGrid } from './library/ModelGrid';
 import { LibraryPagination } from './library/LibraryPagination';
+import { UploadSelectedButton } from './library/UploadSelectedButton';
 import { PropertiesInspector } from './library/PropertiesInspector';
 import {
   FILTER_LABELS,
@@ -1368,9 +1369,7 @@ export function App(): React.JSX.Element {
                         <Icon name="folder" />
                         Open file
                       </button>
-                      <button
-                        type="button"
-                        className="command-button upload-selected"
+                      <UploadSelectedButton
                         disabled={
                           workspaceActionsDisabled ||
                           !library.resultsCurrent ||
@@ -1378,21 +1377,9 @@ export function App(): React.JSX.Element {
                           !activeServer ||
                           !activeServer.availability.modelUpload.available
                         }
-                        onClick={startUpload}
-                        title={
-                          !activeServer
-                            ? 'Connect a PrintFarmer server profile first.'
-                            : !activeServer.availability.modelUpload.available
-                              ? (activeServer.availability.modelUpload.reason ??
-                                'Model upload is unavailable.')
-                              : activeServer.availability.modelUpload.mode ===
-                                  'legacyModelOnly'
-                                ? 'Legacy model-only upload; interrupted retries can create duplicates.'
-                                : 'Upload selected models with idempotent retry protection.'
-                        }
-                      >
-                        Upload to PrintFarmer
-                      </button>
+                        serverProfile={activeServer}
+                        onUpload={startUpload}
+                      />
                     </div>
                   </header>
 
@@ -1973,17 +1960,9 @@ function OnboardingServerNudge({
   serverProfile: ServerProfile | null;
   disabled: boolean;
   onConnect: () => void;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   if (serverProfile) {
-    return (
-      <p className="onboarding-connect-confirmed">
-        <Icon name="collection" size={14} />
-        <span>
-          Connected to <strong>{serverProfile.displayName}</strong>. Upload and
-          sync tools will use this connection as they become available.
-        </span>
-      </p>
-    );
+    return null;
   }
   return (
     <div className="onboarding-connect-nudge">

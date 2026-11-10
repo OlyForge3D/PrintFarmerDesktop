@@ -1,5 +1,8 @@
 // Refuses to let a BEHIND pull request merge, by gating the merge action itself
 // rather than relying on a server-side required check.
+// After native development queue activation, exit 4 routes ALL development
+// PRs to exact-head queue admission instead. The ancestry path below remains
+// the safe compatibility mode before activation and for other targets.
 //
 // Why this exists (#397). `development` has `required_status_checks.strict: true` —
 // require branches to be up to date before merging — but `enforce_admins: false`
@@ -46,10 +49,12 @@ import {
 } from './sha-status.mjs';
 import { discoverToken } from './check-merge-queue-contexts.mjs';
 import { runGh, resolveRepositorySlug } from './check-required-contexts.mjs';
+import { createQueueApi, readQueuePolicy } from './check-development-queue.mjs';
 
 export const EXIT_UP_TO_DATE = 0;
 export const EXIT_BEHIND = 1;
 export const EXIT_UNDETERMINED = 2;
+export const EXIT_QUEUE_REQUIRED = 4;
 
 /**
  * The judgement. Pure over the one fact that decides it.
@@ -137,7 +142,8 @@ the head has never been tested against — the gap that let #322 merge BEHIND
 and break trunk under a strict:true that enforce_admins:false exempted the
 sole admin from.
 
-  0 up to date · 1 BEHIND, do not merge · 2 undetermined
+  0 up to date (legacy strict path) · 1 BEHIND · 2 undetermined
+  4 active development queue required, never direct-merge permission
 `;
 
 /**
@@ -228,6 +234,19 @@ function runMain(argv, env, run) {
       'gh reported no baseRefName/headRefOid for this PR. Exit 2, not a pass.',
     );
     return EXIT_UNDETERMINED;
+  }
+  if (
+    repository === 'OlyForge3D/PrintFarmerDesktop' &&
+    baseRefName === 'development' &&
+    readQueuePolicy(createQueueApi({ ...env, GH_TOKEN: token }, run)).mode ===
+      'queue'
+  ) {
+    console.log(
+      `PR #${args.pr}: native development queue required. Do not manually rebase solely ` +
+        `for freshness or merge directly. Run npm run check:development-queue -- ` +
+        `--pr ${args.pr} --head ${headRefOid} [--enqueue]. Exit 4 is routing, not merge authorization.`,
+    );
+    return EXIT_QUEUE_REQUIRED;
   }
 
   const headRef = fetchPrHead(String(args.pr), args.remote);

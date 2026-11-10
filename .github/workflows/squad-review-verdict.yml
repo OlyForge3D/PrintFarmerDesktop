@@ -534,7 +534,7 @@ jobs:
             // pin exists to catch.
             //
             // This matters more here than it would elsewhere: `development` is
-            // a `strict: true` branch, so every PR must sync with base before
+            // a `strict: true` branch before queue activation, so PRs must sync with base before
             // it can merge, and without this exemption that mandatory sync
             // would invalidate the review it just earned.
             //

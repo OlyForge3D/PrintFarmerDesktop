@@ -148,6 +148,8 @@ export const UNENFORCED_CHECKS = {
     'OlyForge3D/PrintFarmer #1316 (fixing PrintFarmer issue #1310), which ' +
     'carries the identical unwired script for the identical reason.',
   'check:behind-base':
+    'After live development queue activation it routes to check:development-queue ' +
+    '(exit 4), never direct merge or manual freshness updates. Before activation, ' +
     'Its judgement IS enforced in CI: tests/behindBase.test.ts drives ' +
     'evaluateBehindBase and formatResult over plain objects, exercising all ' +
     'three states under `npm run test`. Its main() needs the same two things ' +
