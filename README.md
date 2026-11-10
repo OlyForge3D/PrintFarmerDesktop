@@ -75,6 +75,14 @@ are managed there, while the server bar keeps the active connection accessible
 for uploads and calibration. Library **Add folder** remains a contextual import
 shortcut.
 
+Choose **Edit** on any saved server, including the selected server, to update its
+name, address, or authentication. **Test connection**, then **Save changes**;
+**Cancel editing** leaves the saved profile and selection unchanged. Leave the
+secret field blank to keep saved credentials for the same address and identity,
+or enter a replacement. A changed server address or authentication identity
+requires new credentials. New profiles start with an empty server address;
+entering an HTTP address shows an unencrypted-transport warning.
+
 **Import organization** starts with a collapsed folder tree, not a tag for
 every folder. New folders inherit their nearest configured policy; by default
 they add no folder metadata. Keep the optional whole-import collection/tags,

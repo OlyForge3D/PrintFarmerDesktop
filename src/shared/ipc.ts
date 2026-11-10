@@ -1435,6 +1435,10 @@ const PasswordCredentials = z
   })
   .strict();
 
+// Main-only credential reuse: the renderer sends no secret or replacement
+// identity. Requires an existing profile at the same canonical endpoint.
+const SavedCredentials = z.object({ authMode: z.literal('saved') }).strict();
+
 export const ServerProfileDraft = z
   .object({
     id: z.string().uuid().optional(),
@@ -1443,6 +1447,7 @@ export const ServerProfileDraft = z
     credentials: z.discriminatedUnion('authMode', [
       ApiKeyCredentials,
       PasswordCredentials,
+      SavedCredentials,
     ]),
     allowLegacy: z.boolean(),
   })

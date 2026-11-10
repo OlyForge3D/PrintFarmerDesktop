@@ -1060,6 +1060,117 @@ describe('<App />', () => {
     );
   });
 
+  it.each([false, true])(
+    'refreshes saved profile consumers and resets calibration only for replacement credentials (replacement=%s)',
+    async (replacement) => {
+      let profile: ServerProfile = {
+        ...serverProfile('11111111-1111-4111-8111-111111111111', 'Workshop'),
+        status: 'connected',
+        warnings: [],
+      };
+      const getCalibrationAvailability = vi.fn().mockResolvedValue({
+        available: true,
+        unavailableReason: null,
+        unavailableDetail: null,
+        negotiatedApiVersion: '2',
+        negotiatedSchemaVersion: '2.0',
+        capabilityFlags: {
+          calibrationApiEnabled: true,
+          calibrationChangeFeedEnabled: true,
+          calibrationOfflineDraftEnabled: true,
+          calibrationPhotoUploadEnabled: true,
+          calibrationGenerationEnabled: true,
+          calibrationArtifactPromotionEnabled: true,
+        },
+        grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
+        offlineEditingEnabled: true,
+      });
+      const saveServerProfile = vi.fn<PrintFarmerApi['saveServerProfile']>(
+        (draft) => {
+          profile = { ...profile, displayName: draft.displayName };
+          return Promise.resolve(profile);
+        },
+      );
+      installApi({
+        getAppInfo: vi.fn().mockResolvedValue({
+          contractVersion: 2,
+          appVersion: '0.1.0',
+          platform: 'win32',
+          electronVersion: '33.0.0',
+        }),
+        listModels: vi.fn().mockResolvedValue([]),
+        listServerProfiles: vi.fn(() =>
+          Promise.resolve({
+            profiles: [profile],
+            selectedProfileId: profile.id,
+          }),
+        ),
+        testServerProfile: vi.fn().mockResolvedValue(profile),
+        saveServerProfile,
+        getCalibrationAvailability,
+        listCalibrationWorkspaceStates: vi.fn().mockResolvedValue({
+          states: [],
+          unhydratedProjects: [],
+        }),
+      });
+      render(<App />);
+      await findAuthorityManageButton(/^Manage connection:/);
+      fireEvent.keyDown(document, { key: 'Escape' });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Filament Calibration' }),
+      );
+      await screen.findByRole('heading', { name: 'Filament Calibration' });
+      await waitFor(() =>
+        expect(getCalibrationAvailability).toHaveBeenCalled(),
+      );
+      const initialCalls = getCalibrationAvailability.mock.calls.length;
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Manage PrintFarmer profiles' }),
+      );
+      const dialog = await screen.findByRole('dialog', {
+        name: 'Manage PrintFarmer connection',
+      });
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Edit Workshop' }),
+      );
+      fireEvent.change(within(dialog).getByLabelText('Profile name'), {
+        target: { value: 'Renamed workshop' },
+      });
+      if (replacement) {
+        fireEvent.change(within(dialog).getByLabelText('Desktop API key'), {
+          target: { value: 'replacement-credential' },
+        });
+      }
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Test connection' }),
+      );
+      fireEvent.click(
+        await within(dialog).findByRole('button', { name: 'Save changes' }),
+      );
+      await within(dialog).findByRole('button', {
+        name: 'Edit Renamed workshop',
+      });
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Close server profiles' }),
+      );
+      expect(
+        await findAuthorityManageButton(/^Manage connection:/),
+      ).toHaveTextContent('Renamed workshop');
+      expect(saveServerProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ id: profile.id }),
+      );
+      if (replacement) {
+        await waitFor(() =>
+          expect(getCalibrationAvailability.mock.calls.length).toBeGreaterThan(
+            initialCalls,
+          ),
+        );
+      } else {
+        expect(getCalibrationAvailability).toHaveBeenCalledTimes(initialCalls);
+      }
+    },
+  );
+
   it('reconciles a delete that commits after the profile dialog closes', async () => {
     const profile = serverProfile(
       '11111111-1111-4111-8111-111111111111',
