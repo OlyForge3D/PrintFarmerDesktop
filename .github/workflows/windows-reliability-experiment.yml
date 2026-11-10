@@ -1,0 +1,115 @@
+name: Windows reliability experiment (temporary)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-reliability-experiment.yml
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Temp A-B (${{ matrix.mode }}-${{ matrix.sample }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - { mode: original, sample: 1 }
+          - { mode: original, sample: 2 }
+          - { mode: runner-temp, sample: 1 }
+          - { mode: runner-temp, sample: 2 }
+          - { mode: runner-temp, sample: 3 }
+          - { mode: runner-temp, sample: 4 }
+          - { mode: runner-temp, sample: 5 }
+          - { mode: runner-temp, sample: 6 }
+          - { mode: runner-temp, sample: 7 }
+          - { mode: runner-temp, sample: 8 }
+          - { mode: runner-temp, sample: 9 }
+          - { mode: runner-temp, sample: 10 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: node scripts/npm-ci-strict.mjs
+      - name: Prepare measurement
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'windows-measurement'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          "WINDOWS_MEASUREMENT=$evidence" >> $env:GITHUB_ENV
+          @'
+          const cp = require('node:child_process');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { performance } = require('node:perf_hooks');
+          const { syncBuiltinESMExports } = require('node:module');
+          const stats = {};
+          for (const method of ['spawnSync', 'execFileSync']) {
+            const original = cp[method];
+            cp[method] = function (program) {
+              const start = performance.now();
+              try { return original.apply(this, arguments); }
+              finally {
+                const key = `${method}:${path.basename(String(program))}`;
+                const row = stats[key] ??= { count: 0, milliseconds: 0 };
+                row.count++;
+                row.milliseconds += performance.now() - start;
+              }
+            };
+          }
+          syncBuiltinESMExports();
+          process.on('exit', () => fs.writeFileSync(
+            path.join(process.env.WINDOWS_MEASUREMENT, `process-${process.pid}.json`),
+            JSON.stringify({ pid: process.pid, stats }),
+          ));
+          '@ | Set-Content -Encoding utf8 (Join-Path $evidence 'measure.cjs')
+          Get-MpComputerStatus |
+            Select-Object AMProductVersion, AntivirusSignatureVersion, RealTimeProtectionEnabled |
+            ConvertTo-Json | Set-Content (Join-Path $evidence 'defender.json')
+      - name: Full suite measurement (no retries)
+        shell: pwsh
+        env:
+          EXPERIMENT_MODE: ${{ matrix.mode }}
+        run: |
+          $originalTemp = node -p "require('node:os').tmpdir()"
+          if ($env:EXPERIMENT_MODE -eq 'runner-temp') {
+            $env:TEMP = Join-Path $env:RUNNER_TEMP 'test-fixtures'
+            $env:TMP = $env:TEMP
+            New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          }
+          $env:NODE_OPTIONS = "--require=$env:WINDOWS_MEASUREMENT/measure.cjs"
+          $env:VITEST_JSON = Join-Path $env:WINDOWS_MEASUREMENT 'vitest.json'
+          node --input-type=module -e "import os from 'node:os'; import {createVitest} from 'vitest/node'; const v=await createVitest('test',{watch:false}); console.log(JSON.stringify({tmp:os.tmpdir(),runnerTemp:process.env.RUNNER_TEMP,pool:v.config.pool,maxWorkers:v.config.maxWorkers,fileParallelism:v.config.fileParallelism??true,isolate:v.config.isolate})); await v.close();" |
+            Set-Content (Join-Path $env:WINDOWS_MEASUREMENT 'resolved.json')
+          $start = Get-Date
+          npm run test -- --reporter=default --reporter=json "--outputFile.json=$env:VITEST_JSON"
+          $result = $LASTEXITCODE
+          @{
+            mode = $env:EXPERIMENT_MODE
+            originalTemp = $originalTemp
+            temp = $env:TEMP
+            started = $start.ToUniversalTime().ToString('o')
+            ended = (Get-Date).ToUniversalTime().ToString('o')
+            exitCode = $result
+            head = '${{ github.sha }}'
+            attempt = '${{ github.run_attempt }}'
+          } | ConvertTo-Json | Set-Content (Join-Path $env:WINDOWS_MEASUREMENT 'execution.json')
+          exit $result
+      - name: Preserve measurements including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-temp-${{ matrix.mode }}-${{ matrix.sample }}
+          path: ${{ runner.temp }}/windows-measurement
+          if-no-files-found: error
+          retention-days: 30
