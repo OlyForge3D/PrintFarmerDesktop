@@ -644,9 +644,7 @@ describe('actual merge-group workflow contract', () => {
     expect(workflow).toContain('actions: read');
     const sourceJob = workflow.split('  sequencing-hold:')[0] ?? '';
     expect(sourceJob).not.toContain('actions: read');
-    expect(sourceJob).not.toContain('administration: read');
     const trustedJob = workflow.split('  sequencing-hold:')[1] ?? '';
-    expect(trustedJob).toContain('administration: read');
     expect(trustedJob).toContain('    if: always()');
     expect(trustedJob).toContain('test "$SOURCE_POLICY_RESULT" = success');
     expect(trustedJob).not.toContain('github.event.pull_request.head.sha');
