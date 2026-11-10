@@ -62,6 +62,11 @@ maintenance first: command-scoped `maintenance.autoDetach=false` and
 `gc.autoDetach=false` keep object-store lock files from changing after a
 synchronous Git parent exits. Do not copy a live repository assuming that the
 parent process's exit also joined detached maintenance.
+The citation-content suite builds one immutable real-Git history template and
+copies it per test instead of repeating repository initialization and four
+commits inside every callback. Copies must own their object stores, refs and
+working trees independently; retain the isolation regression when changing
+that fixture. This reduces process work without changing timeout budgets.
 
 Rust sidecar (run from `native/`):
 

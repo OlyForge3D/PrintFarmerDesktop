@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  cpSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -10,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.setConfig({ testTimeout: 15_000 });
 import {
@@ -83,12 +84,15 @@ const assertionRow = (sha: string, text: string) =>
  * citation orphaned by a rebase, and the position this content check must WITHHOLD from rather
  * than fail.
  */
-const fixture = () => {
+const buildTemplate = () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'content-'));
   made.push(dir);
   execFileSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' });
   execFileSync('git', ['-C', dir, 'config', 'user.email', 't@example.invalid']);
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+  // The immutable template must have no detached object-store writer when copied.
+  execFileSync('git', ['-C', dir, 'config', 'maintenance.autoDetach', 'false']);
+  execFileSync('git', ['-C', dir, 'config', 'gc.autoDetach', 'false']);
   mkdirSync(path.join(dir, 'scripts'), { recursive: true });
   mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
   for (const script of HARNESS_MODULES) {
@@ -129,6 +133,52 @@ const fixture = () => {
 
   return { dir, cited, orphan, claim: CLAIM.trim() };
 };
+
+let template: ReturnType<typeof buildTemplate>;
+beforeAll(() => {
+  template = buildTemplate();
+});
+
+const fixture = () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'content-'));
+  made.push(dir);
+  cpSync(template.dir, dir, { recursive: true });
+  return { ...template, dir };
+};
+
+describe('content fixture isolation', () => {
+  it('copies independent real histories without rebuilding the template', () => {
+    const first = fixture();
+    const second = fixture();
+    expect(first.dir).not.toBe(second.dir);
+    expect(run(first.dir, ['rev-parse', 'HEAD'])).toBe(
+      run(second.dir, ['rev-parse', 'HEAD']),
+    );
+    writeFileSync(path.join(first.dir, 'notes.md'), 'changed in one copy\n');
+    const changed = commit(first.dir, 'change only the first copy');
+    expect(run(second.dir, ['rev-parse', 'HEAD'])).not.toBe(changed);
+    expect(
+      spawnSync('git', ['-C', second.dir, 'cat-file', '-e', changed]).status,
+    ).toBe(1);
+    expect(run(template.dir, ['rev-parse', 'HEAD'])).toBe(
+      run(second.dir, ['rev-parse', 'HEAD']),
+    );
+    expect(readFileSync(path.join(second.dir, 'notes.md'), 'utf8')).toContain(
+      second.claim,
+    );
+    expect(run(second.dir, ['cat-file', '-t', second.orphan])).toBe('commit');
+    expect(
+      spawnSync('git', [
+        '-C',
+        second.dir,
+        'merge-base',
+        '--is-ancestor',
+        second.orphan,
+        'HEAD',
+      ]).status,
+    ).toBe(1);
+  });
+});
 
 /**
  * check-citation-reachability.mjs scans audit-trail.md/policy.md, not this file's own ledger, so
