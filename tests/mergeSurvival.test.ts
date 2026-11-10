@@ -30,7 +30,7 @@ const repoRoot = path.resolve(
 );
 const SCRIPT = path.join(repoRoot, 'scripts', 'merge-survival.mjs');
 
-const git = (args: string[], cwd: string, env = process.env) =>
+const git = (args: string[], cwd: string, env = process.env, input?: string) =>
   // A synchronous Git parent can leave detached maintenance mutating objects/
   // after it exits. Finish that work before snapshotting or deleting fixtures.
   execFileSync(
@@ -45,8 +45,9 @@ const git = (args: string[], cwd: string, env = process.env) =>
     {
       cwd,
       env,
+      input,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     },
   ).trim();
 
@@ -360,22 +361,71 @@ describe('merge survival with incomplete history', () => {
     mkdirSync(source);
 
     git(['init', '-q', '--initial-branch=development', source], root);
-    git(['config', 'user.email', 'squad@example.test'], source);
-    git(['config', 'user.name', 'Squad'], source);
-    git(['config', 'commit.gpgsign', 'false'], source);
+    // This source is read-only transport input, not a merge-strategy test.
+    // Import the same four real commits in one process instead of repeatedly
+    // staging, committing, checking out and querying an unused working tree.
+    const committer = 'committer Squad <squad@example.test> 1700000000 +0000';
+    git(
+      ['fast-import', '--quiet'],
+      source,
+      process.env,
+      `commit refs/heads/development
+mark :1
+${committer}
+data <<END
+base
+END
+M 100644 inline base.txt
+data <<END
+base
+END
 
-    write(source, 'base.txt', ['base']);
-    commitAll(source, 'base');
+commit refs/heads/feature
+mark :2
+${committer}
+data <<END
+feature
+END
+from :1
+M 100644 inline feature.txt
+data <<END
+feature
+END
 
-    git(['checkout', '-q', '-b', 'feature'], source);
-    write(source, 'feature.txt', ['feature']);
-    branchHead = commitAll(source, 'feature');
+commit refs/heads/development
+mark :3
+${committer}
+data <<END
+trunk advances
+END
+from :1
+M 100644 inline trunk.txt
+data <<END
+trunk
+END
 
-    git(['checkout', '-q', 'development'], source);
-    write(source, 'trunk.txt', ['trunk']);
-    mergeParent = commitAll(source, 'trunk advances');
-    write(source, 'feature.txt', ['feature']);
-    squashLanding = commitAll(source, 'feature lands');
+commit refs/heads/development
+${committer}
+data <<END
+feature lands
+END
+M 100644 inline feature.txt
+data <<END
+feature
+END
+
+done
+`,
+    );
+    const [feature, parent, landing] = git(
+      ['rev-parse', 'feature', 'development~1', 'development'],
+      source,
+    ).split('\n');
+    if (!feature || !parent || !landing)
+      throw new Error('Shallow fixture source is missing a required revision');
+    branchHead = feature;
+    mergeParent = parent;
+    squashLanding = landing;
 
     // Both destinations start byte-identical, and each test then unshallows
     // its own. So the shallow clone is made once, by real `clone --depth` and
@@ -391,6 +441,10 @@ describe('merge survival with incomplete history', () => {
         '2',
         '--branch',
         'development',
+        '-c',
+        'maintenance.autoDetach=true',
+        '-c',
+        'gc.autoDetach=true',
         pathToFileURL(source).href,
         shallowVerdict,
       ],
@@ -398,8 +452,6 @@ describe('merge survival with incomplete history', () => {
     );
     // The command-scoped fixture policy must win over a repository that opts
     // into detached maintenance, not merely inherit a convenient local default.
-    git(['config', 'maintenance.autoDetach', 'true'], shallowVerdict);
-    git(['config', 'gc.autoDetach', 'true'], shallowVerdict);
     git(
       [
         'fetch',
@@ -419,6 +471,30 @@ describe('merge survival with incomplete history', () => {
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('imports the complete source graph and trees used by the shallow transport', () => {
+    const graph = new Map(
+      git(['rev-list', '--parents', '--all'], source)
+        .split('\n')
+        .map((line) => {
+          const [head, ...parents] = line.split(' ');
+          return [head, parents];
+        }),
+    );
+    expect(graph.size).toBe(4);
+    expect(graph.get(branchHead)).toHaveLength(1);
+    const base = graph.get(branchHead)?.[0];
+    expect(base).toMatch(/^[0-9a-f]{40}$/);
+    expect(graph.get(base)).toEqual([]);
+    expect(graph.get(mergeParent)).toEqual([base]);
+    expect(graph.get(squashLanding)).toEqual([mergeParent]);
+    expect(git(['ls-tree', '-r', '--name-only', 'feature'], source)).toBe(
+      'base.txt\nfeature.txt',
+    );
+    expect(git(['ls-tree', '-r', '--name-only', 'development'], source)).toBe(
+      'base.txt\nfeature.txt\ntrunk.txt',
+    );
+  });
 
   it('finishes fetch maintenance before copying the shallow object store', () => {
     const maintenance = readFileSync(fetchTrace, 'utf8')
