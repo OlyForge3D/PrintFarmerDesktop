@@ -904,7 +904,7 @@ export class UploadJobService {
               setItemState(item, 'cancelled', this.isoNow(), {
                 code: 'PROFILE_CHANGED',
                 message:
-                  'The server profile endpoint changed. Create a new upload job.',
+                  'The server profile endpoint or authentication changed. Create a new upload job.',
                 retryable: false,
                 retryAfterSeconds: null,
                 duplicateRisk: false,

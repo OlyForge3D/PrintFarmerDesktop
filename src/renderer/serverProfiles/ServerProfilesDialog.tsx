@@ -195,6 +195,8 @@ export function ServerProfilesDialog({
       restoreEditFocusRef.current = true;
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
+      setTested(null);
+      setAllowLegacy(false);
       setError(errorMessage(cause));
     } finally {
       onMutationSettled();
@@ -382,12 +384,6 @@ export function ServerProfilesDialog({
             <h3 id="add-profile-title">
               {editingProfile ? 'Edit server' : 'Add a server'}
             </h3>
-            {editingProfile ? (
-              <p className="profile-form-hint">
-                Changing the server address or authentication identity requires
-                new credentials.
-              </p>
-            ) : null}
             <label>
               <span>Profile name</span>
               <input

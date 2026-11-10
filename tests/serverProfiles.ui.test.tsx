@@ -344,6 +344,11 @@ describe('<ServerProfilesDialog />', () => {
       expect(
         screen.getByRole('heading', { name: 'Edit server' }),
       ).toBeVisible();
+      expect(
+        screen.queryByText(
+          /Changing the server address or authentication identity/,
+        ),
+      ).not.toBeInTheDocument();
       expect(screen.getByLabelText('Profile name')).toHaveFocus();
       expect(screen.getByLabelText('Server URL')).toHaveValue(profile.baseUrl);
       expect(screen.getByLabelText('Authentication')).toHaveValue(authMode);
@@ -542,11 +547,57 @@ describe('<ServerProfilesDialog />', () => {
     );
     await waitFor(() => expect(onMutationSettled).toHaveBeenCalledOnce());
     expect(screen.getByRole('alert')).toHaveTextContent('Save failed');
+    expect(screen.queryByText('Connection successful')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Save changes' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Test connection' }),
+    ).toBeEnabled();
     expect(screen.getByRole('heading', { name: 'Edit server' })).toBeVisible();
     expect(screen.getByLabelText('Profile name')).toHaveValue(
       connected.displayName,
     );
     expect(screen.getByRole('button', { name: 'Selected' })).toBeDisabled();
+  });
+
+  it('requires a fresh test and legacy confirmation after a failed legacy save', async () => {
+    const legacy: ServerProfile = {
+      ...connected,
+      status: 'legacy',
+      warnings: ['legacy'],
+    };
+    const testServerProfile = vi.fn().mockResolvedValue(legacy);
+    const saveServerProfile = vi
+      .fn()
+      .mockRejectedValue(new Error('Profile changed; test again.'));
+    installApi({ testServerProfile, saveServerProfile });
+    render(
+      <ServerProfilesDialog
+        profiles={{ profiles: [legacy], selectedProfileId: legacy.id }}
+        onMutationSettled={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Edit Production farm' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    await screen.findByText('Legacy server detected');
+    fireEvent.click(
+      screen.getByLabelText(/Save in legacy mode/, { selector: 'input' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByRole('alert');
+    expect(
+      screen.queryByText('Legacy server detected'),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    await screen.findByText('Legacy server detected');
+    expect(
+      screen.getByLabelText(/Save in legacy mode/, { selector: 'input' }),
+    ).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
   });
 
   it('blocks competing operations during a draft test and discards stale draft results', async () => {

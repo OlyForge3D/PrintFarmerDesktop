@@ -687,7 +687,9 @@ export class ServerProfileService {
       } else {
         store.profiles[index] = stored;
       }
-      store.selectedProfileId ??= id;
+      if (index < 0) {
+        store.selectedProfileId ??= id;
+      }
       try {
         const bindingTransition: ProfileBindingTransition | null =
           identityChanged && current
@@ -710,7 +712,16 @@ export class ServerProfileService {
       }
     });
     const newBinding = serverProfileBinding(id, tested.baseUrl);
-    if (expected.binding && expected.binding !== newBinding) {
+    // Upload workers can already hold the old token past their final revision
+    // check. Endpoint identity alone cannot cancel those workers when explicit
+    // replacement credentials (even for the same principal) or a newly attested
+    // principal are committed. Saved-credential renames retain their binding.
+    if (
+      expected.binding &&
+      (expected.binding !== newBinding ||
+        draft.credentials.authMode !== 'saved' ||
+        transition !== null)
+    ) {
       await this.notifyProfileBindingChanged(id, expected.binding);
     }
     if (transition) {
