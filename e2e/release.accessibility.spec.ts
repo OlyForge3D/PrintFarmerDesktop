@@ -232,6 +232,15 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         await filterButton.click();
         await expect(libraryMain).toBeVisible();
         await expect(filterButton).toHaveAttribute('aria-pressed', 'true');
+        for (const otherFilter of filterChoices.filter(
+          ({ label }) => label !== filter.label,
+        )) {
+          await expect(
+            modelScopes.getByRole('button', {
+              name: new RegExp(`^${otherFilter.label} ${otherFilter.count}$`),
+            }),
+          ).toHaveAttribute('aria-pressed', 'false');
+        }
         await expectNoMaterialViolations(
           page,
           `library ${filter.label} filter`,
