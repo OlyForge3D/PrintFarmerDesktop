@@ -34,7 +34,7 @@ export type LibraryStatus =
   'idle' | 'loading' | 'preparing' | 'scanning' | 'resetting';
 
 export interface LibraryScanActivity {
-  phase: 'idle' | 'preparing' | 'scanning';
+  phase: 'idle' | 'preparing' | 'inspecting' | 'scanning';
   path: string | null;
   label: string | null;
   estimatedTotal: number | null;
@@ -422,9 +422,9 @@ export function useLibrary(
       setScanFeedbackVisible(false);
       setStatus('preparing');
       setScanActivity({
-        phase: 'preparing',
+        phase: 'inspecting',
         path: selection.path,
-        label: `Preparing ${selection.path}`,
+        label: `Inspecting folder: ${selection.path}`,
         estimatedTotal: null,
         backendProgressAvailable: false,
       });
@@ -440,7 +440,7 @@ export function useLibrary(
           return false;
         }
         setScanActivity({
-          phase: 'preparing',
+          phase: 'inspecting',
           path: selection.path,
           label: 'Loading import organization choices',
           estimatedTotal: preview.modelCount,
