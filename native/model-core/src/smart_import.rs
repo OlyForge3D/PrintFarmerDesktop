@@ -286,9 +286,9 @@ pub enum ImportError {
     InvalidCollectionId,
     #[error("import was cancelled; the catalog was not changed")]
     Cancelled,
-    #[error("collection '{id}' no longer exists")]
-    UnknownCollection { id: String },
-    #[error("collection name '{name}' matches {matches} collections; select one by id")]
+    #[error("The remembered collection '{name}' for '{folder}' no longer exists. Reopen the import dialog and choose a collection target for this folder.")]
+    UnknownCollection { name: String, folder: String },
+    #[error("The collection name '{name}' matches {matches} collections. Reopen the import dialog and choose the intended collection target.")]
     AmbiguousCollectionName { name: String, matches: usize },
     #[error("failed to protect scan from cloud downloads: {0}")]
     AvailabilityPolicy(String),
@@ -797,7 +797,7 @@ fn resolved_rules(
                     let collection = collections
                         .iter()
                         .find(|collection| collection.id == *id)
-                        .ok_or_else(|| ImportError::UnknownCollection { id: id.clone() })?;
+                        .ok_or_else(|| missing_collection(&rule.name, &rule.relative_path))?;
                     ResolvedCollectionTarget {
                         key: format!("id:{}", collection.id),
                         id: Some(collection.id.clone()),
@@ -875,7 +875,12 @@ fn evaluate_plan(
         {
             resolved_collections.push((
                 policy.relative_path.clone(),
-                resolve_collection_target(&collections, name, policy.collection_id.as_deref())?,
+                resolve_collection_target(
+                    &collections,
+                    name,
+                    policy.collection_id.as_deref(),
+                    &policy.relative_path,
+                )?,
             ));
         } else if policy.collection_id.is_some() {
             return Err(ImportError::CollectionIdRequiresFixedName);
@@ -923,6 +928,7 @@ fn evaluate_plan(
                         &collections,
                         &name,
                         policy.collection_id.as_deref(),
+                        &policy.relative_path,
                     )?;
                     organization
                         .collections
@@ -983,12 +989,13 @@ fn resolve_collection_target(
     collections: &[crate::catalog::Collection],
     name: &str,
     id: Option<&str>,
+    folder: &Path,
 ) -> Result<ResolvedCollectionTarget, ImportError> {
     if let Some(id) = id {
         let collection = collections
             .iter()
             .find(|collection| collection.id == id)
-            .ok_or_else(|| ImportError::UnknownCollection { id: id.into() })?;
+            .ok_or_else(|| missing_collection(name, folder))?;
         return Ok(ResolvedCollectionTarget {
             key: format!("id:{}", collection.id),
             id: Some(collection.id.clone()),
@@ -1014,6 +1021,17 @@ fn resolve_collection_target(
             name: name.into(),
             matches: matches.len(),
         }),
+    }
+}
+
+fn missing_collection(name: &str, folder: &Path) -> ImportError {
+    ImportError::UnknownCollection {
+        name: name.into(),
+        folder: if folder.as_os_str().is_empty() {
+            "Source folder".into()
+        } else {
+            display_relative(folder)
+        },
     }
 }
 
@@ -1849,6 +1867,47 @@ mod tests {
         let model = store.models().pop().unwrap();
         assert_eq!(store.collections_for_model(&model.hash)[0].id, selected.id);
         assert_eq!(result.resolved_collections[0].collection_id, selected.id);
+    }
+
+    #[test]
+    fn deleted_collection_errors_identify_the_saved_folder_and_name_not_the_id() {
+        let scan = synthetic_scan(&["Parts/a.stl".into()]);
+        let mut store = InMemoryCatalog::new();
+        for folder in ["", "Parts", "Absent/Unvisited"] {
+            let expected = format!(
+                "The remembered collection 'Dragons' for '{}' no longer exists. Reopen the import dialog and choose a collection target for this folder.",
+                if folder.is_empty() { "Source folder" } else { folder }
+            );
+            let legacy = ImportPlan::new(
+                [(
+                    folder.into(),
+                    ImportRuleKind::Collection,
+                    "Dragons".into(),
+                    Some("raw-internal-id".into()),
+                )],
+                [],
+            )
+            .unwrap();
+            let error = import_root(&mut store, "root", &scan, &legacy).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+            assert!(!error.to_string().contains("raw-internal-id"));
+
+            let mut input = policy(
+                folder,
+                ImportPolicyMode::Organize,
+                Some("Dragons"),
+                &[],
+                None,
+            );
+            input.collection_id = Some("raw-internal-id".into());
+            let plan = ImportPlan::new([], [])
+                .unwrap()
+                .with_policies([input])
+                .unwrap();
+            let error = import_root(&mut store, "root", &scan, &plan).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+            assert!(store.models().is_empty());
+        }
     }
 
     #[cfg(feature = "sqlite")]

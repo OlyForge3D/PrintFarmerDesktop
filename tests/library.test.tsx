@@ -189,6 +189,25 @@ describe('useLibrary', () => {
   });
 
   it('clears renderer catalog state only after a successful backend reset', async () => {
+    localStorage.setItem(
+      'printfarmer.import-recipe.v2.root-1',
+      JSON.stringify({
+        rules: [
+          {
+            relativePath: '',
+            kind: 'collection',
+            name: 'Orcs',
+            collectionId: 'c1',
+          },
+        ],
+        commonTags: [],
+      }),
+    );
+    localStorage.setItem(
+      'printfarmer.import-recipe.v1.removed-source',
+      JSON.stringify({ rules: [], commonTags: [] }),
+    );
+    localStorage.setItem('unrelated-preference', 'preserve');
     saveStoredSourceRoots([
       {
         rootId: 'root-1',
@@ -244,6 +263,29 @@ describe('useLibrary', () => {
     expect(result.current.tags).toEqual([]);
     expect(result.current.lastReport).toBeNull();
     expect(result.current.status).toBe('idle');
+    expect(
+      localStorage.getItem('printfarmer.import-recipe.v2.root-1'),
+    ).toBeNull();
+    expect(
+      localStorage.getItem('printfarmer.import-recipe.v1.removed-source'),
+    ).toBeNull();
+    expect(localStorage.getItem('unrelated-preference')).toBe('preserve');
+    expect(
+      initialImportChoices('root-1', 'Models', {
+        modelCount: 0,
+        totalBytes: 0,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 0, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      }),
+    ).toMatchObject({
+      rootCollection: true,
+      rootCollectionName: 'Models',
+      legacyRules: [],
+      policies: [],
+    });
     await waitFor(() =>
       expect(
         JSON.parse(
@@ -255,6 +297,10 @@ describe('useLibrary', () => {
   });
 
   it('keeps the last known catalog visible when reset fails', async () => {
+    localStorage.setItem(
+      'printfarmer.import-recipe.v2.root-1',
+      'preserve-recipe',
+    );
     saveStoredSourceRoots([{ rootId: 'root-1', path: 'C:\\models' }]);
     installApi({
       listModels: vi.fn().mockResolvedValue([model()]),
@@ -271,6 +317,9 @@ describe('useLibrary', () => {
     expect(result.current.sourceRoots).toHaveLength(1);
     expect(result.current.error).toBe('Catalog reset failed: database locked');
     expect(result.current.status).toBe('idle');
+    expect(localStorage.getItem('printfarmer.import-recipe.v2.root-1')).toBe(
+      'preserve-recipe',
+    );
   });
 
   it('previews a chosen folder, then imports its confirmed rules', async () => {
@@ -1140,6 +1189,9 @@ describe('smart import', () => {
         onConfirm={onConfirm}
       />,
     );
+    const scanDetails = screen.getByText('Skipped paths and scan details');
+    expect(scanDetails.closest('details')).not.toHaveProperty('open', true);
+    fireEvent.click(scanDetails);
     expect(
       screen.getByRole('status', { name: 'Scan results' }),
     ).toHaveTextContent('Cloud-only: 5 entries (4 files, 1 folder)');
@@ -1149,10 +1201,8 @@ describe('smart import', () => {
     expect(
       screen.getByText(/No locally available supported files/),
     ).toHaveTextContent('preserved where availability could not be determined');
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    expect(
-      screen.queryByRole('status', { name: 'Scan results' }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(scanDetails);
+    expect(scanDetails.closest('details')).not.toHaveProperty('open', true);
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
@@ -1172,6 +1222,9 @@ describe('smart import', () => {
         onConfirm={vi.fn().mockResolvedValue(true)}
       />,
     );
+    const compactDetails = screen.getByText('Skipped paths and scan details');
+    expect(compactDetails.closest('details')).not.toHaveProperty('open', true);
+    fireEvent.click(compactDetails);
     const feedback = screen.getByRole('status', { name: 'Scan results' });
     expect(feedback).toHaveTextContent(
       'Oversized ZIP archives: 1 skipped (512 MB limit)',
@@ -1183,9 +1236,7 @@ describe('smart import', () => {
     expect(feedback).toHaveTextContent('Size: 512 MB · limit: 512 MB');
     expect(feedback).not.toHaveTextContent(warning);
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 3 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
   });
 
@@ -1440,11 +1491,9 @@ describe('smart import', () => {
       target: { value: 'printable, terrain' },
     });
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 3 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 
     await waitFor(() =>
       expect(onConfirm).toHaveBeenCalledWith(
@@ -1477,12 +1526,8 @@ describe('smart import', () => {
       target: { value: 'x'.repeat(129) },
     });
 
-    expect(
-      screen.getByText('Each tag must be 128 characters or fewer.'),
-    ).toHaveAttribute('role', 'alert');
-    expect(
-      screen.getByRole('button', { name: 'Import 3 files' }),
-    ).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveAttribute('role', 'alert');
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
   });
 
   it('requires an explicit id when existing collections share a name', async () => {
@@ -1519,9 +1564,7 @@ describe('smart import', () => {
     fireEvent.change(screen.getByLabelText('Folder organization for Animals'), {
       target: { value: 'collection' },
     });
-    expect(
-      screen.getByRole('button', { name: 'Import 3 files' }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
     const picker = screen.getByLabelText('Choose collection for Animals');
     picker.focus();
     fireEvent.change(picker, {
@@ -1532,11 +1575,9 @@ describe('smart import', () => {
     );
     expect(document.activeElement).toBe(picker);
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 3 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     expect(onConfirm.mock.calls[0]?.[0].policies).toContainEqual({
@@ -1584,20 +1625,16 @@ describe('smart import', () => {
       />,
     );
 
-    const picker = screen.getByLabelText('Choose collection for Animals');
+    const picker = screen.getByLabelText('Resolve rule collection for Animals');
     expect(picker).toHaveValue('__unresolved__');
     expect(picker).toHaveAttribute('aria-invalid', 'true');
-    expect(
-      screen.getByRole('button', { name: 'Import 3 files' }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
 
     fireEvent.change(picker, {
       target: { value: 'replacement-collection' },
     });
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 3 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
   });
 

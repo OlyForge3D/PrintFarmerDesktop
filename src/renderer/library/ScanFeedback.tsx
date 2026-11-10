@@ -24,6 +24,8 @@ interface ScanFeedbackProps {
   retryLabel?: string | null | undefined;
   onDismiss?: (() => void) | undefined;
   className?: string | undefined;
+  compact?: boolean;
+  disabled?: boolean;
 }
 
 const REASONS: Record<ScanIssue['reason'], string> = {
@@ -39,6 +41,40 @@ const REASONS: Record<ScanIssue['reason'], string> = {
 
 function count(value: number | undefined): number {
   return value ?? 0;
+}
+
+export function scanOutcomeCounts(data: ScanFeedbackData): {
+  cloudOnly: number;
+  permissionDenied: number;
+  unreadable: number;
+  filesystemErrors: number;
+  tooLarge: number;
+  skipped: number;
+} {
+  const cloudOnly =
+    data.skippedEntries?.cloudOnly ??
+    count(data.cloudFilesSkipped) + count(data.cloudDirectoriesSkipped);
+  const permissionDenied = count(data.skippedEntries?.permissionDenied);
+  const unreadable = count(data.skippedEntries?.unreadable);
+  const filesystemErrors =
+    data.skippedEntries?.unreadable === undefined
+      ? count(data.skippedErrors ?? data.scanErrors)
+      : 0;
+  const tooLarge = Math.max(
+    count(data.skippedEntries?.tooLarge),
+    (data.scanIssues ?? []).filter((issue) => issue.reason === 'tooLarge')
+      .length,
+    data.archiveWarnings?.length ?? 0,
+  );
+  return {
+    cloudOnly,
+    permissionDenied,
+    unreadable,
+    filesystemErrors,
+    tooLarge,
+    skipped:
+      cloudOnly + permissionDenied + unreadable + filesystemErrors + tooLarge,
+  };
 }
 
 function hasFeedback(data: ScanFeedbackData): boolean {
@@ -92,26 +128,36 @@ export function ScanFeedback({
   retryLabel,
   onDismiss,
   className = '',
+  compact = false,
+  disabled = false,
 }: ScanFeedbackProps): React.JSX.Element | null {
   if (!hasFeedback(data)) return null;
+  if (compact) {
+    return (
+      <details className="import-scan-details">
+        <summary>Skipped paths and scan details</summary>
+        <ScanFeedback
+          data={data}
+          onRetry={onRetry}
+          retryLabel={retryLabel}
+          disabled={disabled}
+          className="import-scan-feedback"
+        />
+      </details>
+    );
+  }
 
   const cloudFiles = count(data.cloudFilesSkipped);
   const cloudFolders = count(data.cloudDirectoriesSkipped);
-  const skipped = data.skippedEntries;
-  const cloudOnly = skipped?.cloudOnly ?? cloudFiles + cloudFolders;
-  const permissionDenied = count(skipped?.permissionDenied);
-  const unreadable = count(skipped?.unreadable);
-  const legacyFilesystemErrors =
-    skipped?.unreadable === undefined
-      ? count(data.skippedErrors ?? data.scanErrors)
-      : 0;
+  const {
+    cloudOnly,
+    permissionDenied,
+    unreadable,
+    filesystemErrors: legacyFilesystemErrors,
+    tooLarge,
+  } = scanOutcomeCounts(data);
   const issues = data.scanIssues ?? [];
   const legacyArchives = data.archiveWarnings ?? [];
-  const tooLarge = Math.max(
-    count(skipped?.tooLarge),
-    issues.filter((issue) => issue.reason === 'tooLarge').length,
-    legacyArchives.length,
-  );
   const indexedFiles = data.failure
     ? undefined
     : data.added !== undefined
@@ -221,7 +267,7 @@ export function ScanFeedback({
         </div>
         <div className="scan-feedback-actions">
           {onRetry ? (
-            <button type="button" onClick={onRetry}>
+            <button type="button" disabled={disabled} onClick={onRetry}>
               {retryLabel ?? 'Retry'}
             </button>
           ) : null}

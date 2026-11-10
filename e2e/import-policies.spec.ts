@@ -231,18 +231,18 @@ test('folder policies page through a large tree and organize without moving sour
     await expect(
       wizard.getByText('Calculating organization changes…'),
     ).toBeVisible();
-    await expect(wizard.getByText('Current plan')).toBeVisible({
+    await expect(wizard.getByText('Up to date')).toBeVisible({
       timeout: 30_000,
     });
     await expect(wizard.locator('.import-preview-metrics')).toContainText(
       '602',
     );
     await expect(
-      wizard.getByRole('button', { name: 'Import 602 files' }),
+      wizard.getByRole('button', { name: 'Import', exact: true }),
     ).toBeEnabled();
     await saveEvidence(page, 'folder-policy-preview.png');
 
-    await wizard.getByRole('button', { name: 'Import 602 files' }).click();
+    await wizard.getByRole('button', { name: 'Import', exact: true }).click();
     await expect(wizard).toHaveCount(0, { timeout: 60_000 });
     await expect
       .poll(
@@ -312,11 +312,11 @@ test('folder policies page through a large tree and organize without moving sour
         name: 'Path pattern for Miniatures',
       }),
     ).toHaveValue('{maker}/{project}/**');
-    await expect(repeatWizard.getByText('Current plan')).toBeVisible({
+    await expect(repeatWizard.getByText('Up to date')).toBeVisible({
       timeout: 30_000,
     });
     await repeatWizard
-      .getByRole('button', { name: 'Import 602 files' })
+      .getByRole('button', { name: 'Import', exact: true })
       .click();
     await expect(repeatWizard).toHaveCount(0, { timeout: 60_000 });
     await expect
