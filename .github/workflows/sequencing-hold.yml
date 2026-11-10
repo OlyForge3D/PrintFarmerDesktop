@@ -63,6 +63,7 @@ on:
   merge_group:
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -95,3 +96,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run check:sequencing-hold
+
+      # Bind review to the source head, not the synthetic CI head. Execute
+      # base-owned policy code with a read-only token.
+      - name: Check out trusted queue guard
+        if: github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          path: .queue-trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Verify live queue membership and source-head review
+        if: github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/development'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: .queue-trusted
+        run: npm run check:development-queue -- --event

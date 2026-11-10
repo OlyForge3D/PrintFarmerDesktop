@@ -335,6 +335,7 @@ export function evaluateRequiredContexts({ workflows, requiredContexts }) {
   const emitted = new Map();
   for (const { file, contents } of workflows) {
     if (declaredClassOf(contents, file) !== 'reports') continue;
+    if (!triggersOf(contents, file).includes('merge_group')) continue;
     for (const context of renderedContexts(contents, file)) {
       emitted.set(context, file);
     }

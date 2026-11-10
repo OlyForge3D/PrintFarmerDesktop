@@ -2,13 +2,23 @@
 
 Use only for a changed or slot-blocking PR. Re-fetch terminal state, head, draft,
 base, checks, holds, and mergeability immediately before acting. Never mutate
-from the main checkout. Before dispatching any BEHIND base-sync work, run
+from the main checkout. For development, run `npm run check:behind-base -- --pr <n>`
+first. Exit 4 requires the active native queue: use
+`npm run check:development-queue -- --pr <n> --head <reviewed-source-sha>`
+and, only as the independent authorized merger, add `--enqueue`. Do not dispatch
+manual branch updates solely because the source is behind. Source review stays
+pinned; required CI must pass on the current combined merge group. Unknown,
+changed, failed, pending, or missing evidence refuses readiness. No direct admin
+merge bypass. Follow `docs/MERGE_QUEUE.md` for activation/rollback.
+
+Before activation or on other targets, before dispatching BEHIND base-sync work, run
 `npm run plan:behind-sync-order` from the repository. It surveys every open PR
 and yields one global (not per-base) oldest-first sync order. If it reports an
 active sync lease, stand down: do not dispatch or start another sync. Otherwise,
 dispatch only its single next PR; the owning author claims the lease with
 `npm run plan:behind-sync-order -- --claim` immediately before pushing. This
-procedure is advisory for scheduling only, never authorization: re-fetch the
+procedure excludes queue-managed development PRs. It is advisory for scheduling
+only, never authorization: re-fetch the
 selected PR's live state immediately before every action.
 
 Run the exact JSON verdict command in the core. Exit 0 reports current-head

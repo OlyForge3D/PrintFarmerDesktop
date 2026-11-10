@@ -136,9 +136,9 @@ export function evaluateHoldGateReadiness({
       detail:
         `development's required_status_checks.contexts does not yet include ` +
         `"${HOLD_CONTEXT_NAME}". Exact call: ` +
-        'gh api -X PUT repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection/required_status_checks ' +
-        '-f strict=true -F "contexts[]=Desktop (windows-latest)" ... (all 8 existing names) ' +
-        `-F "contexts[]=${HOLD_CONTEXT_NAME}".`,
+        'Read and preserve the live checks array, including app_id bindings, ' +
+        `when adding "${HOLD_CONTEXT_NAME}". Do not replace it with a contexts-only list. ` +
+        'Follow docs/MERGE_QUEUE.md for staged queue activation.',
     });
   }
   if (contextRequired && !workflowReports && mergeQueueActive) {

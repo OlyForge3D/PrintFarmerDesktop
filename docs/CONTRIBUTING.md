@@ -1,5 +1,10 @@
 # Contributing
 
+Development integration uses the staged [merge-queue policy](MERGE_QUEUE.md).
+After owner activation, conflict-free branches need no manual freshness update;
+GitHub tests their combined result before merging. Before activation, retain the
+existing strict freshness guard.
+
 ## Prerequisites
 
 - **Node.js 22.12+** and npm.
