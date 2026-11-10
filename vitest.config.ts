@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { ciWindowsTimeout } from './tests/helpers/ciWindowsTimeout.js';
 
 export default defineConfig({
   plugins: [react()],
@@ -8,14 +9,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./tests/setup.ts'],
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
-    // Deliberate, explicit default (matches vitest's own built-in value) so the
-    // budget is a number someone picked, not a silently-inherited framework
-    // default. Kept tight so a genuine hang fails fast almost everywhere.
-    // Known-heavy files (see tests/calibrationActionInterlock.test.ts and
-    // tests/orcaProfileDiscoveryScale.test.ts) opt into a larger per-file
-    // budget via `vi.setConfig({ testTimeout })` instead of raising this
-    // global value — see issue #734.
-    testTimeout: 5000,
+    // #874: 48 observations/callback, default-budget subprocess tail 17.468s.
+    // Windows CI gets 30s (+72%); developer/macOS limits remain 5s/10s.
+    // Hook 20s is provisional: only one 13.243s hook-associated overrun,
+    // not a measured hook p99. See CONTRIBUTING for evidence/revisit criteria.
+    testTimeout: ciWindowsTimeout(5000, 30_000),
+    hookTimeout: ciWindowsTimeout(10_000, 20_000),
     // This suite contains many subprocess-heavy files. Bounding workers avoids
     // CPU contention turning their explicit per-file budgets into false hangs.
     maxWorkers: 2,

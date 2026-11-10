@@ -1,7 +1,7 @@
 {
   "name": "printfarmer-desktop",
   "productName": "PrintFarmer Desktop",
-  "version": "0.1.0-beta.19",
+  "version": "0.1.0-beta.20",
   "description": "Local-first desktop 3D model library integrated with PrintFarmer",
   "author": "OlyForge3D",
   "license": "AGPL-3.0-only",
@@ -51,6 +51,7 @@
     "check:stacked-base": "node scripts/check-stacked-base.mjs",
     "check:merge-queue-contexts": "node scripts/check-merge-queue-contexts.mjs",
     "check:development-queue": "node scripts/check-development-queue.mjs",
+    "check:queue-squash": "node scripts/verify-queue-squash.mjs",
     "check:merge-landed": "node scripts/check-merge-landed.mjs",
     "check:release-tagged": "node scripts/check-release-tagged.mjs",
     "check:gate-premises": "node scripts/check-gate-premises.mjs",

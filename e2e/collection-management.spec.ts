@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,7 @@ import {
   captureVisualScenario,
 } from './helpers/visualCoverage.js';
 import { RootApprovalStore } from '../src/main/rootApprovals';
+import { createSidebarResizeRecorder } from './helpers/sidebarResizeDiagnostics';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -108,6 +110,9 @@ test('packaged collection management preserves models and source files', async (
       });
       const page = launched.page;
       await applyPinnedRenderingProfile(page);
+      const resizeRecorder = await page.evaluateHandle(
+        createSidebarResizeRecorder,
+      );
       await expect(page.getByText(modelFixtureName)).toBeVisible();
       const models = await page.evaluate(() => window.printFarmer.listModels());
       expect(models).toHaveLength(1);
@@ -188,22 +193,64 @@ test('packaged collection management preserves models and source files', async (
       const resizer = page.getByRole('separator', {
         name: 'Resize library sidebar',
       });
-      const startWidth = (await pane.boundingBox())!.width;
-      const handle = (await resizer.boundingBox())!;
-      await page.mouse.move(
-        handle.x + handle.width / 2,
-        handle.y + handle.height / 2,
+      let startWidth = 0;
+      let resizePassed = false;
+      let resizeEvidence:
+        | ReturnType<ReturnType<typeof createSidebarResizeRecorder>['stop']>
+        | undefined;
+      await runWithPackagedTestCleanup(
+        async () => {
+          await resizeRecorder.evaluate((recorder) => recorder.start());
+          startWidth = (await pane.boundingBox())!.width;
+          const handle = (await resizer.boundingBox())!;
+          await page.mouse.move(
+            handle.x + handle.width / 2,
+            handle.y + handle.height / 2,
+          );
+          await page.mouse.down();
+          await page.mouse.move(
+            handle.x + handle.width / 2 + 120,
+            handle.y + handle.height / 2,
+            { steps: 4 },
+          );
+          await page.mouse.up();
+          await expect
+            .poll(async () => Math.round((await pane.boundingBox())!.width))
+            .toBe(Math.round(startWidth) + 120);
+          resizePassed = true;
+        },
+        async () => {
+          try {
+            resizeEvidence = await resizeRecorder.evaluate(
+              (recorder, passed) =>
+                recorder.stop(
+                  passed ? 'assertion-success' : 'assertion-failure',
+                ),
+              resizePassed,
+            );
+          } finally {
+            await resizeRecorder.dispose();
+          }
+        },
+        async () => {
+          if (!resizeEvidence) {
+            throw new Error(
+              'Sidebar resize diagnostics could not be collected.',
+            );
+          }
+          const evidencePath = testInfo.outputPath(
+            'sidebar-resize-diagnostics.json',
+          );
+          await writeFile(
+            evidencePath,
+            JSON.stringify(resizeEvidence, null, 2),
+          );
+          await testInfo.attach('sidebar-resize-diagnostics', {
+            path: evidencePath,
+            contentType: 'application/json',
+          });
+        },
       );
-      await page.mouse.down();
-      await page.mouse.move(
-        handle.x + handle.width / 2 + 120,
-        handle.y + handle.height / 2,
-        { steps: 4 },
-      );
-      await page.mouse.up();
-      await expect
-        .poll(async () => Math.round((await pane.boundingBox())!.width))
-        .toBe(Math.round(startWidth) + 120);
       const searchBox = await sidebar
         .getByRole('searchbox', { name: 'Search models' })
         .boundingBox();

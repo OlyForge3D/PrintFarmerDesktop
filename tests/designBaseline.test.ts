@@ -16,8 +16,12 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runDetector } from '../scripts/design-detector.mjs';
+import { ciWindowsTimeout } from './helpers/ciWindowsTimeout';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// #874: empirical p99 35.692s/55.729s, 48 observations per callback.
+// 90s bounds the measured tail with >=61% headroom on Windows CI only.
+const measuredBaselineTimeout = ciWindowsTimeout(5000, 90_000);
 let fixture: string;
 
 interface BaselineReport {
@@ -138,46 +142,56 @@ describe('full-source design baseline', () => {
     expect(readFileSync(output, 'utf8')).toBe(bytes);
   });
 
-  it('reports ignored files and applies parsed design policy', () => {
-    mkdirSync(path.join(fixture, '.impeccable'));
-    writeFileSync(
-      path.join(fixture, '.impeccable/config.json'),
-      JSON.stringify({ detector: { ignoreFiles: ['src/renderer/Bad.tsx'] } }),
-    );
-    writeFileSync(
-      path.join(fixture, 'DESIGN.md'),
-      '---\ncolors:\n  primary: "#112233"\n---\n',
-    );
-    const result = baseline();
-    expect(result.status, result.stderr).toBe(0);
-    const report = readReport();
-    expect(report.scope.ignoredByConfig).toEqual(['src/renderer/Bad.tsx']);
-    expect(report.policy[0]?.parsed).toBe(true);
-    expect(report.policy[0]?.allowlists.colors).toBe(true);
-  });
+  it(
+    'reports ignored files and applies parsed design policy',
+    ({ task }) => {
+      expect(task.timeout).toBe(ciWindowsTimeout(5000, 90_000));
+      mkdirSync(path.join(fixture, '.impeccable'));
+      writeFileSync(
+        path.join(fixture, '.impeccable/config.json'),
+        JSON.stringify({ detector: { ignoreFiles: ['src/renderer/Bad.tsx'] } }),
+      );
+      writeFileSync(
+        path.join(fixture, 'DESIGN.md'),
+        '---\ncolors:\n  primary: "#112233"\n---\n',
+      );
+      const result = baseline();
+      expect(result.status, result.stderr).toBe(0);
+      const report = readReport();
+      expect(report.scope.ignoredByConfig).toEqual(['src/renderer/Bad.tsx']);
+      expect(report.policy[0]?.parsed).toBe(true);
+      expect(report.policy[0]?.allowlists.colors).toBe(true);
+    },
+    measuredBaselineTimeout,
+  );
 
-  it('fails without writing a report for malformed config, missing input, or malformed policy', () => {
-    mkdirSync(path.join(fixture, '.impeccable'));
-    const config = path.join(fixture, '.impeccable/config.json');
-    writeFileSync(config, '{"detector":');
-    expect(baseline().status).not.toBe(0);
-    writeFileSync(config, '{"detector":{"ignoreFiles":"oops"}}');
-    expect(baseline().status).not.toBe(0);
-    unlinkSync(config);
-    writeFileSync(path.join(fixture, 'DESIGN.md'), '---\ncolors:\n');
-    expect(baseline().status).not.toBe(0);
-    writeFileSync(
-      path.join(fixture, 'DESIGN.md'),
-      '---\ncolors: [broken\n---\n',
-    );
-    expect(baseline().stderr).toContain('Invalid design frontmatter');
-    writeFileSync(path.join(fixture, 'DESIGN.md'), '# Prose\n');
-    unlinkSync(path.join(fixture, 'src/renderer/Bad.tsx'));
-    expect(baseline().status).not.toBe(0);
-    expect(() =>
-      readFileSync(path.join(fixture, 'reports/design-baseline.json')),
-    ).toThrow();
-  });
+  it(
+    'fails without writing a report for malformed config, missing input, or malformed policy',
+    ({ task }) => {
+      expect(task.timeout).toBe(ciWindowsTimeout(5000, 90_000));
+      mkdirSync(path.join(fixture, '.impeccable'));
+      const config = path.join(fixture, '.impeccable/config.json');
+      writeFileSync(config, '{"detector":');
+      expect(baseline().status).not.toBe(0);
+      writeFileSync(config, '{"detector":{"ignoreFiles":"oops"}}');
+      expect(baseline().status).not.toBe(0);
+      unlinkSync(config);
+      writeFileSync(path.join(fixture, 'DESIGN.md'), '---\ncolors:\n');
+      expect(baseline().status).not.toBe(0);
+      writeFileSync(
+        path.join(fixture, 'DESIGN.md'),
+        '---\ncolors: [broken\n---\n',
+      );
+      expect(baseline().stderr).toContain('Invalid design frontmatter');
+      writeFileSync(path.join(fixture, 'DESIGN.md'), '# Prose\n');
+      unlinkSync(path.join(fixture, 'src/renderer/Bad.tsx'));
+      expect(baseline().status).not.toBe(0);
+      expect(() =>
+        readFileSync(path.join(fixture, 'reports/design-baseline.json')),
+      ).toThrow();
+    },
+    measuredBaselineTimeout,
+  );
 
   it('rejects local overrides and invalid arguments', () => {
     mkdirSync(path.join(fixture, '.impeccable'));

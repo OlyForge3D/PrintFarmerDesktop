@@ -17,6 +17,7 @@ import {
 } from './check-merge-queue-contexts.mjs';
 import { runGh, evaluateRequiredContexts } from './check-required-contexts.mjs';
 import { evaluateSequencingHold } from './check-sequencing-hold.mjs';
+import { verifySquashGroup } from './verify-queue-squash.mjs';
 
 const REPOSITORY = 'OlyForge3D/PrintFarmerDesktop';
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -81,9 +82,16 @@ export function readQueuePull(api, number) {
         mergeQueueEntry { id state position baseCommit { oid } headCommit { oid } }
         reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
       }
+      mergeQueue(branch:"development") {
+        entries(first:100) {
+          nodes { id headCommit { oid } pullRequest { number headRefOid } }
+          pageInfo { hasNextPage }
+        }
+      }
     }
   }`;
-  const pull = api('graphql', { query }).data?.repository?.pullRequest;
+  const data = api('graphql', { query }).data?.repository;
+  const pull = data?.pullRequest;
   const rest = api(`/repos/${REPOSITORY}/pulls/${number}`);
   const base = api(`/repos/${REPOSITORY}/git/ref/heads/development`).object
     ?.sha;
@@ -99,6 +107,25 @@ export function readQueuePull(api, number) {
     throw new Error(
       'Open PR, source head, target, or live base could not be corroborated.',
     );
+  }
+  if (pull.mergeQueueEntry) {
+    const entries = data?.mergeQueue?.entries;
+    const matching = entries?.nodes?.filter(
+      (entry) =>
+        entry?.headCommit?.oid === pull.mergeQueueEntry.headCommit?.oid,
+    );
+    if (
+      !Array.isArray(entries?.nodes) ||
+      entries.pageInfo?.hasNextPage !== false ||
+      !matching ||
+      matching.length !== 1 ||
+      matching[0].id !== pull.mergeQueueEntry.id ||
+      matching[0].pullRequest?.number !== number ||
+      matching[0].pullRequest?.headRefOid !== pull.headRefOid
+    )
+      throw new Error(
+        'Group must belong to exactly one corroborated current PR entry.',
+      );
   }
   return { ...pull, labels: rest.labels, baseSha: base };
 }
@@ -244,12 +271,16 @@ const fingerprint = (pull) =>
     entry: pull.mergeQueueEntry,
   });
 
+const proveLiveSquash = (input) =>
+  verifySquashGroup({ ...input, remote: true });
+
 export function checkDevelopmentQueue(
   { number, head, enqueue = false },
   api,
   verify = () => {
     throw new Error('Review verifier is required.');
   },
+  prove = proveLiveSquash,
 ) {
   const policy = readQueuePolicy(api);
   if (policy.mode !== 'queue') {
@@ -281,6 +312,7 @@ export function checkDevelopmentQueue(
       head_sha: entry.headCommit?.oid,
     };
     assertGroupBinding(pull, group);
+    prove({ base: group.base_sha, group: group.head_sha, head, number });
     const runs = readRuns(api, group.head_sha);
     checkQueueRuns(policy.checks, runs, group.head_sha);
     const runIds = new Set(
@@ -396,13 +428,19 @@ function readEventQueuePolicy(api) {
   };
 }
 
-export function verifyQueueEvent(event, api, verify) {
+export function verifyQueueEvent(event, api, verify, prove = proveLiveSquash) {
   const group = event.merge_group;
   const match =
-    /^refs\/heads\/gh-readonly-queue\/development\/pr-([1-9]\d*)-/.exec(
+    /^refs\/heads\/gh-readonly-queue\/development\/pr-([1-9]\d*)-([a-f0-9]{40})$/.exec(
       group?.head_ref ?? '',
     );
-  if (!match || !sha(group.base_sha) || !sha(group.head_sha)) {
+  if (
+    !match ||
+    match[2] !== group.base_sha ||
+    !Number.isSafeInteger(Number(match[1])) ||
+    !sha(group.base_sha) ||
+    !sha(group.head_sha)
+  ) {
     throw new Error('Not a recognizable development merge-group event.');
   }
   const policy = readEventQueuePolicy(api);
@@ -410,17 +448,14 @@ export function verifyQueueEvent(event, api, verify) {
   const pull = readQueuePull(api, number);
   assertQueuePull(pull, pull.headRefOid);
   assertGroupBinding(pull, group);
-  const comparison = api(
-    `/repos/${REPOSITORY}/compare/${pull.headRefOid}...${group.head_sha}`,
-  );
-  if (
-    !['ahead', 'identical'].includes(comparison.status) ||
-    comparison.behind_by !== 0
-  ) {
-    throw new Error(
-      'Current source head is not contained in this merge group.',
-    );
-  }
+  prove({
+    base: group.base_sha,
+    group: group.head_sha,
+    head: pull.headRefOid,
+    number,
+  });
+  // The event has no source SHA: exact-head freshness is established by the
+  // fetched PR ref above and the review verifier's --expected-head binding.
   verify(number, pull.headRefOid);
   const again = readQueuePull(api, number);
   assertQueuePull(again, pull.headRefOid);
@@ -430,10 +465,15 @@ export function verifyQueueEvent(event, api, verify) {
     JSON.stringify(policy) !== JSON.stringify(readEventQueuePolicy(api))
   )
     throw new Error('Queue evidence or policy changed during verification.');
-  return `Live queue configuration, membership, source-head review, holds and threads verified for this combined result. ${policy.bypass}.`;
+  return `Live queue configuration, single-PR membership, squash tree, source-head review, holds and threads verified for this combined result. ${policy.bypass}.`;
 }
 
-export function main(argv, env = process.env, run = spawnSync) {
+export function main(
+  argv,
+  env = process.env,
+  run = spawnSync,
+  prove = proveLiveSquash,
+) {
   try {
     const api = createQueueApi(env, run);
     const verify = (number, head) => verifyReview(number, head, env, run);
@@ -445,6 +485,7 @@ export function main(argv, env = process.env, run = spawnSync) {
           JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')),
           api,
           verify,
+          prove,
         ),
       );
       return 0;
@@ -466,6 +507,7 @@ export function main(argv, env = process.env, run = spawnSync) {
         { number: Number(args.pr), head: args.head, enqueue: args.enqueue },
         api,
         verify,
+        prove,
       ),
     );
     return 0;
