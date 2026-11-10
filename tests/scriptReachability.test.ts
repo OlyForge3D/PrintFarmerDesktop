@@ -45,6 +45,10 @@ const workflows = files.filter(({ path: filePath }) =>
   filePath.startsWith('.github/workflows/'),
 );
 
+// Both repository guards consume the same immutable corpus. Re-scanning it
+// inside the stale-exemption test took 5.067s on hosted Windows (#868).
+const repositoryReachability = evaluateScriptReachability({ scripts, files });
+
 function definedScripts(): Record<string, string> {
   const parsed: unknown = JSON.parse(packageJson?.contents ?? '{}');
   if (
@@ -204,14 +208,14 @@ describe('invocationKinds separates invoking from mentioning', () => {
 });
 
 describe('the repository has no undeclared dead scripts', () => {
-  const reachability = evaluateScriptReachability({ scripts, files });
-
   it('leaves no script uninvoked and undeclared', () => {
-    expect(reachability.orphans.map(({ basename }) => basename)).toEqual([]);
+    expect(
+      repositoryReachability.orphans.map(({ basename }) => basename),
+    ).toEqual([]);
   });
 
   it('actually resolves most scripts to a real invocation, so the pass is not vacuous', () => {
-    expect(reachability.invoked.length).toBeGreaterThan(20);
+    expect(repositoryReachability.invoked.length).toBeGreaterThan(20);
   });
 
   it('reports an unknown orphan rather than ignoring it', () => {
@@ -243,6 +247,25 @@ describe('the repository has no undeclared dead scripts', () => {
     });
 
     expect(report.orphans).toEqual([{ basename: 'self.mjs' }]);
+  });
+
+  it('reports an invocation even when an allowlist entry claims the script is uninvoked', () => {
+    const report = evaluateScriptReachability({
+      scripts: [`${SCRIPT_DIRECTORY}/wired.mjs`],
+      files: [
+        {
+          path: 'package.json',
+          contents: '{"scripts":{"check:wired":"node scripts/wired.mjs"}}',
+        },
+      ],
+      allowlist: { 'wired.mjs': 'A stale exemption must not hide invocation.' },
+    });
+
+    expect(report.invoked.map(({ basename }) => basename)).toEqual([
+      'wired.mjs',
+    ]);
+    expect(report.declared).toEqual([]);
+    expect(report.orphans).toEqual([]);
   });
 });
 
@@ -347,9 +370,8 @@ describe('the allowlists cannot rot quietly', () => {
   });
 
   it('holds no entry that is in fact invoked, so a stale exemption is caught', () => {
-    const reachability = evaluateScriptReachability({ scripts, files });
     const invoked = new Set(
-      reachability.invoked.map(({ basename }) => basename),
+      repositoryReachability.invoked.map(({ basename }) => basename),
     );
     for (const basename of Object.keys(UNINVOKED_SCRIPTS)) {
       expect(

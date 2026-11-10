@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MAX_ARCHIVE_BYTES, IpcChannel } from '@shared/ipc';
@@ -81,9 +81,8 @@ function recordingChannel(): {
 
 describe('retarget ZIP limit wiring', () => {
   it('uses the persisted setting on the distinct retarget sidecar and keeps strict validation', async () => {
-    electronState.userDataPath = path.join(
-      process.cwd(),
-      `.test-retarget-archive-settings-${randomUUID()}`,
+    electronState.userDataPath = await mkdtemp(
+      path.join(tmpdir(), 'retarget-archive-settings-'),
     );
     electronState.handlers.clear();
     const initializeArtifacts = vi
