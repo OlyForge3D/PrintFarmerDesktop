@@ -122,7 +122,7 @@ function renderWizard(busy = false): void {
 async function waitForPreview(previewImport: PreviewImportMock): Promise<void> {
   await waitFor(() => expect(previewImport).toHaveBeenCalled());
   await waitFor(() =>
-    expect(screen.getByText('Current plan')).toBeInTheDocument(),
+    expect(screen.getByText('Up to date')).toBeInTheDocument(),
   );
 }
 
@@ -135,6 +135,224 @@ afterEach(() => {
 });
 
 describe('folder policy tree and preview', () => {
+  it.each([
+    ['rule', ''],
+    ['policy', 'Miniatures'],
+    ['rule', 'Miniatures'],
+    ['rule', 'Unvisited/Legacy'],
+    ['policy', 'Unvisited/Archive'],
+  ] as const)(
+    'recovers a stale %s target at %s without silently selecting a same-name replacement',
+    async (source, relativePath) => {
+      const savedName = 'Remembered dragons';
+      const oldId = 'deleted-internal-id';
+      localStorage.setItem(
+        recipeKey,
+        JSON.stringify({
+          rules:
+            source === 'rule'
+              ? [
+                  {
+                    relativePath,
+                    kind: 'collection',
+                    name: savedName,
+                    collectionId: oldId,
+                  },
+                  { relativePath, kind: 'tag', name: 'keep-additive-tag' },
+                ]
+              : [],
+          policies:
+            source === 'policy'
+              ? [
+                  {
+                    relativePath,
+                    mode: 'organize',
+                    collectionName: savedName,
+                    collectionId: oldId,
+                    tags: ['keep-policy-tag'],
+                  },
+                ]
+              : [],
+          ignoredPaths: ['Unvisited/Ignored'],
+          commonTags: ['keep-common-tag'],
+        }),
+      );
+      const previewImport = installPreview();
+      const onConfirm = createConfirmImport();
+      render(
+        <ImportWizard
+          draft={{
+            ...draft,
+            collections: [
+              {
+                id: 'replacement',
+                name: savedName,
+                sharedToFarm: false,
+                memberCount: 2,
+              },
+            ],
+          }}
+          busy={false}
+          error={null}
+          onCancel={vi.fn()}
+          onDismissError={vi.fn()}
+          onConfirm={onConfirm}
+        />,
+      );
+      const issue = screen.getByRole('alert', {
+        name: 'Collection targets need attention',
+      });
+      expect(issue).toHaveTextContent(relativePath || 'Source folder');
+      expect(issue).toHaveTextContent(savedName);
+      expect(screen.queryByText(new RegExp(oldId))).toBeNull();
+      const picker = within(issue).getByRole('combobox');
+      expect(picker).toHaveValue('__unresolved__');
+      expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      expect(previewImport).not.toHaveBeenCalled();
+      fireEvent.change(picker, { target: { value: 'replacement' } });
+      await waitForPreview(previewImport);
+      const request = previewImport.mock.calls.at(-1)?.[0];
+      expect(JSON.stringify(request)).not.toContain(oldId);
+      if (source === 'rule') {
+        expect(request?.rules).toContainEqual({
+          relativePath,
+          kind: 'collection',
+          name: savedName,
+          collectionId: 'replacement',
+        });
+        expect(request?.rules).toContainEqual({
+          relativePath,
+          kind: 'tag',
+          name: 'keep-additive-tag',
+        });
+      } else {
+        expect(request?.policies).toContainEqual({
+          relativePath,
+          mode: 'organize',
+          collectionName: savedName,
+          collectionId: 'replacement',
+          tags: ['keep-policy-tag'],
+        });
+      }
+      expect(request?.commonTags).toEqual(['keep-common-tag']);
+      fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+      await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
+      expect(onConfirm.mock.calls[0]?.[0].ignoredPaths).toEqual([
+        'Unvisited/Ignored',
+      ]);
+    },
+  );
+
+  it('lets a missing hidden target explicitly create a collection with its remembered name', async () => {
+    localStorage.setItem(
+      recipeKey,
+      JSON.stringify({
+        rules: [],
+        commonTags: [],
+        policies: [
+          {
+            relativePath: 'Absent/Folder',
+            mode: 'organize',
+            collectionName: 'Dragons',
+            collectionId: 'deleted',
+            tags: ['keep'],
+          },
+        ],
+      }),
+    );
+    const previewImport = installPreview();
+    renderWizard();
+    fireEvent.change(
+      screen.getByLabelText('Resolve policy collection for Absent/Folder'),
+      { target: { value: '__name__' } },
+    );
+    await waitForPreview(previewImport);
+    expect(previewImport.mock.calls.at(-1)?.[0].policies).toEqual([
+      {
+        relativePath: 'Absent/Folder',
+        mode: 'organize',
+        collectionName: 'Dragons',
+        tags: ['keep'],
+      },
+    ]);
+  });
+
+  it('shows an automatic read-only empty summary, keeps pending import gated, and labels the action simply Import', async () => {
+    const previewImport = installPreview(
+      createPreviewImport().mockResolvedValue({
+        ...preview,
+        organization: {
+          affectedModels: 0,
+          unmatchedModels: 6,
+          newCollections: [],
+          reusedCollections: [],
+          newTags: [],
+          reusedTags: [],
+          samples: [],
+          errors: [],
+        },
+      }),
+    );
+    renderWizard();
+    expect(
+      screen.getByRole('heading', { name: 'What this import will do' }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/Updates automatically as you change folder settings/),
+    ).toBeVisible();
+    expect(screen.queryByText('Current plan')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Import' }),
+    ).toHaveAccessibleDescription(/automatic summary finishes updating/);
+    await waitForPreview(previewImport);
+    expect(
+      screen.getByText(
+        'No collections or tags will be added. Model files will still be imported.',
+      ),
+    ).toBeVisible();
+    expect(document.querySelector('.import-preview-metrics')).toBeNull();
+    expect(document.querySelector('.import-preview-names')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+  });
+
+  it('does not present zero metrics or an up-to-date badge when native calculation returns errors, and retries the same plan', async () => {
+    const message =
+      "The remembered collection 'Dragons' for 'Miniatures' no longer exists. Reopen the import dialog and choose a collection target for this folder.";
+    const previewImport = installPreview(
+      createPreviewImport().mockResolvedValueOnce({
+        ...preview,
+        organization: {
+          ...organization,
+          affectedModels: 0,
+          newCollections: [],
+          newTags: [],
+          samples: [],
+          errors: [message],
+        },
+      }),
+    );
+    renderWizard();
+    await waitFor(() =>
+      expect(screen.getByText("Couldn't calculate")).toBeVisible(),
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(message);
+    expect(document.querySelector('.import-preview-metrics')).toBeNull();
+    expect(screen.queryByText('Up to date')).toBeNull();
+    const button = screen.getByRole('button', { name: 'Import' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(
+      /summary could not be calculated/,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Retry organization preview' }),
+    );
+    await waitForPreview(previewImport);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(previewImport).toHaveBeenCalledTimes(2);
+  });
+
   it('locates invalid policies across pages without blaming the selected valid folder', async () => {
     const invalidPath = 'Folder-105/Project';
     const folders = Array.from({ length: 110 }, (_, index) => ({
@@ -189,9 +407,7 @@ describe('folder policy tree and preview', () => {
     expect(sourceErrors).toHaveTextContent(
       'Output placeholders must be named captures',
     );
-    expect(
-      screen.getByRole('button', { name: 'Import 6 files' }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
     expect(
       screen.queryByRole('button', {
         name: `Edit policy for ${invalidPath}`,
@@ -235,9 +451,7 @@ describe('folder policy tree and preview', () => {
       screen.queryByRole('alert', { name: 'Source organization errors' }),
     ).toBeNull();
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 6 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
   });
 
@@ -354,9 +568,7 @@ describe('folder policy tree and preview', () => {
     expect(
       screen.getByText('Example model paths and resulting organization'),
     ).toBeVisible();
-    expect(
-      screen.getByRole('button', { name: 'Import 6 files' }),
-    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
   });
 
   it('resolves a fixed recipe collection by ID and blocks a missing saved target', async () => {
@@ -401,9 +613,7 @@ describe('folder policy tree and preview', () => {
         name: 'Choose recipe collection for Miniatures',
       }),
     ).toHaveValue('maker-collection-id');
-    expect(
-      screen.getByRole('button', { name: 'Import 6 files' }),
-    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
 
     unmount();
     render(
@@ -423,9 +633,7 @@ describe('folder policy tree and preview', () => {
         }),
       ).toHaveAttribute('aria-invalid', 'true'),
     );
-    expect(
-      screen.getByRole('button', { name: 'Import 6 files' }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
   });
 
   it('clears descendant and absent saved exceptions during subtree bulk actions', async () => {
@@ -596,9 +804,7 @@ describe('folder policy tree and preview', () => {
         'Organization preview is unavailable',
       ),
     );
-    expect(
-      screen.getByRole('button', { name: 'Import 6 files' }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
     fireEvent.click(
       screen.getByRole('button', { name: 'Retry organization preview' }),
     );
@@ -634,11 +840,9 @@ describe('folder policy tree and preview', () => {
     );
     await waitForPreview(previewImport);
     expect(previewImport).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Import 6 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 6 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
     expect(previewImport).toHaveBeenCalledTimes(1);
   });

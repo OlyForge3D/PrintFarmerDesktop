@@ -2002,11 +2002,9 @@ describe('<App />', () => {
       target: { value: 'printable' },
     });
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 2 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Import 2 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 
     await waitFor(() =>
       expect(importRoot).toHaveBeenCalledWith({
@@ -2082,7 +2080,7 @@ describe('<App />', () => {
       name: 'Organize models before importing',
     });
     const importButton = screen.getByRole('button', {
-      name: 'Import 2277 files',
+      name: 'Import',
     });
     await waitFor(() => expect(importButton).toBeEnabled());
     fireEvent.click(importButton);
@@ -2180,11 +2178,9 @@ describe('<App />', () => {
       name: 'Organize models before importing',
     });
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 3 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     expect(within(dialog).getByRole('progressbar')).toBeInTheDocument();
 
     await act(async () => {
@@ -2214,9 +2210,7 @@ describe('<App />', () => {
     expect(
       within(dialog).getByRole('status', { name: 'Import progress' }),
     ).toBeEmptyDOMElement();
-    expect(
-      screen.getByRole('button', { name: 'Import 3 files' }),
-    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
   });
 
   it('keeps Library preview entry points unreachable while a Settings import is being prepared', async () => {
@@ -2384,13 +2378,9 @@ describe('<App />', () => {
     addFolder.focus();
     fireEvent.click(addFolder);
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 1 file' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Import 1 file' }),
-    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
 
     await waitFor(() =>
       expect(

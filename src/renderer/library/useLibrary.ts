@@ -19,6 +19,7 @@ import { LibraryPageSize as PageSizeSchema } from '@shared/ipc';
 import { defaultLibraryView, type LibraryView } from './filter';
 import { rootIdForPath } from './model';
 import { previewAllImportFolders } from './importPreview';
+import { forgetAllImportPlans } from './importPlan';
 import {
   filterModelsByRemovedRoots,
   loadStoredSourceRoots,
@@ -761,6 +762,7 @@ export function useLibrary(
     setStatus('resetting');
     try {
       const result = await window.printFarmer.resetCatalog();
+      forgetAllImportPlans();
       setCatalogModels([]);
       responseRevision.current += 1;
       setCollections([]);

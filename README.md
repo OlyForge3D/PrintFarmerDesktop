@@ -41,6 +41,11 @@ message and does not change the catalog. Catalog-refresh errors retry the
 catalog refresh rather than rescanning the source. Long diagnostic messages are
 available under **Error details**.
 
+The import dialog includes skipped-entry, cloud-only, unreadable, and oversized
+ZIP counts alongside its file summary. **Skipped paths and scan details** keeps
+remediation guidance, bounded path details, and retry available without a
+separate warning banner.
+
 The library loads one database-backed page at a time: **48 items** by default,
 with **24, 48, 96, or 192** items per page. The page-size preference is saved
 locally. Search, format/review filters, collection selection, and sorting apply
@@ -85,6 +90,12 @@ The scope is independent of which tree rows are displayed. Previously saved
 folder rules remain visible as legacy additive choices until explicitly edited.
 Remembering preserves fixed collection identities and policies for later imports,
 including newly encountered descendant folders.
+If a remembered collection was deleted, choose a target explicitly using its
+saved folder path and collection name, including choices for folders absent
+from the current scan. A same-name collection is not silently substituted.
+Resetting the catalog also forgets saved import recipes for all sources: a
+fresh catalog starts with fresh organization choices rather than replaying
+identities and policies from the removed catalog.
 
 Optional **path recipes** match directories relative to the selected folder.
 For example, on `Miniatures`, use `{maker}/{project}/**`, collection `{maker}`,
@@ -95,13 +106,18 @@ Without `**`, the directory path must match exactly. Names are unique ASCII
 identifiers, not expressions. An unmatched recipe adds no folder metadata and
 does not fall back to its parent policy. Whole-import organization still applies.
 
-Before confirmation, the preview evaluates the full source and distinguishes
+**What this import will do** is a read-only summary that updates automatically
+as folder settings change; there is no separate plan-acceptance step.
+It evaluates the full source and distinguishes
 unique **new** collections/tags from existing metadata to reuse, with example
 resolved outputs and unmatched file counts. Invalid patterns, unknown captures,
 invalid resolved names, or unresolved collection targets block import. The
 import rescans and validates again before catalog changes, so preview counts
 are estimates of file locations, not content-deduplicated model identities.
 Paging the folder hierarchy never truncates policy coverage.
+Import is unavailable while this calculation is pending or has failed; the
+reason appears beside **Import**. An empty organization summary still permits
+importing model files without adding collections or tags.
 
 **Maximum ZIP size** is measured in MiB (1,048,576 bytes), defaults to 512 MiB,
 and accepts whole values from 1 to 16,384 MiB. Changes apply to the next scan,

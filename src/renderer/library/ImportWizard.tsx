@@ -15,7 +15,7 @@ import {
 import { basename, formatBytes } from './model';
 import { Icon } from '../ui/Icon';
 import { LibraryErrorAlert } from './LibraryErrorAlert';
-import { ScanFeedback } from './ScanFeedback';
+import { ScanFeedback, scanOutcomeCounts } from './ScanFeedback';
 
 export interface ImportWizardProps {
   draft: ImportDraft;
@@ -58,7 +58,7 @@ export function ImportWizard({
     importStage,
     draft.preview.modelCount,
   );
-  const [scanFeedbackDismissed, setScanFeedbackDismissed] = useState(false);
+  const scanCounts = scanOutcomeCounts(draft.preview);
   const dialogRef = useRef<HTMLElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
@@ -86,6 +86,38 @@ export function ImportWizard({
   const [folderPage, setFolderPage] = useState(0);
   const plan = useMemo(() => buildImportPlan(choices), [choices]);
   const planKey = JSON.stringify(plan);
+  const unresolvedTargets = [
+    ...plan.rules.flatMap((rule) =>
+      rule.kind === 'collection'
+        ? [
+            {
+              source: 'rule' as const,
+              path: rule.relativePath,
+              name: rule.name,
+              id: rule.collectionId,
+            },
+          ]
+        : [],
+    ),
+    ...(plan.policies ?? []).flatMap((policy) =>
+      policy.mode === 'organize' &&
+      policy.collectionName &&
+      !hasTemplatePlaceholder(policy.collectionName)
+        ? [
+            {
+              source: 'policy' as const,
+              path: policy.relativePath,
+              name: policy.collectionName,
+              id: policy.collectionId,
+            },
+          ]
+        : [],
+    ),
+  ].filter(
+    (target) =>
+      rememberedCollectionTarget(target.name, target.id, draft.collections)
+        .unresolved,
+  );
   const folderTree = useMemo(
     () => buildFolderTree(choices.folders),
     [choices.folders],
@@ -195,6 +227,7 @@ export function ImportWizard({
     commonTagsError === null &&
     !unresolvedRoot &&
     unresolvedFolders.length === 0 &&
+    unresolvedTargets.length === 0 &&
     previewIsCurrent &&
     (previewState?.organization?.errors.length ?? 1) === 0 &&
     !busy;
@@ -202,6 +235,19 @@ export function ImportWizard({
   useEffect(() => {
     if (busy || completedPreviewKeyRef.current === planKey) return;
     const requestId = ++previewRequestRef.current;
+    if (
+      unresolvedRoot ||
+      unresolvedFolders.length ||
+      unresolvedTargets.length
+    ) {
+      setPreviewState({
+        key: planKey,
+        status: 'error',
+        error:
+          'Choose collection targets in Folder policies or Whole import to calculate the summary.',
+      });
+      return;
+    }
     setPreviewState({ key: planKey, status: 'pending' });
     const timer = window.setTimeout(() => {
       void Promise.resolve()
@@ -225,12 +271,16 @@ export function ImportWizard({
               'Organization preview is unavailable. Update the desktop sidecar and retry.',
             );
           }
+          const organization = response.organization;
           setPreviewState({
             key: planKey,
-            status: 'ready',
-            organization: response.organization,
+            status: organization.errors.length ? 'error' : 'ready',
+            ...(organization.errors.length
+              ? { error: organization.errors.join(' ') }
+              : { organization }),
           });
-          completedPreviewKeyRef.current = planKey;
+          if (!organization.errors.length)
+            completedPreviewKeyRef.current = planKey;
         })
         .catch((cause: unknown) => {
           if (previewRequestRef.current !== requestId) return;
@@ -250,7 +300,16 @@ export function ImportWizard({
         previewRequestRef.current += 1;
       }
     };
-  }, [busy, draft.approvalId, plan, planKey, previewRetry]);
+  }, [
+    busy,
+    draft.approvalId,
+    plan,
+    planKey,
+    previewRetry,
+    unresolvedRoot,
+    unresolvedFolders.length,
+    unresolvedTargets.length,
+  ]);
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -302,10 +361,6 @@ export function ImportWizard({
       document.removeEventListener('focusin', onFocusIn);
     };
   }, [busy, onCancel]);
-
-  useEffect(() => {
-    setScanFeedbackDismissed(false);
-  }, [draft.preview]);
 
   useEffect(() => {
     if (!busy) {
@@ -456,6 +511,22 @@ export function ImportWizard({
             {draft.preview.formats.step !== undefined ? (
               <SummaryStat label="STEP" value={draft.preview.formats.step} />
             ) : null}
+            <SummaryStat label="Skipped entries" value={scanCounts.skipped} />
+            <SummaryStat label="Cloud-only" value={scanCounts.cloudOnly} />
+            <SummaryStat label="Unreadable" value={scanCounts.unreadable} />
+            <SummaryStat label="Oversized ZIPs" value={scanCounts.tooLarge} />
+            {scanCounts.permissionDenied ? (
+              <SummaryStat
+                label="Permission denied"
+                value={scanCounts.permissionDenied}
+              />
+            ) : null}
+            {scanCounts.filesystemErrors ? (
+              <SummaryStat
+                label="Filesystem errors"
+                value={scanCounts.filesystemErrors}
+              />
+            ) : null}
           </div>
 
           {error ? (
@@ -467,15 +538,13 @@ export function ImportWizard({
               retryLabel={retryLabel}
             />
           ) : null}
-          {!scanFeedbackDismissed ? (
-            <ScanFeedback
-              data={draft.preview}
-              onRetry={onRetryScan}
-              retryLabel={retryLabel}
-              onDismiss={() => setScanFeedbackDismissed(true)}
-              className="import-scan-feedback"
-            />
-          ) : null}
+          <ScanFeedback
+            data={draft.preview}
+            onRetry={onRetryScan}
+            retryLabel={retryLabel}
+            compact
+            disabled={busy}
+          />
           {draft.preview.modelCount === 0 ? (
             <p className="import-warning">
               No locally available supported files were found.
@@ -500,7 +569,6 @@ export function ImportWizard({
               <div className="import-section-heading">
                 <div>
                   <h3>Whole import</h3>
-                  <p>Apply a collection and optional tags to every model.</p>
                 </div>
               </div>
               <div className="import-root-rule">
@@ -577,12 +645,11 @@ export function ImportWizard({
                     }))
                   }
                 />
-                <small
-                  className={commonTagsError ? 'import-field-error' : undefined}
-                  role={commonTagsError ? 'alert' : undefined}
-                >
-                  {commonTagsError ?? 'Separate tags with commas.'}
-                </small>
+                {commonTagsError ? (
+                  <small className="import-field-error" role="alert">
+                    {commonTagsError}
+                  </small>
+                ) : null}
               </label>
             </section>
 
@@ -606,6 +673,92 @@ export function ImportWizard({
                   legacy rules/ignores
                 </span>
               </div>
+              {unresolvedTargets.length ? (
+                <div
+                  className="import-policy-alert"
+                  role="alert"
+                  aria-label="Collection targets need attention"
+                >
+                  <strong>Saved collection choices need attention</strong>
+                  <span>
+                    A remembered collection is missing or its name is ambiguous.
+                    Choose a target explicitly; files will not be moved.
+                  </span>
+                  {unresolvedTargets.map((target, index) => (
+                    <label
+                      className="import-policy-field"
+                      key={`${target.source}-${target.path}-${index}`}
+                    >
+                      <span>
+                        {target.path || 'Source folder'} — {target.name}
+                      </span>
+                      <CollectionTargetPicker
+                        label={`Resolve ${target.source} collection for ${target.path || 'source'}`}
+                        name={target.name}
+                        collectionId={target.id}
+                        unresolved
+                        collections={draft.collections}
+                        disabled={busy}
+                        onSelect={(collection) =>
+                          setChoices((current) => {
+                            const selected = collection
+                              ? { collectionId: collection.id }
+                              : {};
+                            const name = collection?.name ?? target.name;
+                            const next = {
+                              ...current,
+                              legacyRules: current.legacyRules.map((rule) => {
+                                if (
+                                  target.source !== 'rule' ||
+                                  rule.kind !== 'collection' ||
+                                  rule.relativePath !== target.path ||
+                                  rule.name !== target.name ||
+                                  rule.collectionId !== target.id
+                                )
+                                  return rule;
+                                const rest = { ...rule };
+                                delete rest.collectionId;
+                                return { ...rest, name, ...selected };
+                              }),
+                              policies: current.policies.map((policy) => {
+                                if (
+                                  target.source !== 'policy' ||
+                                  policy.relativePath !== target.path
+                                )
+                                  return policy;
+                                const rest = { ...policy };
+                                delete rest.collectionId;
+                                return {
+                                  ...rest,
+                                  collectionName: name,
+                                  ...selected,
+                                };
+                              }),
+                              folders: current.folders.map((folder) =>
+                                folder.relativePath === target.path &&
+                                (folder.mode === 'collection' ||
+                                  folder.mode === 'recipe')
+                                  ? withFolderCollectionTarget(
+                                      { ...folder, name },
+                                      selected,
+                                    )
+                                  : folder,
+                              ),
+                            };
+                            return target.source === 'rule' &&
+                              target.path === ''
+                              ? withRootCollectionTarget(
+                                  { ...next, rootCollectionName: name },
+                                  selected,
+                                )
+                              : next;
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
               {validationError && !choices.recipeError ? (
                 <div
                   className="import-policy-alert"
@@ -910,12 +1063,6 @@ export function ImportWizard({
                             {selectedFolder.modelCount.toLocaleString()} models
                           </span>
                         </div>
-                        {selectedFolder.legacy ? (
-                          <p className="import-legacy-note">
-                            Legacy additive choice. It remains unchanged until
-                            you edit this folder.
-                          </p>
-                        ) : null}
                         {selectedFolder.mode === 'ignore' ? (
                           <p className="import-legacy-note">
                             Legacy ignore only removes the old choice here. It
@@ -1182,18 +1329,6 @@ export function ImportWizard({
                             </label>
                           </>
                         ) : null}
-                        {selectedFolder.mode === 'disabled' ? (
-                          <p className="import-disabled-note">
-                            Folder metadata is disabled here. Model files are
-                            still imported and remain in this source.
-                          </p>
-                        ) : null}
-                        {selectedFolder.mode === 'inherit' ? (
-                          <p className="import-inherit-note">
-                            This folder has no local policy. It inherits the
-                            nearest configured ancestor policy, if any.
-                          </p>
-                        ) : null}
                         {selectedFolderValidationError ? (
                           <p className="import-field-error" role="alert">
                             Policy error for {selectedFolder.relativePath}:{' '}
@@ -1217,10 +1352,10 @@ export function ImportWizard({
             <section className="import-section import-organization-preview">
               <div className="import-section-heading">
                 <div>
-                  <h3>Organization preview</h3>
+                  <h3>What this import will do</h3>
                   <p>
-                    Based on the complete source scan. Import stays unavailable
-                    until this plan is previewed successfully.
+                    Read-only summary of the complete source scan. Updates
+                    automatically as you change folder settings.
                   </p>
                 </div>
                 <span>
@@ -1228,8 +1363,8 @@ export function ImportWizard({
                   previewState.status === 'pending'
                     ? 'Updating…'
                     : previewState.status === 'error'
-                      ? 'Unavailable'
-                      : 'Current plan'}
+                      ? "Couldn't calculate"
+                      : 'Up to date'}
                 </span>
               </div>
               {previewState?.key !== planKey ||
@@ -1305,30 +1440,57 @@ export function ImportWizard({
             />
             Remember these rules for this source
           </label>
-          <div>
-            <button
-              type="button"
-              className="import-secondary"
-              disabled={busy}
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              ref={importButtonRef}
-              className="import-primary"
-              disabled={!canImport}
-              onClick={() => {
-                void submit();
-              }}
-            >
-              {busy
-                ? 'Importing...'
-                : draft.preview.modelCount === 0
-                  ? 'Reconcile source'
-                  : `Import ${draft.preview.modelCount} ${draft.preview.modelCount === 1 ? 'file' : 'files'}`}
-            </button>
+          <div className="import-footer-actions">
+            {!busy && !canImport ? (
+              <p
+                id="import-unavailable-reason"
+                className="import-action-reason"
+                role="status"
+              >
+                {unresolvedRoot ||
+                unresolvedFolders.length ||
+                unresolvedTargets.length
+                  ? 'Choose the collection targets that need attention.'
+                  : validationError ||
+                    commonTagsError ||
+                    (choices.rootCollection &&
+                    !validOrganizationName(choices.rootCollectionName)
+                      ? 'Check the organization settings above.'
+                      : !previewIsCurrent &&
+                          previewState?.key === planKey &&
+                          previewState.status === 'error'
+                        ? 'Import is unavailable because the summary could not be calculated. Review the error above and retry.'
+                        : 'Import will be available when the automatic summary finishes updating.')}
+              </p>
+            ) : null}
+            <div>
+              <button
+                type="button"
+                className="import-secondary"
+                disabled={busy}
+                onClick={onCancel}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                ref={importButtonRef}
+                className="import-primary"
+                aria-describedby={
+                  !busy && !canImport ? 'import-unavailable-reason' : undefined
+                }
+                disabled={!canImport}
+                onClick={() => {
+                  void submit();
+                }}
+              >
+                {busy
+                  ? 'Importing...'
+                  : draft.preview.modelCount === 0
+                    ? 'Reconcile source'
+                    : 'Import'}
+              </button>
+            </div>
           </div>
         </footer>
 
@@ -1480,6 +1642,20 @@ function OrganizationPreview({
 }: {
   organization: NonNullable<ImportPreviewResponse['organization']>;
 }): React.JSX.Element {
+  if (
+    organization.affectedModels === 0 &&
+    !organization.newCollections.length &&
+    !organization.reusedCollections.length &&
+    !organization.newTags.length &&
+    !organization.reusedTags.length
+  ) {
+    return (
+      <p className="import-preview-status">
+        No collections or tags will be added. Model files will still be
+        imported.
+      </p>
+    );
+  }
   return (
     <div className="import-preview-content">
       <div className="import-preview-metrics">
@@ -1567,6 +1743,7 @@ function OrganizationNameList({
   names: readonly string[];
 }): React.JSX.Element {
   const visible = names.slice(0, 30);
+  if (!names.length) return <></>;
   return (
     <details>
       <summary>
@@ -1718,7 +1895,7 @@ function rememberedCollectionTarget(
   );
   return remembered
     ? { collectionId: remembered.id, resolvedName: remembered.name }
-    : { unresolved: true };
+    : { collectionId: rememberedId, unresolved: true };
 }
 
 function withRootCollectionTarget(
@@ -1768,7 +1945,7 @@ function CollectionTargetPicker({
 }): React.JSX.Element {
   const matches = matchingCollections(name, collections);
   const nameTargetDisabled = matches.length > 1;
-  const value = collectionId ?? (unresolved ? '__unresolved__' : '__name__');
+  const value = unresolved ? '__unresolved__' : (collectionId ?? '__name__');
   return (
     <select
       className="import-collection-target"

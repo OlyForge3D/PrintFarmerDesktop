@@ -135,7 +135,7 @@ describe('import wizard progress', () => {
     );
 
     const importButton = screen.getByRole('button', {
-      name: 'Import 2277 files',
+      name: 'Import',
     });
     await waitFor(() => expect(importButton).toBeEnabled());
     fireEvent.click(importButton);
@@ -175,7 +175,7 @@ describe('import wizard progress', () => {
     });
     expect(progressStatus()).toBeEmptyDOMElement();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-    const reenabled = screen.getByRole('button', { name: 'Import 2277 files' });
+    const reenabled = screen.getByRole('button', { name: 'Import' });
     expect(reenabled).toBeEnabled();
     expect(reenabled).toHaveFocus();
   });
@@ -193,11 +193,9 @@ describe('import wizard progress', () => {
     };
     const { rerender } = render(<ImportWizard {...props} error={null} />);
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 2277 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Import 2277 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     rerender(<ImportWizard {...props} error="Scan policy refused root." />);
     await act(async () => {
       pending.resolve(false);
@@ -222,16 +220,14 @@ describe('import wizard progress', () => {
       />,
     );
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Import 2277 files' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Import 2277 files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     expect(screen.getByRole('progressbar')).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(),
     );
-    const reenabled = screen.getByRole('button', { name: 'Import 2277 files' });
+    const reenabled = screen.getByRole('button', { name: 'Import' });
     expect(reenabled).toBeEnabled();
     expect(reenabled).toHaveFocus();
   });

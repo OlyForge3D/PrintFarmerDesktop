@@ -274,7 +274,8 @@ export function SourcesWorkspace({
               <p>
                 This removes indexed models, source folders, favorites,
                 thumbnail records, and every tag and collection on this
-                computer, including their assignments.
+                computer, including their assignments and saved import
+                organization choices.
               </p>
               <p>
                 Your original files, server connections, upload history, and
