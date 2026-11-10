@@ -103,7 +103,10 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         page.getByRole('button', { name: 'Cancel import' }),
       ).toBeFocused();
       await expectNoMaterialViolations(page, 'import review', testInfo);
-      const importButton = page.getByRole('button', { name: 'Import 1 file' });
+      const importButton = page.getByRole('button', {
+        name: 'Import',
+        exact: true,
+      });
       await importButton.scrollIntoViewIfNeeded();
       await importButton.click();
       await expect(importDialog).toHaveCount(0);

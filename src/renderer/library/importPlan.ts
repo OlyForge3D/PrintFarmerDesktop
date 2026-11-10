@@ -398,6 +398,18 @@ export function forgetImportPlan(rootId: string): void {
   globalThis.localStorage.removeItem(`${LEGACY_PREFIX}${rootId}`);
 }
 
+export function forgetAllImportPlans(): void {
+  const storage = globalThis.localStorage;
+  const keys = Array.from({ length: storage.length }, (_, index) =>
+    storage.key(index),
+  );
+  for (const key of keys) {
+    if (key?.startsWith(STORAGE_PREFIX) || key?.startsWith(LEGACY_PREFIX)) {
+      storage.removeItem(key);
+    }
+  }
+}
+
 function readRecipe(rootId: string): {
   recipe: StoredImportRecipe | null;
   error?: string;

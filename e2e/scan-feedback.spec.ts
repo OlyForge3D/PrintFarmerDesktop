@@ -112,7 +112,7 @@ test('many skipped ZIPs keep import actions reachable while details scroll', asy
     });
     await expect(wizard).toBeVisible();
     const actualImportButton = wizard.getByRole('button', {
-      name: /Import 1 file/,
+      name: /^Import$/,
     });
     await expect(actualImportButton).toBeEnabled();
     await expect(wizard).toContainText('225');
@@ -138,13 +138,14 @@ test('many skipped ZIPs keep import actions reachable while details scroll', asy
           .evaluate((element) => element.scrollWidth <= element.clientWidth),
       )
       .toBe(true);
-    const details = wizard
-      .locator('details')
-      .filter({ has: page.locator('summary', { hasText: /skip/i }) });
+    const details = wizard.locator('.import-scan-details');
     await expect(details).toHaveCount(1);
     await expect(details).not.toHaveAttribute('open', '');
     await page.screenshot({ path: testInfo.outputPath('scan-summary.png') });
-    await details.locator('summary').click();
+    await details.locator(':scope > summary').click();
+    await details
+      .getByText('Show skipped paths and details', { exact: true })
+      .click();
     await page.screenshot({
       path: testInfo.outputPath('scan-details-expanded.png'),
     });
