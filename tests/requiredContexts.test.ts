@@ -31,7 +31,7 @@ describe('evaluateRequiredContexts', () => {
   it('is ready when all eight are present and successful', () => {
     const r = evaluateRequiredContexts(EIGHT, allEight());
     expect(r.exitCode).toBe(EXIT_READY);
-    expect(r.green).toHaveLength(8);
+    expect(r.green).toHaveLength(EIGHT.length);
     expect(r.absent).toEqual([]);
   });
 
@@ -41,7 +41,7 @@ describe('evaluateRequiredContexts', () => {
       .filter((r) => r.name !== 'Dependency advisories')
       .concat([ok('Lint'), ok('Format'), ok('Provenance')]);
     expect(runs.every((r) => r.conclusion === 'SUCCESS')).toBe(true);
-    expect(runs).toHaveLength(10);
+    expect(runs).toHaveLength(EIGHT.length + 2);
 
     const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.exitCode).toBe(EXIT_ABSENT);
@@ -88,7 +88,7 @@ describe('evaluateRequiredContexts', () => {
     };
     const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.pending).toEqual(['Sidecar (windows-latest)']);
-    expect(r.green).toHaveLength(7);
+    expect(r.green).toHaveLength(EIGHT.length - 1);
     expect(r.notGreen).toEqual([]);
     expect(r.exitCode).toBe(EXIT_NOT_GREEN);
   });
@@ -99,14 +99,14 @@ describe('evaluateRequiredContexts', () => {
       ok('Lint'),
       ok('Format'),
     ]);
-    expect(r.green).toHaveLength(8);
+    expect(r.green).toHaveLength(EIGHT.length);
     expect(r.extra).toBe(2);
   });
 
   it('is ABSENT when there are no runs at all rather than vacuously ready', () => {
     const r = evaluateRequiredContexts(EIGHT, []);
     expect(r.exitCode).toBe(EXIT_ABSENT);
-    expect(r.absent).toHaveLength(8);
+    expect(r.absent).toHaveLength(EIGHT.length);
   });
 
   it('tolerates undefined runs', () => {
