@@ -190,6 +190,7 @@ describe('the parsers see the real files, not an empty string', () => {
     expect(declaredClassOf(entry!.contents, entry!.file)).toBe('reports');
     expect(renderedContexts(entry!.contents, entry!.file)).toEqual([
       'Sequencing hold',
+      'Source policy checks',
     ]);
     expect(REQUIRED_CONTEXT_NAMES).toContain('Sequencing hold');
   });

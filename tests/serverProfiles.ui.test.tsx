@@ -97,6 +97,11 @@ describe('<ServerProfilesDialog />', () => {
     expect(
       screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toHaveAttribute('aria-modal', 'true');
+    expect(
+      screen.getByText(
+        /HTTP is allowed for trusted LAN servers but is not encrypted/,
+      ),
+    ).toBeVisible();
     fireEvent.change(screen.getByLabelText('Profile name'), {
       target: { value: 'Production farm' },
     });
@@ -105,6 +110,11 @@ describe('<ServerProfilesDialog />', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
     expect(await screen.findByText('Connection successful')).toBeVisible();
+    expect(
+      screen.getByText(
+        'HTTP transport is not encrypted. Use only on a trusted LAN.',
+      ),
+    ).toBeVisible();
     const request = testServerProfile.mock.calls[0]?.[0];
     expect(request?.source).toBe('draft');
     expect(

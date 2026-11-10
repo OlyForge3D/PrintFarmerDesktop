@@ -196,11 +196,16 @@ function fixture() {
   return { root, work, remote, git, gitAt, base, output, environment, invoke };
 }
 
+// Real Git/npm subprocesses exceeded 5s on hosted Windows (5.861s in #866).
+// Keep the larger budget scoped to transactions, not pure validation tests.
 describe('persisted version commit and atomic branch/tag transaction', () => {
   it('commits every application version surface and tags/builds that exact SHA', () => {
     const f = fixture();
-    const calls: { command: string; args: string[]; env: NodeJS.ProcessEnv }[] =
-      [];
+    const calls: {
+      command: string;
+      args: string[];
+      env: NodeJS.ProcessEnv;
+    }[] = [];
     const result = main(f.environment, f.work, (command, args, options) => {
       calls.push({ command, args, env: options.env });
       return f.invoke(command, args, options);
@@ -536,7 +541,7 @@ describe('persisted version commit and atomic branch/tag transaction', () => {
     writeFileSync(path.join(f.work, 'dist', 'unexpected.zip'), 'unexpected');
     expect(() => main(verify, f.work, f.invoke)).toThrow();
   });
-});
+}, 30_000);
 
 describe('published asset contract', () => {
   it.each(['1.2.3', '1.2.3-beta.1'])(

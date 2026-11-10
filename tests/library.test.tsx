@@ -2278,8 +2278,8 @@ describe('<LibrarySidebar /> organization filters', () => {
     );
 
     expect(
-      screen.getByText('Tag and collection scopes are combined.'),
-    ).toBeVisible();
+      screen.queryByText('Tag and collection scopes are combined.'),
+    ).not.toBeInTheDocument();
     expect(screen.getByText(collectionName)).toHaveAttribute(
       'title',
       collectionName,

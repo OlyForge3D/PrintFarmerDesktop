@@ -504,8 +504,9 @@ export function parseVerdictComment(comment) {
  * Determine whether a record reviewed at an old head SHA may be carried
  * forward to a new head SHA without a fresh review. This exists so a routine
  * base-branch sync doesn't cost a full re-review of a contribution nobody
- * touched — which matters here because `development` is `strict: true`, so
- * every PR must sync before it can merge.
+ * touched. Before queue activation strict freshness requires a base sync;
+ * after activation review stays on the source head and combined CI runs on
+ * the synthetic group instead. Neither path waives source review.
  *
  * BOTH conditions must hold:
  *

@@ -297,6 +297,48 @@ describe('<App />', () => {
     window.localStorage.clear();
   });
 
+  it('keeps connected server identity in the shell without redundant onboarding or HTTP banners', async () => {
+    const profile = serverProfile(
+      '11111111-1111-4111-8111-111111111111',
+      'Home',
+    );
+    profile.baseUrl = 'http://home.example';
+    profile.status = 'connected';
+    profile.warnings = ['insecureHttp'];
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'darwin',
+        electronVersion: '44.3.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [profile],
+        selectedProfileId: profile.id,
+      }),
+    });
+    render(<App />);
+    expect(
+      await screen.findByRole('heading', { name: 'Build your model library' }),
+    ).toBeVisible();
+    expect(
+      await findAuthorityManageButton(/Home.*Status: Connected/),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/Upload and sync tools will use this connection/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('HTTP connection is not encrypted'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('The 3D viewer opens only when you choose Preview.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Select a model to inspect its file details.'),
+    ).toBeVisible();
+  });
+
   it('keeps long catalog errors compact and dismissible in Library and Sources', async () => {
     const error = `Catalog refresh failed: ${'Invalid model format. '.repeat(1000)}`;
     const listModels = vi.fn().mockRejectedValue(new Error(error));

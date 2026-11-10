@@ -144,6 +144,21 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       ).toBeVisible();
       await expectNoMaterialViolations(page, 'populated library', testInfo);
 
+      const uploadHelp = page.getByRole('group', {
+        name: 'Upload selected models to PrintFarmer',
+      });
+      await uploadHelp.focus();
+      await expect(page.getByRole('tooltip')).toHaveText(
+        'Upload selected models to PrintFarmer. Connect a PrintFarmer server profile first.',
+      );
+      await expectNoMaterialViolations(
+        page,
+        'disabled upload tooltip',
+        testInfo,
+      );
+      await uploadHelp.press('Escape');
+      await expect(page.getByRole('tooltip')).toBeHidden();
+
       const previewButton = inspector.getByRole('button', {
         name: 'Preview in 3D',
       });

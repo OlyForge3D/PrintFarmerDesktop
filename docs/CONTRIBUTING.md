@@ -1,5 +1,10 @@
 # Contributing
 
+Development integration uses the staged [merge-queue policy](MERGE_QUEUE.md).
+After owner activation, conflict-free branches need no manual freshness update;
+GitHub tests their combined result before merging. Before activation, retain the
+existing strict freshness guard.
+
 ## Prerequisites
 
 - **Node.js 22.12+** and npm.
@@ -41,6 +46,27 @@ Renderer/main/preload (run from the repo root):
 | `npm run make`                           | Build platform installers                          |
 | `npm run verify:target-profiles`         | Verify the pinned printer-profile snapshot         |
 | `npm run worktree:remove -- <path>`      | Safely force-remove a linked worktree              |
+
+Repository reachability tests use Git's tracked-file index, not transient
+untracked test directories. Stage new source and skill documents before running
+`tests/skillReferenceReachability.test.ts`; tracked references are still checked
+against the working tree, so deleted sources and unreadable skill documents fail.
+Create disposable fixtures under the OS temporary directory, not the checkout.
+Real Git/npm release-transaction tests have a scoped 30-second budget for hosted
+Windows subprocess latency; pure validation retains the 5-second default.
+Repository-wide guard assertions should reuse one report when they inspect the
+same immutable tracked corpus, rather than repeating an expensive full scan
+inside each assertion. Keep small synthetic positive/negative controls separate.
+Git fixture commands that snapshot or delete repositories must finish automatic
+maintenance first: command-scoped `maintenance.autoDetach=false` and
+`gc.autoDetach=false` keep object-store lock files from changing after a
+synchronous Git parent exits. Do not copy a live repository assuming that the
+parent process's exit also joined detached maintenance.
+The citation-content suite builds one immutable real-Git history template and
+copies it per test instead of repeating repository initialization and four
+commits inside every callback. Copies must own their object stores, refs and
+working trees independently; retain the isolation regression when changing
+that fixture. This reduces process work without changing timeout budgets.
 
 Rust sidecar (run from `native/`):
 
