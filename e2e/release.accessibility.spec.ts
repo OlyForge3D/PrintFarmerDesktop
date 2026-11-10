@@ -231,7 +231,7 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         });
         await filterButton.click();
         await expect(libraryMain).toBeVisible();
-        await expect(filterButton).toHaveAttribute('aria-current', 'page');
+        await expect(filterButton).toHaveAttribute('aria-pressed', 'true');
         await expectNoMaterialViolations(
           page,
           `library ${filter.label} filter`,
@@ -599,7 +599,7 @@ test('@a11y workspace destinations and Library filters stay within their routes'
       ).toHaveAttribute('aria-current', 'page');
       await expect(
         page.getByRole('button', { name: 'Favorites' }),
-      ).toHaveAttribute('aria-current', 'page');
+      ).toHaveAttribute('aria-pressed', 'true');
       await expectNoMaterialViolations(
         page,
         'library favorites filter',
