@@ -39,6 +39,7 @@ import { isolateHiddenObjectIds } from './library/partTreeModel';
 import { plateHiddenObjectIds } from './viewer/plateSelection';
 import type { PlateSelection } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
+import { ImportPreparationStatus } from './library/ImportPreparationStatus';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
 import { SettingsWorkspace } from './shell/SettingsWorkspace';
 import {
@@ -1508,7 +1509,10 @@ export function App(): React.JSX.Element {
 
                   <div
                     className="library-content"
-                    aria-busy={library.status === 'loading'}
+                    aria-busy={
+                      library.status === 'loading' ||
+                      library.status === 'preparing'
+                    }
                   >
                     <ModelGrid
                       models={
@@ -1760,6 +1764,8 @@ export function App(): React.JSX.Element {
           updateCheck={availableRelease.checkState}
         />
       </div>
+
+      <ImportPreparationStatus activity={library.scanActivity} />
 
       {library.importDraft ? (
         <ImportWizard
