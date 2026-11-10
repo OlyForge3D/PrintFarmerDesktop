@@ -108,10 +108,8 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         'onboarding.rail-interaction-compact',
         testInfo,
       );
-      await page.getByRole('button', { name: /^Sources/ }).click();
-      await expect(
-        page.getByRole('main', { name: 'Catalog sources' }),
-      ).toBeVisible();
+      await page.getByRole('button', { name: /^Settings/ }).click();
+      await expect(page.getByRole('main', { name: 'Settings' })).toBeVisible();
       await page.getByRole('button', { name: 'Library', exact: true }).click();
       await expect(onboarding).toHaveCount(0);
       await page.reload();
@@ -123,10 +121,10 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       });
       await closeOnboarding.focus();
       await page.keyboard.press('Shift+Tab');
-      const cacheSettings = onboarding.getByRole('button', {
-        name: 'Thumbnail cache settings',
+      const maybeLater = onboarding.getByRole('button', {
+        name: 'Maybe later',
       });
-      await expect(cacheSettings).toBeFocused();
+      await expect(maybeLater).toBeFocused();
       await page.keyboard.press('Tab');
       await expect(closeOnboarding).toBeFocused();
       await page.keyboard.press('Tab');
@@ -136,7 +134,7 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         onboarding.getByRole('button', { name: 'Maybe later' }),
       ).toBeFocused();
       await page.keyboard.press('Tab');
-      await expect(cacheSettings).toBeFocused();
+      await expect(closeOnboarding).toBeFocused();
       await addFolder.click();
 
       const importDialog = page.getByRole('dialog', {
@@ -148,7 +146,7 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       ).toBeFocused();
       await expectNoMaterialViolations(page, 'import review', testInfo);
       await captureVisualScenario(page, 'import.review', testInfo);
-      const importButton = page.getByRole('button', { name: 'Import 1 files' });
+      const importButton = page.getByRole('button', { name: 'Import 1 file' });
       await importButton.scrollIntoViewIfNeeded();
       await importButton.click();
       await expect(importDialog).toHaveCount(0);
@@ -293,10 +291,17 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await expectNoMaterialViolations(page, 'empty model search', testInfo);
       await captureVisualScenario(page, 'library.empty-search', testInfo);
       await page.getByRole('button', { name: 'Clear filters' }).click();
+      await expect(pagination.getByRole('status')).toHaveText(
+        '1-1 of 1 matches',
+      );
+      await expect(pageSize).toBeEnabled();
 
-      const railSources = page.getByRole('button', { name: /^Sources/ });
+      const railSources = page.getByRole('button', { name: /^Settings/ });
       await railSources.click();
-      const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+      const sourcesPane = page.getByRole('region', {
+        name: 'Source folders',
+        exact: true,
+      });
       await expect(sourcesPane).toBeVisible();
       await expect(sourcesPane).toHaveAttribute('aria-busy', 'false');
       await expect(
@@ -306,8 +311,11 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
         sourcesPane.getByRole('button', { name: 'Refresh catalog' }),
       ).toBeEnabled();
       await expect(
-        page.getByRole('heading', { name: 'Sources', level: 1 }),
+        page.getByRole('heading', { name: 'Settings', level: 1 }),
       ).toBeFocused();
+      await expect(
+        page.locator('.settings-pane [aria-busy="true"]'),
+      ).toHaveCount(0);
       await expectNoMaterialViolations(page, 'catalog sources', testInfo);
       await captureVisualScenario(page, 'sources.configured', testInfo);
       await page.getByRole('button', { name: 'Reset catalog' }).click();
@@ -490,10 +498,8 @@ test('@a11y workspace destinations and Library filters stay within their routes'
       await expect(onboarding).toBeVisible();
       await onboarding.getByRole('button', { name: 'Maybe later' }).click();
 
-      await page
-        .getByRole('button', { name: 'Thumbnail cache', exact: true })
-        .click();
-      const cacheDialog = page.getByRole('dialog', {
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      const cacheDialog = page.getByRole('region', {
         name: 'Thumbnail cache',
       });
       await expect(cacheDialog).toBeVisible();
@@ -505,15 +511,17 @@ test('@a11y workspace destinations and Library filters stay within their routes'
           name: 'Clear cached thumbnails…',
         }),
       ).toBeDisabled();
+      await expect(
+        page.locator('.settings-pane [aria-busy="true"]'),
+      ).toHaveCount(0);
       await expectNoMaterialViolations(page, 'empty thumbnail cache', testInfo);
       await captureVisualScenario(
         page,
         'dialogs.thumbnail-cache.empty-cache-disabled-clear',
         testInfo,
       );
-      await cacheDialog
-        .getByRole('button', { name: 'Close thumbnail cache settings' })
-        .click();
+      await page.getByRole('button', { name: 'Library', exact: true }).click();
+      await expect(cacheDialog).toHaveCount(0);
 
       const workspaceRoutes = [
         {
@@ -522,7 +530,7 @@ test('@a11y workspace destinations and Library filters stay within their routes'
         },
         { buttonName: /^Uploads/, mainName: 'Upload queue' },
         { buttonName: /^Tags & Collections/, mainName: 'Tags and collections' },
-        { buttonName: /^Sources/, mainName: 'Catalog sources' },
+        { buttonName: /^Settings/, mainName: 'Settings' },
       ];
       for (const [index, route] of workspaceRoutes.entries()) {
         await page.getByRole('button', { name: route.buttonName }).click();
@@ -534,6 +542,17 @@ test('@a11y workspace destinations and Library filters stay within their routes'
         await expect(
           page.getByRole('button', { name: route.buttonName }),
         ).toHaveAttribute('aria-current', 'page');
+        await expect(main.locator('[aria-busy="true"]')).toHaveCount(0);
+        if (route.mainName === 'Settings') {
+          await expect(
+            main.getByRole('spinbutton', {
+              name: 'Maximum ZIP size (MiB)',
+            }),
+          ).toBeEnabled();
+          await expect(
+            main.getByRole('button', { name: 'Save ZIP limit', exact: true }),
+          ).toHaveCSS('opacity', '1');
+        }
         await expectNoMaterialViolations(page, route.mainName, testInfo);
         if (index === workspaceRoutes.length - 1) {
           await captureVisualScenario(
@@ -598,6 +617,22 @@ async function expectNoMaterialViolations(
       materialImpacts.has(violation.impact),
   );
   if (material.length > 0) {
+    const liveStyles = await page.evaluate(() =>
+      [...document.querySelectorAll('button, input')].map((element) => {
+        const style = getComputedStyle(element);
+        return {
+          html: element.outerHTML,
+          disabled: element.matches(':disabled'),
+          opacity: style.opacity,
+          color: style.color,
+          background: style.backgroundColor,
+        };
+      }),
+    );
+    await testInfo.attach(`styles-${surface.replaceAll(' ', '-')}.json`, {
+      body: Buffer.from(JSON.stringify(liveStyles, null, 2)),
+      contentType: 'application/json',
+    });
     await testInfo.attach(`axe-${surface.replaceAll(' ', '-')}.json`, {
       body: Buffer.from(JSON.stringify(material, null, 2)),
       contentType: 'application/json',

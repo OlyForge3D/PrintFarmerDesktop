@@ -1,38 +1,44 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ResetCatalogResponse } from '@shared/ipc';
+import type { ReconcileReport, ResetCatalogResponse } from '@shared/ipc';
 import { Icon } from '../ui/Icon';
 import { reconcileHeadline, type SourceRootSummary } from './sourceRoots';
 import type { LibraryScanActivity } from './useLibrary';
 import { LibraryErrorAlert } from './LibraryErrorAlert';
+import { ScanFeedback } from './ScanFeedback';
 
 export interface SourcesWorkspaceProps {
   roots: SourceRootSummary[];
   modelCount: number;
   busy: boolean;
   error: string | null;
+  lastReport: ReconcileReport | null;
+  scanFeedbackVisible: boolean;
   scanActivity: LibraryScanActivity;
   onAddFolder: () => void;
   onRefresh: () => void;
   onDismissError: () => void;
+  onRetryScan: () => void;
+  retryLabel: string | null;
+  onDismissScanFeedback: () => void;
   onRescanRoot: (rootId: string) => void;
   onRemoveRoot: (rootId: string) => void;
   onResetCatalog: () => Promise<ResetCatalogResponse | null>;
 }
 
-/**
- * Folder access is durable configuration an operator revisits, so it is a place
- * rather than a dialog. Only the destructive reset still takes over focus,
- * because that is a decision and not a view.
- */
 export function SourcesWorkspace({
   roots,
   modelCount,
   busy,
   error,
+  lastReport,
+  scanFeedbackVisible,
   scanActivity,
   onAddFolder,
   onRefresh,
   onDismissError,
+  onRetryScan,
+  retryLabel,
+  onDismissScanFeedback,
   onRescanRoot,
   onRemoveRoot,
   onResetCatalog,
@@ -60,17 +66,16 @@ export function SourcesWorkspace({
   };
 
   return (
-    <main
-      id="sources-main"
-      className="sources-pane"
-      aria-label="Catalog sources"
+    <section
+      className="settings-sources"
+      aria-labelledby="settings-sources-heading"
       aria-busy={busy}
     >
       <header className="service-heading">
         <div>
-          <h1 data-sources-heading tabIndex={-1}>
-            Sources
-          </h1>
+          <h2 id="settings-sources-heading" tabIndex={-1}>
+            Source folders
+          </h2>
           <p>
             Which folders PrintFarmer indexes on this computer. Scans are
             read-only; original model files are never moved.
@@ -109,7 +114,17 @@ export function SourcesWorkspace({
           error={error}
           className="catalog-sources-alert error"
           onDismiss={onDismissError}
-          onRetry={onRefresh}
+          onRetry={onRetryScan}
+          retryLabel={retryLabel}
+        />
+      ) : null}
+      {scanFeedbackVisible && lastReport ? (
+        <ScanFeedback
+          data={lastReport}
+          onRetry={onRetryScan}
+          retryLabel={retryLabel}
+          onDismiss={onDismissScanFeedback}
+          className="catalog-sources-scan-feedback"
         />
       ) : null}
       {resetSummary ? (
@@ -187,17 +202,6 @@ export function SourcesWorkspace({
                       </span>
                       <small title={root.path}>{root.path}</small>
                       <small>{sourceRootDetail(root)}</small>
-                      {root.lastReport?.archiveWarnings?.map(
-                        (warning, index) => (
-                          <p
-                            key={index}
-                            className="import-warning"
-                            role="status"
-                          >
-                            {warning}
-                          </p>
-                        ),
-                      )}
                     </div>
                   </div>
                   <div className="source-root-actions">
@@ -299,7 +303,7 @@ export function SourcesWorkspace({
           )}
         </section>
       </div>
-    </main>
+    </section>
   );
 }
 

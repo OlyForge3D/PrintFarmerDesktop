@@ -41,8 +41,11 @@ test('shows delayed source scan progress, then announces and recovers from root 
   });
   const maybeLater = page.getByRole('button', { name: 'Maybe later' });
   if (await maybeLater.isVisible()) await maybeLater.click();
-  await page.getByRole('button', { name: /^Sources/ }).click();
-  const sources = page.getByRole('main', { name: 'Catalog sources' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const sources = page.getByRole('region', {
+    name: 'Source folders',
+    exact: true,
+  });
   const root = page.getByRole('list', { name: 'Source folders' }).locator('li');
   await expect(root).toContainText('a11y-models');
 

@@ -240,10 +240,10 @@ test('shows onboarding CTA for a fresh empty catalog', async () => {
   // nudge, not a modal that owns the shell, and it appears on exactly the runs
   // that have no source roots yet — so locking navigation behind it would
   // strand a first run on the one place that cannot help.
-  const railSources = page.getByRole('button', { name: /^Sources/ });
+  const railSources = page.getByRole('button', { name: /^Settings/ });
   await expect(railSources).toBeEnabled();
   await railSources.click();
-  const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+  const sourcesPane = page.getByRole('main', { name: 'Settings' });
   await expect(sourcesPane).toBeVisible();
   await expect(onboardingDialog).toHaveCount(0);
   // Restore state: return to the library so subsequent tests start clean.
@@ -518,6 +518,111 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(
     page.locator('.properties-inspector').getByLabel('Model statistics'),
   ).toContainText('OBJ');
+});
+
+test('configures thumbnail storage in Settings and preserves the browsing workspace', async ({
+  browserName,
+}, testInfo) => {
+  expect(browserName).toBe('chromium');
+  await dismissOnboardingIfVisible(page);
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Thumbnail cache', exact: true }),
+  ).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('library.png') });
+
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const settings = page.getByRole('main', { name: 'Settings' });
+  await expect(
+    page.getByRole('heading', { name: 'Settings', level: 1 }),
+  ).toBeFocused();
+  await expect(
+    settings.getByRole('region', { name: 'Source folders' }),
+  ).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('settings-sources.png') });
+  await settings.getByRole('link', { name: 'ZIP files', exact: true }).click();
+  const zipSize = settings.getByLabel('Maximum ZIP size (MiB)');
+  await expect(zipSize).toHaveValue('512');
+  await zipSize.fill('1024');
+  await settings.getByRole('button', { name: 'Save ZIP limit' }).click();
+  await expect(
+    settings.getByText(
+      'ZIP size limit saved. It applies to the next scan or rescan.',
+    ),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => window.printFarmer.getArchiveSettings()),
+  ).toEqual({ maxArchiveBytes: 1024 * 1024 * 1024 });
+  await page.screenshot({ path: testInfo.outputPath('settings-zip.png') });
+  await settings
+    .getByRole('link', { name: 'Thumbnail cache', exact: true })
+    .click();
+  const maxSize = settings.getByLabel('Maximum size (MiB)');
+  await expect(maxSize).toHaveValue('512');
+  await maxSize.fill('768');
+  await settings.getByLabel('Remove unused thumbnails after (days)').fill('14');
+  await settings.getByRole('button', { name: 'Save settings' }).click();
+  await expect(
+    settings.getByText('Thumbnail cache settings saved.'),
+  ).toBeVisible();
+  const saved = await page.evaluate(() =>
+    window.printFarmer.getThumbnailCacheSettings(),
+  );
+  expect(saved.maxBytes).toBe(768 * 1024 * 1024);
+  expect(saved.retentionDays).toBe(14);
+  await page.screenshot({ path: testInfo.outputPath('settings-cache.png') });
+
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await expect(zipSize).toHaveValue('1024');
+  await zipSize.fill('512');
+  await settings.getByRole('button', { name: 'Save ZIP limit' }).click();
+  await expect(
+    settings.getByText(
+      'ZIP size limit saved. It applies to the next scan or rescan.',
+    ),
+  ).toBeVisible();
+  await settings
+    .getByRole('link', { name: 'Thumbnail cache', exact: true })
+    .click();
+  await expect(maxSize).toHaveValue('768');
+  await expect(
+    settings.getByLabel('Remove unused thumbnails after (days)'),
+  ).toHaveValue('14');
+  await maxSize.fill('512');
+  await settings.getByLabel('Remove unused thumbnails after (days)').fill('30');
+  await settings.getByRole('button', { name: 'Save settings' }).click();
+  await expect(
+    settings.getByText('Thumbnail cache settings saved.'),
+  ).toBeVisible();
+
+  await settings
+    .getByRole('link', { name: 'Connections', exact: true })
+    .click();
+  await settings
+    .getByRole('button', { name: 'Manage server profiles' })
+    .click();
+  await expect(
+    page.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Close server profiles' }).click();
+  await expect(
+    settings.getByRole('button', { name: 'Manage server profiles' }),
+  ).toBeFocused();
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+
+  for (const name of [
+    'library',
+    'settings-sources',
+    'settings-zip',
+    'settings-cache',
+  ]) {
+    await testInfo.attach(name, {
+      path: testInfo.outputPath(`${name}.png`),
+      contentType: 'image/png',
+    });
+  }
 });
 
 test('renders without severe renderer console errors', () => {

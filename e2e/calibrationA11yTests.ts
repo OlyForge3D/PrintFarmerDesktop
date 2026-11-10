@@ -1445,7 +1445,7 @@ test('@a11y workspace rail and status bar announce synthetic queue and source st
     .filter({ hasText: 'Uploads' });
   const sources = rail
     .locator('button.rail-item')
-    .filter({ hasText: 'Sources' });
+    .filter({ hasText: 'Settings' });
   await page.getByRole('button', { name: /^Uploads/ }).click();
   await expect(uploads).toHaveAttribute('aria-current', 'page');
   await expect(uploads).toContainText('1 upload remaining');
@@ -1697,7 +1697,9 @@ test('@a11y library short and expanded errors retain retry and dismiss actions',
     .filter({ hasText: 'Synthetic catalog read failed.' });
   await expect(shortError).toBeVisible();
   await expect(shortError.getByText('Error details')).toHaveCount(0);
-  await expect(shortError.getByRole('button', { name: 'Retry' })).toBeVisible();
+  await expect(
+    shortError.getByRole('button', { name: 'Reload catalog' }),
+  ).toBeVisible();
   await expect(
     shortError.getByRole('button', { name: 'Dismiss library error' }),
   ).toBeVisible();
@@ -1715,7 +1717,9 @@ test('@a11y library short and expanded errors retain retry and dismiss actions',
   await expect(longError).toBeVisible();
   await longError.getByText('Error details', { exact: true }).click();
   await expect(longError.locator('pre')).toContainText(longErrorMessage);
-  await expect(longError.getByRole('button', { name: 'Retry' })).toBeVisible();
+  await expect(
+    longError.getByRole('button', { name: 'Reload catalog' }),
+  ).toBeVisible();
   await expect(
     longError.getByRole('button', { name: 'Dismiss library error' }),
   ).toBeVisible();

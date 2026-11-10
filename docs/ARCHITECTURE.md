@@ -24,6 +24,45 @@ or uploads source models without an explicit user action.
 
 ## Model previews
 
+Import organization has two compatible inputs: legacy additive `rules` and
+explicit subtree `policies`. Main validates both with shared Zod schemas and
+passes only approved source paths to the sidecar. A nearest-ancestor policy
+replaces all ancestor folder policies and legacy folder rules for that
+location. Whole-import rules at the empty path and common tags remain additive.
+An explicit disabled policy is not the absence of a policy and never filters
+files or deletes existing metadata.
+
+The renderer stores version-2 source recipes with version-1 fallback migration.
+Legacy rules and selected collection IDs are retained, including currently
+absent paths, until the user edits them. Bulk subtree edits deliberately clear
+descendant exceptions, including absent paths. New folders inherit; they do not
+generate automatic tags. Corrupt recipes block confirmation rather than
+silently replacing user choices.
+
+Folder discovery is paged in batches of at most 500, with total and next-offset
+fields. Truncated previews return a `previewId` for a single scan snapshot;
+subsequent pages must reuse that ID with the same approved path and options,
+avoiding repeated filesystem traversal and organization evaluation. The sidecar
+bounds snapshots to four entries / 32 MiB with a 120-second lifetime. Missing,
+expired, evicted, or mismatched IDs fail closed and require a new preview.
+The renderer assembles the hierarchy separately from the visible,
+collapsed tree. Native policy preview and import evaluate every discovered file
+independently of these pages. Preview does no content hashing: affected and
+unmatched counts describe file locations; actual import deduplicates by hash.
+Preview returns unique new/reused metadata and bounded representative samples
+and errors. Import repeats validation against its fresh scan before mutation.
+
+Path recipes use at most 32 slash-separated segments: literals, unique
+`{identifier}` captures, and an optional final `**`. They match directories
+relative to the policy folder, case-sensitively. Captures match one segment;
+`**` matches zero or more. Outputs may reference only declared captures.
+Patterns and paths are bounded to 4096 characters and resolved organization
+names to 128 characters. Unmatched patterns produce no local metadata and do
+not inherit an older policy. Invalid patterns or resolved targets fail closed.
+Sidecar RPC version 6 is required: older binaries could ignore unknown policy
+fields, so main rejects their handshake instead of importing without the
+confirmed organization. Desktop IPC versioning is independent and unchanged.
+
 Scans also index STL, OBJ, 3MF and STEP members of `.zip` files. A member's
 identity is SHA-256 of its streamed, uncompressed bytes, so it groups with an
 extracted copy even within the same source root. A 3MF member is one model;
@@ -38,8 +77,9 @@ ZIP indexing uses seekable files and bounded central-directory reads, with no
 whole-archive buffering or extraction. ZIP files larger than 512 MiB on disk
 (536,870,912 bytes) are skipped using filesystem metadata before opening,
 parsing, decompressing or hashing archive contents. Exactly 512 MiB is allowed.
-Preview, import and library scans show a warning with the archive filename,
-actual byte size and limit, while continuing with the folder's other files.
+Preview, import and library scans aggregate expected archive skips; collapsed
+details carry the archive path, actual size and effective limit, while indexing
+the folder's readable files.
 Member access rechecks this cap, including archives that grow after preview.
 This compressed-file cap applies only to `.zip`, not standalone `.3mf` files.
 Additional limits are 100,000 directory entries,
@@ -47,9 +87,33 @@ Additional limits are 100,000 directory entries,
 supported model bytes per archive. The shared 300:1 ratio limit applies above
 4 MiB. Encrypted, symlink, unsafe-path, corrupt and over-budget model members
 reject indexing that archive; scan errors appear in source-root status and
-details are logged by the sidecar. Incomplete scans do not declare unseen
-locations missing; successful rescans reconcile member changes/removals and
-archive deletion using normal catalog availability semantics.
+details are logged by the sidecar and included in scan results. Failed entries
+and subtrees preserve their existing catalog locations; successful parts of a
+partial scan still reconcile changes/removals. Cancellation does not import.
+
+On macOS, scanning recognizes File Provider placeholders using the synthetic
+`SF_DATALESS` BSD metadata flag, not size, extension, block count or permissions.
+Scan and import I/O run under thread-scoped
+`IOPOL_MATERIALIZE_DATALESS_FILES_OFF`, including directory enumeration, ZIP
+directory reads and hashing. This also prevents hydration when content is
+evicted after metadata inspection; the documented `EDEADLK` materialization
+denial is an expected cloud skip. Policy setup/restoration failures are surfaced
+rather than silently enabling downloads. A failed scan report keeps previously
+collected skipped-path details, including cloud skips discovered during hashing
+before a policy restore failure, alongside its fatal `failure`; the renderer shows
+both the failure and those diagnostics without recording a successful scan or
+mutating the catalog. A later scan of another root remains independently usable.
+Explicit viewer operations are not
+subject to this scan-scoped policy. Network files without the dataless signal
+continue through the normal supported filesystem path.
+
+Cloud-only sources are counted separately from permission/read failures and
+oversized ZIPs. Confirmed cloud-only known locations become unavailable without
+deleting their model identities or organization. Unknown availability under
+failed paths stays unchanged; those paths are not inferred missing. Preview and
+import carry reason counts for all skipped entries, plus at most 200 path-specific
+details and an explicit truncation flag. Skipped directories count as folders,
+never as an invented number of model files beneath them.
 
 Archive locations use a reserved `::zip::` path component plus central-directory
 index and member name. These are locators, not filesystem paths: main authorizes
@@ -71,7 +135,7 @@ verify both projection modes against it. Thumbnail rendering remains unchanged.
 All renderer↔main messages are defined once in `src/shared/ipc.ts` with Zod
 schemas. The main process validates every request and response; the renderer
 gets static types. Desktop IPC is currently version 10. It is intentionally
-independent from the Rust sidecar RPC handshake (protocol version 5); bump each
+independent from the Rust sidecar RPC handshake (protocol version 6); bump each
 constant only for changes to its own wire boundary.
 
 Scene previews use `loadScenePacked`: little-endian float32 positions, uint32

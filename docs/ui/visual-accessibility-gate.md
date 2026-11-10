@@ -30,13 +30,26 @@ Zero `unverified` rows is a classification statement, **not** a completeness,
 accessibility or visual-pass certificate. Native limits and real failures remain
 explicit. The two former card/upload golden-review rows now reference their
 existing scenario evidence; neither requires a golden image. Every one of the
-331 scenario IDs has a current Windows PNG/metadata pair as of 2026-11-09.
-The audit checked actual image/environment digests, metadata/index/state mapping
-and current manifest assertion scope, with an altered-digest negative control.
+331 scenario IDs have a fresh Windows PNG/metadata pair in the post-integration
+audit on 2026-11-09. That audit checked actual image/environment digests,
+metadata/index/state mapping and current manifest assertion scope, with an
+altered-digest negative control. It does not certify captures against a later head.
 All 586 previously captured images were preserved byte-for-byte; the archive now
-contains 653 image/environment pairs. Capture alone does not establish an axe
-pass: capture precedes some scans so failures retain reviewable evidence.
+contains 1,156 image/environment pairs. The earlier pre-integration audit of 653
+pairs remains historical evidence. Capture alone does not establish an axe pass:
+capture precedes some scans so failures retain reviewable evidence.
 All 331 scenarios use `screenshotPolicy: "temporary-review-evidence"`.
+
+The subsequent development integration moves source folders and thumbnail cache
+controls into Settings. Existing capture IDs remain stable (including the legacy
+`dialogs.thumbnail-cache` prefix), but metadata and assertions now describe a
+Settings section and inline clear-confirmation alert, not a modal. Compact cache
+coverage requires horizontal fit and a scroll-reachable clear action, not full
+vertical fit. Global modal exclusion instead uses the connection manager.
+These migrations have fresh captures and passing integrated suites. The earlier
+archive audit remains historical rather than being rewritten. Newly integrated
+archive/import-policy features are not comprehensively inventoried by this finite
+catalog.
 
 ## What executes
 
@@ -209,14 +222,15 @@ rewritten as a pass.
 
 Scanners verify a deliberate unnamed-button probe before material checks; soft
 assertions retain all findings while still failing the test. Manifest/archive
-contract tests, TypeScript, repository lint and formatting passed. The earlier
-full unit run had one unrelated
+contract tests, TypeScript, repository lint and formatting passed. An earlier
+full unit run had an
 `OperatorRecoveryRequired` enum-drift failure in
-`tests/calibration.jobBlockedReasonCode.test.ts`; it is not silently relabeled as
-a passing full suite.
+`tests/calibration.jobBlockedReasonCode.test.ts`. The enum snapshot and operator
+recovery copy were subsequently corrected; that historical failing run is not
+silently relabeled as passing.
 
 After the contrast fixes and a successful production/package rebuild
-(`npm run pretest:e2e`), the final artifact-only implementation passed
+(`npm run pretest:e2e`), the pre-integration artifact-only implementation passed
 **126 tests across all 17 manifest suites**, using the complete command above.
 The removed approval flag was deliberately set during the run:
 
@@ -225,12 +239,21 @@ $env:PRINTFARMER_REQUIRE_APPROVED_VISUAL_BASELINES = '1'
 # Run the complete 17-suite command above; this obsolete flag has no effect.
 ```
 
-The current manifest/archive contract command passed **12 tests**. The earlier
-related App/manifest/archive unit run passed 46 tests with one pre-existing skip.
-`npm run typecheck`, `npm run lint` and `npm run format` also passed.
-`artifacts/ui-coverage-review/verification.json` records the current 331-scenario
-evidence audit and preservation results. This does not change the explicitly
-restricted truncation scan or native-platform limits.
+After development integration and another production/package rebuild, the same
+17-suite command plus `scan-feedback.spec.ts` and `import-policies.spec.ts`
+passed **129 tests across 19 suites**. Settings checks wait for the cleared
+catalog query to finish and ZIP controls to load before navigating or auditing.
+These readiness fixes add no axe exclusions, skips or weaker contrast rules.
+
+The current manifest/archive contract command passed **17 tests**. The full
+`npm run test` run passed **5,660 tests**, with **187 skipped** (5,847 total;
+231 passing files and 7 skipped files). The earlier related App/manifest/archive
+unit run passed 46 tests with one pre-existing skip.
+`artifacts/ui-coverage-review/integration-verification.json` records the fresh
+331-scenario evidence audit and preservation results;
+`artifacts/ui-coverage-review/verification.json` preserves the earlier audit.
+Neither audit changes the explicitly restricted truncation scan or
+native-platform limits, and neither is a WCAG certification.
 
 ### Reviewing images without a gate
 

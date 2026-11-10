@@ -146,8 +146,11 @@ test('@a11y missing, duplicate, thumbnail and paginated library states are rende
       const maybeLater = page.getByRole('button', { name: 'Maybe later' });
       if (await maybeLater.isVisible()) await maybeLater.click();
 
-      await page.getByRole('button', { name: /^Sources/ }).click();
-      const sources = page.getByRole('main', { name: 'Catalog sources' });
+      await page.getByRole('button', { name: /^Settings/ }).click();
+      const sources = page.getByRole('region', {
+        name: 'Source folders',
+        exact: true,
+      });
       await sources.getByRole('button', { name: 'Refresh catalog' }).click();
       await expect(sources).toHaveAttribute('aria-busy', 'false');
       await page.getByRole('button', { name: 'Library', exact: true }).click();
@@ -241,9 +244,10 @@ test('@a11y missing, duplicate, thumbnail and paginated library states are rende
       await expect(singleCopyCard.locator('.model-missing')).toHaveCount(0);
       await expect(singleCopyCard.locator('.model-copies')).toHaveCount(0);
       rmSync(path.join(modelRoot, 'coverage-02-healthy.obj'));
-      await page.getByRole('button', { name: /^Sources/ }).click();
-      const refreshedSources = page.getByRole('main', {
-        name: 'Catalog sources',
+      await page.getByRole('button', { name: /^Settings/ }).click();
+      const refreshedSources = page.getByRole('region', {
+        name: 'Source folders',
+        exact: true,
       });
       await refreshedSources
         .getByRole('button', { name: 'Refresh catalog' })
@@ -422,10 +426,8 @@ test('@a11y imported 3MF materials, parts and tree interactions render in previe
       if (await maybeLater.isVisible()) await maybeLater.click();
 
       await page.getByRole('button', { name: 'Select multi_part.3mf' }).click();
-      await page.getByRole('button', { name: /^Sources/ }).click();
-      await expect(
-        page.getByRole('main', { name: 'Catalog sources' }),
-      ).toBeVisible();
+      await page.getByRole('button', { name: /^Settings/ }).click();
+      await expect(page.getByRole('main', { name: 'Settings' })).toBeVisible();
       await page.getByRole('button', { name: 'Library', exact: true }).click();
       const restoredSelection = page.getByRole('button', {
         name: 'Deselect multi_part.3mf',

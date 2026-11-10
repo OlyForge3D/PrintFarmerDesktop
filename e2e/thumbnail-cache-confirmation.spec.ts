@@ -25,7 +25,7 @@ test.afterEach(async () => {
   }
 });
 
-async function openCacheDialog(
+async function openCacheSettings(
   browserName: string,
   thumbnailCacheSaveResult: 'success' | 'unwritable',
 ) {
@@ -41,10 +41,10 @@ async function openCacheDialog(
   });
   const maybeLater = page.getByRole('button', { name: 'Maybe later' });
   if (await maybeLater.isVisible()) await maybeLater.click();
-  await page.getByRole('button', { name: 'Thumbnail cache' }).click();
+  await page.getByRole('button', { name: /^Settings/ }).click();
   return {
     page,
-    dialog: page.getByRole('dialog', { name: 'Thumbnail cache' }),
+    dialog: page.getByRole('region', { name: 'Thumbnail cache', exact: true }),
   };
 }
 
@@ -64,8 +64,11 @@ test('thumbnail cache clear confirmation is cancellable with synthetic usage', a
 
   const maybeLater = page.getByRole('button', { name: 'Maybe later' });
   if (await maybeLater.isVisible()) await maybeLater.click();
-  await page.getByRole('button', { name: 'Thumbnail cache' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Thumbnail cache' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const dialog = page.getByRole('region', {
+    name: 'Thumbnail cache',
+    exact: true,
+  });
   await expect(dialog).toBeVisible();
   await expect(
     dialog.getByText('C:\\SyntheticPrintFarmer\\thumbnail-cache'),
@@ -78,7 +81,7 @@ test('thumbnail cache clear confirmation is cancellable with synthetic usage', a
   await scanSurface(page, {
     name: 'loaded thumbnail cache settings',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(
@@ -95,7 +98,7 @@ test('thumbnail cache clear confirmation is cancellable with synthetic usage', a
   await scanSurface(page, {
     name: 'invalid thumbnail cache settings',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(
@@ -103,12 +106,13 @@ test('thumbnail cache clear confirmation is cancellable with synthetic usage', a
     'dialogs.thumbnail-cache.invalid-settings',
     testInfo,
   );
-  await dialog
-    .getByRole('button', { name: 'Close thumbnail cache settings' })
-    .click();
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await page.getByRole('button', { name: 'Thumbnail cache' }).click();
-  const reopenedDialog = page.getByRole('dialog', { name: 'Thumbnail cache' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const reopenedDialog = page.getByRole('region', {
+    name: 'Thumbnail cache',
+    exact: true,
+  });
   await expect(
     reopenedDialog.getByText('3.0 KiB used · 3 thumbnails'),
   ).toBeVisible();
@@ -118,7 +122,7 @@ test('thumbnail cache clear confirmation is cancellable with synthetic usage', a
   await reopenedDialog
     .getByRole('button', { name: 'Clear cached thumbnails…' })
     .click();
-  const confirmation = reopenedDialog.getByRole('alertdialog', {
+  const confirmation = reopenedDialog.getByRole('alert', {
     name: 'Confirm clearing thumbnails',
   });
   await expect(confirmation).toContainText(
@@ -145,7 +149,7 @@ test('saves valid thumbnail cache settings through synthetic IPC', async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(120_000);
-  const { page, dialog } = await openCacheDialog(browserName, 'success');
+  const { page, dialog } = await openCacheSettings(browserName, 'success');
   await expect(dialog.getByLabel('Maximum size (MiB)')).toHaveValue('128');
   await dialog.getByLabel('Maximum size (MiB)').fill('64');
   await dialog.getByLabel('Remove unused thumbnails after (days)').fill('14');
@@ -161,7 +165,7 @@ test('saves valid thumbnail cache settings through synthetic IPC', async ({
   await scanSurface(page, {
     name: 'saved thumbnail cache settings',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(
@@ -175,7 +179,7 @@ test('announces an unwritable thumbnail cache location after save', async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(120_000);
-  const { page, dialog } = await openCacheDialog(browserName, 'unwritable');
+  const { page, dialog } = await openCacheSettings(browserName, 'unwritable');
   await dialog.getByLabel('Maximum size (MiB)').fill('64');
   await dialog.getByLabel('Remove unused thumbnails after (days)').fill('14');
   await dialog.getByRole('button', { name: 'Save settings' }).click();
@@ -193,7 +197,7 @@ test('announces an unwritable thumbnail cache location after save', async ({
   await scanSurface(page, {
     name: 'unwritable thumbnail cache warning',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(
@@ -203,7 +207,7 @@ test('announces an unwritable thumbnail cache location after save', async ({
   );
 });
 
-test('captures Library and cache dialog at the compact CSS viewport proxy', async ({
+test('captures Library and cache settings at the compact CSS viewport proxy', async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(120_000);
@@ -240,9 +244,13 @@ test('captures Library and cache dialog at the compact CSS viewport proxy', asyn
   });
   await captureVisualScenario(page, 'library.home.compact-layout', testInfo);
 
-  await page.getByRole('button', { name: 'Thumbnail cache' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Thumbnail cache' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const dialog = page.getByRole('region', {
+    name: 'Thumbnail cache',
+    exact: true,
+  });
   await expect(dialog).toBeVisible();
+  await dialog.scrollIntoViewIfNeeded();
   const dialogBounds = await dialog.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     return {
@@ -256,12 +264,15 @@ test('captures Library and cache dialog at the compact CSS viewport proxy', asyn
   });
   expect(dialogBounds.left).toBeGreaterThanOrEqual(0);
   expect(dialogBounds.right).toBeLessThanOrEqual(dialogBounds.viewportWidth);
-  expect(dialogBounds.top).toBeGreaterThanOrEqual(0);
-  expect(dialogBounds.bottom).toBeLessThanOrEqual(dialogBounds.viewportHeight);
+  const clearCache = dialog.getByRole('button', {
+    name: 'Clear cached thumbnails…',
+  });
+  await clearCache.scrollIntoViewIfNeeded();
+  await expect(clearCache).toBeInViewport();
   await scanSurface(page, {
-    name: 'compact thumbnail cache settings dialog',
+    name: 'compact thumbnail cache settings section',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(

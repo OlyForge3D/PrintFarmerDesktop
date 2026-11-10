@@ -49,8 +49,11 @@ test('active source scan remains announced in Library and its navigation rail', 
   const page = await launchScenario(browserName, {
     sourceScanDelayMs: 8_000,
   });
-  await page.getByRole('button', { name: /^Sources/ }).click();
-  const sources = page.getByRole('main', { name: 'Catalog sources' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const sources = page.getByRole('region', {
+    name: 'Source folders',
+    exact: true,
+  });
   const root = page.getByRole('list', { name: 'Source folders' }).locator('li');
   await expect(root).toContainText('a11y-models');
   await root.getByRole('button', { name: 'Reconnect' }).click();
@@ -96,6 +99,9 @@ test('ambiguous import collection suggestions block until an identity is selecte
     name: 'Organize models before importing',
   });
   await expect(dialog).toBeVisible();
+  await dialog
+    .getByRole('combobox', { name: 'Folder organization for Animals' })
+    .selectOption('collection');
   const picker = dialog.getByRole('combobox', {
     name: 'Choose collection for Animals',
   });
@@ -130,8 +136,11 @@ test('cache settings loading and failure feedback remain visible and accessible'
   const page = await launchScenario(browserName, {
     thumbnailCacheLoadPending: true,
   });
-  await page.getByRole('button', { name: 'Thumbnail cache' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Thumbnail cache' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const dialog = page.getByRole('region', {
+    name: 'Thumbnail cache',
+    exact: true,
+  });
   await expect(dialog.getByText('Loading cache settings…')).toBeVisible();
   await expect(
     dialog.getByRole('button', { name: 'Clear cached thumbnails…' }),
@@ -139,7 +148,7 @@ test('cache settings loading and failure feedback remain visible and accessible'
   await scanSurface(page, {
     name: 'thumbnail cache settings loading',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(
@@ -156,8 +165,11 @@ test('cache settings load failure is announced without enabling destructive acti
   const page = await launchScenario(browserName, {
     thumbnailCacheLoadFailure: true,
   });
-  await page.getByRole('button', { name: 'Thumbnail cache' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Thumbnail cache' });
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const dialog = page.getByRole('region', {
+    name: 'Thumbnail cache',
+    exact: true,
+  });
   await expect(dialog.getByRole('alert')).toContainText(
     'Synthetic cache settings load failure.',
   );
@@ -167,7 +179,7 @@ test('cache settings load failure is announced without enabling destructive acti
   await scanSurface(page, {
     name: 'thumbnail cache settings load failure',
     present: dialog,
-    include: '[role="dialog"]',
+    include: '.settings-cache',
     testInfo,
   });
   await captureVisualScenario(

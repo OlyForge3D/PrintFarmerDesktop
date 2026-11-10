@@ -54,6 +54,52 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('accepts additive scan summaries and old sidecars without them', () => {
+    const oldPreview = {
+      modelCount: 0,
+      totalBytes: 0,
+      skippedErrors: 0,
+      complete: true,
+      formats: { stl: 0, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    };
+    expect(
+      ipcSchemas[IpcChannel.PreviewImport].response.parse(oldPreview).complete,
+    ).toBe(true);
+
+    const summary = {
+      cloudOnly: 2,
+      permissionDenied: 1,
+      unreadable: 3,
+      tooLarge: 1,
+    };
+    const issue = {
+      path: 'C:\\Models\\large.zip',
+      kind: 'file',
+      reason: 'tooLarge',
+      detail: 'The archive exceeded its configured limit.',
+      sizeBytes: 128 * 1024 * 1024,
+      limitBytes: 64 * 1024 * 1024,
+    };
+    const parsed = ipcSchemas[IpcChannel.PreviewImport].response.parse({
+      ...oldPreview,
+      skippedEntries: summary,
+      scanIssues: [issue],
+      scanIssuesTruncated: true,
+    });
+    expect(parsed.scanIssues?.[0]).toMatchObject({
+      sizeBytes: 128 * 1024 * 1024,
+      limitBytes: 64 * 1024 * 1024,
+    });
+    expect(() =>
+      ipcSchemas[IpcChannel.PreviewImport].response.parse({
+        ...oldPreview,
+        scanIssues: [{ ...issue, reason: 'unreadable', sizeBytes: 12 }],
+      }),
+    ).toThrow();
+  });
+
   it('accepts a valid app info response', () => {
     const value = ipcSchemas[IpcChannel.AppInfo].response.parse({
       contractVersion: IPC_CONTRACT_VERSION,
@@ -356,6 +402,57 @@ describe('ipc contract', () => {
 
     expect(value.rules).toHaveLength(1);
     expect(value.rules[0]).toMatchObject({ collectionId: 'collection-1' });
+  });
+
+  it('carries paged discovery and bounded declarative subtree policies', () => {
+    const policy = {
+      relativePath: 'Miniatures',
+      mode: 'organize',
+      collectionName: '{maker}',
+      tags: ['miniatures'],
+      pattern: '{maker}/{project}/**',
+    };
+    const request = {
+      approvalId: '11111111-1111-4111-8111-111111111111',
+      policies: [policy],
+      rules: [],
+      commonTags: [],
+    };
+    expect(
+      ipcSchemas[IpcChannel.PreviewImport].request.parse({
+        ...request,
+        folderOffset: 500,
+      }),
+    ).toMatchObject({ policies: [policy], folderOffset: 500 });
+    expect(
+      ipcSchemas[IpcChannel.ImportRoot].request.parse({
+        ...request,
+        rootId: 'source',
+      }),
+    ).toMatchObject({ policies: [policy] });
+    for (const invalid of [
+      { ...policy, expression: 'arbitrary-code' },
+      { ...policy, tags: ['x'.repeat(129)] },
+      { ...policy, pattern: 'x'.repeat(4097) },
+      { ...policy, mode: 'exclude' },
+    ]) {
+      expect(() =>
+        ipcSchemas[IpcChannel.ImportRoot].request.parse({
+          ...request,
+          rootId: 'source',
+          policies: [invalid],
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      ipcSchemas[IpcChannel.PreviewImport].request.parse({
+        ...request,
+        path: '/unapproved',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects invalid import rule names and tag collection IDs', () => {
     expect(() =>
       ipcSchemas[IpcChannel.ImportRoot].request.parse({
         rootId: 'root-1',

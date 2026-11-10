@@ -169,6 +169,7 @@ interface HarnessOptions {
   catalog?: LogicalModel[];
   page?: QueryModelsResponse;
   authorizeFiles?: RootApprovalStore['authorizeFiles'];
+  approvedRoot?: string;
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -186,6 +187,7 @@ function harness(options: HarnessOptions = {}): Harness {
     };
 
   const sidecar = {
+    setArchiveSizeLimitProvider: () => undefined,
     loadScene: record('sidecar', 'loadScene'),
     extractVendorMetadata: record('sidecar', 'extractVendorMetadata'),
     extractVendorPlateThumbnails: record(
@@ -199,6 +201,23 @@ function harness(options: HarnessOptions = {}): Harness {
       pngBase64: 'AA==',
     }),
     scanRoot: record('sidecar', 'scanRoot'),
+    previewImport: record('sidecar', 'previewImport', {
+      modelCount: 0,
+      totalBytes: 0,
+      skippedErrors: 0,
+      complete: true,
+      formats: { stl: 0, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    }),
+    importRoot: record('sidecar', 'importRoot', {
+      report: { added: 0, changed: 0, unchanged: 0, missing: 0, hashErrors: 0 },
+      modelsOrganized: 0,
+      collectionsCreated: 0,
+      collectionAssignments: 0,
+      tagAssignments: 0,
+      resolvedCollections: [],
+    }),
     listModels: record('sidecar', 'listModels', options.catalog ?? []),
     queryModels: record('sidecar', 'queryModels', options.page),
     resetCatalog: record('sidecar', 'resetCatalog', {
@@ -263,7 +282,10 @@ function harness(options: HarnessOptions = {}): Harness {
       return Promise.reject(new TestApprovalError(DENIED));
     },
     authorizeFiles: options.authorizeFiles ?? (() => Promise.resolve([])),
-    resolve: () => Promise.reject(new TestApprovalError(DENIED)),
+    resolve: () =>
+      options.approvedRoot
+        ? Promise.resolve(options.approvedRoot)
+        : Promise.reject(new TestApprovalError(DENIED)),
     approveFromPicker: (selectedPath: string) => {
       rootApproved = true;
       return Promise.resolve({
@@ -295,6 +317,65 @@ function harness(options: HarnessOptions = {}): Harness {
     approvals,
   };
 }
+
+describe('folder import policy forwarding', () => {
+  const approvalId = '11111111-1111-4111-8111-111111111111';
+  const policies = [{ relativePath: 'Miniatures', mode: 'disabled', tags: [] }];
+
+  it('authorizes discovery pages and forwards the full preview policy set', async () => {
+    const options = {
+      folderOffset: 500,
+      previewId: 'snapshot-1',
+      policies,
+      rules: [],
+      commonTags: [],
+    };
+    const denied = harness();
+    await expect(
+      denied.handlers.get(IpcChannel.PreviewImport)!(
+        {},
+        { approvalId, ...options },
+      ),
+    ).rejects.toThrow(DENIED);
+    expect(denied.downstream).toEqual([]);
+    const allowed = harness({ approvedRoot: '/approved/models' });
+    await allowed.handlers.get(IpcChannel.PreviewImport)!(
+      {},
+      { approvalId, ...options },
+    );
+    expect(allowed.downstream).toEqual([
+      {
+        target: 'sidecar',
+        method: 'previewImport',
+        args: ['/approved/models', options],
+      },
+    ]);
+  });
+
+  it('forwards policies on import only after resolving an approved root', async () => {
+    const request = {
+      approvalId,
+      rootId: 'source',
+      rules: [],
+      commonTags: [],
+      policies,
+    };
+    const denied = harness();
+    await expect(
+      denied.handlers.get(IpcChannel.ImportRoot)!({}, request),
+    ).rejects.toThrow(DENIED);
+    expect(denied.downstream).toEqual([]);
+    const allowed = harness({ approvedRoot: '/approved/models' });
+    await allowed.handlers.get(IpcChannel.ImportRoot)!({}, request);
+    expect(allowed.downstream).toEqual([
+      {
+        target: 'sidecar',
+        method: 'importRoot',
+        args: ['source', '/approved/models', [], [], policies],
+      },
+    ]);
+  });
+});
 
 function senderEvent(id: number) {
   return {

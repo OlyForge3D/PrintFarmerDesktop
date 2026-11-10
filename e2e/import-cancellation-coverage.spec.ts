@@ -78,7 +78,7 @@ test('cancels synthetic import review without importing files', async ({
   });
   await expect(importReview).toBeVisible();
   await expect(
-    importReview.getByRole('button', { name: 'Import 1 files' }),
+    importReview.getByRole('button', { name: 'Import 1 file' }),
   ).toBeEnabled();
   await importReview.getByRole('button', { name: 'Cancel import' }).click();
 

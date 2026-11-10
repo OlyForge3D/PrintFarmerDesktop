@@ -407,6 +407,16 @@ export async function applyCalibrationScenario(
         formats: { stl: 1, threeMf: 0, obj: 0 },
         folders: [],
         foldersTruncated: false,
+        organization: {
+          affectedModels: 1,
+          newCollections: ['import-source'],
+          reusedCollections: [],
+          newTags: [],
+          reusedTags: [],
+          unmatchedModels: 0,
+          samples: [],
+          errors: [],
+        },
       }));
       handle('catalog:importRoot', () => {
         throw new Error('Unexpected import after review cancellation.');
@@ -427,6 +437,16 @@ export async function applyCalibrationScenario(
           { relativePath: 'Animals', name: 'Animals', depth: 1, modelCount: 2 },
         ],
         foldersTruncated: false,
+        organization: {
+          affectedModels: 2,
+          newCollections: ['import-source'],
+          reusedCollections: ['Animals'],
+          newTags: [],
+          reusedTags: [],
+          unmatchedModels: 0,
+          samples: [],
+          errors: [],
+        },
       }));
       handle('catalog:listCollections', () => [
         {

@@ -13,6 +13,29 @@ use crate::scan::DiscoveredFile;
 
 pub const MARKER: &str = "::zip::";
 pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_CONFIGURED_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MIB: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(try_from = "u64")]
+pub struct ArchiveSizeLimit(pub u64);
+
+impl Default for ArchiveSizeLimit {
+    fn default() -> Self {
+        Self(MAX_ARCHIVE_BYTES)
+    }
+}
+
+impl TryFrom<u64> for ArchiveSizeLimit {
+    type Error = &'static str;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        if !(MIB..=MAX_CONFIGURED_ARCHIVE_BYTES).contains(&value) || !value.is_multiple_of(MIB) {
+            return Err("Maximum ZIP size must be a whole MiB between 1 and 16384 MiB");
+        }
+        Ok(Self(value))
+    }
+}
 pub const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 pub const MAX_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CENTRAL_DIRECTORY_BYTES: u64 = 64 * 1024 * 1024;
@@ -45,16 +68,20 @@ pub fn is_zip(path: &Path) -> bool {
 }
 
 pub fn size_warning(path: &Path, size: u64) -> Option<String> {
-    (size > MAX_ARCHIVE_BYTES).then(|| {
+    size_warning_with_limit(path, size, MAX_ARCHIVE_BYTES)
+}
+
+pub fn size_warning_with_limit(path: &Path, size: u64, max_bytes: u64) -> Option<String> {
+    (size > max_bytes).then(|| {
         format!(
-            "Skipped ZIP {}: on-disk size {size} bytes exceeds the 512 MiB limit ({MAX_ARCHIVE_BYTES} bytes).",
-            path.display()
+            "Skipped ZIP {}: on-disk size {size} bytes exceeds the {} MiB limit ({max_bytes} bytes).",
+            path.display(), max_bytes / MIB
         )
     })
 }
 
-fn check_archive_size(path: &Path, size: u64) -> io::Result<()> {
-    match size_warning(path, size) {
+fn check_archive_size(path: &Path, size: u64, max_bytes: u64) -> io::Result<()> {
+    match size_warning_with_limit(path, size, max_bytes) {
         Some(warning) => Err(invalid(warning)),
         None => Ok(()),
     }
@@ -155,11 +182,19 @@ impl std::io::Seek for ArchiveFile {
     }
 }
 
+#[cfg(test)]
 fn open_archive(path: &Path) -> io::Result<zip::ZipArchive<ArchiveFile>> {
-    check_archive_size(path, std::fs::metadata(path)?.len())?;
+    open_archive_with_limit(path, MAX_ARCHIVE_BYTES)
+}
+
+fn open_archive_with_limit(
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<zip::ZipArchive<ArchiveFile>> {
+    check_archive_size(path, std::fs::metadata(path)?.len(), max_bytes)?;
     let file = File::open(path)?;
     // Recheck the opened file in case it changed between stat and open.
-    check_archive_size(path, file.metadata()?.len())?;
+    check_archive_size(path, file.metadata()?.len(), max_bytes)?;
     // The ZIP library bounds neither central-directory allocation nor entry
     // count before parsing. Check the EOCD (including ZIP64) first.
     let (entries, directory_bytes) = directory_bounds(&file)?;
@@ -181,7 +216,10 @@ fn open_archive(path: &Path) -> io::Result<zip::ZipArchive<ArchiveFile>> {
 }
 
 fn invalid_zip(error: zip::result::ZipError) -> io::Error {
-    invalid(format!("ZIP source error: {error}"))
+    match error {
+        zip::result::ZipError::Io(error) => error,
+        error => invalid(format!("ZIP source error: {error}")),
+    }
 }
 
 fn directory_bounds(mut file: &File) -> io::Result<(u64, u64)> {
@@ -254,8 +292,18 @@ pub fn discover(
     metadata: &Metadata,
     cancel: &AtomicBool,
 ) -> io::Result<Vec<DiscoveredFile>> {
-    check_archive_size(path, metadata.len())?;
-    let mut archive = open_archive(path)?;
+    discover_with_limit(path, relative, metadata, cancel, MAX_ARCHIVE_BYTES)
+}
+
+pub fn discover_with_limit(
+    path: &Path,
+    relative: &Path,
+    metadata: &Metadata,
+    cancel: &AtomicBool,
+    max_bytes: u64,
+) -> io::Result<Vec<DiscoveredFile>> {
+    check_archive_size(path, metadata.len(), max_bytes)?;
+    let mut archive = open_archive_with_limit(path, max_bytes)?;
     let guard = ParseGuard::default();
     let mut total = 0u64;
     let mut files = Vec::new();
@@ -339,11 +387,20 @@ impl Read for BoundedMember<'_> {
     }
 }
 
+#[cfg(test)]
 fn read_member<T>(
     source: &MemberSource,
     operation: impl FnOnce(BoundedMember<'_>) -> io::Result<T>,
 ) -> io::Result<T> {
-    let mut archive = open_archive(&source.archive)?;
+    read_member_with_limit(source, MAX_ARCHIVE_BYTES, operation)
+}
+
+fn read_member_with_limit<T>(
+    source: &MemberSource,
+    max_bytes: u64,
+    operation: impl FnOnce(BoundedMember<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut archive = open_archive_with_limit(&source.archive, max_bytes)?;
     let entry = archive.by_index(source.index).map_err(invalid_zip)?;
     if entry.name() != source.name {
         return Err(invalid("ZIP member changed; rescan the source folder"));
@@ -358,8 +415,12 @@ fn read_member<T>(
 }
 
 pub fn hash_source(path: &Path) -> io::Result<ContentHash> {
+    hash_source_with_limit(path, MAX_ARCHIVE_BYTES)
+}
+
+pub fn hash_source_with_limit(path: &Path, max_bytes: u64) -> io::Result<ContentHash> {
     match member_source(path)? {
-        Some(source) => read_member(&source, |reader| hash_reader(reader)),
+        Some(source) => read_member_with_limit(&source, max_bytes, |reader| hash_reader(reader)),
         None => crate::hash::hash_file(path),
     }
 }
@@ -367,6 +428,13 @@ pub fn hash_source(path: &Path) -> io::Result<ContentHash> {
 /// Reuse each seekable directory during reconciliation, rather than reparsing
 /// a potentially large central directory once per member.
 pub fn hash_sources(paths: &[PathBuf]) -> Vec<(PathBuf, io::Result<ContentHash>)> {
+    hash_sources_with_limit(paths, MAX_ARCHIVE_BYTES)
+}
+
+pub fn hash_sources_with_limit(
+    paths: &[PathBuf],
+    max_bytes: u64,
+) -> Vec<(PathBuf, io::Result<ContentHash>)> {
     let mut archives = std::collections::BTreeMap::<PathBuf, Vec<(PathBuf, MemberSource)>>::new();
     let mut results = Vec::with_capacity(paths.len());
     for path in paths {
@@ -380,11 +448,15 @@ pub fn hash_sources(paths: &[PathBuf]) -> Vec<(PathBuf, io::Result<ContentHash>)
         }
     }
     for (path, members) in archives {
-        let mut archive = match open_archive(&path) {
+        let mut archive = match open_archive_with_limit(&path, max_bytes) {
             Ok(archive) => archive,
             Err(error) => {
                 for (path, _) in members {
-                    results.push((path, Err(invalid(error.to_string()))));
+                    let copy = match error.raw_os_error() {
+                        Some(code) => io::Error::from_raw_os_error(code),
+                        None => io::Error::new(error.kind(), error.to_string()),
+                    };
+                    results.push((path, Err(copy)));
                 }
                 continue;
             }
@@ -423,6 +495,10 @@ impl ResolvedSource {
 }
 
 pub fn resolve(path: &Path) -> io::Result<ResolvedSource> {
+    resolve_with_limit(path, MAX_ARCHIVE_BYTES)
+}
+
+pub fn resolve_with_limit(path: &Path, max_bytes: u64) -> io::Result<ResolvedSource> {
     let Some(source) = member_source(path)? else {
         return Ok(ResolvedSource {
             path: path.to_owned(),
@@ -436,7 +512,9 @@ pub fn resolve(path: &Path) -> io::Result<ResolvedSource> {
         .path()
         .join(format!("model.{}", format.extension()));
     let mut output = File::create(&target)?;
-    read_member(&source, |mut reader| io::copy(&mut reader, &mut output))?;
+    read_member_with_limit(&source, max_bytes, |mut reader| {
+        io::copy(&mut reader, &mut output)
+    })?;
     output.flush()?;
     drop(output);
     Ok(ResolvedSource {
@@ -468,6 +546,113 @@ mod tests {
 
     fn reconcile(store: &mut dyn CatalogStore, root: &Path) -> crate::catalog::ReconcileReport {
         reconcile_root(store, "root", &scan_root(root, &AtomicBool::new(false)))
+    }
+
+    fn write_sparse_zip(path: &Path, size: u64) {
+        use std::io::{Seek, SeekFrom};
+        write_zip(path, &[("part.stl", b"solid part\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid part")]);
+        let mut bytes = std::fs::read(path).unwrap();
+        let prefix = size - bytes.len() as u64;
+        let central = bytes
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x01\x02")
+            .unwrap();
+        let end = bytes.len() - 22;
+        bytes[central + 42..central + 46].copy_from_slice(&(prefix as u32).to_le_bytes());
+        bytes[end + 16..end + 20]
+            .copy_from_slice(&((prefix + central as u64) as u32).to_le_bytes());
+        let mut file = File::create(path).unwrap();
+        file.seek(SeekFrom::Start(prefix)).unwrap();
+        file.write_all(&bytes).unwrap();
+    }
+
+    #[test]
+    fn configurable_limit_preserves_exact_threshold_and_member_read_safety() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("parts.zip");
+        write_sparse_zip(&path, MIB);
+        let scan = crate::scan::scan_root_with_limit(root.path(), &AtomicBool::new(false), MIB);
+        assert_eq!(scan.files.len(), 1);
+        assert!(scan.archive_warnings.is_empty());
+        let mut store = InMemoryCatalog::default();
+        assert_eq!(reconcile_root(&mut store, "root", &scan).added, 1);
+        assert!(resolve_with_limit(&scan.files[0].path, MIB).is_ok());
+
+        write_sparse_zip(&path, MIB + 1);
+        let lower = crate::scan::scan_root_with_limit(root.path(), &AtomicBool::new(false), MIB);
+        assert!(lower.files.is_empty());
+        assert!(lower.archive_warnings[0].contains("1 MiB limit (1048576 bytes)"));
+        assert_eq!(lower.skipped_errors, 0);
+        assert!(resolve_with_limit(&scan.files[0].path, MIB).is_err());
+        assert!(crate::scene::load_scene_with_limit(&scan.files[0].path, MIB).is_err());
+        assert!(hash_source_with_limit(&scan.files[0].path, MIB).is_err());
+        assert!(
+            hash_sources_with_limit(&[scan.files[0].path.clone()], MIB)[0]
+                .1
+                .is_err()
+        );
+        assert!(crate::scene::load_scene_with_limit(&scan.files[0].path, 2 * MIB).is_ok());
+    }
+
+    #[test]
+    fn raised_limit_indexes_archives_above_the_old_default_in_all_scan_rpcs() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("parts.zip");
+        write_sparse_zip(&path, MAX_ARCHIVE_BYTES + MIB);
+        assert!(scan_root(root.path(), &AtomicBool::new(false))
+            .files
+            .is_empty());
+        for method in ["scanRoot", "previewImport", "importRoot"] {
+            let request = serde_json::json!({
+                "id": 1, "method": method,
+                "params": { "rootId": "root", "path": root.path(), "maxArchiveBytes": MAX_ARCHIVE_BYTES + 2 * MIB }
+            }).to_string() + "\n";
+            let mut store = InMemoryCatalog::default();
+            let mut output = Vec::new();
+            crate::serve::run(&mut store, std::io::Cursor::new(request), &mut output).unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(response["ok"], true, "{response}");
+            if method == "previewImport" {
+                assert_eq!(response["result"]["modelCount"], 1, "{response}");
+            } else {
+                assert_eq!(store.models().len(), 1, "{response}");
+            }
+        }
+    }
+
+    #[test]
+    fn rpc_rejects_unbounded_or_fractional_archive_limits() {
+        for max_bytes in [0, MIB - 1, MIB + 1, MAX_CONFIGURED_ARCHIVE_BYTES + MIB] {
+            for method in [
+                "scanRoot",
+                "previewImport",
+                "importRoot",
+                "loadScenePacked",
+                "renderThumbnail",
+                "hashModelSource",
+            ] {
+                let request = serde_json::json!({
+                    "id": 1, "method": method,
+                    "params": { "rootId": "root", "path": "/missing.zip", "maxArchiveBytes": max_bytes }
+                }).to_string() + "\n";
+                let mut output = Vec::new();
+                crate::serve::run(
+                    &mut InMemoryCatalog::default(),
+                    std::io::Cursor::new(request),
+                    &mut output,
+                )
+                .unwrap();
+                let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
+                assert_eq!(response["ok"], false);
+                assert!(
+                    response["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Maximum ZIP size must"),
+                    "{response}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -581,7 +766,8 @@ mod tests {
         let scan = scan_root(root.path(), &AtomicBool::new(false));
         assert_eq!(
             crate::catalog::hash_changed_files(&store, "root", &scan)
-                .0
+                .unwrap()
+                .hashes
                 .len(),
             usize::from(!cfg!(unix))
         );
@@ -894,7 +1080,8 @@ mod tests {
         let scan = scan_root(root.path(), &AtomicBool::new(false));
         assert_eq!(
             crate::catalog::hash_changed_files(&store, "root", &scan)
-                .0
+                .unwrap()
+                .hashes
                 .len(),
             usize::from(!cfg!(unix))
         );
@@ -915,7 +1102,8 @@ mod tests {
         let scan = scan_root(root.path(), &AtomicBool::new(false));
         assert_eq!(
             crate::catalog::hash_changed_files(&store, "root", &scan)
-                .0
+                .unwrap()
+                .hashes
                 .len(),
             usize::from(!cfg!(unix))
         );

@@ -447,7 +447,11 @@ fn default_plate(root_object_ids: Vec<String>) -> ScenePlate {
 
 /// Load and normalize a model file, dispatching on its extension.
 pub fn load_scene(path: &Path) -> Result<SceneMesh, SceneError> {
-    let resolved = crate::archive::resolve(path)?;
+    load_scene_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn load_scene_with_limit(path: &Path, max_bytes: u64) -> Result<SceneMesh, SceneError> {
+    let resolved = crate::archive::resolve_with_limit(path, max_bytes)?;
     let path = resolved.path();
     match ModelFormat::from_path(path) {
         Some(ModelFormat::Stl) => Ok(SceneMesh::from_stl(&stl::parse_file(path)?)),

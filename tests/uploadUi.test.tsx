@@ -261,15 +261,15 @@ describe('catalog multi-selection and upload queue UI', () => {
     });
     installApi({ resetCatalog });
     const { container } = render(<App />);
-    const manage = await screen.findByRole('button', { name: /^Sources/ });
+    const manage = await screen.findByRole('button', { name: /^Settings/ });
     fireEvent.click(manage);
 
     const heading = await screen.findByRole('heading', {
-      name: 'Sources',
+      name: 'Settings',
       level: 1,
     });
     await waitFor(() => expect(heading).toHaveFocus());
-    expect(screen.getByRole('main', { name: 'Catalog sources' })).toBeVisible();
+    expect(screen.getByRole('main', { name: 'Settings' })).toBeVisible();
     expect(container.querySelector('.app-body')).not.toHaveAttribute('inert');
     expect(screen.getByText('Configured folders')).toBeVisible();
     expect(screen.getByText('C:\\models')).toBeVisible();
@@ -388,6 +388,18 @@ describe('catalog multi-selection and upload queue UI', () => {
 
 function installApi(overrides: Partial<PrintFarmerApi>): void {
   const api: Partial<PrintFarmerApi> = {
+    getArchiveSettings: vi
+      .fn()
+      .mockResolvedValue({ maxArchiveBytes: 512 * 1024 * 1024 }),
+    getThumbnailCacheSettings: vi.fn().mockResolvedValue({
+      location: null,
+      effectiveLocation: '/profile/scene-cache.v1',
+      maxBytes: 512 * 1024 * 1024,
+      retentionDays: 30,
+      usedBytes: 0,
+      entryCount: 0,
+      warning: null,
+    }),
     getAppInfo: vi.fn().mockResolvedValue({
       contractVersion: 2,
       appVersion: '0.1.0',

@@ -251,7 +251,13 @@ impl From<&ScenePlate> for ScenePlateDto {
 
 /// Load a model file and return the renderer-facing scene DTO.
 pub fn load_scene_dto(path: &Path) -> Result<SceneMeshDto, SceneError> {
-    Ok(SceneMeshDto::from(&scene::load_scene(path)?))
+    load_scene_dto_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn load_scene_dto_with_limit(path: &Path, max_bytes: u64) -> Result<SceneMeshDto, SceneError> {
+    Ok(SceneMeshDto::from(&scene::load_scene_with_limit(
+        path, max_bytes,
+    )?))
 }
 
 /// Core model metadata in wire form. Every field is optional; absent fields are
@@ -344,7 +350,14 @@ impl From<&vendor::VendorMetadata> for VendorMetadataDto {
 
 /// Extract slicer-project (vendor) metadata and return the wire DTO.
 pub fn extract_vendor_metadata_dto(path: &Path) -> Result<VendorMetadataDto, ThreeMfError> {
-    let resolved = crate::archive::resolve(path)?;
+    extract_vendor_metadata_dto_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn extract_vendor_metadata_dto_with_limit(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<VendorMetadataDto, ThreeMfError> {
+    let resolved = crate::archive::resolve_with_limit(path, max_bytes)?;
     let path = resolved.path();
     Ok(VendorMetadataDto::from(&vendor::extract_file(path)?))
 }
@@ -384,7 +397,14 @@ pub struct VendorPlateThumbnailsDto {
 pub fn extract_vendor_plate_thumbnails_dto(
     path: &Path,
 ) -> Result<VendorPlateThumbnailsDto, ThreeMfError> {
-    let resolved = crate::archive::resolve(path)?;
+    extract_vendor_plate_thumbnails_dto_with_limit(path, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn extract_vendor_plate_thumbnails_dto_with_limit(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<VendorPlateThumbnailsDto, ThreeMfError> {
+    let resolved = crate::archive::resolve_with_limit(path, max_bytes)?;
     let path = resolved.path();
     Ok(VendorPlateThumbnailsDto {
         thumbnails: vendor::read_plate_thumbnails_file(path)?
@@ -434,7 +454,15 @@ pub fn render_thumbnail_dto(
     path: &Path,
     size: Option<u32>,
 ) -> Result<ThumbnailDto, ThumbnailPipelineError> {
-    let mesh = scene::load_scene(path)?;
+    render_thumbnail_dto_with_limit(path, size, crate::archive::MAX_ARCHIVE_BYTES)
+}
+
+pub fn render_thumbnail_dto_with_limit(
+    path: &Path,
+    size: Option<u32>,
+    max_bytes: u64,
+) -> Result<ThumbnailDto, ThumbnailPipelineError> {
+    let mesh = scene::load_scene_with_limit(path, max_bytes)?;
     let edge = size.unwrap_or(DEFAULT_THUMBNAIL_SIZE);
     let png = thumbnail::render_png(&mesh, edge)?;
     Ok(ThumbnailDto {
@@ -548,6 +576,20 @@ pub struct ReconcileReportDto {
     pub missing: usize,
     pub hash_errors: usize,
     #[serde(default)]
+    pub scan_errors: usize,
+    #[serde(default)]
+    pub cloud_files_skipped: usize,
+    #[serde(default)]
+    pub cloud_directories_skipped: usize,
+    #[serde(default)]
+    pub skipped_entries: crate::scan::SkippedEntryCounts,
+    #[serde(default)]
+    pub scan_issues: Vec<crate::scan::ScanIssue>,
+    #[serde(default)]
+    pub scan_issues_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default)]
     pub archive_warnings: Vec<String>,
 }
 
@@ -559,6 +601,13 @@ impl From<&crate::catalog::ReconcileReport> for ReconcileReportDto {
             unchanged: r.unchanged,
             missing: r.missing,
             hash_errors: r.hash_errors,
+            scan_errors: r.scan_errors,
+            cloud_files_skipped: r.cloud_files_skipped,
+            cloud_directories_skipped: r.cloud_directories_skipped,
+            skipped_entries: r.skipped_entries.clone(),
+            scan_issues: r.scan_issues.clone(),
+            scan_issues_truncated: r.scan_issues_truncated,
+            failure: r.failure.clone(),
             archive_warnings: r.archive_warnings.clone(),
         }
     }
@@ -589,11 +638,51 @@ pub struct ImportPreviewDto {
     pub total_bytes: u64,
     pub skipped_errors: usize,
     #[serde(default)]
+    pub cloud_files_skipped: usize,
+    #[serde(default)]
+    pub cloud_directories_skipped: usize,
+    #[serde(default)]
+    pub skipped_entries: crate::scan::SkippedEntryCounts,
+    #[serde(default)]
+    pub scan_issues: Vec<crate::scan::ScanIssue>,
+    #[serde(default)]
+    pub scan_issues_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default)]
     pub archive_warnings: Vec<String>,
     pub complete: bool,
     pub formats: ImportFormatCountsDto,
     pub folders: Vec<ImportFolderDto>,
+    pub folders_total: usize,
     pub folders_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_folder_offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<ImportOrganizationPreviewDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOrganizationPreviewDto {
+    pub affected_models: usize,
+    pub new_collections: Vec<String>,
+    pub reused_collections: Vec<String>,
+    pub new_tags: Vec<String>,
+    pub reused_tags: Vec<String>,
+    pub unmatched_models: usize,
+    pub samples: Vec<ImportOrganizationSampleDto>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOrganizationSampleDto {
+    pub relative_path: String,
+    pub collections: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
@@ -602,6 +691,12 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
             model_count: preview.model_count,
             total_bytes: preview.total_bytes,
             skipped_errors: preview.skipped_errors,
+            cloud_files_skipped: preview.cloud_files_skipped,
+            cloud_directories_skipped: preview.cloud_directories_skipped,
+            skipped_entries: preview.skipped_entries.clone(),
+            scan_issues: preview.scan_issues.clone(),
+            scan_issues_truncated: preview.scan_issues_truncated,
+            failure: preview.failure.clone(),
             archive_warnings: preview.archive_warnings.clone(),
             complete: preview.complete,
             formats: ImportFormatCountsDto {
@@ -625,7 +720,30 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
                     model_count: folder.model_count,
                 })
                 .collect(),
+            folders_total: preview.folders_total,
             folders_truncated: preview.folders_truncated,
+            preview_id: preview.preview_id.clone(),
+            next_folder_offset: preview.next_folder_offset,
+            organization: preview.organization.as_ref().map(|organization| {
+                ImportOrganizationPreviewDto {
+                    affected_models: organization.affected_models,
+                    new_collections: organization.new_collections.clone(),
+                    reused_collections: organization.reused_collections.clone(),
+                    new_tags: organization.new_tags.clone(),
+                    reused_tags: organization.reused_tags.clone(),
+                    unmatched_models: organization.unmatched_models,
+                    samples: organization
+                        .samples
+                        .iter()
+                        .map(|sample| ImportOrganizationSampleDto {
+                            relative_path: sample.relative_path.clone(),
+                            collections: sample.collections.clone(),
+                            tags: sample.tags.clone(),
+                        })
+                        .collect(),
+                    errors: organization.errors.clone(),
+                }
+            }),
         }
     }
 }
@@ -900,6 +1018,7 @@ mod tests {
             missing: 2,
             hash_errors: 0,
             archive_warnings: Vec::new(),
+            ..crate::catalog::ReconcileReport::default()
         };
         let dto = ReconcileReportDto::from(&report);
         let json = serde_json::to_string(&dto).unwrap();

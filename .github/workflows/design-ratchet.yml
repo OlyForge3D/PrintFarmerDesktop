@@ -57,6 +57,7 @@ jobs:
           ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           path: trusted
           sparse-checkout: |
+            scripts/design-baseline.mjs
             scripts/design-ratchet.mjs
             scripts/design-detector.mjs
             scripts/design-surface.mjs

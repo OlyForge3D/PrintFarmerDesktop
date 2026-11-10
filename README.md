@@ -31,9 +31,15 @@ action.
 
 The library indexes STL, OBJ, 3MF, and STEP (`.step`/`.stp`) files. STEP
 indexing does not require STEP tessellation support; 3D preview of STEP models
-requires a sidecar built with the optional `step` feature. Library errors can
-be dismissed without changing imported data, or retried to refresh the catalog.
-Long diagnostic messages are available under **Error details**.
+requires a sidecar built with the optional `step` feature. Scans continue to
+index readable files when another file or folder is cloud-only, inaccessible,
+or unreadable. Oversized ZIP archives are skipped at the configured archive
+size limit. Scan feedback groups skipped files and folders by reason and offers
+expandable path details (up to 200 entries; counts cover the full scan). Use
+**Retry** to repeat the same source operation; **Dismiss** only hides its
+message and does not change the catalog. Catalog-refresh errors retry the
+catalog refresh rather than rescanning the source. Long diagnostic messages are
+available under **Error details**.
 
 The library loads one database-backed page at a time: **48 items** by default,
 with **24, 48, 96, or 192** items per page. The page-size preference is saved
@@ -55,6 +61,54 @@ all pages. Each bulk change shows an exact per-collection preview and must be
 confirmed; if the matching models or memberships change before you confirm, the
 change is refused and nothing is written. Bulk changes only edit collection
 membership — source files and other memberships are untouched.
+
+**Settings** in the workspace rail groups source folders, thumbnail cache, and
+ZIP file limits, and PrintFarmer connections. Add, scan/reconnect, or hide source folders and reset
+the local catalog there; configure thumbnail storage, size/retention limits, or
+confirm clearing cached previews without changing source files. Server profiles
+are managed there, while the server bar keeps the active connection accessible
+for uploads and calibration. Library **Add folder** remains a contextual import
+shortcut.
+
+**Import organization** starts with a collapsed folder tree, not a tag for
+every folder. New folders inherit their nearest configured policy; by default
+they add no folder metadata. Keep the optional whole-import collection/tags,
+then select a folder to put its entire subtree into a fixed collection or add
+fixed tags. Expand only branches that need exceptions. A child policy replaces
+its parent's folder organization, while **Disabled** explicitly stops it;
+**Inherit** removes the exception. Neither setting excludes files or removes
+existing catalog tags or collection memberships.
+
+Select multiple folders to change entire subtrees together, including collapsed
+descendants and remembered exceptions for folders not currently present.
+The scope is independent of which tree rows are displayed. Previously saved
+folder rules remain visible as legacy additive choices until explicitly edited.
+Remembering preserves fixed collection identities and policies for later imports,
+including newly encountered descendant folders.
+
+Optional **path recipes** match directories relative to the selected folder.
+For example, on `Miniatures`, use `{maker}/{project}/**`, collection `{maker}`,
+and tag `miniatures`. Each named placeholder captures one directory segment;
+unused captures such as `{project}` do not create tags. Literal segments match
+exactly and case-sensitively; only a trailing `**` matches zero or more segments.
+Without `**`, the directory path must match exactly. Names are unique ASCII
+identifiers, not expressions. An unmatched recipe adds no folder metadata and
+does not fall back to its parent policy. Whole-import organization still applies.
+
+Before confirmation, the preview evaluates the full source and distinguishes
+unique **new** collections/tags from existing metadata to reuse, with example
+resolved outputs and unmatched file counts. Invalid patterns, unknown captures,
+invalid resolved names, or unresolved collection targets block import. The
+import rescans and validates again before catalog changes, so preview counts
+are estimates of file locations, not content-deduplicated model identities.
+Paging the folder hierarchy never truncates policy coverage.
+
+**Maximum ZIP size** is measured in MiB (1,048,576 bytes), defaults to 512 MiB,
+and accepts whole values from 1 to 16,384 MiB. Changes apply to the next scan,
+import review/import, or ZIP-member preview; rescan folders to update the
+catalog. Files exactly at the limit are allowed; larger archives are skipped
+with the configured limit in the warning. ZIP entry-count, directory-memory,
+per-member, decompression, and indexing budgets are unchanged.
 
 Thumbnails are requested only near the viewport; queued requests are skipped
 when their cards leave the page, and the thumbnail cache retains at most 256
@@ -256,7 +310,10 @@ Separately, installed builds show a lightweight "update available" notice in the
 status bar when a newer GitHub release with an installer for its platform is
 published on its release train. Beta builds are told about newer betas and any
 newer stable release; stable builds are told only about newer stable releases.
-The notice links to the release page and can be dismissed per version. It never
+The notice links to the release page and can be dismissed per version. While it
+is visible, it replaces the status bar's "Check for Updates" button; dismissing
+the notice restores manual checking. After a manual check finds no update, the
+button reads "Up to date" and can be clicked to check again. The notice never
 downloads or installs anything, checks GitHub at most every six hours (the last
 result is remembered across restarts), and is disabled under `npm start`.
 

@@ -13,13 +13,14 @@ export const modelFixtureName =
   'precision-calibration-fixture-with-an-intentionally-long-name.obj';
 
 export async function refreshCatalog(page: Page): Promise<void> {
-  // Sources is a place in the workspace rail, not a dialog: navigate to it,
-  // refresh, and navigate back rather than opening and closing a modal.
-  await page.getByRole('button', { name: /^Sources/ }).click();
-  const sourcesPane = page.getByRole('main', { name: 'Catalog sources' });
+  // Folder management lives in Settings; refresh there before returning.
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  const sourcesPane = page.getByRole('main', { name: 'Settings' });
   await expect(sourcesPane).toBeVisible();
   await sourcesPane.getByRole('button', { name: 'Refresh catalog' }).click();
-  await expect(sourcesPane).toHaveAttribute('aria-busy', 'false');
+  await expect(
+    sourcesPane.getByRole('region', { name: 'Source folders' }),
+  ).toHaveAttribute('aria-busy', 'false');
   await page.getByRole('button', { name: 'Library', exact: true }).click();
   await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
 }

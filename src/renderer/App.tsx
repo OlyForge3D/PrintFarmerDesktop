@@ -10,6 +10,7 @@ import type {
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
 import { LibraryErrorAlert } from './library/LibraryErrorAlert';
+import { ScanFeedback } from './library/ScanFeedback';
 import { useFavorites } from './library/useFavorites';
 import { useModelTags } from './library/useModelTags';
 import { useModelCollections } from './library/useModelCollections';
@@ -39,8 +40,7 @@ import { plateHiddenObjectIds } from './viewer/plateSelection';
 import type { PlateSelection } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
-import { reconcileHeadline, reconcileDetails } from './library/sourceRoots';
-import { SourcesWorkspace } from './library/SourcesWorkspace';
+import { SettingsWorkspace } from './shell/SettingsWorkspace';
 import {
   forgetImportPlan,
   rememberImportPlan,
@@ -69,7 +69,6 @@ import {
 import { UploadsWorkspace } from './uploads/UploadsWorkspace';
 import { summarizeUploadJobs } from './uploads/uploadSummary';
 import { OrganizationWorkspace } from './library/OrganizationWorkspace';
-import { ThumbnailCacheDialog } from './library/ThumbnailCacheDialog';
 import { RetargetWorkflow } from './retarget/RetargetWorkflow';
 import type { RetargetTarget } from './retarget/useRetargetWorkflow';
 import { CalibrationWorkspace } from './calibration';
@@ -86,7 +85,6 @@ const MAX_UPLOAD_SELECTION = 500;
 type ModalOwner =
   | 'none'
   | 'profiles'
-  | 'thumbnailCache'
   | 'import'
   | 'previewPreparation'
   | 'preview'
@@ -108,7 +106,7 @@ export function App(): React.JSX.Element {
       selectedProfileId: null,
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
-  const [thumbnailCacheOpen, setThumbnailCacheOpen] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [importPreparing, setImportPreparing] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [modalOwner, setModalOwnerState] = useState<ModalOwner>('none');
@@ -238,7 +236,6 @@ export function App(): React.JSX.Element {
     !onboardingDismissed &&
     library.status !== 'loading' &&
     !profilesOpen &&
-    !thumbnailCacheOpen &&
     !retargetTarget &&
     !previewOpen &&
     !library.importDraft &&
@@ -252,14 +249,12 @@ export function App(): React.JSX.Element {
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
-    thumbnailCacheOpen ||
     retargetOpen ||
     collectionsOpen;
   const backgroundExcluded =
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
-    thumbnailCacheOpen ||
     retargetOpen ||
     collectionsOpen;
   const prepareFolderImport = library.addFolder;
@@ -634,7 +629,6 @@ export function App(): React.JSX.Element {
     library.importDraft,
     previewOpen,
     profilesOpen,
-    thumbnailCacheOpen,
     releaseModal,
   ]);
 
@@ -706,13 +700,20 @@ export function App(): React.JSX.Element {
       const result = await commitFolderImport({
         rules: plan.rules,
         commonTags: plan.commonTags,
+        policies: plan.policies,
       });
       if (result && rootId) {
         releaseModal('import');
-        if (remember) {
-          rememberImportPlan(rootId, plan, result.resolvedCollections);
-        } else {
-          forgetImportPlan(rootId);
+        try {
+          if (remember) {
+            rememberImportPlan(rootId, plan, result.resolvedCollections);
+          } else {
+            forgetImportPlan(rootId);
+          }
+        } catch (error: unknown) {
+          setAppError(
+            `Import completed, but source policies could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
         setTimeout(() => {
           const previous = importReturnFocusRef.current;
@@ -991,7 +992,8 @@ export function App(): React.JSX.Element {
     serverProfiles.profiles.find(
       (profile) => profile.id === serverProfiles.selectedProfileId,
     ) ?? null;
-  const workspaceActionsDisabled = busy || modalOwner !== 'none';
+  const workspaceActionsDisabled =
+    busy || settingsBusy || modalOwner !== 'none';
   const serverProfilesDisabled =
     workspaceActionsDisabled ||
     importPreparing ||
@@ -1009,6 +1011,7 @@ export function App(): React.JSX.Element {
         workspaceSwitching ||
         backgroundExcluded ||
         library.status === 'resetting' ||
+        settingsBusy ||
         modalOwnerRef.current !== 'none'
       ) {
         return;
@@ -1038,7 +1041,13 @@ export function App(): React.JSX.Element {
         setWorkspaceSwitching(false);
       }
     },
-    [activeWorkspace, backgroundExcluded, library.status, workspaceSwitching],
+    [
+      activeWorkspace,
+      backgroundExcluded,
+      library.status,
+      settingsBusy,
+      workspaceSwitching,
+    ],
   );
   const openProfiles = (): void => {
     if (serverProfilesDisabled) return;
@@ -1057,15 +1066,6 @@ export function App(): React.JSX.Element {
     restoreProfileFocusRef.current = true;
     setProfilesOpen(false);
     releaseModal('profiles');
-  };
-  const openThumbnailCache = (): void => {
-    if (busy || reserveModal('thumbnailCache') === null) return;
-    if (onboardingOpen) setOnboardingDismissed(true);
-    setThumbnailCacheOpen(true);
-  };
-  const closeThumbnailCache = (): void => {
-    setThumbnailCacheOpen(false);
-    releaseModal('thumbnailCache');
   };
   const openCollectionManager = (target?: CollectionTargetKind): void => {
     if (busy || reserveModal('collections') === null) return;
@@ -1209,6 +1209,7 @@ export function App(): React.JSX.Element {
     backgroundExcluded ||
     modalOwner !== 'none' ||
     workspaceSwitching ||
+    settingsBusy ||
     resetInFlight;
   const sourcesNeedingAttention = library.sourceRoots.filter(
     (root) => root.status !== 'available',
@@ -1233,7 +1234,7 @@ export function App(): React.JSX.Element {
         uploadSummary.remaining === 1 ? 'upload' : 'uploads'
       } remaining`,
     },
-    sources: {
+    settings: {
       count: sourcesNeedingAttention,
       tone: 'warning',
       description: `${sourcesNeedingAttention} ${
@@ -1282,7 +1283,9 @@ export function App(): React.JSX.Element {
           disabledExplanation={
             workspaceSwitching
               ? 'Saving calibration changes before leaving this workspace.'
-              : 'Navigation is unavailable while a dialog is open.'
+              : settingsBusy
+                ? 'Wait for the settings operation to finish.'
+                : 'Navigation is unavailable while a dialog is open.'
           }
           badges={workspaceBadges}
           onNavigate={(destination) => {
@@ -1310,7 +1313,6 @@ export function App(): React.JSX.Element {
                   onQueryChange={setQuery}
                   onFilterChange={setFilter}
                   onAddFolder={beginImport}
-                  onOpenThumbnailCacheSettings={openThumbnailCache}
                   collections={library.collections}
                   selectedCollections={collectionIds}
                   onCollectionsChange={setCollectionIds}
@@ -1488,11 +1490,6 @@ export function App(): React.JSX.Element {
                         </span>
                         <progress aria-label="Current scan progress" />
                       </>
-                    ) : library.lastReport ? (
-                      <>
-                        <strong>{reconcileHeadline(library.lastReport)}</strong>
-                        <span>{reconcileDetails(library.lastReport)}</span>
-                      </>
                     ) : null}
                   </div>
 
@@ -1502,8 +1499,20 @@ export function App(): React.JSX.Element {
                       className="library-alert"
                       onDismiss={library.dismissError}
                       onRetry={() => {
-                        void library.refresh();
+                        void library.retryLastOperation();
                       }}
+                      retryLabel={library.retryLabel}
+                    />
+                  ) : null}
+                  {library.scanFeedbackVisible && library.lastReport ? (
+                    <ScanFeedback
+                      data={library.lastReport}
+                      onRetry={() => {
+                        void library.retryLastOperation();
+                      }}
+                      retryLabel={library.retryLabel}
+                      onDismiss={library.dismissScanFeedback}
+                      className="library-scan-feedback"
                     />
                   ) : null}
 
@@ -1693,23 +1702,40 @@ export function App(): React.JSX.Element {
               />
             ) : null}
 
-            {activeWorkspace === 'sources' ? (
-              <SourcesWorkspace
-                roots={library.sourceRoots}
-                modelCount={library.totalModels}
-                busy={library.status !== 'idle'}
-                error={library.error}
-                onDismissError={library.dismissError}
-                scanActivity={library.scanActivity}
-                onAddFolder={beginImport}
-                onRefresh={() => {
-                  void library.refresh();
+            {activeWorkspace === 'settings' ? (
+              <SettingsWorkspace
+                sources={{
+                  roots: library.sourceRoots,
+                  modelCount: library.totalModels,
+                  busy:
+                    library.status !== 'idle' ||
+                    settingsBusy ||
+                    modalOwner !== 'none',
+                  error: library.error,
+                  lastReport: library.lastReport,
+                  scanFeedbackVisible: library.scanFeedbackVisible,
+                  onDismissError: library.dismissError,
+                  onRetryScan: () => {
+                    void library.retryLastOperation();
+                  },
+                  onDismissScanFeedback: library.dismissScanFeedback,
+                  retryLabel: library.retryLabel,
+                  scanActivity: library.scanActivity,
+                  onAddFolder: beginImport,
+                  onRefresh: () => {
+                    void library.refresh();
+                  },
+                  onRescanRoot: (rootId) => {
+                    void library.rescanRoot(rootId);
+                  },
+                  onRemoveRoot: library.removeRoot,
+                  onResetCatalog: resetCatalog,
                 }}
-                onRescanRoot={(rootId) => {
-                  void library.rescanRoot(rootId);
-                }}
-                onRemoveRoot={library.removeRoot}
-                onResetCatalog={resetCatalog}
+                profile={activeServer}
+                connectionsDisabled={serverProfilesDisabled}
+                cacheDisabled={busy || settingsBusy || modalOwner !== 'none'}
+                onManageProfiles={openProfiles}
+                onCacheBusyChange={setSettingsBusy}
               />
             ) : null}
 
@@ -1750,8 +1776,17 @@ export function App(): React.JSX.Element {
           key={library.importDraft.rootId}
           draft={library.importDraft}
           busy={library.status === 'scanning'}
+          importStage={
+            library.status === 'scanning'
+              ? (library.scanActivity.importStage ?? 'importing')
+              : null
+          }
           error={library.error}
           onDismissError={library.dismissError}
+          onRetryScan={() => {
+            void library.retryLastOperation();
+          }}
+          retryLabel={library.retryLabel}
           onCancel={cancelImport}
           onConfirm={confirmImport}
         />
@@ -1761,7 +1796,6 @@ export function App(): React.JSX.Element {
         <LibraryOnboarding
           busy={importPreparing}
           onAddFolder={beginImport}
-          onManageThumbnailCache={openThumbnailCache}
           onClose={dismissOnboarding}
         />
       ) : null}
@@ -1813,9 +1847,6 @@ export function App(): React.JSX.Element {
           onMutationSettled={refreshServerProfiles}
           onClose={closeProfiles}
         />
-      ) : null}
-      {thumbnailCacheOpen ? (
-        <ThumbnailCacheDialog onClose={closeThumbnailCache} />
       ) : null}
 
       {collectionManager ? (

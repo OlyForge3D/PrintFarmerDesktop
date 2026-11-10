@@ -90,6 +90,75 @@ function emitEmptyPackedScene(id: number, emit: (line: string) => void): void {
 }
 
 describe('SidecarClient', () => {
+  it('snapshots configured ZIP limits on each scan/import/preview request, including a respawn', async () => {
+    const { channel, sent, closeFromSidecar } = makeFakeChannel(
+      (request, emit) => {
+        emit(JSON.stringify({ id: request.id, ok: true, result: {} }));
+      },
+    );
+    const client = new SidecarClient(() => channel);
+    let limit = 1024 * 1024;
+    client.setArchiveSizeLimitProvider(() => Promise.resolve(limit));
+    await client.scanRoot('root', '/models');
+    await client.previewImport('/models');
+    limit = 1024 * 1024 * 1024;
+    closeFromSidecar(0);
+    await client.importRoot('root', '/models', [], []);
+    await client.extractVendorMetadata('/models/parts.zip/::zip::/0/part.3mf');
+    expect(
+      sent.map(
+        (line) =>
+          (JSON.parse(line) as { params: { maxArchiveBytes: number } }).params
+            .maxArchiveBytes,
+      ),
+    ).toEqual([
+      1024 * 1024,
+      1024 * 1024,
+      1024 * 1024 * 1024,
+      1024 * 1024 * 1024,
+    ]);
+    client.dispose();
+  });
+
+  it('snapshots the configured ZIP limit on each recipe-bound scene load', async () => {
+    const { channel, sent } = makeFakeChannel((request, emit) => {
+      if (request.method === 'handshake') {
+        emit(
+          JSON.stringify({
+            id: request.id,
+            ok: true,
+            result: {
+              protocolVersion: SIDECAR_RPC_PROTOCOL_VERSION,
+              sidecarVersion: 'test',
+              sceneCacheRecipe: 'scene/v2.2',
+            },
+          }),
+        );
+        return;
+      }
+
+      emitEmptyPackedScene(request.id, emit);
+    });
+    const client = new SidecarClient(() => channel);
+    let limit = 1024 * 1024;
+    client.setArchiveSizeLimitProvider(() => Promise.resolve(limit));
+
+    await client.loadSceneWithRecipe('C:/part.stl');
+    limit = 1024 * 1024 * 1024;
+    await client.loadSceneWithRecipe('C:/part.stl');
+
+    expect(
+      sent
+        .map((line) => JSON.parse(line) as { method: string; params: unknown })
+        .filter((request) => request.method === 'loadScenePacked')
+        .map((request) => request.params),
+    ).toEqual([
+      { path: 'C:/part.stl', maxArchiveBytes: 1024 * 1024 },
+      { path: 'C:/part.stl', maxArchiveBytes: 1024 * 1024 * 1024 },
+    ]);
+    client.dispose();
+  });
+
   it('rejects a sidecar with an incompatible protocol version', async () => {
     const { channel } = makeFakeChannel((request, emit) => {
       emit(
@@ -349,9 +418,9 @@ describe('SidecarClient', () => {
     });
   });
 
-  it('keeps Desktop IPC v10 independent from sidecar protocol v5', () => {
+  it('keeps Desktop IPC v11 independent from sidecar protocol v6', () => {
     expect(IPC_CONTRACT_VERSION).toBe(11);
-    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(5);
+    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(6);
   });
   it('resolves a handshake response', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
@@ -390,6 +459,33 @@ describe('SidecarClient', () => {
     await expect(client.handshake()).rejects.toThrow(
       `sidecar protocol mismatch: expected ${SIDECAR_RPC_PROTOCOL_VERSION}, received ${SIDECAR_RPC_PROTOCOL_VERSION + 1}`,
     );
+  });
+
+  it('refuses import policies on old sidecars that could silently ignore them', async () => {
+    const { channel, sent } = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: { protocolVersion: 5, sidecarVersion: 'before-policies' },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel, {
+      requireProtocolHandshake: true,
+    });
+    await expect(
+      client.importRoot(
+        'root',
+        '/models',
+        [],
+        [],
+        [{ relativePath: 'Miniatures', mode: 'disabled', tags: [] }],
+      ),
+    ).rejects.toThrow('sidecar protocol mismatch: expected 6, received 5');
+    expect(
+      sent.map((line) => (JSON.parse(line) as { method: string }).method),
+    ).toEqual(['handshake']);
   });
 
   it('sends a well-formed packed scene request and resolves the result', async () => {
@@ -669,14 +765,27 @@ describe('SidecarClient', () => {
     });
     const client = new SidecarClient(() => channel);
 
-    await client.previewImport('C:/models');
+    const options = {
+      folderOffset: 500,
+      previewId: 'snapshot-1',
+      policies: [
+        {
+          relativePath: 'Miniatures',
+          mode: 'organize' as const,
+          pattern: '{maker}/{project}/**',
+          collectionName: '{maker}',
+          tags: ['miniatures'],
+        },
+      ],
+    };
+    await client.previewImport('C:/models', options);
 
     const request = JSON.parse(sent[0] ?? '{}') as {
       method: string;
       params: { path: string };
     };
     expect(request.method).toBe('previewImport');
-    expect(request.params).toEqual({ path: 'C:/models' });
+    expect(request.params).toEqual({ path: 'C:/models', ...options });
   });
 
   it('sends confirmed organization rules with an import', async () => {
@@ -712,7 +821,16 @@ describe('SidecarClient', () => {
       },
     ];
 
-    await client.importRoot('root1', 'C:/models', rules, ['printable']);
+    const policies = [
+      { relativePath: 'Animals/Cats', mode: 'disabled' as const, tags: [] },
+    ];
+    await client.importRoot(
+      'root1',
+      'C:/models',
+      rules,
+      ['printable'],
+      policies,
+    );
 
     const request = JSON.parse(sent[0] ?? '{}') as {
       method: string;
@@ -724,6 +842,7 @@ describe('SidecarClient', () => {
       path: 'C:/models',
       rules,
       commonTags: ['printable'],
+      policies,
     });
   });
 

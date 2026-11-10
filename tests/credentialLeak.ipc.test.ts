@@ -222,6 +222,7 @@ function realService(): ServerProfileService {
 function register(profiles: ServerProfileService): Map<string, Handler> {
   electronState.handlers.clear();
   const noopSidecar = {
+    setArchiveSizeLimitProvider: () => undefined,
     loadScene: () => Promise.resolve({}),
     extractVendorMetadata: () => Promise.resolve({}),
     extractVendorPlateThumbnails: () => Promise.resolve({ thumbnails: [] }),

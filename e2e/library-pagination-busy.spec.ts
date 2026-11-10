@@ -90,7 +90,9 @@ test('library initial query failure announces and recovers on retry', async ({
     .getByRole('alert')
     .filter({ hasText: 'Synthetic initial catalog failure.' });
   await expect(error).toBeVisible();
-  await expect(error.getByRole('button', { name: 'Retry' })).toBeVisible();
+  await expect(
+    error.getByRole('button', { name: 'Reload catalog' }),
+  ).toBeVisible();
   await expect(
     error.getByRole('button', { name: 'Dismiss library error' }),
   ).toBeVisible();
@@ -100,7 +102,7 @@ test('library initial query failure announces and recovers on retry', async ({
     testInfo,
   });
   await captureVisualScenario(page, 'library.home.page-load-error', testInfo);
-  await error.getByRole('button', { name: 'Retry' }).click();
+  await error.getByRole('button', { name: 'Reload catalog' }).click();
   await expect(error).toHaveCount(0);
   await expect(
     page.getByRole('navigation', { name: 'Library pages' }).getByRole('status'),

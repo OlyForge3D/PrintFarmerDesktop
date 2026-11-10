@@ -132,6 +132,8 @@ export const IpcChannel = {
   SetThumbnailCacheSettings: 'thumbnailCache:setSettings',
   ChooseThumbnailCacheLocation: 'thumbnailCache:chooseLocation',
   ClearThumbnailCache: 'thumbnailCache:clear',
+  GetArchiveSettings: 'archive:getSettings',
+  SetArchiveSettings: 'archive:setSettings',
   ScanRoot: 'catalog:scanRoot',
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
@@ -542,6 +544,20 @@ export type RenderThumbnailResponse = z.infer<typeof RenderThumbnailResponse>;
 
 // --- thumbnailCache:* -----------------------------------------------------
 
+export const DEFAULT_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
+export const MAX_ARCHIVE_SIZE_MIB = 16384;
+export const ArchiveSettings = z
+  .object({
+    maxArchiveBytes: z
+      .number()
+      .int()
+      .min(1024 * 1024)
+      .max(MAX_ARCHIVE_SIZE_MIB * 1024 * 1024)
+      .multipleOf(1024 * 1024),
+  })
+  .strict();
+export type ArchiveSettings = z.infer<typeof ArchiveSettings>;
+
 export const ThumbnailCacheSettings = z
   .object({
     location: z.string().min(1).max(4096).nullable(),
@@ -639,6 +655,46 @@ export const LogicalModel = z.object({
 export type LogicalModel = z.infer<typeof LogicalModel>;
 
 /** Summary of one reconciliation pass over a source root. */
+export const ScanSkippedEntries = z
+  .object({
+    cloudOnly: z.number().int().nonnegative(),
+    permissionDenied: z.number().int().nonnegative(),
+    unreadable: z.number().int().nonnegative(),
+    tooLarge: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ScanSkippedEntries = z.infer<typeof ScanSkippedEntries>;
+
+const ScanIssueBase = {
+  path: z.string(),
+  kind: z.enum(['file', 'folder']),
+  detail: z.string(),
+};
+
+export const ScanIssue = z.discriminatedUnion('reason', [
+  z.object({ ...ScanIssueBase, reason: z.literal('cloudOnly') }).strict(),
+  z
+    .object({ ...ScanIssueBase, reason: z.literal('permissionDenied') })
+    .strict(),
+  z.object({ ...ScanIssueBase, reason: z.literal('unreadable') }).strict(),
+  z
+    .object({
+      ...ScanIssueBase,
+      reason: z.literal('tooLarge'),
+      sizeBytes: z.number().int().nonnegative().optional(),
+      limitBytes: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+]);
+export type ScanIssue = z.infer<typeof ScanIssue>;
+
+/** Details for skipped paths are capped by the sidecar; counts cover the full scan. */
+const ScanIssueSummaryFields = {
+  skippedEntries: ScanSkippedEntries.optional(),
+  scanIssues: z.array(ScanIssue).max(200).optional(),
+  scanIssuesTruncated: z.boolean().optional(),
+};
+
 export const ReconcileReport = z.object({
   added: z.number().int().nonnegative(),
   changed: z.number().int().nonnegative(),
@@ -646,7 +702,11 @@ export const ReconcileReport = z.object({
   missing: z.number().int().nonnegative(),
   hashErrors: z.number().int().nonnegative(),
   scanErrors: z.number().int().nonnegative().optional(),
+  cloudFilesSkipped: z.number().int().nonnegative().optional(),
+  cloudDirectoriesSkipped: z.number().int().nonnegative().optional(),
+  failure: z.string().optional(),
   archiveWarnings: z.array(z.string()).optional(),
+  ...ScanIssueSummaryFields,
 });
 export type ReconcileReport = z.infer<typeof ReconcileReport>;
 
@@ -669,19 +729,16 @@ export const ImportFolder = z.object({
 });
 export type ImportFolder = z.infer<typeof ImportFolder>;
 
-export const ImportPreviewRequest = z
-  .object({
-    approvalId: z.string().uuid(),
-  })
-  .strict();
-export type ImportPreviewRequest = z.infer<typeof ImportPreviewRequest>;
-
 export const ImportPreviewResponse = z.object({
   modelCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   skippedErrors: z.number().int().nonnegative(),
+  cloudFilesSkipped: z.number().int().nonnegative().optional(),
+  cloudDirectoriesSkipped: z.number().int().nonnegative().optional(),
+  ...ScanIssueSummaryFields,
   archiveWarnings: z.array(z.string()).optional(),
   complete: z.boolean(),
+  failure: z.string().optional(),
   formats: z.object({
     stl: z.number().int().nonnegative(),
     threeMf: z.number().int().nonnegative(),
@@ -691,6 +748,29 @@ export const ImportPreviewResponse = z.object({
   }),
   folders: z.array(ImportFolder).max(500),
   foldersTruncated: z.boolean(),
+  foldersTotal: z.number().int().nonnegative().optional(),
+  nextFolderOffset: z.number().int().nonnegative().optional(),
+  previewId: z.string().min(1).max(128).optional(),
+  organization: z
+    .object({
+      affectedModels: z.number().int().nonnegative(),
+      newCollections: z.array(z.string()).max(10000),
+      reusedCollections: z.array(z.string()).max(10000),
+      newTags: z.array(z.string()).max(10000),
+      reusedTags: z.array(z.string()).max(10000),
+      unmatchedModels: z.number().int().nonnegative(),
+      samples: z
+        .array(
+          z.object({
+            relativePath: z.string(),
+            collections: z.array(z.string()),
+            tags: z.array(z.string()),
+          }),
+        )
+        .max(10),
+      errors: z.array(z.string()).max(20),
+    })
+    .optional(),
 });
 export type ImportPreviewResponse = z.infer<typeof ImportPreviewResponse>;
 
@@ -710,9 +790,65 @@ export const ImportRule = z.discriminatedUnion('kind', [
 ]);
 export type ImportRule = z.infer<typeof ImportRule>;
 
+export const ImportPolicy = z
+  .object({
+    relativePath: z.string().max(4096),
+    mode: z.enum(['organize', 'disabled']),
+    collectionName: z.string().trim().min(1).max(128).optional(),
+    collectionId: z.string().min(1).max(256).optional(),
+    tags: z.array(z.string().trim().min(1).max(128)).max(100),
+    pattern: z.string().min(1).max(4096).optional(),
+  })
+  .strict()
+  .superRefine((policy, context) => {
+    if (
+      policy.mode === 'disabled' &&
+      (policy.collectionName !== undefined ||
+        policy.collectionId !== undefined ||
+        policy.pattern !== undefined ||
+        policy.tags.length > 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Disabled policies cannot carry organization outputs or a pattern.',
+      });
+    }
+    if (
+      policy.mode === 'organize' &&
+      !policy.collectionName &&
+      policy.tags.length === 0
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'An organization policy needs a collection or tags.',
+      });
+    }
+    if (policy.collectionId && !policy.collectionName) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A collection ID needs a collection name.',
+      });
+    }
+  });
+export type ImportPolicy = z.infer<typeof ImportPolicy>;
+
+export const ImportPreviewRequest = z
+  .object({
+    approvalId: z.string().uuid(),
+    folderOffset: z.number().int().nonnegative().optional(),
+    previewId: z.string().min(1).max(128).optional(),
+    rules: z.array(ImportRule).max(1000).optional(),
+    commonTags: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
+    policies: z.array(ImportPolicy).max(1000).optional(),
+  })
+  .strict();
+export type ImportPreviewRequest = z.infer<typeof ImportPreviewRequest>;
+
 export const ImportRootRequest = ScanRootRequest.extend({
   rules: z.array(ImportRule).max(1000),
   commonTags: z.array(z.string().trim().min(1).max(128)).max(100),
+  policies: z.array(ImportPolicy).max(1000).optional(),
 });
 export type ImportRootRequest = z.infer<typeof ImportRootRequest>;
 
@@ -8045,6 +8181,14 @@ export const ipcSchemas = {
     request: GetThumbnailCacheSettingsRequest,
     response: GetThumbnailCacheSettingsResponse,
   },
+  [IpcChannel.GetArchiveSettings]: {
+    request: z.void(),
+    response: ArchiveSettings,
+  },
+  [IpcChannel.SetArchiveSettings]: {
+    request: ArchiveSettings,
+    response: ArchiveSettings,
+  },
   [IpcChannel.SetThumbnailCacheSettings]: {
     request: SetThumbnailCacheSettingsRequest,
     response: SetThumbnailCacheSettingsResponse,
@@ -8425,6 +8569,8 @@ export interface PrintFarmerApi {
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
   getThumbnailCacheSettings(): Promise<GetThumbnailCacheSettingsResponse>;
+  getArchiveSettings(): Promise<ArchiveSettings>;
+  setArchiveSettings(request: ArchiveSettings): Promise<ArchiveSettings>;
   setThumbnailCacheSettings(
     request: SetThumbnailCacheSettingsRequest,
   ): Promise<SetThumbnailCacheSettingsResponse>;

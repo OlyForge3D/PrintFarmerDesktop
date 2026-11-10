@@ -171,7 +171,7 @@
         },
         {
           "id": "library-selection-survives-route-switch",
-          "label": "Selected model remains selected after switching to Sources and back",
+          "label": "Selected model remains selected after switching to Settings and back",
           "coverage": {
             "status": "scenario",
             "scenarioId": "shell.main-window.library-selection-survives-route-switch"
@@ -376,7 +376,7 @@
       "states": [
         {
           "id": "five-workspace-routes",
-          "label": "Library, Filament Calibration, Uploads, Tags & Collections and Sources routes",
+          "label": "Library, Filament Calibration, Uploads, Tags & Collections and Settings routes",
           "coverage": {
             "status": "scenario",
             "scenarioId": "shell.workspace-rail.five-workspace-routes"
@@ -1128,7 +1128,7 @@
     },
     {
       "id": "sources.workspace",
-      "label": "Sources workspace and reset review",
+      "label": "Source folders in Settings and reset review",
       "reachability": "active",
       "sourceRefs": [
         "src/renderer/library/SourcesWorkspace.tsx:27-317",
@@ -1670,9 +1670,9 @@
     },
     {
       "id": "dialogs.thumbnail-cache",
-      "label": "Thumbnail cache settings dialog",
+      "label": "Thumbnail cache section in Settings",
       "reachability": "active",
-      "sourceRefs": ["src/renderer/library/ThumbnailCacheDialog.tsx:9,12-25"],
+      "sourceRefs": ["src/renderer/library/ThumbnailCacheSettings.tsx:9-322"],
       "states": [
         {
           "id": "loaded-settings",
@@ -1720,7 +1720,7 @@
         },
         {
           "id": "compact-layout",
-          "label": "Cache dialog fits a compact CSS viewport proxy",
+          "label": "Cache section fits horizontally and its clear action is scroll-reachable at a compact CSS viewport proxy",
           "coverage": {
             "status": "scenario",
             "scenarioId": "dialogs.thumbnail-cache.compact-layout"
@@ -1744,7 +1744,7 @@
         },
         {
           "id": "nested-clear-confirmation",
-          "label": "Nested Clear-cache alertdialog and Keep action",
+          "label": "Inline Clear-cache alert and Keep action",
           "coverage": {
             "status": "scenario",
             "scenarioId": "dialogs.thumbnail-cache.populated-clear-confirmation"
@@ -4081,7 +4081,7 @@
               "library.error-details.compact-long-retry-dismiss",
               "shell.states.cache-long-path-compact"
             ],
-            "reason": "Finite collection/cache/error dialog compact and long-path candidates execute under separately fingerprinted profiles."
+            "reason": "Finite collection/cache/error compact and long-path candidates execute under separately fingerprinted profiles."
           }
         },
         {
@@ -4276,7 +4276,7 @@
       "testRef": "e2e/release.accessibility.spec.ts",
       "renderingProfileId": "desktop-dark-1120x700-dsf1-en-US-UTC-reduced-motion-v1",
       "fixture": "Packaged app with isolated empty user data, no server profile, and no configured source roots.",
-      "trigger": "At the compact profile, verify the onboarding dialog semantics, navigate to Sources through the rail, then return to Library.",
+      "trigger": "At the compact profile, verify the onboarding dialog semantics, navigate to Settings through the rail, then return to Library.",
       "expectedState": "The onboarding dialog is aria-modal and the rail remains actionable; leaving Library dismisses onboarding for the current process, so returning shows the library unobstructed.",
       "axe": "Whole-page material WCAG A/AA scan at 1120x700; not certification.",
       "dimensionsExercised": [
@@ -4319,11 +4319,11 @@
       "stateId": "configured-sources",
       "testRef": "e2e/release.accessibility.spec.ts",
       "fixture": "Imported only synthetic checked-in fixture into a disposable local catalog.",
-      "trigger": "Navigate to Sources after import.",
-      "expectedState": "Catalog sources main and Sources heading are visible/focused.",
+      "trigger": "Navigate to Settings after import and inspect Source folders.",
+      "expectedState": "Settings main and Source folders region are visible.",
       "axe": "Existing material WCAG A/AA scan; not certification.",
       "dimensionsExercised": [
-        "Catalog sources main and Sources heading are visible/focused."
+        "Settings main and Source folders region are visible."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },
@@ -4860,11 +4860,11 @@
       "stateId": "library-selection-survives-route-switch",
       "testRef": "e2e/library-state-coverage.spec.ts",
       "fixture": "Hand-authored multi_part.3mf copied into a disposable local model root and indexed by the packaged sidecar.",
-      "trigger": "Select the synthetic model, navigate to Sources, then return to Library.",
+      "trigger": "Select the synthetic model, navigate to Settings, then return to Library.",
       "expectedState": "The selected model remains selected and exposes aria-pressed=true after the route switch.",
       "axe": "Whole-page material WCAG A/AA scan; not certification.",
       "dimensionsExercised": [
-        "Library selection state survives an in-session route switch to Sources and back."
+        "Library selection state survives an in-session route switch to Settings and back."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },
@@ -5459,9 +5459,9 @@
       "stateId": "scan-progress",
       "testRef": "e2e/source-scan-coverage.spec.ts",
       "fixture": "Isolated Electron renderer with a synthetic persisted root/approval ID and a test-only catalog:scanRoot handler delayed for 1.2 seconds.",
-      "trigger": "Open Sources and activate Reconnect; inspect while the mocked scanRoot promise is pending.",
-      "expectedState": "Sources is aria-busy and exposes the accessible Reconnecting status and indeterminate Scan progress control.",
-      "axe": "Positive-control-protected axe scan of the Sources workspace during the pending scan; not certification.",
+      "trigger": "Open Source folders in Settings and activate Reconnect; inspect while the mocked scanRoot promise is pending.",
+      "expectedState": "The Source folders section is aria-busy and exposes the accessible Reconnecting status and indeterminate Scan progress control.",
+      "axe": "Positive-control-protected axe scan during the pending source scan in Settings; not certification.",
       "dimensionsExercised": [
         "Scanning state while a deterministic scanRoot request is pending.",
         "Accessible root-level progress status."
@@ -5475,8 +5475,8 @@
       "testRef": "e2e/source-scan-coverage.spec.ts",
       "fixture": "Same isolated synthetic source root; test-only scanRoot rejects once and returns a valid empty report on retry.",
       "trigger": "Observe the one-shot scanRoot failure, then activate Reconnect again.",
-      "expectedState": "A root scan error is announced with Retry and Dismiss controls; retry clears the error and restores the idle Sources view.",
-      "axe": "Positive-control-protected axe scan of the Sources workspace with the root error; not certification.",
+      "expectedState": "A root scan error is announced with Retry and Dismiss controls; retry clears the error and restores the idle Source folders section.",
+      "axe": "Positive-control-protected axe scan in Settings with the root error; not certification.",
       "dimensionsExercised": [
         "Root-level scan error announcement.",
         "Retry after a rejected scanRoot request."
@@ -6297,11 +6297,11 @@
       "stateId": "five-workspace-routes",
       "testRef": "e2e/release.accessibility.spec.ts",
       "fixture": "Packaged renderer with the checked-in synthetic model fixture in an isolated catalog and user-data directory.",
-      "trigger": "Navigate from Library through Filament Calibration, Uploads, Tags & Collections and Sources, asserting each named main landmark and current rail item; scan each route and capture Sources.",
-      "expectedState": "All five destinations render the expected landmark and expose their active rail item; the pending screenshot captures the Sources route after the complete traversal.",
+      "trigger": "Navigate from Library through Filament Calibration, Uploads, Tags & Collections and Settings, asserting each named main landmark and current rail item; scan each route and capture Settings.",
+      "expectedState": "All five destinations render the expected landmark and expose their active rail item; the screenshot captures Settings after the complete traversal.",
       "axe": "Whole-page material WCAG A/AA scan on each of the five renderer routes; not certification.",
       "dimensionsExercised": [
-        "All five destinations render the expected landmark and expose their active rail item; the pending screenshot captures the Sources route after the complete traversal."
+        "All five destinations render the expected landmark and expose their active rail item; the screenshot captures Settings after the complete traversal."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },
@@ -6423,11 +6423,11 @@
       "stateId": "empty-cache-disabled-clear",
       "testRef": "e2e/release.accessibility.spec.ts",
       "fixture": "Fresh packaged app with isolated user data and no imported models or cached thumbnails.",
-      "trigger": "Open Thumbnail cache settings, wait for the settings load to finish, assert Clear cached thumbnails is disabled, Axe-scan and capture.",
-      "expectedState": "The default cache settings dialog is loaded and its destructive clear action is disabled when the isolated cache has no entries.",
-      "axe": "Whole-page material WCAG A/AA scan with the modal cache settings dialog open; not certification.",
+      "trigger": "Open Settings, wait for the Thumbnail cache section to load, assert Clear cached thumbnails is disabled, Axe-scan and capture.",
+      "expectedState": "The default cache settings section is loaded and its destructive clear action is disabled when the isolated cache has no entries.",
+      "axe": "Whole-page material WCAG A/AA scan with the Settings workspace open; not certification.",
       "dimensionsExercised": [
-        "The default cache settings dialog is loaded and its destructive clear action is disabled when the isolated cache has no entries."
+        "The default cache settings section is loaded and its destructive clear action is disabled when the isolated cache has no entries."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },
@@ -6438,8 +6438,8 @@
       "testRef": "e2e/thumbnail-cache-confirmation.spec.ts",
       "fixture": "Isolated Electron renderer with synthetic cache settings and a test-only setSettings handler that throws if called.",
       "trigger": "Enter a maximum cache size below the renderer's minimum and activate Save settings.",
-      "expectedState": "The dialog announces the allowed size/retention range and does not call the cache settings write handler.",
-      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings dialog; not certification.",
+      "expectedState": "The section announces the allowed size/retention range and does not call the cache settings write handler.",
+      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings section; not certification.",
       "dimensionsExercised": [
         "Client-side minimum-size validation.",
         "No cache settings write is invoked for invalid input."
@@ -6452,9 +6452,9 @@
       "stateId": "loaded-settings",
       "testRef": "e2e/thumbnail-cache-confirmation.spec.ts",
       "fixture": "Isolated Electron renderer with test-only thumbnailCache:getSettings response reporting a synthetic cache path, three entries, 128 MiB maximum, and 30-day retention.",
-      "trigger": "Open Thumbnail cache settings and wait for the mocked settings response.",
-      "expectedState": "The dialog shows the synthetic effective location, default cleanup limits, and 3.0 KiB usage for three thumbnails.",
-      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings dialog; not certification.",
+      "trigger": "Open Settings and wait for the mocked Thumbnail cache settings response.",
+      "expectedState": "The section shows the synthetic effective location, default cleanup limits, and 3.0 KiB usage for three thumbnails.",
+      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings section; not certification.",
       "dimensionsExercised": [
         "Loaded synthetic effective cache location.",
         "Default size and retention controls.",
@@ -6469,11 +6469,11 @@
       "testRef": "e2e/thumbnail-cache-confirmation.spec.ts",
       "renderingProfileId": "desktop-dark-720x450-2x-proxy-dsf1-en-US-UTC-reduced-motion-v1",
       "fixture": "Isolated Electron renderer with synthetic cache settings at a pinned 720x450 CSS viewport and device scale factor 1.",
-      "trigger": "Open Thumbnail cache settings and measure the dialog against the compact CSS viewport.",
-      "expectedState": "The dialog remains within the viewport bounds; this does not establish native zoom or platform-specific scaling behavior.",
-      "axe": "Positive-control-protected axe scan scoped to the cache dialog at the compact CSS viewport; not certification.",
+      "trigger": "Open Settings, measure the cache section horizontally and scroll its clear action into the compact CSS viewport.",
+      "expectedState": "The section fits horizontally and its clear action is scroll-reachable; this does not establish full vertical fit, native zoom or platform-specific scaling behavior.",
+      "axe": "Positive-control-protected axe scan scoped to the cache section at the compact CSS viewport; not certification.",
       "dimensionsExercised": [
-        "Dialog bounds remain within the 720x450 CSS viewport proxy.",
+        "Section horizontal bounds remain within the 720x450 CSS viewport proxy and the clear action can be scrolled into view.",
         "Native browser zoom, forced colors, and mixed-DPI transitions are not exercised."
       ],
       "screenshotPolicy": "temporary-review-evidence"
@@ -6485,8 +6485,8 @@
       "testRef": "e2e/thumbnail-cache-confirmation.spec.ts",
       "fixture": "Isolated Electron renderer with test-only thumbnailCache:setSettings returning deterministic settings; no filesystem write occurs.",
       "trigger": "Enter valid 64 MiB/14-day cleanup settings and activate Save settings.",
-      "expectedState": "The dialog applies the returned values and announces that settings were saved without an error alert.",
-      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings dialog; not certification.",
+      "expectedState": "The section applies the returned values and announces that settings were saved without an error alert.",
+      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings section; not certification.",
       "dimensionsExercised": [
         "Valid cleanup limits are returned and applied from synthetic IPC.",
         "The success status is visible and no warning or error alert is present."
@@ -6500,8 +6500,8 @@
       "testRef": "e2e/thumbnail-cache-confirmation.spec.ts",
       "fixture": "Isolated Electron renderer with test-only thumbnailCache:setSettings returning a synthetic unwritable-location warning; no filesystem write occurs.",
       "trigger": "Enter valid cleanup settings and save through the deterministic synthetic IPC response.",
-      "expectedState": "The dialog announces the location warning and explains thumbnails still render but may not be cached.",
-      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings dialog; not certification.",
+      "expectedState": "The section announces the location warning and explains thumbnails still render but may not be cached.",
+      "axe": "Positive-control-protected axe scan scoped to the thumbnail cache settings section; not certification.",
       "dimensionsExercised": [
         "A successful settings response can carry an unwritable-location warning.",
         "Warning and success status remain visible together without a real path write."
@@ -6514,12 +6514,12 @@
       "stateId": "nested-clear-confirmation",
       "testRef": "e2e/thumbnail-cache-confirmation.spec.ts",
       "fixture": "Isolated Electron renderer with test-only thumbnailCache:getSettings response reporting three synthetic cache entries.",
-      "trigger": "Open cache settings, choose Clear cached thumbnails, then inspect the nested alertdialog and select Keep cache.",
+      "trigger": "Open Settings, choose Clear cached thumbnails, then inspect the inline confirmation alert and select Keep cache.",
       "expectedState": "The destructive clear confirmation is visible with source-file safety copy and can be canceled without clearing or changing the synthetic entry count.",
-      "axe": "Whole-page material WCAG A/AA scan with the modal confirmation open; not certification.",
+      "axe": "Whole-page material WCAG A/AA scan with the inline confirmation visible; not certification.",
       "dimensionsExercised": [
         "Test-only local cache count enables the populated clear action without creating real cache data.",
-        "Nested clear confirmation can be canceled without invoking the clear IPC."
+        "Inline clear confirmation can be canceled without invoking the clear IPC."
       ],
       "screenshotPolicy": "temporary-review-evidence"
     },
@@ -6529,7 +6529,7 @@
       "stateId": "active-scanning",
       "testRef": "e2e/inventoried-rendered-states.spec.ts",
       "fixture": "Isolated Electron renderer with a synthetic approved source root and a test-only catalog scan handler held open for eight seconds.",
-      "trigger": "Start Reconnect in Sources, switch to Library while catalog:scanRoot is pending, then assert the live Library status and aria-busy state before capture.",
+      "trigger": "Start Reconnect under Source folders in Settings, switch to Library while catalog:scanRoot is pending, then assert the live Library status and aria-busy state before capture.",
       "expectedState": "Library visibly announces the active source reconnect, marks the status busy and keeps progress feedback available while the synthetic scan is pending.",
       "axe": "Positive-control-protected axe scan scoped to the visible Library during the held-open synthetic scan; not certification.",
       "dimensionsExercised": [
@@ -6559,7 +6559,7 @@
       "stateId": "ambiguous-collection-guard",
       "testRef": "e2e/inventoried-rendered-states.spec.ts",
       "fixture": "Synthetic folder-picker, import-preview and collection-list IPC responses with two distinct collections named Animals; importRoot throws if called.",
-      "trigger": "Open the import review, assert the ambiguous folder target is unresolved and Import is disabled, then select an explicit collection identity.",
+      "trigger": "Open the import review, set the Animals folder policy to Collection, assert the ambiguous target is unresolved and Import is disabled, then select an explicit collection identity.",
       "expectedState": "Ambiguous name suggestions cannot be imported until a specific collection id is selected; the test does not invoke importRoot.",
       "axe": "Positive-control-protected axe scan scoped to the import dialog with unresolved ambiguity; not certification.",
       "dimensionsExercised": [
@@ -6575,11 +6575,11 @@
       "stateId": "loading",
       "testRef": "e2e/inventoried-rendered-states.spec.ts",
       "fixture": "Synthetic thumbnailCache:getSettings handler returns a never-resolving promise in an isolated Electron renderer.",
-      "trigger": "Open Thumbnail cache settings and assert loading feedback plus disabled cache-clear action.",
+      "trigger": "Open Settings and assert Thumbnail cache loading feedback plus disabled cache-clear action.",
       "expectedState": "The loading label remains visible and the destructive clear action remains disabled while settings are pending.",
-      "axe": "Positive-control-protected axe scan scoped to the cache settings dialog; not certification.",
+      "axe": "Positive-control-protected axe scan scoped to the cache settings section; not certification.",
       "dimensionsExercised": [
-        "A deterministic pending response holds the dialog in its loading state.",
+        "A deterministic pending response holds the section in its loading state.",
         "Clear remains disabled without loaded cache settings."
       ],
       "screenshotPolicy": "temporary-review-evidence"
@@ -6590,9 +6590,9 @@
       "stateId": "load-error",
       "testRef": "e2e/inventoried-rendered-states.spec.ts",
       "fixture": "Synthetic thumbnailCache:getSettings handler throws a deterministic load error in an isolated Electron renderer.",
-      "trigger": "Open Thumbnail cache settings and assert the alert and disabled clear action.",
+      "trigger": "Open Settings and assert the Thumbnail cache alert and disabled clear action.",
       "expectedState": "Settings load failure is announced without exposing an enabled destructive clear action.",
-      "axe": "Positive-control-protected axe scan scoped to the cache settings dialog; not certification.",
+      "axe": "Positive-control-protected axe scan scoped to the cache settings section; not certification.",
       "dimensionsExercised": [
         "The load error is exposed as an alert.",
         "Clear remains disabled after the failed load."
@@ -7034,8 +7034,8 @@
       "stateId": "modal-exclusion",
       "testRef": "e2e/shell-import-state-coverage.spec.ts",
       "fixture": "Typed synthetic IPC replies in an isolated Electron process; no real source imports.",
-      "trigger": "Execute the named modal-exclusion transition in the shell/import fixture.",
-      "expectedState": "The test explicitly asserts modal-exclusion UI status and controls before capturing.",
+      "trigger": "Dismiss onboarding and open Connect to PrintFarmer from the unconfigured authority bar.",
+      "expectedState": "The connection manager is the only dialog and the application body is inert before capturing.",
       "axe": "Axe probe and full-page material checks run with soft assertions to retain all findings while failing the test.",
       "dimensionsExercised": [
         "modal exclusion",
@@ -7098,8 +7098,8 @@
       "stateId": "import-rules-warnings",
       "testRef": "e2e/shell-import-state-coverage.spec.ts",
       "fixture": "Typed synthetic IPC replies in an isolated Electron process; no real source imports.",
-      "trigger": "Execute the named import-rules-warnings transition in the shell/import fixture.",
-      "expectedState": "The test explicitly asserts import-rules-warnings UI status and controls before capturing.",
+      "trigger": "Load both synthetic folder-discovery pages, disable organization for Parts, override its Decorative descendant with a tag, and enter whole-import tags.",
+      "expectedState": "Filesystem skip feedback is visible, the complete two-folder hierarchy replaces the old truncation warning, and the disabled parent policy and explicit child override remain editable before import.",
       "axe": "Axe probe and full-page material checks run with soft assertions to retain all findings while failing the test.",
       "dimensionsExercised": [
         "import rules warnings",
@@ -7741,7 +7741,7 @@
       "stateId": "sources-missing-offline",
       "testRef": "e2e/shell-import-state-coverage.spec.ts",
       "fixture": "Typed synthetic IPC replies in an isolated Electron process; no real source imports.",
-      "trigger": "Open Sources with one missing and one unscanned offline root. Assert header actions are enabled, hover and scan Add source folder, then hover Refresh catalog before capture.",
+      "trigger": "Open Source folders in Settings with one missing and one unscanned offline root. Assert header actions are enabled, hover and scan Add source folder, then hover Refresh catalog before capture.",
       "expectedState": "Missing files and Needs scan remain distinct, both Reconnect actions render, and enabled primary/refresh hover states pass the material contrast scan.",
       "axe": "Axe probe and full-page material checks run with soft assertions to retain all findings while failing the test.",
       "dimensionsExercised": [
