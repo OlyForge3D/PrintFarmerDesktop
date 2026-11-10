@@ -19,6 +19,7 @@ import {
   rulesetCoversFeatureBranches,
   statusCheckEnforcement,
 } from '../scripts/check-protection-assumptions.mjs';
+import { QUEUE_PARAMETERS } from '../scripts/merge-queue-policy.mjs';
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -798,11 +799,75 @@ describe('the report names the decision, not just the drift', () => {
     const facts = baseline();
     facts.protection.allow_force_pushes = { enabled: true };
     facts.collaborators = [];
-
     expect(assumptionsOf(facts)).toEqual([
       'development.allow_force_pushes',
       'collaborators',
     ]);
+  });
+
+  describe('queue bypass evidence stays in the privileged assessment', () => {
+    const queue = () => ({
+      id: 20361532,
+      target: 'branch',
+      enforcement: 'active',
+      conditions: {
+        ref_name: { include: ['refs/heads/development'], exclude: [] },
+      },
+      rules: [{ type: 'merge_queue', parameters: { ...QUEUE_PARAMETERS } }],
+    });
+    it.each(['omitted', 'empty', 'nonempty'] as const)(
+      'uses authenticated detail, not public detail, with %s admin bypass actors',
+      async (shape) => {
+        const publicDetail = queue();
+        const adminDetail = {
+          ...publicDetail,
+          ...(shape === 'omitted'
+            ? {}
+            : {
+                bypass_actors:
+                  shape === 'empty'
+                    ? []
+                    : [{ actor_type: 'OrganizationAdmin' }],
+              }),
+        };
+        const authenticatedDetails: string[] = [];
+        const fetchImpl: typeof fetch = (input, init) => {
+          if (typeof input !== 'string') throw new Error('Expected string URL');
+          const url = input;
+          const token = new Headers(init?.headers).get('authorization');
+          let body: unknown;
+          if (url.endsWith('/rulesets')) body = [{ id: publicDetail.id }];
+          else if (url.endsWith(`/rulesets/${publicDetail.id}`)) {
+            if (token) authenticatedDetails.push(token);
+            body = token ? adminDetail : publicDetail;
+          } else if (url.endsWith('/branches?protected=true'))
+            body = [{ name: 'development' }];
+          else if (url.endsWith('/collaborators'))
+            body = [{ login: 'jpapiez', role_name: 'admin' }];
+          else body = baseline().protection;
+          return Promise.resolve(new Response(JSON.stringify(body)));
+        };
+        const repository = { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' };
+        const publicFacts = await fetchPublicRepositoryFacts({
+          repository,
+          fetchImpl,
+        });
+        expect(evaluatePublicProtectionAssumptions(publicFacts)).toEqual([]);
+        expect(PRIVILEGED_ONLY_ASSUMPTIONS).toContain(
+          'development.merge_queue',
+        );
+        const facts = await fetchRepositoryFacts({
+          repository,
+          token: 'admin-test',
+          fetchImpl,
+        });
+        expect(authenticatedDetails).toEqual(['Bearer admin-test']);
+        expect(facts.rulesets).toEqual([adminDetail]);
+        expect(
+          evaluateProtectionAssumptions(facts).map((v) => v.assumption),
+        ).toEqual(shape === 'empty' ? [] : ['development.merge_queue']);
+      },
+    );
   });
 
   it('pins the expected collaborator set so it cannot be widened silently', () => {
@@ -909,6 +974,12 @@ describe('#491: the public tier needs no protection object at all', () => {
     facts.protection.required_status_checks.strict = false;
     facts.protection.required_status_checks.contexts = [];
     facts.collaborators = [];
+    const activeQueue = facts.rulesets[0];
+    if (!activeQueue) throw new Error('Queue fixture is missing');
+    Object.assign(activeQueue, {
+      enforcement: 'active',
+      rules: [{ type: 'merge_queue' }],
+    });
 
     const fullAssumptions = new Set(assumptionsOf(facts));
     for (const assumption of PRIVILEGED_ONLY_ASSUMPTIONS) {
@@ -1071,7 +1142,7 @@ describe('full protection facts include authenticated ruleset details', () => {
       bypass_actors: [],
     };
     const fetchImpl: typeof fetch = (input, init) => {
-      const url = input as string;
+      const url = input instanceof Request ? input.url : input.toString();
       calls.push({
         url,
         headers: (init?.headers ?? {}) as Record<string, string>,
@@ -1079,9 +1150,7 @@ describe('full protection facts include authenticated ruleset details', () => {
       let body: unknown;
       if (url.endsWith('/rulesets')) body = [{ id: 20361532 }];
       else if (url.endsWith('/rulesets/20361532')) {
-        body = Object.keys(
-          (init?.headers ?? {}) as Record<string, string>,
-        ).some((header) => header.toLowerCase() === 'authorization')
+        body = new Headers(init?.headers).has('authorization')
           ? authenticatedRuleset
           : publicRuleset;
       } else if (url.endsWith('/branches?protected=true')) {

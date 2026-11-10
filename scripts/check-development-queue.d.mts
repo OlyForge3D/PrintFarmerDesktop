@@ -3,6 +3,11 @@ export type QueueApi = (
   endpoint: string,
   fields?: Record<string, string>,
 ) => unknown;
+export type QueueRunner = (
+  command: string,
+  args: string[],
+  options: { encoding: 'utf8'; env: NodeJS.ProcessEnv },
+) => { status: number | null; stdout: string; stderr: string; error?: Error };
 export interface QueuePull {
   id: string;
   state: string;
@@ -42,7 +47,7 @@ export interface QueueRun {
 }
 export declare function createQueueApi(
   env?: NodeJS.ProcessEnv,
-  run?: typeof import('node:child_process').spawnSync,
+  run?: QueueRunner,
 ): QueueApi;
 export declare function readQueuePolicy(api: QueueApi): QueuePolicy;
 export declare function readQueuePull(api: QueueApi, number: number): QueuePull;
@@ -69,5 +74,5 @@ export declare function verifyQueueEvent(
 export declare function main(
   argv: string[],
   env?: NodeJS.ProcessEnv,
-  run?: typeof import('node:child_process').spawnSync,
+  run?: QueueRunner,
 ): number;

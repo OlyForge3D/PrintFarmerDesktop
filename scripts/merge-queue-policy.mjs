@@ -21,22 +21,33 @@ export const QUEUE_PARAMETERS = Object.freeze({
   check_response_timeout_minutes: 120,
 });
 
-export function validQueueRuleset(ruleset) {
+// CI can observe scope/parameters, but GitHub hides bypass actors from its token.
+// This predicate alone never establishes non-bypassability.
+export function validQueueConfiguration(ruleset) {
   const refs = ruleset?.conditions?.ref_name;
-  const queues = ruleset?.rules?.filter((rule) => rule.type === 'merge_queue');
+  const queues = Array.isArray(ruleset?.rules)
+    ? ruleset.rules.filter((rule) => rule?.type === 'merge_queue')
+    : [];
   return (
     ruleset?.enforcement === 'active' &&
     ruleset.target === 'branch' &&
-    refs?.include?.length === 1 &&
+    Array.isArray(refs?.include) &&
+    refs.include.length === 1 &&
     refs.include[0] === 'refs/heads/development' &&
     Array.isArray(refs.exclude) &&
     refs.exclude.length === 0 &&
-    Array.isArray(ruleset.bypass_actors) &&
-    ruleset.bypass_actors.length === 0 &&
     queues?.length === 1 &&
     Object.entries(QUEUE_PARAMETERS).every(
       ([key, value]) => queues[0].parameters?.[key] === value,
     )
+  );
+}
+
+export function validQueueRuleset(ruleset) {
+  return (
+    validQueueConfiguration(ruleset) &&
+    Array.isArray(ruleset.bypass_actors) &&
+    ruleset.bypass_actors.length === 0
   );
 }
 

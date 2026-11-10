@@ -1,7 +1,16 @@
 import path from 'node:path';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 /**
  * `.squad/skills/**` is read by every agent on activation, and one of those
@@ -26,15 +35,6 @@ const repositoryRoot = path.resolve(
 
 const SKILLS_ROOT = path.join(repositoryRoot, '.squad', 'skills');
 
-const IGNORED_DIRECTORIES = new Set([
-  'node_modules',
-  '.git',
-  'target',
-  'dist',
-  'out',
-  'coverage',
-]);
-
 /** Directories a full-path reference may start with. */
 const ROOTED_REFERENCE =
   /^(scripts|tests|src|native|docs|\.github|\.squad)\/[A-Za-z0-9._/-]+$/;
@@ -49,14 +49,17 @@ const BARE_FILENAME = /^[A-Za-z0-9._-]+\.(mjs|cjs|js|ts|tsx|yml|yaml|rs)$/;
 /** Inline code spans. A reference outside backticks is prose, not a citation. */
 const CODE_SPAN = /`([^`\n]+)`/g;
 
-export function collectFiles(directory: string, accumulator: string[] = []) {
-  for (const entry of readdirSync(directory)) {
-    if (IGNORED_DIRECTORIES.has(entry)) continue;
-    const absolute = path.join(directory, entry);
-    if (statSync(absolute).isDirectory()) collectFiles(absolute, accumulator);
-    else accumulator.push(absolute);
-  }
-  return accumulator;
+export function collectFiles(directory: string) {
+  // The index is stable while other workers create/remove untracked fixtures.
+  // Stage new source/skill files before checking their references.
+  return execFileSync('git', ['ls-files', '--cached', '-z'], {
+    cwd: directory,
+    encoding: 'utf8',
+    stdio: 'pipe',
+  })
+    .split('\0')
+    .filter(Boolean)
+    .map((file) => path.join(directory, file));
 }
 
 export function extractFileReferences(markdown: string) {
@@ -74,24 +77,70 @@ export function extractFileReferences(markdown: string) {
 
 const repositoryFiles = collectFiles(repositoryRoot);
 
-const filesByBasename = new Map<string, string[]>();
-for (const absolute of repositoryFiles) {
-  const base = path.basename(absolute);
-  const bucket = filesByBasename.get(base);
-  if (bucket) bucket.push(absolute);
-  else filesByBasename.set(base, [absolute]);
-}
-
-export function resolveReference(reference: string) {
+export function resolveReference(
+  reference: string,
+  root = repositoryRoot,
+  files = repositoryFiles,
+) {
   if (ROOTED_REFERENCE.test(reference)) {
-    return existsSync(path.join(repositoryRoot, reference));
+    return existsSync(path.join(root, reference));
   }
-  return filesByBasename.has(reference);
+  return files.some(
+    (file) => path.basename(file) === reference && existsSync(file),
+  );
 }
 
-const skillDocuments = collectFiles(SKILLS_ROOT).filter((file) =>
-  file.endsWith('.md'),
+const skillDocuments = repositoryFiles.filter(
+  (file) =>
+    file.startsWith(`${SKILLS_ROOT}${path.sep}`) && file.endsWith('.md'),
 );
+
+const temporary: string[] = [];
+afterEach(() => {
+  for (const directory of temporary.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe('repository inventory isolation', () => {
+  it('ignores transient fixtures without hiding missing tracked sources or skills', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'skill-references-'));
+    temporary.push(root);
+    execFileSync('git', ['init', '--quiet'], { cwd: root });
+    const source = path.join(root, 'scripts', 'real.mjs');
+    const skill = path.join(root, '.squad', 'skills', 'example.md');
+    mkdirSync(path.dirname(source), { recursive: true });
+    mkdirSync(path.dirname(skill), { recursive: true });
+    writeFileSync(source, 'export {};\n');
+    writeFileSync(skill, '`scripts/real.mjs` and `missing.mjs`\n');
+    execFileSync('git', ['add', '.'], { cwd: root });
+    const transient = path.join(root, '.test-retarget-archive-settings');
+    mkdirSync(transient);
+    writeFileSync(path.join(transient, 'missing.mjs'), 'fixture only\n');
+
+    const files = collectFiles(root);
+    expect(files.sort()).toEqual([skill, source].sort());
+    rmSync(transient, { recursive: true });
+    expect(collectFiles(root)).toEqual(files);
+    expect(resolveReference('real.mjs', root, files)).toBe(true);
+    expect(resolveReference('scripts/real.mjs', root, files)).toBe(true);
+    expect(resolveReference('missing.mjs', root, files)).toBe(false);
+    expect(resolveReference('scripts/missing.mjs', root, files)).toBe(false);
+
+    rmSync(source);
+    expect(resolveReference('real.mjs', root, files)).toBe(false);
+    expect(resolveReference('scripts/real.mjs', root, files)).toBe(false);
+    rmSync(skill);
+    expect(collectFiles(root)).toContain(skill);
+    expect(() => readFileSync(skill, 'utf8')).toThrow(/ENOENT/);
+  });
+
+  it('surfaces inventory errors instead of checking an empty corpus', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'skill-references-no-git-'));
+    temporary.push(root);
+    expect(() => collectFiles(root)).toThrow();
+  });
+});
 
 describe('every file named by a skill document exists', () => {
   it('finds skill documents to check, rather than passing on an empty set', () => {

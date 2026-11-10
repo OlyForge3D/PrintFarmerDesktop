@@ -108,6 +108,9 @@ export function App(): React.JSX.Element {
       selectedProfileId: null,
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [profileConnectionEpochs, setProfileConnectionEpochs] = useState<
+    Record<string, number>
+  >({});
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [importPreparing, setImportPreparing] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
@@ -1611,6 +1614,7 @@ export function App(): React.JSX.Element {
 
             {activeWorkspace === 'calibration' ? (
               <CalibrationWorkspace
+                key={`${serverProfiles.selectedProfileId}:${profileConnectionEpochs[serverProfiles.selectedProfileId ?? ''] ?? 0}`}
                 selectedProfileId={serverProfiles.selectedProfileId}
                 selectedProfileName={activeServer?.displayName ?? ''}
                 disabled={modalOwner !== 'none'}
@@ -1828,6 +1832,12 @@ export function App(): React.JSX.Element {
         <ServerProfilesDialog
           profiles={serverProfiles}
           onMutationSettled={refreshServerProfiles}
+          onConnectionChanged={(id) =>
+            setProfileConnectionEpochs((epochs) => ({
+              ...epochs,
+              [id]: (epochs[id] ?? 0) + 1,
+            }))
+          }
           onClose={closeProfiles}
         />
       ) : null}

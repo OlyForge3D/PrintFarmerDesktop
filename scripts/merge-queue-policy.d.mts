@@ -3,6 +3,7 @@ export declare const QUEUE_PARAMETERS: Readonly<
   Record<string, string | number>
 >;
 export declare function validQueueRuleset(ruleset: unknown): boolean;
+export declare function validQueueConfiguration(ruleset: unknown): boolean;
 export interface QueuePolicy {
   mode: 'strict' | 'queue';
   checks: { context: string; appId: number }[];

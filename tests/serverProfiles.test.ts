@@ -10,6 +10,8 @@ import {
   type SecretStorage,
 } from '../src/main/serverProfiles.js';
 import type { ServerProfileDraft } from '@shared/ipc';
+import { ServerProfileCalibrationTokenProvider } from '../src/main/calibrationService.js';
+import { SyncHttpClient } from '../src/main/syncHttp.js';
 
 const NOW = Date.parse('2026-07-23T12:00:00.000Z');
 const TEST_USER_DATA_PATH = path.join(process.cwd(), 'profile-test-data');
@@ -111,7 +113,7 @@ const secureStorage: SecretStorage = {
       .join(''),
 };
 
-const apiKeyDraft = (
+const serverDraft = (
   overrides: Partial<ServerProfileDraft> = {},
 ): ServerProfileDraft => ({
   displayName: 'Farm',
@@ -260,15 +262,537 @@ it('builds authenticated endpoints without dropping reverse-proxy prefixes', () 
 });
 
 describe('server profiles', () => {
+  it('preserves null selection when editing an existing profile but auto-selects a new profile', async () => {
+    const fs = new MemoryFileSystem();
+    const profiles = service(fs);
+    const saved = await profiles.save(serverDraft());
+    expect((await profiles.list()).selectedProfileId).toBe(saved.id);
+    const store = MutableProfileStore.parse(JSON.parse(persistedStore(fs)));
+    store.selectedProfileId = null;
+    fs.files.set(
+      path.join(TEST_USER_DATA_PATH, 'server-profiles.v1.json'),
+      new TextEncoder().encode(JSON.stringify(store)),
+    );
+    const updated = await profiles.save(
+      serverDraft({
+        id: saved.id,
+        displayName: 'Renamed without selecting',
+        credentials: { authMode: 'saved' },
+      }),
+    );
+    expect(await profiles.list()).toEqual({
+      selectedProfileId: null,
+      profiles: [updated],
+    });
+    const reopened = service(fs);
+    expect((await reopened.list()).selectedProfileId).toBeNull();
+    const added = await profiles.save(
+      serverDraft({
+        displayName: 'New farm',
+        baseUrl: 'https://other.example',
+      }),
+    );
+    expect((await profiles.list()).selectedProfileId).toBe(added.id);
+  });
+
+  it.each(['apiKey', 'password'] as const)(
+    'tests and renames a saved %s profile without renderer secrets or selection changes',
+    async (authMode) => {
+      const fs = new MemoryFileSystem();
+      const baseline = successfulFetch();
+      const logins: unknown[] = [];
+      const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) => {
+        if (requestUrl(input).pathname === '/prefix/api/auth/login') {
+          logins.push(requestBody(init));
+          return Promise.resolve(
+            json({
+              success: true,
+              token: 'password-jwt',
+              expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+              user: { id: 'operator-1' },
+            }),
+          );
+        }
+        return baseline(input, init);
+      });
+      const profiles = service(fs, fetchImpl);
+      const selected = await profiles.save(serverDraft());
+      const credentials =
+        authMode === 'apiKey'
+          ? { authMode, apiKey: 'reuse-key' }
+          : {
+              authMode,
+              username: 'operator@example.com',
+              password: 'reuse-password',
+              rememberMe: false,
+            };
+      const saved = await profiles.save(
+        serverDraft({
+          credentials,
+          displayName: 'Nonselected farm',
+          baseUrl: 'https://farm.example/prefix',
+        }),
+      );
+      const beforeBinding = await profiles.getPersistedSyncBinding(saved.id);
+      const beforeContext = await profiles.getAuthenticatedContext(saved.id);
+      const before = persistedStore(fs);
+      const draft = serverDraft({
+        id: saved.id,
+        displayName: 'Renamed farm',
+        baseUrl: ' HTTPS://FARM.EXAMPLE:443/prefix/// ',
+        credentials: { authMode: 'saved' },
+      });
+
+      const tested = await profiles.test({ source: 'draft', draft });
+      expect(tested).toMatchObject({
+        id: saved.id,
+        displayName: 'Renamed farm',
+        authMode,
+        ...(authMode === 'password'
+          ? { username: 'operator@example.com' }
+          : {}),
+      });
+      expect(persistedStore(fs)).toBe(before);
+      await expect(
+        profiles.revalidateAuthenticatedContext(beforeContext),
+      ).resolves.toBeUndefined();
+      const updated = await profiles.save(draft);
+      expect(await profiles.list()).toEqual({
+        profiles: [selected, updated],
+        selectedProfileId: selected.id,
+      });
+      expect(await profiles.getPersistedSyncBinding(saved.id)).toEqual(
+        beforeBinding,
+      );
+      expect(await profiles.pendingBindingTransitions()).toEqual([]);
+      await expect(
+        profiles.revalidateAuthenticatedContext(beforeContext),
+      ).rejects.toMatchObject({ code: 'AUTHENTICATION_SUPERSEDED' });
+      const afterContext = await profiles.getAuthenticatedContext(saved.id);
+      expect(afterContext.serverBinding).toBe(beforeContext.serverBinding);
+      expect(afterContext.revision).not.toBe(beforeContext.revision);
+      expect(afterContext.endpoint('/api/3d-models/upload').toString()).toBe(
+        'https://farm.example/prefix/api/3d-models/upload',
+      );
+      expect(
+        JSON.stringify({ tested, updated, list: await profiles.list() }),
+      ).not.toMatch(/reuse-key|reuse-password|encryptedSecret/);
+      expect(persistedStore(fs)).not.toMatch(/reuse-key|reuse-password/);
+
+      // Reopen the encrypted store and authenticate again, not just from cache.
+      const reopened = service(fs, fetchImpl);
+      await expect(reopened.getToken(saved.id)).resolves.toBe(
+        authMode === 'password' ? 'password-jwt' : 'short-lived-jwt',
+      );
+      expect((await reopened.list()).selectedProfileId).toBe(selected.id);
+      if (authMode === 'password') {
+        expect(logins).toHaveLength(4);
+        expect(
+          logins.every(
+            (body) =>
+              JSON.stringify(body) ===
+              JSON.stringify({
+                usernameOrEmail: 'operator@example.com',
+                password: 'reuse-password',
+                rememberMe: false,
+              }),
+          ),
+        ).toBe(true);
+      } else {
+        const exchanges = vi
+          .mocked(baseline)
+          .mock.calls.filter(
+            ([input]) =>
+              requestUrl(input).pathname ===
+              '/prefix/api/auth/api-key/exchange',
+          );
+        expect(exchanges).toHaveLength(4);
+        expect(
+          exchanges.every(
+            ([, init]) =>
+              JSON.stringify(requestBody(init)) ===
+              JSON.stringify({ apiKey: 'reuse-key' }),
+          ),
+        ).toBe(true);
+      }
+    },
+  );
+
+  it.each(['save', 'test'] as const)(
+    '%s rejects saved credentials without a matching existing endpoint before transport',
+    async (operation) => {
+      const fs = new MemoryFileSystem();
+      const fetchImpl = successfulFetch();
+      const profiles = service(fs, fetchImpl);
+      const saved = await profiles.save(serverDraft());
+      const before = persistedStore(fs);
+      vi.mocked(fetchImpl).mockClear();
+      const invoke = (draft: ServerProfileDraft) =>
+        operation === 'save'
+          ? profiles.save(draft)
+          : profiles.test({ source: 'draft', draft });
+      for (const [overrides, code] of [
+        [{}, 'VALIDATION_ERROR'],
+        [{ id: '99999999-9999-4999-8999-999999999999' }, 'NOT_FOUND'],
+        [
+          { id: saved.id, baseUrl: 'https://other.example' },
+          'VALIDATION_ERROR',
+        ],
+        [
+          { id: saved.id, baseUrl: 'http://10.0.0.20/prefix' },
+          'VALIDATION_ERROR',
+        ],
+        [{ id: saved.id, baseUrl: 'https://10.0.0.20' }, 'VALIDATION_ERROR'],
+      ] as const) {
+        await expect(
+          invoke(
+            serverDraft({
+              ...overrides,
+              credentials: { authMode: 'saved' },
+            }),
+          ),
+        ).rejects.toMatchObject({ code });
+      }
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(persistedStore(fs)).toBe(before);
+    },
+  );
+
+  it.each(['save', 'test'] as const)(
+    '%s rejects stale saved credentials after replacement or deletion',
+    async (operation) => {
+      for (const mutation of ['replace', 'delete'] as const) {
+        const fs = new MemoryFileSystem();
+        const baseline = successfulFetch();
+        const reached = deferred<void>();
+        const gate = deferred<Response>();
+        let exchanges = 0;
+        const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) => {
+          if (
+            requestUrl(input).pathname === '/api/auth/api-key/exchange' &&
+            ++exchanges === 2
+          ) {
+            reached.resolve();
+            return gate.promise;
+          }
+          return baseline(input, init);
+        });
+        const profiles = service(fs, fetchImpl);
+        const saved = await profiles.save(serverDraft());
+        const draft = serverDraft({
+          id: saved.id,
+          displayName: 'Stale rename',
+          credentials: { authMode: 'saved' },
+        });
+        const pending =
+          operation === 'save'
+            ? profiles.save(draft)
+            : profiles.test({ source: 'draft', draft });
+        // Attach rejection handling before releasing the delayed response.
+        const rejected = expect(pending).rejects.toMatchObject({
+          code:
+            operation === 'test' && mutation === 'delete'
+              ? 'NOT_FOUND'
+              : operation === 'save'
+                ? 'AUTHENTICATION_SUPERSEDED'
+                : 'VALIDATION_ERROR',
+        });
+        await reached.promise;
+        if (mutation === 'delete') {
+          await profiles.delete(saved.id);
+        } else {
+          await profiles.save(
+            serverDraft({
+              id: saved.id,
+              displayName: 'Newer name',
+              credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+            }),
+          );
+        }
+        const afterMutation = persistedStore(fs);
+        gate.resolve(
+          json({
+            token: 'stale-jwt',
+            expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+            scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+          }),
+        );
+        await rejected;
+        expect(persistedStore(fs)).toBe(afterMutation);
+        if (mutation === 'replace') {
+          await expect(profiles.getToken(saved.id)).resolves.toBe(
+            'short-lived-jwt',
+          );
+        }
+      }
+    },
+  );
+
+  it('keeps saved edit failures nonmutating, including vault and atomic write failures', async () => {
+    const fs = new MemoryFileSystem();
+    const baseline = successfulFetch();
+    let rejectAuthentication = false;
+    let vaultUnavailable = false;
+    const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) =>
+      rejectAuthentication &&
+      requestUrl(input).pathname === '/api/auth/api-key/exchange'
+        ? Promise.resolve(json({}, 401))
+        : baseline(input, init),
+    );
+    const profiles = service(fs, fetchImpl, () => NOW, {
+      ...secureStorage,
+      isEncryptionAvailable: () => !vaultUnavailable,
+    });
+    const saved = await profiles.save(serverDraft());
+    const draft = serverDraft({
+      id: saved.id,
+      displayName: 'Never persisted',
+      credentials: { authMode: 'saved' },
+    });
+    const before = persistedStore(fs);
+    rejectAuthentication = true;
+    await expect(profiles.save(draft)).rejects.toMatchObject({
+      code: 'AUTHENTICATION_FAILED',
+    });
+    await expect(
+      profiles.test({ source: 'draft', draft }),
+    ).rejects.toMatchObject({
+      code: 'AUTHENTICATION_FAILED',
+    });
+    expect(persistedStore(fs)).toBe(before);
+    rejectAuthentication = false;
+    fs.failNextWrite(new Error('disk unavailable'));
+    await expect(profiles.save(draft)).rejects.toThrow();
+    expect(persistedStore(fs)).toBe(before);
+    vaultUnavailable = true;
+    vi.mocked(fetchImpl).mockClear();
+    await expect(profiles.save(draft)).rejects.toMatchObject({
+      code: 'ENCRYPTION_UNAVAILABLE',
+    });
+    await expect(
+      profiles.test({ source: 'draft', draft }),
+    ).rejects.toMatchObject({
+      code: 'ENCRYPTION_UNAVAILABLE',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(persistedStore(fs)).toBe(before);
+  });
+
+  it('leaves saved-draft decryption failure nonmutating without transport or cached-token disclosure', async () => {
+    const fs = new MemoryFileSystem();
+    let vaultFails = false;
+    const fetchImpl = successfulFetch();
+    const profiles = service(fs, fetchImpl, () => NOW, {
+      ...secureStorage,
+      decryptString: (value) => {
+        if (vaultFails) {
+          throw new Error(
+            'private-vault-detail desktop-secret short-lived-jwt',
+          );
+        }
+        return secureStorage.decryptString(value);
+      },
+    });
+    const saved = await profiles.save(serverDraft());
+    const before = persistedStore(fs);
+    const context = await profiles.getAuthenticatedContext(saved.id);
+    vi.mocked(fetchImpl).mockClear();
+    vaultFails = true;
+    const result = await profiles
+      .test({
+        source: 'draft',
+        draft: serverDraft({
+          id: saved.id,
+          displayName: 'Unsaved name',
+          credentials: { authMode: 'saved' },
+        }),
+      })
+      .catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(ServerProfileError);
+    expect(result).toMatchObject({ code: 'CORRUPT_STORE' });
+    expect(String(result)).not.toMatch(
+      /private-vault-detail|desktop-secret|short-lived-jwt/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(persistedStore(fs)).toBe(before);
+    expect(await profiles.list()).toEqual({
+      selectedProfileId: saved.id,
+      profiles: [saved],
+    });
+    await expect(
+      profiles.revalidateAuthenticatedContext(context),
+    ).resolves.toBeUndefined();
+    // A cached JWT is not returned as a workaround for an unreadable vault.
+    await expect(profiles.getToken(saved.id)).rejects.toMatchObject({
+      code: 'CORRUPT_STORE',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    vaultFails = false;
+    await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
+    expect(persistedStore(fs)).toBe(before);
+  });
+
+  it('replaces authentication identity explicitly and binds subsequent saved edits to the new principal', async () => {
+    const fs = new MemoryFileSystem();
+    const baseline = successfulFetch();
+    let principalId = 'operator-1';
+    const loginBodies: unknown[] = [];
+    const fetchImpl = vi.fn<typeof globalThis.fetch>((input, init) => {
+      if (requestUrl(input).pathname === '/api/auth/login') {
+        loginBodies.push(requestBody(init));
+        return Promise.resolve(
+          json({
+            success: true,
+            token: 'new-principal-jwt',
+            expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+            user: { id: principalId },
+          }),
+        );
+      }
+      if (requestUrl(input).pathname === '/api/auth/me') {
+        return Promise.resolve(json({ id: principalId }));
+      }
+      return baseline(input, init);
+    });
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(serverDraft());
+    const binding = await profiles.getPersistedSyncBinding(saved.id);
+    const oldContext = await profiles.getAuthenticatedContext(saved.id);
+    const invalidated = vi.fn();
+    profiles.subscribeInvalidation(invalidated);
+    principalId = 'operator-2';
+    const replacement = await profiles.save(
+      serverDraft({
+        id: saved.id,
+        credentials: {
+          authMode: 'password',
+          username: 'different-operator',
+          password: 'replacement-password',
+          rememberMe: true,
+        },
+      }),
+    );
+    expect(replacement).toMatchObject({
+      id: saved.id,
+      authMode: 'password',
+      username: 'different-operator',
+    });
+    const replacedBinding = await profiles.getPersistedSyncBinding(saved.id);
+    expect(replacedBinding.revision).toBe(binding.revision + 1);
+    expect(replacedBinding.binding).not.toBe(binding.binding);
+    expect(invalidated).toHaveBeenCalledOnce();
+    await expect(
+      profiles.revalidateAuthenticatedContext(oldContext),
+    ).rejects.toMatchObject({ code: 'AUTHENTICATION_SUPERSEDED' });
+    await profiles.save(
+      serverDraft({
+        id: saved.id,
+        displayName: 'Renamed new identity',
+        credentials: { authMode: 'saved' },
+      }),
+    );
+    expect(await profiles.getPersistedSyncBinding(saved.id)).toEqual(
+      replacedBinding,
+    );
+    expect(invalidated).toHaveBeenCalledOnce();
+    expect(loginBodies).toEqual(
+      Array.from({ length: 2 }, () => ({
+        usernameOrEmail: 'different-operator',
+        password: 'replacement-password',
+        rememberMe: true,
+      })),
+    );
+    expect(await profiles.list()).toMatchObject({
+      selectedProfileId: saved.id,
+      profiles: [{ id: saved.id, displayName: 'Renamed new identity' }],
+    });
+    expect((await profiles.list()).profiles).toHaveLength(1);
+    expect(persistedStore(fs)).not.toContain('replacement-password');
+    expect((await profiles.getAuthenticatedContext(saved.id)).principalId).toBe(
+      'operator-2',
+    );
+  });
+
+  it('keeps sync and calibration bound to the edited profile, not the selected one', async () => {
+    const profiles = service(new MemoryFileSystem());
+    const saved = await profiles.save(serverDraft());
+    const initial = await profiles.getPersistedSyncBinding(saved.id);
+    const calibrationBinding = (
+      await profiles.getAuthenticatedContext(saved.id)
+    ).serverBinding;
+    const selected = await profiles.save(
+      serverDraft({
+        baseUrl: 'https://different.example',
+      }),
+    );
+    await profiles.select(selected.id);
+    await profiles.save(
+      serverDraft({
+        id: saved.id,
+        displayName: 'Edited source farm',
+        credentials: { authMode: 'saved' },
+      }),
+    );
+    const provider = new ServerProfileCalibrationTokenProvider(profiles);
+    expect(
+      await provider.getAuthenticatedContext(saved.id, saved.baseUrl),
+    ).toMatchObject({ baseUrl: saved.baseUrl, binding: calibrationBinding });
+    const fetchImpl = vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(
+        json({
+          changes: [],
+          nextCursor: null,
+          hasMore: false,
+          serverRevision: 1,
+        }),
+      ),
+    );
+    const sync = new SyncHttpClient(profiles, { fetch: fetchImpl });
+    await sync.getChanges(
+      saved.id,
+      saved.baseUrl,
+      null,
+      50,
+      new AbortController().signal,
+    );
+    expect(requestUrl(fetchImpl.mock.calls[0]![0]).origin).toBe(saved.baseUrl);
+    expect((await profiles.list()).selectedProfileId).toBe(selected.id);
+
+    await profiles.save(
+      serverDraft({
+        id: saved.id,
+        baseUrl: 'https://replacement.example',
+        credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+      }),
+    );
+    await expect(
+      provider.getAuthenticatedContext(saved.id, saved.baseUrl),
+    ).rejects.toThrow();
+    const calls = fetchImpl.mock.calls.length;
+    await expect(
+      sync.getChanges(
+        saved.id,
+        saved.baseUrl,
+        null,
+        50,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
+    expect(fetchImpl).toHaveBeenCalledTimes(calls);
+    expect((await profiles.getPersistedSyncBinding(saved.id)).revision).toBe(
+      initial.revision + 1,
+    );
+  });
+
   it('keeps persisted server binding stable across rename and token renewal', async () => {
     const profiles = service(new MemoryFileSystem());
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const initial = await profiles.getPersistedSyncBinding(saved.id);
     const invalidated = vi.fn();
     profiles.subscribeInvalidation(invalidated);
 
     await profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         displayName: 'Renamed farm',
         credentials: { authMode: 'apiKey', apiKey: 'rotated-key' },
@@ -301,7 +825,7 @@ describe('server profiles', () => {
       successfulFetch((url) => calls.push(url.pathname)),
     );
 
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const listed = await profiles.list();
     const persisted = [...fs.files.values()]
       .map((value) => new TextDecoder().decode(value))
@@ -332,7 +856,7 @@ describe('server profiles', () => {
       successfulFetch((url) => paths.push(url.pathname)),
     );
     const saved = await profiles.save({
-      ...apiKeyDraft(),
+      ...serverDraft(),
       baseUrl: 'https://farm.example/prefix',
     });
     const context = await profiles.getAuthenticatedContext(saved.id);
@@ -358,7 +882,7 @@ describe('server profiles', () => {
   it('invalidates a rejected JWT only once for its exact context', async () => {
     const fileSystem = new MemoryFileSystem();
     const profiles = service(fileSystem);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const context = await profiles.getAuthenticatedContext(saved.id);
     await expect(profiles.invalidateRejectedContext(context)).resolves.toBe(
       true,
@@ -377,7 +901,7 @@ describe('server profiles', () => {
       return Promise.resolve();
     });
     profiles.onProfileBindingChanged(changed);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     await profiles.save({
       id: saved.id,
       displayName: saved.displayName,
@@ -423,7 +947,7 @@ describe('server profiles', () => {
     );
 
     await expect(
-      service(new MemoryFileSystem(), fetchImpl).save(apiKeyDraft()),
+      service(new MemoryFileSystem(), fetchImpl).save(serverDraft()),
     ).resolves.toMatchObject({
       status: 'connected',
       version: { service: 'Farm.Web.Api' },
@@ -434,7 +958,7 @@ describe('server profiles', () => {
   it('deleting a profile removes its encrypted secret and cached token', async () => {
     const fs = new MemoryFileSystem();
     const profiles = service(fs);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
     await expect(profiles.delete(saved.id)).resolves.toEqual({
@@ -479,7 +1003,7 @@ describe('server profiles', () => {
       const fs = new MemoryFileSystem();
       const fetchImpl = successfulFetch();
       const profiles = service(fs, fetchImpl);
-      await profiles.save(apiKeyDraft());
+      await profiles.save(serverDraft());
       const requestsBeforeTamper = vi.mocked(fetchImpl).mock.calls.length;
       let requestedId = '';
       mutateStoredProfile(fs, (profile) => {
@@ -499,7 +1023,7 @@ describe('server profiles', () => {
     const fs = new MemoryFileSystem();
     const fetchImpl = successfulFetch();
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const requestsBeforeTamper = vi.mocked(fetchImpl).mock.calls.length;
     const legacyEncryptedSecret = Buffer.from(
       secureStorage.encryptString(
@@ -523,7 +1047,7 @@ describe('server profiles', () => {
       isEncryptionAvailable: () => false,
     });
 
-    await expect(profiles.save(apiKeyDraft())).rejects.toMatchObject({
+    await expect(profiles.save(serverDraft())).rejects.toMatchObject({
       code: 'ENCRYPTION_UNAVAILABLE',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -539,7 +1063,7 @@ describe('server profiles', () => {
         getSelectedStorageBackend: () => 'basic_text',
       },
     );
-    await expect(profiles.save(apiKeyDraft())).rejects.toMatchObject({
+    await expect(profiles.save(serverDraft())).rejects.toMatchObject({
       code: 'ENCRYPTION_UNAVAILABLE',
     });
   });
@@ -602,7 +1126,7 @@ describe('server profiles', () => {
       if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
     });
     const profiles = service(fs, fetchImpl, () => currentTime);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     expect(await profiles.getToken(saved.id)).toBe('short-lived-jwt');
     expect(exchanges).toBe(1);
@@ -630,11 +1154,11 @@ describe('server profiles', () => {
         if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
       }),
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     await profiles.test({
       source: 'draft',
-      draft: apiKeyDraft({ id: saved.id }),
+      draft: serverDraft({ id: saved.id }),
     });
     await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
 
@@ -668,7 +1192,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl, () => currentTime);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     currentTime += 14 * 60_000 + 1;
 
     const renewal = profiles.getToken(saved.id);
@@ -676,7 +1200,7 @@ describe('server profiles', () => {
     await expect(
       profiles.test({
         source: 'draft',
-        draft: apiKeyDraft({ id: saved.id }),
+        draft: serverDraft({ id: saved.id }),
       }),
     ).resolves.toMatchObject({ id: saved.id, status: 'connected' });
     renewalGate.resolve(
@@ -721,7 +1245,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl, () => currentTime);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     currentTime += 14 * 60_000 + 1;
 
     const renewal = profiles.getToken(saved.id);
@@ -774,7 +1298,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl, () => currentTime);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     currentTime += 14 * 60_000 + 1;
 
     const renewal = profiles.getToken(saved.id);
@@ -783,7 +1307,7 @@ describe('server profiles', () => {
     });
     await renewalReached.promise;
     await profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         baseUrl: 'https://replacement.example',
         credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
@@ -812,7 +1336,7 @@ describe('server profiles', () => {
         if (url.pathname === '/api/auth/me') currentUserChecks += 1;
       }),
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     await profiles.test({ source: 'saved', id: saved.id });
 
@@ -849,7 +1373,7 @@ describe('server profiles', () => {
     const invalidated = vi.fn();
     profiles.subscribeInvalidation(invalidated);
 
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const initial = await profiles.getPersistedSyncBinding(saved.id);
 
     // The server now resolves these credentials to a different principal
@@ -904,12 +1428,12 @@ describe('server profiles', () => {
     const invalidated = vi.fn();
     profiles.subscribeInvalidation(invalidated);
 
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const initial = await profiles.getPersistedSyncBinding(saved.id);
 
     currentUserId = 'operator-2';
     await profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         displayName: 'Rebound farm',
         credentials: { authMode: 'apiKey', apiKey: 'rotated-key' },
@@ -941,7 +1465,7 @@ describe('server profiles', () => {
     );
 
     await profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         displayName: 'Still rebound farm',
         credentials: { authMode: 'apiKey', apiKey: 'rotated-again' },
@@ -981,7 +1505,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl, () => currentTime);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     currentTime += 14 * 60_000 + 1;
 
     const oldRenewal = profiles.getToken(saved.id);
@@ -1025,7 +1549,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     const olderRetest = profiles.test({ source: 'saved', id: saved.id });
     const olderResult = expect(olderRetest).rejects.toMatchObject({
@@ -1078,11 +1602,11 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const writeGate = fs.gateNextWrite();
 
     const saveA = profiles.save(
-      apiKeyDraft({ id: saved.id, displayName: 'Save A' }),
+      serverDraft({ id: saved.id, displayName: 'Save A' }),
     );
     await writeGate.reached;
     const retestB = profiles.test({ source: 'saved', id: saved.id });
@@ -1115,12 +1639,12 @@ describe('server profiles', () => {
         if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
       }),
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     fs.failNextWrite(new Error('disk full'));
 
     await expect(
       profiles.save(
-        apiKeyDraft({ id: saved.id, displayName: 'Must not persist' }),
+        serverDraft({ id: saved.id, displayName: 'Must not persist' }),
       ),
     ).rejects.toThrow('disk full');
     expect(persistedStore(fs)).not.toContain('Must not persist');
@@ -1137,11 +1661,11 @@ describe('server profiles', () => {
         if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
       }),
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const writeGate = fs.gateNextWrite();
 
     const update = profiles.save(
-      apiKeyDraft({ id: saved.id, displayName: 'Persist without token' }),
+      serverDraft({ id: saved.id, displayName: 'Persist without token' }),
     );
     await writeGate.reached;
     profiles.clearTokens();
@@ -1197,10 +1721,10 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     await profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         baseUrl: 'https://replacement.example',
         credentials: {
@@ -1252,7 +1776,7 @@ describe('server profiles', () => {
     );
     const tested = await service(new MemoryFileSystem(), fetchImpl).test({
       source: 'draft',
-      draft: apiKeyDraft(),
+      draft: serverDraft(),
     });
 
     expect(tested.status).toBe('legacy');
@@ -1289,7 +1813,7 @@ describe('server profiles', () => {
 
     const tested = await service(new MemoryFileSystem(), fetchImpl).test({
       source: 'draft',
-      draft: apiKeyDraft(),
+      draft: serverDraft(),
     });
 
     expect(tested.status).toBe('connected');
@@ -1322,7 +1846,7 @@ describe('server profiles', () => {
       );
       const pending = service(new MemoryFileSystem(), fetchImpl).test({
         source: 'draft',
-        draft: apiKeyDraft(),
+        draft: serverDraft(),
       });
       const assertion = expect(pending).rejects.toMatchObject({
         code: 'TIMEOUT',
@@ -1356,7 +1880,7 @@ describe('server profiles', () => {
 
     const tested = await service(new MemoryFileSystem(), fetchImpl).test({
       source: 'draft',
-      draft: apiKeyDraft(),
+      draft: serverDraft(),
     });
 
     expect(tested.status).toBe('legacy');
@@ -1376,7 +1900,7 @@ describe('server profiles', () => {
     await expect(
       service(new MemoryFileSystem(), fetchImpl).test({
         source: 'draft',
-        draft: apiKeyDraft(),
+        draft: serverDraft(),
       }),
     ).rejects.toMatchObject({
       code: 'RATE_LIMITED',
@@ -1411,7 +1935,7 @@ describe('server profiles', () => {
       await expect(
         service(new MemoryFileSystem(), fetchImpl).test({
           source: 'draft',
-          draft: apiKeyDraft(),
+          draft: serverDraft(),
         }),
       ).rejects.toMatchObject({ code });
       expect(exchanges).toBe(1);
@@ -1514,10 +2038,10 @@ describe('server profiles', () => {
         return resumeOlderLegacyCas.promise;
       },
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     const olderSave = profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         displayName: 'Older legacy save',
         allowLegacy: false,
@@ -1597,12 +2121,12 @@ describe('server profiles', () => {
         });
       },
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     savedId = saved.id;
     raceEnabled = true;
 
     const olderSave = profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         displayName: 'No-hook legacy',
         allowLegacy: false,
@@ -1642,7 +2166,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     failRetest = true;
 
     await expect(
@@ -1675,7 +2199,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     const retest = profiles.test({ source: 'saved', id: saved.id });
     const retestResult = expect(retest).rejects.toMatchObject({
@@ -1712,7 +2236,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const originalEncryptedSecret = encryptedBlob(persistedStore(fs));
 
     const retest = profiles.test({ source: 'saved', id: saved.id });
@@ -1721,7 +2245,7 @@ describe('server profiles', () => {
     });
     await retestReachedNetwork.promise;
     await profiles.save(
-      apiKeyDraft({
+      serverDraft({
         id: saved.id,
         displayName: 'Replacement farm',
         baseUrl: 'https://replacement.example',
@@ -1767,7 +2291,7 @@ describe('server profiles', () => {
         },
       };
       const profiles = service(fs, fetchImpl, () => NOW, storage);
-      const saved = await profiles.save(apiKeyDraft());
+      const saved = await profiles.save(serverDraft());
       const requestsBeforeRetest = vi.mocked(fetchImpl).mock.calls.length;
       vaultFails = true;
 
@@ -1810,7 +2334,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl, () => NOW, storage);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
 
     const olderRetest = profiles.test({ source: 'saved', id: saved.id });
     const olderResult = expect(olderRetest).rejects.toMatchObject({
@@ -1859,7 +2383,7 @@ describe('server profiles', () => {
       },
     );
     const profiles = service(fs, fetchImpl, () => currentTime, storage);
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     currentTime += 14 * 60_000 + 1;
 
     const renewal = profiles.getToken(saved.id);
@@ -1898,7 +2422,7 @@ describe('server profiles', () => {
     await expect(
       service(new MemoryFileSystem(), malformed).test({
         source: 'draft',
-        draft: apiKeyDraft(),
+        draft: serverDraft(),
       }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
 

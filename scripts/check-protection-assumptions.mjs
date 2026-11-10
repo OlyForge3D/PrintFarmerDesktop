@@ -439,13 +439,14 @@ export function evaluatePublicProtectionAssumptions({
   return violations;
 }
 
-// The seven assumptions that DO need the privileged tier
-// (`/branches/{branch}/protection`, `/collaborators`), named here once so
+// Assumptions that need the privileged tier (including authenticated ruleset
+// bypass detail, branch protection and collaborators), named here once so
 // `main()`'s no-token path can report each one explicitly as
 // not-checked-no-scope rather than silently omitting it from the printed
 // output. Order matches the sequence `evaluateProtectionAssumptions` checks
 // them in, above.
 export const PRIVILEGED_ONLY_ASSUMPTIONS = Object.freeze([
+  'development.merge_queue',
   'development.allow_force_pushes',
   'development.allow_deletions',
   'development.required_linear_history',
@@ -828,20 +829,6 @@ export async function fetchPublicRepositoryFacts({
   };
 }
 
-async function fetchPrivilegedRulesets({ repository, token, fetchImpl }) {
-  const rulesets = await api(fetchImpl, repository, token, '/rulesets');
-  if (!Array.isArray(rulesets)) {
-    throw new Error(
-      'Authenticated /rulesets response must be an array before full queue policy can be evaluated.',
-    );
-  }
-  return Promise.all(
-    rulesets.map((ruleset) =>
-      api(fetchImpl, repository, token, `/rulesets/${ruleset.id}`),
-    ),
-  );
-}
-
 // #491: the two reads that need an admin-scoped token -- branch protection
 // detail and the collaborator list. Both 401 without one (measured). Backs
 // the seven assumptions in `PRIVILEGED_ONLY_ASSUMPTIONS`.
@@ -924,17 +911,20 @@ export async function fetchRepositoryFacts({
   token,
   fetchImpl = fetch,
 }) {
-  const [publicFacts, privilegedFacts, rulesets] = await Promise.all([
+  const [publicFacts, privilegedFacts] = await Promise.all([
     fetchPublicRepositoryFacts({ repository, fetchImpl }),
     fetchPrivilegedRepositoryFacts({ repository, branch, token, fetchImpl }),
-    fetchPrivilegedRulesets({ repository, token, fetchImpl }),
   ]);
 
   return {
     protection: privilegedFacts.protection,
-    // The anonymous ruleset endpoint omits `bypass_actors`; the full policy
-    // evaluator needs authenticated detail to confirm the empty bypass list.
-    rulesets,
+    // Public detail deliberately omits bypass_actors, even when an admin token
+    // exists elsewhere in this process. Re-read with that token for this tier.
+    rulesets: await Promise.all(
+      publicFacts.rulesets.map((ruleset) =>
+        api(fetchImpl, repository, token, `/rulesets/${ruleset.id}`),
+      ),
+    ),
     protectedBranches: publicFacts.protectedBranches,
     collaborators: privilegedFacts.collaborators,
   };
@@ -1343,7 +1333,7 @@ async function main() {
 
   if (token === null) {
     // #491's public tier: real work, not a skip. Only the two assumptions
-    // that need no credential are checked; the other seven are reported
+    // that need no credential are checked; the privileged ones are reported
     // below by name as not-checked-no-scope, never silently omitted.
     const publicFacts = await fetchPublicRepositoryFacts({ repository });
     const violations = evaluatePublicProtectionAssumptions(publicFacts);
