@@ -615,7 +615,9 @@ describe('<App />', () => {
       ).not.toBeInTheDocument(),
     );
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Add folder' })).toHaveFocus(),
+      expect(
+        screen.getByRole('heading', { name: 'All models', level: 1 }),
+      ).toHaveFocus(),
     );
   });
 
@@ -673,7 +675,7 @@ describe('<App />', () => {
       'Choose how subfolders should organize your models as collections or tags before scanning.',
     );
     expect(dialog).toHaveTextContent(
-      'Add folders from the library, or manage connected folders in Settings whenever you need.',
+      'Add more folders or manage connected folders in Settings whenever you need.',
     );
     expect(dialog).not.toHaveTextContent(
       /source root|keep roots healthy|remove roots/i,
@@ -837,10 +839,14 @@ describe('<App />', () => {
     });
 
     render(<App />);
+    await screen.findByRole('button', { name: 'Select widget.stl' });
     expect(
-      await screen.findByText('0 available · 1 needs attention'),
-    ).toBeVisible();
+      screen.getByRole('button', { name: /^Settings/ }),
+    ).toHaveAccessibleName(/1 source needs attention/);
     fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
+    expect(screen.getByLabelText('Catalog summary')).toHaveTextContent(
+      '1Need attention',
+    );
     const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
     fireEvent.click(reconnect);
 
@@ -1173,7 +1179,10 @@ describe('<App />', () => {
     const manage = await findAuthorityManageButton(/^Connect to PrintFarmer:/);
     await waitFor(() => expect(manage).toBeEnabled());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Add source folder' }),
+    );
     expect(manage).toBeDisabled();
     fireEvent.click(manage);
     expect(
@@ -1202,7 +1211,9 @@ describe('<App />', () => {
     expect(container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
     const cancel = screen.getByRole('button', { name: 'Cancel import' });
     await waitFor(() => expect(cancel).toHaveFocus());
-    screen.getByLabelText('Search models').focus();
+    screen
+      .getByRole('button', { name: 'Refresh catalog', hidden: true })
+      .focus();
     expect(cancel).toHaveFocus();
   });
 
@@ -1453,16 +1464,16 @@ describe('<App />', () => {
     });
     render(<App />);
     const manage = await findAuthorityManageButton(/^Connect to PrintFarmer:/);
-    const addFolder = screen.getByRole('button', { name: 'Add folder' });
+    const settings = screen.getByRole('button', { name: /^Settings/ });
     const openFile = screen.getByRole('button', { name: 'Open file' });
     await waitFor(() => expect(openFile).toBeEnabled());
 
     fireEvent.click(openFile);
     expect(openFile).toBeDisabled();
     expect(manage).toBeDisabled();
-    expect(addFolder).toBeDisabled();
+    expect(settings).toBeDisabled();
     fireEvent.click(manage);
-    fireEvent.click(addFolder);
+    fireEvent.click(settings);
     expect(
       screen.queryByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).not.toBeInTheDocument();
@@ -1471,14 +1482,14 @@ describe('<App />', () => {
     picker.resolve(null);
     await waitFor(() => expect(openFile).toBeEnabled());
     expect(manage).toBeEnabled();
-    expect(addFolder).toBeEnabled();
+    expect(settings).toBeEnabled();
   });
 
   it.each([
     ['cancellation', null],
     ['failure', new Error('folder picker unavailable')],
   ] as const)(
-    'restores Add folder focus after native picker %s',
+    'restores Settings source folder focus after native picker %s',
     async (_label, outcome) => {
       window.localStorage.setItem(
         'printfarmer.library.sourceRoots.v1',
@@ -1502,8 +1513,9 @@ describe('<App />', () => {
             : vi.fn().mockResolvedValue(outcome),
       });
       render(<App />);
+      fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
       const addFolder = await screen.findByRole('button', {
-        name: 'Add folder',
+        name: 'Add source folder',
       });
       await waitFor(() => expect(addFolder).toBeEnabled());
       addFolder.focus();
@@ -1814,7 +1826,10 @@ describe('<App />', () => {
     });
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Add folder' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Add source folder' }),
+    );
 
     expect(
       await screen.findByRole('dialog', {
@@ -1915,7 +1930,10 @@ describe('<App />', () => {
     });
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Add folder' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Add source folder' }),
+    );
     const dialog = await screen.findByRole('dialog', {
       name: 'Organize models before importing',
     });
@@ -2010,7 +2028,10 @@ describe('<App />', () => {
     });
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Add folder' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Settings/ }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Add source folder' }),
+    );
     const dialog = await screen.findByRole('dialog', {
       name: 'Organize models before importing',
     });
@@ -2054,7 +2075,7 @@ describe('<App />', () => {
     ).toBeEnabled();
   });
 
-  it('disables preview entry points while an import is being prepared', async () => {
+  it('keeps Library preview entry points unreachable while a Settings import is being prepared', async () => {
     const model: LogicalModel = {
       hash: 'part',
       format: 'stl',
@@ -2096,16 +2117,22 @@ describe('<App />', () => {
     render(<App />);
     await screen.findByRole('button', { name: 'Select part.stl' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Add source folder' }),
+    );
     await waitFor(() => expect(openFolder).toHaveBeenCalledTimes(1));
 
-    expect(screen.getByRole('button', { name: 'Open file' })).toBeDisabled();
+    const library = screen.getByRole('button', { name: 'Library' });
+    expect(library).toBeDisabled();
+    fireEvent.click(library);
+    expect(screen.getByRole('main', { name: 'Settings' })).toBeVisible();
     expect(
-      screen.getByRole('button', { name: 'Preview part.stl in 3D' }),
-    ).toBeDisabled();
-    fireEvent.doubleClick(
-      screen.getByRole('button', { name: 'Select part.stl' }),
-    );
+      screen.queryByRole('button', { name: 'Open file' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Preview part.stl in 3D' }),
+    ).not.toBeInTheDocument();
     expect(loadScene).not.toHaveBeenCalled();
   });
 
@@ -2206,7 +2233,10 @@ describe('<App />', () => {
     );
     await waitFor(() => expect(tagsForModel).toHaveBeenCalledTimes(1));
 
-    const addFolder = screen.getByRole('button', { name: 'Add folder' });
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    const addFolder = await screen.findByRole('button', {
+      name: 'Add source folder',
+    });
     addFolder.focus();
     fireEvent.click(addFolder);
     await waitFor(() =>
@@ -2226,6 +2256,7 @@ describe('<App />', () => {
       ).not.toBeInTheDocument(),
     );
     await waitFor(() => expect(addFolder).toHaveFocus());
+    fireEvent.click(screen.getByRole('button', { name: 'Library' }));
     await waitFor(() => expect(tagsForModel).toHaveBeenCalledTimes(2));
     expect(collectionsForModel).toHaveBeenCalledTimes(2);
     await act(async () => {
