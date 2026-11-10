@@ -12,7 +12,7 @@ renderer states. Structural workspace/dialog/phase/method/native counts overlap;
 they must not be added into a coverage denominator. No Cartesian product is
 implied.
 
-The reconciled catalog has **35 surfaces, 404 named rows and 331 candidate
+The reconciled catalog has **35 surfaces, 406 named rows and 331 candidate
 scenarios**:
 
 | Row status       | Count | Meaning                                                                              |
@@ -20,7 +20,7 @@ scenarios**:
 | `scenario`       |   331 | Owns one stable capture ID and explicit assertions                                   |
 | `scenario-group` |    45 | Original composite row referencing executable scenario IDs; creates no extra capture |
 | `blocked-native` |    16 | Native/platform behavior or real device interaction outside this safe renderer layer |
-| `not-rendered`   |     6 | Absent feature, unreachable forced state or non-renderer tooling                     |
+| `not-rendered`   |     8 | Absent feature, unreachable forced state or non-renderer tooling                     |
 | `unit-test`      |     1 | Static design detector, which has no rendered interface                              |
 | `retired`        |     4 | Legacy/non-live surfaces, not active coverage                                        |
 | `external`       |     1 | Destination outside this app                                                         |
@@ -157,10 +157,11 @@ runtime clamping.
 
 ## Running and reviewing candidates
 
-The release accessibility entry point imports `calibrationA11yTests.ts`:
+The required CI accessibility gate discovers all `@a11y` tests, including the
+library state spec and the calibration tests imported by the release entry point:
 
 ```powershell
-npx playwright test release.accessibility.spec.ts
+npx playwright test --grep "@a11y"
 ```
 
 For the complete manifest candidate suites, use basename selectors (Windows

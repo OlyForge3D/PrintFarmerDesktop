@@ -51,6 +51,28 @@ describe('UI visual/accessibility coverage manifest', () => {
     );
   });
 
+  it('keeps the published inventory counts aligned with the authoritative manifest', () => {
+    const summary = summarizeCoverage(getCoverageManifest());
+    const document = readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        'docs',
+        'ui',
+        'visual-accessibility-gate.md',
+      ),
+      'utf8',
+    );
+    expect(document.replace(/\s+/g, ' ')).toContain(
+      `**${summary.surfaceCount} surfaces, ${summary.stateCount} named rows and ${summary.scenarioCount} candidate scenarios**`,
+    );
+    for (const [status, count] of Object.entries(summary.statusCounts)) {
+      expect(document).toMatch(
+        new RegExp('\\| `' + status + '`\\s*\\|\\s*' + count + '\\s*\\|'),
+      );
+    }
+  });
+
   it('requires stable IDs, source states and a matching test scenario mapping', () => {
     const manifest = structuredClone(getCoverageManifest());
     manifest.scenarios[0]!.stateId = 'missing-state';
