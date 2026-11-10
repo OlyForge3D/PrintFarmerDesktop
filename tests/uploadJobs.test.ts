@@ -510,6 +510,164 @@ describe('UploadJobService', () => {
     },
   );
 
+  it('aborts old credentials even when a checkpoint failure has made the queue unavailable', async () => {
+    const profiles = realProfileService();
+    const saved = await profiles.save({
+      displayName: 'Farm',
+      baseUrl: 'https://farm.example',
+      credentials: { authMode: 'apiKey', apiKey: 'fixture-key' },
+      allowLegacy: false,
+    });
+    const store = new UploadJobStore({
+      userDataPath: 'data',
+      fileSystem: memoryFileSystem(),
+    });
+    const active = deferred<AbortSignal>();
+    const failing = deferred<void>();
+    const failTransport = deferred<void>();
+    const transport = vi.fn<UploadTransport>((request) => {
+      if (transport.mock.calls.length === 2) {
+        failing.resolve();
+        return failTransport.promise.then(() => {
+          throw new Error('Second transport failed.');
+        });
+      }
+      active.resolve(request.signal);
+      return new Promise((_resolve, reject) => {
+        request.signal.addEventListener(
+          'abort',
+          () => reject(new Error('Aborted.')),
+          {
+            once: true,
+          },
+        );
+      });
+    });
+    const uploads = await serviceFixture({
+      hashes: ['a'.repeat(64), 'b'.repeat(64)],
+      profiles,
+      store,
+      transport,
+      concurrency: 2,
+    });
+    try {
+      await uploads.start({
+        profileId: saved.id,
+        hashes: ['a'.repeat(64), 'b'.repeat(64)],
+      });
+      const signal = await active.promise;
+      await failing.promise;
+      vi.spyOn(store, 'saveState').mockRejectedValue(
+        new Error('Checkpoint failed.'),
+      );
+      failTransport.resolve();
+      await expectEventuallyRejected(() => uploads.list());
+      expect(signal.aborted).toBe(false);
+      await profiles.save({
+        id: saved.id,
+        displayName: saved.displayName,
+        baseUrl: saved.baseUrl,
+        credentials: { authMode: 'apiKey', apiKey: 'rotated-fixture-key' },
+        allowLegacy: false,
+      });
+      expect(signal.aborted).toBe(true);
+      await expect(uploads.list()).rejects.toThrow(
+        /upload queue encountered an internal error/i,
+      );
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      uploads.dispose();
+    }
+  });
+
+  it.each(['active', 'uncertain', 'accepted'] as const)(
+    'retains legacy duplicate risk after credential rotation of an %s upload',
+    async (stage) => {
+      const profiles = realProfileService(undefined, 'legacyModelOnly');
+      const saved = await profiles.save({
+        displayName: 'Legacy farm',
+        baseUrl: 'https://farm.example',
+        credentials: { authMode: 'apiKey', apiKey: 'fixture-key' },
+        allowLegacy: true,
+      });
+      const entered = deferred<void>();
+      const accepted = deferred<void>();
+      const transport = vi.fn<UploadTransport>(async (request) => {
+        entered.resolve();
+        if (stage === 'accepted') {
+          await accepted.promise;
+          return remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          );
+        }
+        if (stage === 'active') {
+          await new Promise<void>((resolve) =>
+            request.signal.addEventListener('abort', () => resolve(), {
+              once: true,
+            }),
+          );
+        }
+        throw new ModelUploadError(
+          {
+            code: 'ABORTED',
+            message: 'Response lost after sending legacy bytes.',
+            retryable: false,
+            retryAfterSeconds: null,
+            duplicateRisk: true,
+          },
+          'modelStreaming',
+        );
+      });
+      const uploads = await serviceFixture({
+        hashes: ['c'.repeat(64)],
+        profiles,
+        transport,
+      });
+      try {
+        const job = await uploads.start({
+          profileId: saved.id,
+          hashes: ['c'.repeat(64)],
+        });
+        await entered.promise;
+        if (stage === 'uncertain') {
+          await waitFor(
+            () => uploads.list(),
+            (jobs) => jobs[0]?.items[0]?.state === 'uncertain',
+          );
+        }
+        const rotation = profiles.save({
+          id: saved.id,
+          displayName: saved.displayName,
+          baseUrl: saved.baseUrl,
+          credentials: { authMode: 'apiKey', apiKey: 'rotated-fixture-key' },
+          allowLegacy: true,
+        });
+        if (stage === 'accepted') {
+          // Wait until the credential change reaches the active worker before its response arrives.
+          await vi.waitFor(() =>
+            expect(transport.mock.calls[0]?.[0].signal.aborted).toBe(true),
+          );
+          accepted.resolve();
+        }
+        await rotation;
+        const jobs = await uploads.list();
+        expect(jobs[0]?.items[0]).toMatchObject({
+          state: 'uncertain',
+          error: { duplicateRisk: true, retryable: false },
+        });
+        await expect(uploads.retry(job.id)).rejects.toThrow(
+          /no safely retryable/i,
+        );
+        expect(transport).toHaveBeenCalledOnce();
+      } finally {
+        accepted.resolve();
+        uploads.dispose();
+      }
+    },
+  );
+
   it('does not abort active transport for a saved-credential rename of the same principal', async () => {
     const profiles = realProfileService();
     const saved = await profiles.save({
@@ -2280,6 +2438,7 @@ const PROFILE = profile('modern');
 
 function realProfileService(
   principalId: () => string = () => 'fixture-operator',
+  mode: 'modern' | 'legacyModelOnly' = 'modern',
 ): ServerProfileService {
   const now = Date.parse('2026-07-23T19:00:00.000Z');
   return new ServerProfileService({
@@ -2306,7 +2465,7 @@ function realProfileService(
           timestamp: new Date(now).toISOString(),
         };
       } else if (url.pathname.endsWith('/api/system/capabilities')) {
-        body = PROFILE.capabilities;
+        body = profile(mode).capabilities;
       } else if (url.pathname.endsWith('/api/auth/api-key/exchange')) {
         body = {
           token: 'fixture-jwt',

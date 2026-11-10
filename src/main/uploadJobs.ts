@@ -863,21 +863,6 @@ export class UploadJobService {
     const invalidateIdentity = reason === 'identityChanged';
     this.changingProfileBindings.add(profileId);
     try {
-      await this.requireReady();
-    } catch {
-      try {
-        if (invalidateIdentity) {
-          await this.options.sidecar.purgeRemoteModelLinks(
-            profileId,
-            previousBinding,
-          );
-        }
-      } finally {
-        this.changingProfileBindings.delete(profileId);
-      }
-      return;
-    }
-    try {
       const workers: Promise<void>[] = [];
       for (const job of this.state.jobs) {
         if (
@@ -894,6 +879,17 @@ export class UploadJobService {
         }
       }
       await Promise.allSettled(workers);
+      try {
+        await this.requireReady();
+      } catch {
+        if (invalidateIdentity) {
+          await this.options.sidecar.purgeRemoteModelLinks(
+            profileId,
+            previousBinding,
+          );
+        }
+        return;
+      }
       await this.durableMutate((draft) => {
         for (const job of draft.jobs) {
           if (
@@ -902,6 +898,13 @@ export class UploadJobService {
           )
             continue;
           for (const item of job.items) {
+            if (
+              job.mode === 'legacyModelOnly' &&
+              item.state === 'uncertain' &&
+              item.error?.duplicateRisk
+            ) {
+              continue;
+            }
             if (
               item.state === 'queued' ||
               item.state === 'uploading' ||
@@ -1389,7 +1392,16 @@ export class UploadJobService {
       const item = requireItem(draft.jobs, jobId, itemId);
       const active = this.active.get(itemId);
       const detail = safeUploadError(error);
-      if (isProfileChanged(error)) {
+      if (job.mode === 'legacyModelOnly' && legacyBytesCommitted) {
+        setItemState(item, 'uncertain', this.isoNow(), {
+          ...detail,
+          code: 'LEGACY_UPLOAD_UNCERTAIN',
+          message:
+            'Legacy upload bytes may have reached the server. Confirm the duplicate risk explicitly before retrying.',
+          retryable: false,
+          duplicateRisk: true,
+        });
+      } else if (isProfileChanged(error)) {
         setItemState(item, 'cancelled', this.isoNow(), detail);
       } else if (active?.action === 'pause' && job.mode === 'modern') {
         item.state = 'queued';
@@ -1404,15 +1416,6 @@ export class UploadJobService {
             'Upload cancelled. A safe retry retains the same upload identity.',
           retryable: true,
           duplicateRisk: false,
-        });
-      } else if (job.mode === 'legacyModelOnly' && legacyBytesCommitted) {
-        setItemState(item, 'uncertain', this.isoNow(), {
-          ...detail,
-          code: 'LEGACY_UPLOAD_UNCERTAIN',
-          message:
-            'Legacy upload bytes may have reached the server. Confirm the duplicate risk explicitly before retrying.',
-          retryable: false,
-          duplicateRisk: true,
         });
       } else {
         setItemState(item, 'failed', this.isoNow(), detail);

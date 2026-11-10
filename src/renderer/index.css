@@ -1539,7 +1539,7 @@ select:disabled {
   bottom: max(24px, 3vh);
   left: 50%;
   display: flex;
-  width: min(max(90%, 600px), calc(100% - 32px));
+  width: min(920px, max(90%, 600px), calc(100% - 32px));
   min-width: 0;
   min-height: 0;
   flex-direction: column;
