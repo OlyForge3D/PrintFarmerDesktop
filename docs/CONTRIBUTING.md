@@ -68,6 +68,55 @@ commits inside every callback. Copies must own their object stores, refs and
 working trees independently; retain the isolation regression when changing
 that fixture. This reduces process work without changing timeout budgets.
 
+### Hosted Windows test budgets
+
+Only Windows with a truthy `CI` environment variable (other than `"false"`)
+uses the measured #874 budgets below. Developer runs, including Windows,
+and macOS CI retain the existing limits. `tests/helpers/ciWindowsTimeout.ts`
+owns this gate; its tests include non-CI Windows and CI macOS/Linux controls.
+Workers remain two, fork isolation stays enabled, and no assertion, skip,
+retry, child-process limit, or job timeout changes.
+
+| Surface                                | Existing limit | Windows CI | Observed tail                            |
+| -------------------------------------- | -------------: | ---------: | ---------------------------------------- |
+| Default callback                       |             5s |        30s | 17.468s, 72% headroom                    |
+| Default hook                           |            10s |        20s | Provisional; see below                   |
+| Two measured design-baseline callbacks |             5s |        90s | 35.692s / 55.729s, at least 61% headroom |
+| Push-guard callbacks                   |            15s |        80s | 51.681s, 55% headroom                    |
+| Orca scale callbacks                   |            15s |        30s | 17.440s, 72% headroom                    |
+
+These are nearest-rank empirical p99 values from **48 observations per named
+callback**, not precise estimates of a production tail distribution: at this
+sample size p99 equals the maximum. Some explicit per-file limits override
+Vitest defaults, so changing only the default does not cover the demonstrated
+failures. Unmeasured explicit overrides remain unchanged.
+
+The **20-second hook limit is provisional**, based on one failed
+design-ratchet hook-associated elapsed time of 13.243s (51% headroom), not a
+directly measured hook p99. Follow-up under #874: collect actual hook setup
+durations on the next ten independent Windows full-suite runs, retain red
+attempts, and revisit this bound with hook-specific tail evidence. Do not
+substitute callback durations for hook measurements.
+
+Evidence and complete limitations are retained in draft experiment #875,
+especially [the final report](https://github.com/OlyForge3D/PrintFarmerDesktop/pull/875#issuecomment-6776566822).
+The final controlled batch `42878637597` had twelve green executions: two
+untouched, two matched-delay and eight one-worker samples. Thus no tested
+lever cleanly separated reliability from controls. Across two batches,
+one worker passed 18/18 samples but cost 56-80% more wall time; it is **not**
+enabled. Moving temp to D: broke genuine distinct-8.3-alias coverage.
+Defender protection was already off with C:/D: excluded, so extra exclusions
+are not a demonstrated fix. Temp placement and Defender settings stay intact.
+
+The budget tradeoff is slower hang detection, not a proven contention cure
+or permission to rerun until green. A blocked synchronous subprocess cannot
+be interrupted by Vitest's JavaScript timer; existing child/job bounds still
+apply. Revisit limits when the runner image, fixture workload, or Vitest pool
+changes, or after any fresh timeout. Compare exact-head independent full-suite
+runs, keep original failures, and use updated measurements and explicit
+headroom before reducing or increasing a bound. Temporary experiment workflows
+must not merge with the repair.
+
 Rust sidecar (run from `native/`):
 
 | Command                                         | Purpose                            |

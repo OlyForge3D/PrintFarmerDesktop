@@ -33,8 +33,13 @@ import {
   it,
   vi,
 } from 'vitest';
+import { ciWindowsTimeout } from './helpers/ciWindowsTimeout';
 
-vi.setConfig({ testTimeout: 15_000, hookTimeout: 30_000 });
+// #874: empirical p99 51.681s from 48 samples; 80s gives 55% CI-only headroom.
+vi.setConfig({
+  testTimeout: ciWindowsTimeout(15_000, 80_000),
+  hookTimeout: 30_000,
+});
 import {
   ACK_ENV,
   ACK_FOREIGN_ENV,
