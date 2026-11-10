@@ -280,19 +280,6 @@
   color: var(--accent);
 }
 
-.authority-warning {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  padding: 2px 8px;
-  border: 1px solid #4d3a1d;
-  border-radius: var(--control-radius);
-  background: #2b2013;
-  color: var(--warning);
-  font-size: 12px;
-}
-
 /* Status -------------------------------------------------------------- */
 
 .status-activity {

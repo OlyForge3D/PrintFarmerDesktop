@@ -50,13 +50,6 @@ export function AuthorityBar({
           {status}
         </span>
       </button>
-
-      {profile?.warnings.includes('insecureHttp') ? (
-        <p className="authority-warning">
-          <Icon name="missing" />
-          HTTP connection is not encrypted
-        </p>
-      ) : null}
     </section>
   );
 }
