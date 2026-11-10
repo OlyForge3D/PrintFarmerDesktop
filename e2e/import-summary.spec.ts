@@ -68,6 +68,19 @@ test('automatic summary, responsive width and explicit stale-target recovery use
       name: 'Organize models before importing',
     });
     await expect(wizard.getByText('Up to date')).toBeVisible();
+    const outcomes = wizard.getByRole('region', {
+      name: 'What this import will do',
+    });
+    await wizard
+      .getByRole('button', { name: 'Cancel import', exact: true })
+      .focus();
+    await page.keyboard.press('Tab');
+    await expect(
+      outcomes.locator('.import-preview-names summary').first(),
+    ).toBeFocused();
+    for (const disclosure of await outcomes.locator('details').all()) {
+      await expect(disclosure).not.toHaveAttribute('open');
+    }
     const importButton = wizard.getByRole('button', {
       name: 'Import',
       exact: true,
@@ -80,17 +93,6 @@ test('automatic summary, responsive width and explicit stale-target recovery use
       .withRules(['color-contrast'])
       .analyze();
     expect(contrast.violations).toEqual([]);
-    await wizard
-      .getByRole('checkbox', { name: 'Add all models to collection' })
-      .uncheck();
-    await expect(importButton).toBeDisabled();
-    await expect(
-      wizard.getByText(
-        'No collections or tags will be added. Model files will still be imported.',
-      ),
-    ).toBeVisible();
-    await expect(importButton).toBeEnabled();
-    await expect(wizard.locator('.import-preview-metrics')).toHaveCount(0);
     for (const width of [640, 1200, 1920]) {
       await app.evaluate(
         ({ BrowserWindow }, size) =>
@@ -117,6 +119,7 @@ test('automatic summary, responsive width and explicit stale-target recovery use
       }
       for (const selector of [
         '.import-body',
+        '.import-organization-preview',
         '.import-tree-layout',
         '.import-folder-editor',
       ]) {
@@ -126,10 +129,34 @@ test('automatic summary, responsive width and explicit stale-target recovery use
             .evaluate((element) => element.scrollWidth <= element.clientWidth),
         ).toBe(true);
       }
+      expect(
+        await outcomes.evaluate((element) => {
+          const stats = element.previousElementSibling;
+          const body = element.parentElement;
+          if (!stats?.classList.contains('import-summary') || !body)
+            return false;
+          const bounds = element.getBoundingClientRect();
+          return (
+            bounds.top >= stats.getBoundingClientRect().bottom &&
+            bounds.bottom <= body.getBoundingClientRect().bottom
+          );
+        }),
+      ).toBe(true);
       await page.screenshot({
         path: testInfo.outputPath(`automatic-summary-${width}.png`),
       });
     }
+    await wizard
+      .getByRole('checkbox', { name: 'Add all models to collection' })
+      .uncheck();
+    await expect(importButton).toBeDisabled();
+    await expect(
+      wizard.getByText(
+        'No collections or tags will be added. Model files will still be imported.',
+      ),
+    ).toBeVisible();
+    await expect(importButton).toBeEnabled();
+    await expect(wizard.locator('.import-preview-metrics')).toHaveCount(0);
     const approvedPath = await wizard
       .locator('.import-source-path')
       .innerText();

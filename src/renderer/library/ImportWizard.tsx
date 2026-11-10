@@ -66,7 +66,11 @@ export function ImportWizard({
   const folderEditorRef = useRef<HTMLElement | null>(null);
   const wasBusyRef = useRef(false);
   const previewRequestRef = useRef(0);
-  const completedPreviewKeyRef = useRef<string | null>(null);
+  const completedPreviewRef = useRef<{
+    key: string;
+    approvalId: string;
+    organization: NonNullable<ImportPreviewResponse['organization']>;
+  } | null>(null);
   const [previewState, setPreviewState] = useState<{
     key: string;
     status: 'pending' | 'ready' | 'error';
@@ -166,6 +170,17 @@ export function ImportWizard({
           !hasTemplatePlaceholder(folder.name))) &&
       folder.collectionTargetUnresolved,
   );
+  const additionalUnresolvedTargets = unresolvedTargets.filter((target) => {
+    if (target.source === 'rule') return target.path !== '';
+    const folder = foldersByPath.get(target.path);
+    return (
+      !folder ||
+      folder.legacy ||
+      (folder.mode !== 'collection' && folder.mode !== 'recipe') ||
+      folder.name.trim() !== target.name ||
+      folder.collectionId !== target.id
+    );
+  });
   const validationError = policyValidationError(choices);
   const folderValidationIssues = useMemo(() => {
     const isolatedChoices: ImportChoices = {
@@ -233,7 +248,7 @@ export function ImportWizard({
     !busy;
 
   useEffect(() => {
-    if (busy || completedPreviewKeyRef.current === planKey) return;
+    if (busy) return;
     const requestId = ++previewRequestRef.current;
     if (
       unresolvedRoot ||
@@ -245,6 +260,18 @@ export function ImportWizard({
         status: 'error',
         error:
           'Choose collection targets in Folder policies or Whole import to calculate the summary.',
+      });
+      return;
+    }
+    const completed = completedPreviewRef.current;
+    if (
+      completed?.key === planKey &&
+      completed.approvalId === draft.approvalId
+    ) {
+      setPreviewState({
+        key: planKey,
+        status: 'ready',
+        organization: completed.organization,
       });
       return;
     }
@@ -279,8 +306,13 @@ export function ImportWizard({
               ? { error: organization.errors.join(' ') }
               : { organization }),
           });
-          if (!organization.errors.length)
-            completedPreviewKeyRef.current = planKey;
+          if (!organization.errors.length) {
+            completedPreviewRef.current = {
+              key: planKey,
+              approvalId: draft.approvalId,
+              organization,
+            };
+          }
         })
         .catch((cause: unknown) => {
           if (previewRequestRef.current !== requestId) return;
@@ -529,6 +561,50 @@ export function ImportWizard({
             ) : null}
           </div>
 
+          <section
+            className="import-section import-organization-preview"
+            aria-labelledby="import-organization-heading"
+          >
+            <div className="import-section-heading">
+              <div>
+                <h3 id="import-organization-heading">
+                  What this import will do
+                </h3>
+                <p>
+                  Read-only summary of the complete source scan. Updates
+                  automatically as you change folder settings.
+                </p>
+              </div>
+              <span role="status" aria-label="Organization calculation">
+                {previewState?.key !== planKey ||
+                previewState.status === 'pending'
+                  ? 'Updating…'
+                  : previewState.status === 'error'
+                    ? "Couldn't calculate"
+                    : 'Up to date'}
+              </span>
+            </div>
+            {previewState?.key !== planKey ||
+            previewState.status === 'pending' ? (
+              <p className="import-preview-status">
+                Calculating organization changes…
+              </p>
+            ) : previewState.status === 'error' ? (
+              <div className="import-preview-error" role="alert">
+                <span>Preview failed: {previewState.error}</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setPreviewRetry((current) => current + 1)}
+                >
+                  Retry organization preview
+                </button>
+              </div>
+            ) : previewState.organization ? (
+              <OrganizationPreview organization={previewState.organization} />
+            ) : null}
+          </section>
+
           {error ? (
             <LibraryErrorAlert
               error={error}
@@ -673,7 +749,7 @@ export function ImportWizard({
                   legacy rules/ignores
                 </span>
               </div>
-              {unresolvedTargets.length ? (
+              {additionalUnresolvedTargets.length ? (
                 <div
                   className="import-policy-alert"
                   role="alert"
@@ -684,7 +760,7 @@ export function ImportWizard({
                     A remembered collection is missing or its name is ambiguous.
                     Choose a target explicitly; files will not be moved.
                   </span>
-                  {unresolvedTargets.map((target, index) => (
+                  {additionalUnresolvedTargets.map((target, index) => (
                     <label
                       className="import-policy-field"
                       key={`${target.source}-${target.path}-${index}`}
@@ -1149,28 +1225,37 @@ export function ImportWizard({
                                 }
                               />
                             </label>
-                            <CollectionTargetPicker
-                              label={`Choose collection for ${selectedFolder.relativePath}`}
-                              name={selectedFolder.name}
-                              collectionId={selectedFolder.collectionId}
-                              unresolved={Boolean(
-                                selectedFolder.collectionTargetUnresolved,
-                              )}
-                              collections={draft.collections}
-                              disabled={busy}
-                              onSelect={(collection) =>
-                                updateFolder(
-                                  selectedFolder.relativePath,
-                                  (current) =>
-                                    collection
-                                      ? withFolderCollectionTarget(
-                                          { ...current, name: collection.name },
-                                          { collectionId: collection.id },
-                                        )
-                                      : withFolderCollectionTarget(current, {}),
-                                )
-                              }
-                            />
+                            {!selectedFolder.legacy ||
+                            !selectedFolder.collectionTargetUnresolved ? (
+                              <CollectionTargetPicker
+                                label={`Choose collection for ${selectedFolder.relativePath}`}
+                                name={selectedFolder.name}
+                                collectionId={selectedFolder.collectionId}
+                                unresolved={Boolean(
+                                  selectedFolder.collectionTargetUnresolved,
+                                )}
+                                collections={draft.collections}
+                                disabled={busy}
+                                onSelect={(collection) =>
+                                  updateFolder(
+                                    selectedFolder.relativePath,
+                                    (current) =>
+                                      collection
+                                        ? withFolderCollectionTarget(
+                                            {
+                                              ...current,
+                                              name: collection.name,
+                                            },
+                                            { collectionId: collection.id },
+                                          )
+                                        : withFolderCollectionTarget(
+                                            current,
+                                            {},
+                                          ),
+                                  )
+                                }
+                              />
+                            ) : null}
                             <label className="import-policy-field">
                               <span>Also add tags (optional)</span>
                               <input
@@ -1278,7 +1363,9 @@ export function ImportWizard({
                               />
                             </label>
                             {selectedFolder.name.trim() &&
-                            !hasTemplatePlaceholder(selectedFolder.name) ? (
+                            !hasTemplatePlaceholder(selectedFolder.name) &&
+                            (!selectedFolder.legacy ||
+                              !selectedFolder.collectionTargetUnresolved) ? (
                               <CollectionTargetPicker
                                 label={`Choose recipe collection for ${selectedFolder.relativePath}`}
                                 name={selectedFolder.name}
@@ -1348,44 +1435,6 @@ export function ImportWizard({
                   Models are directly inside the selected folder.
                 </p>
               )}
-            </section>
-            <section className="import-section import-organization-preview">
-              <div className="import-section-heading">
-                <div>
-                  <h3>What this import will do</h3>
-                  <p>
-                    Read-only summary of the complete source scan. Updates
-                    automatically as you change folder settings.
-                  </p>
-                </div>
-                <span>
-                  {previewState?.key !== planKey ||
-                  previewState.status === 'pending'
-                    ? 'Updating…'
-                    : previewState.status === 'error'
-                      ? "Couldn't calculate"
-                      : 'Up to date'}
-                </span>
-              </div>
-              {previewState?.key !== planKey ||
-              previewState.status === 'pending' ? (
-                <p className="import-preview-status" role="status">
-                  Calculating organization changes…
-                </p>
-              ) : previewState.status === 'error' ? (
-                <div className="import-preview-error" role="alert">
-                  <span>Preview failed: {previewState.error}</span>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setPreviewRetry((current) => current + 1)}
-                  >
-                    Retry organization preview
-                  </button>
-                </div>
-              ) : previewState.organization ? (
-                <OrganizationPreview organization={previewState.organization} />
-              ) : null}
             </section>
           </div>
           {submitError ? (

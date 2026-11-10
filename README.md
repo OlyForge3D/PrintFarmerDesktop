@@ -106,8 +106,10 @@ Without `**`, the directory path must match exactly. Names are unique ASCII
 identifiers, not expressions. An unmatched recipe adds no folder metadata and
 does not fall back to its parent policy. Whole-import organization still applies.
 
-**What this import will do** is a read-only summary that updates automatically
-as folder settings change; there is no separate plan-acceptance step.
+**What this import will do**, directly below the file/scan statistics, is a
+read-only summary that updates automatically as folder settings change; there
+is no separate plan-acceptance step. Collection/tag lists stay collapsed until
+opened, keeping the summary compact above the folder settings.
 It evaluates the full source and distinguishes
 unique **new** collections/tags from existing metadata to reuse, with example
 resolved outputs and unmatched file counts. Invalid patterns, unknown captures,

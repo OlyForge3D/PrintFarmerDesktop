@@ -1625,7 +1625,7 @@ describe('smart import', () => {
       />,
     );
 
-    const picker = screen.getByLabelText('Choose collection for Animals');
+    const picker = screen.getByLabelText('Resolve rule collection for Animals');
     expect(picker).toHaveValue('__unresolved__');
     expect(picker).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();

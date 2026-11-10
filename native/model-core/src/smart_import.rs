@@ -1876,7 +1876,11 @@ mod tests {
         for folder in ["", "Parts", "Absent/Unvisited"] {
             let expected = format!(
                 "The remembered collection 'Dragons' for '{}' no longer exists. Reopen the import dialog and choose a collection target for this folder.",
-                if folder.is_empty() { "Source folder" } else { folder }
+                if folder.is_empty() {
+                    "Source folder".to_string()
+                } else {
+                    folder.replace('/', std::path::MAIN_SEPARATOR_STR)
+                }
             );
             let legacy = ImportPlan::new(
                 [(

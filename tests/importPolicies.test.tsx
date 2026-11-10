@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -135,6 +136,41 @@ afterEach(() => {
 });
 
 describe('folder policy tree and preview', () => {
+  it('places the live summary below scan statistics in reading order with collapsed details before the folder controls', async () => {
+    const previewImport = installPreview();
+    renderWizard();
+    await waitForPreview(previewImport);
+    const summary = screen.getByRole('region', {
+      name: 'What this import will do',
+    });
+    expect(document.querySelector('.import-summary')?.nextElementSibling).toBe(
+      summary,
+    );
+    expect(
+      summary.compareDocumentPosition(
+        screen.getByRole('checkbox', { name: 'Add all models to collection' }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const disclosures = summary.querySelectorAll('details');
+    expect(disclosures.length).toBeGreaterThan(0);
+    for (const disclosure of disclosures) expect(disclosure.open).toBe(false);
+    const tags = screen.getByLabelText('Tags for all imported models');
+    tags.focus();
+    fireEvent.change(tags, { target: { value: 'typing' } });
+    expect(
+      screen.getByRole('status', { name: 'Organization calculation' }),
+    ).toHaveTextContent('Updating…');
+    fireEvent.change(tags, { target: { value: 'typing-more' } });
+    expect(previewImport).toHaveBeenCalledOnce();
+    await waitFor(() => expect(previewImport).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('status', { name: 'Organization calculation' }),
+      ).toHaveTextContent('Up to date'),
+    );
+    expect(tags).toHaveFocus();
+  });
+
   it.each([
     ['rule', ''],
     ['policy', 'Miniatures'],
@@ -199,13 +235,33 @@ describe('folder policy tree and preview', () => {
           onConfirm={onConfirm}
         />,
       );
-      const issue = screen.getByRole('alert', {
+      const hasLocalPicker =
+        relativePath === '' ||
+        (source === 'policy' && relativePath === 'Miniatures');
+      const issue = screen.queryByRole('alert', {
         name: 'Collection targets need attention',
       });
-      expect(issue).toHaveTextContent(relativePath || 'Source folder');
-      expect(issue).toHaveTextContent(savedName);
+      if (hasLocalPicker) {
+        expect(issue).toBeNull();
+        expect(screen.getByDisplayValue(savedName)).toBeVisible();
+      } else {
+        if (!issue) throw new Error('Missing saved-target recovery alert');
+        expect(issue).toHaveTextContent(relativePath);
+        expect(issue).toHaveTextContent(savedName);
+      }
       expect(screen.queryByText(new RegExp(oldId))).toBeNull();
-      const picker = within(issue).getByRole('combobox');
+      const picker = screen.getByRole('combobox', {
+        name: hasLocalPicker
+          ? relativePath === ''
+            ? 'Choose import collection'
+            : `Choose collection for ${relativePath}`
+          : `Resolve ${source} collection for ${relativePath}`,
+      });
+      expect(
+        screen
+          .getAllByRole('combobox')
+          .filter((element) => element.getAttribute('aria-invalid') === 'true'),
+      ).toHaveLength(1);
       expect(picker).toHaveValue('__unresolved__');
       expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
       await new Promise((resolve) => setTimeout(resolve, 450));
@@ -308,6 +364,9 @@ describe('folder policy tree and preview', () => {
     ).toHaveAccessibleDescription(/automatic summary finishes updating/);
     await waitForPreview(previewImport);
     expect(
+      screen.getByRole('status', { name: 'Organization calculation' }),
+    ).toHaveTextContent('Up to date');
+    expect(
       screen.getByText(
         'No collections or tags will be added. Model files will still be imported.',
       ),
@@ -316,6 +375,54 @@ describe('folder policy tree and preview', () => {
     expect(document.querySelector('.import-preview-names')).toBeNull();
     expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
   });
+
+  it.each(['debouncing', 'in flight'] as const)(
+    'restores the completed summary when returning to a plan while another is %s',
+    async (stage) => {
+      let finishChangedPreview:
+        ((response: ImportPreviewResponse) => void) | undefined;
+      const changedPreview = new Promise<ImportPreviewResponse>((resolve) => {
+        finishChangedPreview = resolve;
+      });
+      const previewImport = installPreview(
+        createPreviewImport()
+          .mockResolvedValueOnce({
+            ...preview,
+            organization,
+          })
+          .mockReturnValueOnce(changedPreview),
+      );
+      renderWizard();
+      await waitForPreview(previewImport);
+      const tags = screen.getByLabelText('Tags for all imported models');
+      fireEvent.change(tags, { target: { value: 'changed' } });
+      expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled();
+      if (stage === 'in flight') {
+        await waitFor(() => expect(previewImport).toHaveBeenCalledTimes(2));
+      }
+      fireEvent.change(tags, { target: { value: '' } });
+      expect(
+        screen.getByRole('status', { name: 'Organization calculation' }),
+      ).toHaveTextContent('Up to date');
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+      expect(document.querySelector('.import-preview-names')).toHaveTextContent(
+        'Maker',
+      );
+      if (!finishChangedPreview) throw new Error('Missing preview resolver');
+      await act(async () => {
+        finishChangedPreview?.({
+          ...preview,
+          organization: { ...organization, newCollections: ['Obsolete'] },
+        });
+        await changedPreview;
+      });
+      expect(screen.queryByText('Obsolete')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+      expect(previewImport).toHaveBeenCalledTimes(
+        stage === 'in flight' ? 2 : 1,
+      );
+    },
+  );
 
   it('does not present zero metrics or an up-to-date badge when native calculation returns errors, and retries the same plan', async () => {
     const message =
