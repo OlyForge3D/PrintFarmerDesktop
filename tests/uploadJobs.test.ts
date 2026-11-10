@@ -265,6 +265,169 @@ describe('UploadJobStore', () => {
 });
 
 describe('UploadJobService', () => {
+  it.each([false, true])(
+    'preserves upload deduplication only for unchanged principal during credential rotation (principalChanged=%s)',
+    async (principalChanged) => {
+      let principalId = 'original-operator';
+      const profiles = realProfileService(() => principalId);
+      const profile = await profiles.save({
+        displayName: 'Farm',
+        baseUrl: 'https://farm.example',
+        credentials: { authMode: 'apiKey', apiKey: 'fixture-key' },
+        allowLegacy: false,
+      });
+      const hash = createHash('sha256')
+        .update(await fs.readFile(MODEL_PATH))
+        .digest('hex');
+      let savedLink: Parameters<UploadSidecar['linkRemoteModel']>[0] | null =
+        null;
+      const purge = vi.fn(() => {
+        savedLink = null;
+        return Promise.resolve(1);
+      });
+      const transport = vi.fn<UploadTransport>((request) =>
+        Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        ),
+      );
+      const uploads = await serviceFixture({
+        hashes: [hash],
+        profiles,
+        transport,
+        sidecarFactory: (models) => ({
+          listModels: () => Promise.resolve(models),
+          renderThumbnail: () => Promise.resolve(null),
+          getRemoteModelLink: (_profileId, binding) =>
+            Promise.resolve(
+              savedLink?.serverBinding === binding ? savedLink : null,
+            ),
+          removeRemoteModelLink: () => Promise.resolve(false),
+          purgeRemoteModelLinks: purge,
+          linkRemoteModel: (link) => {
+            savedLink = link;
+            return Promise.resolve(link);
+          },
+        }),
+      });
+      const first = await uploads.start({
+        profileId: profile.id,
+        hashes: [hash],
+      });
+      const completed = await waitFor(
+        () => uploads.list(),
+        (jobs) => jobs[0]?.state === 'completed',
+      );
+      const durableId = completed[0]!.items[0]!.clientUploadId;
+      if (principalChanged) principalId = 'replacement-operator';
+      await profiles.save({
+        id: profile.id,
+        displayName: profile.displayName,
+        baseUrl: profile.baseUrl,
+        credentials: { authMode: 'apiKey', apiKey: 'rotated-fixture-key' },
+        allowLegacy: false,
+      });
+      expect(purge).toHaveBeenCalledTimes(principalChanged ? 1 : 0);
+      await uploads.remove(first.id);
+      const second = await uploads.start({
+        profileId: profile.id,
+        hashes: [hash],
+      });
+      if (principalChanged) {
+        expect(second.items[0]?.clientUploadId).not.toBe(durableId);
+        await waitFor(
+          () => uploads.list(),
+          (jobs) =>
+            jobs.find((job) => job.id === second.id)?.state === 'completed',
+        );
+        expect(transport).toHaveBeenCalledTimes(2);
+      } else {
+        expect(second.items[0]).toMatchObject({
+          state: 'succeeded',
+          clientUploadId: durableId,
+        });
+        expect(transport).toHaveBeenCalledOnce();
+      }
+      uploads.dispose();
+    },
+  );
+
+  it('reuses the durable ID after credential rotation cancels an accepted upload with no response', async () => {
+    const profiles = realProfileService();
+    const profile = await profiles.save({
+      displayName: 'Farm',
+      baseUrl: 'https://farm.example',
+      credentials: { authMode: 'apiKey', apiKey: 'fixture-key' },
+      allowLegacy: false,
+    });
+    const hash = createHash('sha256')
+      .update(await fs.readFile(MODEL_PATH))
+      .digest('hex');
+    const entered = deferred<void>();
+    const ids: string[] = [];
+    const transport = vi.fn<UploadTransport>((request) => {
+      ids.push(request.clientUploadId);
+      if (ids.length > 1) {
+        return Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        );
+      }
+      entered.resolve();
+      return new Promise((_resolve, reject) => {
+        request.signal.addEventListener(
+          'abort',
+          () =>
+            reject(
+              new ModelUploadError(
+                {
+                  code: 'ABORTED',
+                  message: 'Credential rotation cancelled the response.',
+                  retryable: false,
+                  retryAfterSeconds: null,
+                  duplicateRisk: false,
+                },
+                'modelStreaming',
+              ),
+            ),
+          { once: true },
+        );
+      });
+    });
+    const uploads = await serviceFixture({
+      hashes: [hash],
+      profiles,
+      transport,
+    });
+    await uploads.start({ profileId: profile.id, hashes: [hash] });
+    await entered.promise;
+    await profiles.save({
+      id: profile.id,
+      displayName: profile.displayName,
+      baseUrl: profile.baseUrl,
+      credentials: { authMode: 'apiKey', apiKey: 'rotated-fixture-key' },
+      allowLegacy: false,
+    });
+    expect((await uploads.list())[0]?.items[0]?.state).toBe('cancelled');
+    const second = await uploads.start({
+      profileId: profile.id,
+      hashes: [hash],
+    });
+    expect(second.items[0]?.clientUploadId).toBe(ids[0]);
+    await waitFor(
+      () => uploads.list(),
+      (jobs) => jobs.find((job) => job.id === second.id)?.state === 'completed',
+    );
+    expect(ids).toEqual([ids[0], ids[0]]);
+    uploads.dispose();
+  });
+
   it.each([
     'replacement-same-principal',
     'replacement-new-principal',

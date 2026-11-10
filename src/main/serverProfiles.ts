@@ -204,6 +204,9 @@ export interface SecretStorage {
   getSelectedStorageBackend?(): string;
 }
 
+export type ProfileBindingChangeReason =
+  'identityChanged' | 'credentialsChanged';
+
 export interface ServerProfileDependencies {
   userDataPath: string;
   fileSystem?: ProfileFileSystem;
@@ -407,7 +410,11 @@ export class ServerProfileService {
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
   private readonly authGenerations = new Map<string, number>();
   private readonly profileBindingListeners = new Set<
-    (profileId: string, previousBinding: string) => Promise<void> | void
+    (
+      profileId: string,
+      previousBinding: string,
+      reason?: ProfileBindingChangeReason,
+    ) => Promise<void> | void
   >();
   private readonly invalidationListeners = new Set<
     (transition: ProfileBindingTransition) => Promise<void> | void
@@ -441,6 +448,7 @@ export class ServerProfileService {
     listener: (
       profileId: string,
       previousBinding: string,
+      reason?: ProfileBindingChangeReason,
     ) => Promise<void> | void,
   ): () => void {
     this.profileBindingListeners.add(listener);
@@ -722,7 +730,13 @@ export class ServerProfileService {
         draft.credentials.authMode !== 'saved' ||
         transition !== null)
     ) {
-      await this.notifyProfileBindingChanged(id, expected.binding);
+      await this.notifyProfileBindingChanged(
+        id,
+        expected.binding,
+        expected.binding !== newBinding || transition !== null
+          ? 'identityChanged'
+          : 'credentialsChanged',
+      );
     }
     if (transition) {
       await this.emitInvalidation(transition).catch(() => {
@@ -1087,10 +1101,11 @@ export class ServerProfileService {
   private async notifyProfileBindingChanged(
     profileId: string,
     previousBinding: string,
+    reason: ProfileBindingChangeReason = 'identityChanged',
   ): Promise<void> {
     await Promise.allSettled(
       [...this.profileBindingListeners].map((listener) =>
-        Promise.resolve(listener(profileId, previousBinding)),
+        Promise.resolve(listener(profileId, previousBinding, reason)),
       ),
     );
   }

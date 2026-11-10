@@ -196,7 +196,7 @@ function successfulFetch(): typeof globalThis.fetch {
   });
 }
 
-const apiKeyDraft = (
+const serverDraft = (
   overrides: Partial<ServerProfileDraft> = {},
 ): ServerProfileDraft => ({
   displayName: 'Farm',
@@ -293,7 +293,7 @@ describe('credential-leak: wired server-profile IPC handlers', () => {
         return baseline(input, init);
       }),
     );
-    const saved = await profiles.save(apiKeyDraft());
+    const saved = await profiles.save(serverDraft());
     const previousBinding = await profiles.getPersistedSyncBinding(saved.id);
     let releasePending: () => void = () => undefined;
     let notePending: () => void = () => undefined;
@@ -358,7 +358,7 @@ describe('credential-leak: wired server-profile IPC handlers', () => {
       Promise.resolve(
         handlers.get(IpcChannel.SaveServerProfile)!(
           senderEvent,
-          apiKeyDraft({
+          serverDraft({
             id: saved.id,
             credentials: {
               authMode: 'apiKey',
@@ -413,7 +413,7 @@ describe('credential-leak: wired server-profile IPC handlers', () => {
   it('hands the renderer no secret through save, then list/select/test', async () => {
     const saved = (await handlers.get(IpcChannel.SaveServerProfile)!(
       senderEvent,
-      apiKeyDraft(),
+      serverDraft(),
     )) as { id: string };
     const listed = await handlers.get(IpcChannel.ListServerProfiles)!(
       senderEvent,
@@ -424,7 +424,7 @@ describe('credential-leak: wired server-profile IPC handlers', () => {
     );
     const tested = await handlers.get(IpcChannel.TestServerProfile)!(
       senderEvent,
-      { source: 'draft', draft: apiKeyDraft({ id: saved.id }) },
+      { source: 'draft', draft: serverDraft({ id: saved.id }) },
     );
 
     for (const [label, payload] of [
@@ -442,7 +442,7 @@ describe('credential-leak: wired server-profile IPC handlers', () => {
     // `{}` or threw would pass every leak assertion above.
     const saved = (await handlers.get(IpcChannel.SaveServerProfile)!(
       senderEvent,
-      apiKeyDraft(),
+      serverDraft(),
     )) as Record<string, unknown>;
     expect(saved).toMatchObject({
       displayName: 'Farm',
