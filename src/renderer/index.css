@@ -439,12 +439,6 @@ select:disabled {
   margin-bottom: 6px;
 }
 
-.organization-filter-note {
-  margin: -4px 12px 12px;
-  color: var(--quiet);
-  font-size: 11px;
-}
-
 .collection-manager-list {
   margin: 0 0 12px;
   padding: 0;
@@ -565,10 +559,6 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.library-pagination small {
-  color: var(--quiet);
 }
 
 .sidebar-section + .sidebar-section {
@@ -858,6 +848,37 @@ select:disabled {
   flex: none;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.upload-action {
+  position: relative;
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.upload-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.upload-selected:disabled {
+  pointer-events: none;
+}
+
+.upload-action-tooltip {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  right: 0;
+  width: min(320px, 70vw);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 30%);
 }
 
 .inspector-action-help {
@@ -1494,20 +1515,6 @@ select:disabled {
 .onboarding-connect-nudge button:hover:not(:disabled) {
   background: var(--accent);
   color: #071018;
-}
-
-.onboarding-connect-confirmed {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 10px 0 0;
-  color: var(--success);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.onboarding-connect-confirmed svg {
-  flex: none;
 }
 
 .library-onboarding-secondary {
@@ -3146,11 +3153,6 @@ select:disabled {
   margin: 14px 0 4px;
   color: var(--muted);
   font-weight: 600;
-}
-
-.inspector-placeholder span {
-  max-width: 230px;
-  font-size: 11px;
 }
 
 .inspector-content {

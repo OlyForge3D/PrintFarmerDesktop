@@ -69,8 +69,8 @@ export function UploadsWorkspace({
           <div className="purposeful-empty-state">
             <h2>Nothing queued</h2>
             <p>
-              Select models in the library, then choose Upload to PrintFarmer.
-              Uploads keep running while you work elsewhere in the app.
+              Select models in the library, then choose Upload. Uploads keep
+              running while you work elsewhere in the app.
             </p>
             <button
               type="button"
