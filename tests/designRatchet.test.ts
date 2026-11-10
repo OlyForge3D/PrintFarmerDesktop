@@ -131,6 +131,7 @@ describe('design count ratchet', () => {
     expect(workflow).not.toMatch(/npm (?:ci|install)/);
   });
 
+  // Clone, sparse checkout and both real ratchet runs can exceed 5s on Windows CI.
   it('runs with exactly the trusted sparse-checkout paths from the workflow', () => {
     const workflow = readFileSync(
       path.join(repo, '.github/workflows/design-ratchet.yml'),
@@ -166,7 +167,7 @@ describe('design count ratchet', () => {
     ]);
     expect(incomplete.status).toBe(1);
     expect(incomplete.stderr).toContain('design-baseline.mjs');
-  });
+  }, 30_000);
 
   it('rejects a squash-stranded anchor and preserves enforcement after a landed-source refresh', () => {
     const mainBranch = git('branch', '--show-current');
