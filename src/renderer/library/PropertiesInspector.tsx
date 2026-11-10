@@ -56,7 +56,6 @@ export function PropertiesInspector(
         <div className="inspector-placeholder">
           <Icon name="file" size={28} />
           <p>Select a model to inspect its file details.</p>
-          <span>The 3D viewer opens only when you choose Preview.</span>
         </div>
       )}
     </aside>

@@ -166,11 +166,6 @@ export function LibrarySidebar({
             onExpandedChange={(open) => setExpanded('tags', open)}
           />
         ) : null}
-        {onTagsChange && onCollectionsChange ? (
-          <p className="organization-filter-note">
-            Tag and collection scopes are combined.
-          </p>
-        ) : null}
       </aside>
     </SidebarResizer>
   );
@@ -205,6 +200,7 @@ function OrganizationFilter({
         expanded ? 'sidebar-collections' : 'sidebar-collections collapsed'
       }
       aria-label={`${label} filter`}
+      aria-description={`Matches any selected ${noun}. Tag and collection filters are combined.`}
     >
       <legend className="sidebar-section-label">
         <button
@@ -247,7 +243,6 @@ function OrganizationFilter({
             All {label.toLowerCase()}
           </button>
         </div>
-        <p className="collection-filter-hint">Matches any selected {noun}.</p>
         <div className="collection-filter-options">
           {matching.map((item) => (
             <label

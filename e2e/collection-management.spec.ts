@@ -109,6 +109,14 @@ test('packaged collection management preserves models and source files', async (
       const sidebar = page.getByRole('complementary', {
         name: 'Library navigation',
       });
+      await expect(
+        page.getByText(
+          /Tag and collection scopes are combined|Matches any selected|Selection applies to this page|The 3D viewer opens only/,
+        ),
+      ).toHaveCount(0);
+      await expect(collections).toHaveAccessibleDescription(
+        'Matches any selected collection. Tag and collection filters are combined.',
+      );
       const collectionsBox = await collections.boundingBox();
       const tagsBox = await tags.boundingBox();
       expect(collectionsBox!.y).toBeLessThan(tagsBox!.y);
@@ -181,6 +189,32 @@ test('packaged collection management preserves models and source files', async (
       await page.screenshot({
         path: testInfo.outputPath('inspector-file-locations.png'),
       });
+      const upload = page.getByRole('button', {
+        name: 'Upload selected models to PrintFarmer',
+      });
+      await expect(upload).toHaveText('Upload');
+      await expect(upload).toBeDisabled();
+      const uploadHelp = page.getByRole('group', {
+        name: 'Upload selected models to PrintFarmer',
+      });
+      await uploadHelp.focus();
+      await expect(page.getByRole('tooltip')).toHaveText(
+        'Upload selected models to PrintFarmer. Connect a PrintFarmer server profile first.',
+      );
+      await uploadHelp.hover();
+      await page.mouse.move(0, 0);
+      await expect(uploadHelp).toBeFocused();
+      await expect(page.getByRole('tooltip')).toBeVisible();
+      await uploadHelp.press('Escape');
+      await expect(page.getByRole('tooltip')).toBeHidden();
+      await uploadHelp.hover();
+      await expect(page.getByRole('tooltip')).toBeVisible();
+      await page.screenshot({
+        path: testInfo.outputPath('library-upload-tooltip.png'),
+      });
+      await page.mouse.move(0, 0);
+      await uploadHelp.press('Tab');
+      await expect(page.getByRole('tooltip')).toBeHidden();
 
       await tags.getByRole('checkbox', { name: 'release-e2e' }).check();
       await collections

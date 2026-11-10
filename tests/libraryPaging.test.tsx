@@ -139,8 +139,13 @@ describe('bounded library queries', () => {
     fireEvent.click(within(tags).getByRole('checkbox', { name: 'Red' }));
     expect(onTagsChange).toHaveBeenCalledWith(['red']);
     expect(
-      screen.getByText('Tag and collection scopes are combined.'),
-    ).toBeTruthy();
+      screen.queryByText('Tag and collection scopes are combined.'),
+    ).not.toBeInTheDocument();
+    expect(tags).toHaveAttribute(
+      'aria-description',
+      'Matches any selected tag. Tag and collection filters are combined.',
+    );
+    expect(screen.queryByText(/Matches any selected/)).not.toBeInTheDocument();
   });
   it('fetches bounded pages, keeps global totals, and persists page size', async () => {
     const listModels = vi.fn();

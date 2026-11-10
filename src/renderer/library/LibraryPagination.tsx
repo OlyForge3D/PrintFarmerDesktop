@@ -77,7 +77,6 @@ export function LibraryPagination({
           Last
         </button>
       </div>
-      <small>Selection applies to this page.</small>
     </nav>
   );
 }
