@@ -49,6 +49,9 @@ against the working tree, so deleted sources and unreadable skill documents fail
 Create disposable fixtures under the OS temporary directory, not the checkout.
 Real Git/npm release-transaction tests have a scoped 30-second budget for hosted
 Windows subprocess latency; pure validation retains the 5-second default.
+Repository-wide guard assertions should reuse one report when they inspect the
+same immutable tracked corpus, rather than repeating an expensive full scan
+inside each assertion. Keep small synthetic positive/negative controls separate.
 
 Rust sidecar (run from `native/`):
 
