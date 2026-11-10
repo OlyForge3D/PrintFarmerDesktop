@@ -144,7 +144,8 @@ describe('full-source design baseline', () => {
 
   it(
     'reports ignored files and applies parsed design policy',
-    () => {
+    ({ task }) => {
+      expect(task.timeout).toBe(ciWindowsTimeout(5000, 90_000));
       mkdirSync(path.join(fixture, '.impeccable'));
       writeFileSync(
         path.join(fixture, '.impeccable/config.json'),
@@ -166,7 +167,8 @@ describe('full-source design baseline', () => {
 
   it(
     'fails without writing a report for malformed config, missing input, or malformed policy',
-    () => {
+    ({ task }) => {
+      expect(task.timeout).toBe(ciWindowsTimeout(5000, 90_000));
       mkdirSync(path.join(fixture, '.impeccable'));
       const config = path.join(fixture, '.impeccable/config.json');
       writeFileSync(config, '{"detector":');

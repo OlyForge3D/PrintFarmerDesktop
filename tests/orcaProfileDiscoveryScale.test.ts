@@ -26,6 +26,10 @@ import { ciWindowsTimeout } from './helpers/ciWindowsTimeout';
 // samples; 30s gives 72% headroom only on CI Windows, not a proven cause.
 vi.setConfig({ testTimeout: ciWindowsTimeout(15_000, 30_000) });
 
+it('wires the measured Orca callback limit', ({ task }) => {
+  expect(task.timeout).toBe(ciWindowsTimeout(15_000, 30_000));
+});
+
 const TARGET_PROFILE_NAME = 'Voron Generic PLA @0.4 nozzle';
 
 /** Vendor directory sizes mirroring a real OrcaSlicer resources tree. */

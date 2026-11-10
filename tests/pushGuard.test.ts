@@ -56,6 +56,10 @@ import { HOOKS_PATH } from '../scripts/install-git-hooks.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 
+it('wires the measured push-guard callback limit', ({ task }) => {
+  expect(task.timeout).toBe(ciWindowsTimeout(15_000, 80_000));
+});
+
 const OURS = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const THEIRS = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const LOCAL = 'cccccccccccccccccccccccccccccccccccccccc';
