@@ -20,14 +20,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { discoverLocalOrcaFilamentProfilesEntries } from '../src/main/orcaProfileDiscovery.js';
 import { RemoteCalibrationPrinterContext } from '../src/main/calibrationWire.js';
+import { ciWindowsTimeout } from './helpers/ciWindowsTimeout';
 
-// Runs in 842ms standalone but has timed out under full-suite parallel
-// scheduling contention (issue #734) -- the slow path there is contention
-// for a worker, not the traversal itself. 15000ms is >17x the standalone
-// runtime, ample headroom for scheduling variance without masking a real
-// regression (option 2 from #734: a targeted per-file override, not a
-// blanket global increase).
-vi.setConfig({ testTimeout: 15000 });
+// #734 retains 15s locally. #874: empirical p99 17.440s across 48 Windows
+// samples; 30s gives 72% headroom only on CI Windows, not a proven cause.
+vi.setConfig({ testTimeout: ciWindowsTimeout(15_000, 30_000) });
+
+it('wires the measured Orca callback limit', ({ task }) => {
+  expect(task.timeout).toBe(ciWindowsTimeout(15_000, 30_000));
+});
 
 const TARGET_PROFILE_NAME = 'Voron Generic PLA @0.4 nozzle';
 
