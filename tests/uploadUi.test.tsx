@@ -104,6 +104,9 @@ describe('catalog multi-selection and upload queue UI', () => {
       }
       fireEvent.focus(focusTarget);
       expect(screen.getByRole('tooltip')).toHaveTextContent(detail);
+      fireEvent.mouseEnter(upload.parentElement!);
+      fireEvent.mouseLeave(upload.parentElement!);
+      expect(screen.getByRole('tooltip')).toBeVisible();
       fireEvent.keyDown(focusTarget, { key: 'Escape' });
       expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
       fireEvent.blur(focusTarget);
@@ -111,6 +114,9 @@ describe('catalog multi-selection and upload queue UI', () => {
       expect(screen.getByRole('tooltip')).toHaveTextContent(
         `Upload selected models to PrintFarmer. ${detail}`,
       );
+      fireEvent.focus(focusTarget);
+      fireEvent.blur(focusTarget);
+      expect(screen.getByRole('tooltip')).toBeVisible();
       fireEvent.mouseLeave(upload.parentElement!);
       expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
     },

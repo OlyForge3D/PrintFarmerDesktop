@@ -14,7 +14,10 @@ export function UploadSelectedButton({
   onUpload: () => void;
 }): React.JSX.Element {
   const tooltipId = useId();
-  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const open = (hovered || focused) && !dismissed;
   const availability = serverProfile?.availability.modelUpload;
   const detail = !serverProfile
     ? 'Connect a PrintFarmer server profile first.'
@@ -31,13 +34,19 @@ export function UploadSelectedButton({
       role={disabled ? 'group' : undefined}
       aria-label={disabled ? LABEL : undefined}
       aria-describedby={disabled ? tooltipId : undefined}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
+      onMouseEnter={() => {
+        setHovered(true);
+        setDismissed(false);
+      }}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => {
+        setFocused(true);
+        setDismissed(false);
+      }}
+      onBlur={() => setFocused(false)}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
-          setOpen(false);
+          setDismissed(true);
           event.stopPropagation();
         }
       }}

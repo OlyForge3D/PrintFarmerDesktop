@@ -201,6 +201,10 @@ test('packaged collection management preserves models and source files', async (
       await expect(page.getByRole('tooltip')).toHaveText(
         'Upload selected models to PrintFarmer. Connect a PrintFarmer server profile first.',
       );
+      await uploadHelp.hover();
+      await page.mouse.move(0, 0);
+      await expect(uploadHelp).toBeFocused();
+      await expect(page.getByRole('tooltip')).toBeVisible();
       await uploadHelp.press('Escape');
       await expect(page.getByRole('tooltip')).toBeHidden();
       await uploadHelp.hover();
