@@ -23,7 +23,7 @@ to isolated `development`-based worktrees.
    priority transitively, and order unblocked work by inherited priority, age,
    then number. A malformed/truncated response is not clean.
 3. Before each claim, dispatch, or merge, re-fetch its live state. Honor holds,
-   leases, scope decisions, the strict `development`/BEHIND sync procedure in
+   leases, scope decisions, the staged `development` merge-queue procedure in
    `references/pr-gates.md`, and a shared cap of **five** active
    implementation-or-analysis sessions. Cache changes whenever
    dependency/blocker, issue/session/claim/linked PR, base, verdict-only

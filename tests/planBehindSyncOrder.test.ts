@@ -201,7 +201,7 @@ describe('planSyncOrder', () => {
 describe('formatPlan', () => {
   it('says nothing to sync when there is no next candidate anywhere', () => {
     const text = formatPlan({ next: null, queued: [] }, []);
-    expect(text).toContain('No open pull request is BEHIND its base');
+    expect(text).toContain('No open pull request needs a manual base sync');
   });
 
   it('names exactly one PR to sync next and warns against firing multiple', () => {
@@ -276,7 +276,7 @@ describe('formatPlan', () => {
     expect(text).toContain('Could not determine BEHIND status');
     expect(text).toContain('#42');
     expect(text).toContain('could not be refreshed');
-    expect(text).not.toContain('No open pull request is BEHIND');
+    expect(text).not.toContain('No open pull request needs a manual base sync');
   });
 
   it('reports skipped PRs alongside a real plan, not instead of it', () => {
