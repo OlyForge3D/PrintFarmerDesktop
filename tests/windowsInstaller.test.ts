@@ -1,7 +1,12 @@
 // @vitest-environment node
 
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import {
+  execFile,
+  spawn,
+  type ChildProcess,
+  type SpawnOptions,
+} from 'node:child_process';
 import {
   copyFile,
   mkdir,
@@ -15,6 +20,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createWindowsInstallerPhaseReporter,
+  observeWindowsInstallerFileOperation,
+  type WindowsInstallerPhaseReporter,
+} from './helpers/windowsInstallerPhaseTrace';
 import {
   buildVerifiedInstallerScript,
   launchVerifiedWindowsInstaller,
@@ -184,6 +194,15 @@ describe('descriptor-bound Windows installer launch', () => {
   it.runIf(process.platform === 'win32')(
     'prevents unlink and rename substitution after verification begins',
     async () => {
+      const emitPhase = createWindowsInstallerPhaseReporter();
+      let phaseTraceWriteFailed = false;
+      const reportPhase: WindowsInstallerPhaseReporter = (phase, details) => {
+        try {
+          emitPhase(phase, details);
+        } catch {
+          phaseTraceWriteFailed = true;
+        }
+      };
       const directory = await mkdtemp(
         path.join(os.tmpdir(), 'windows-installer-race-'),
       );
@@ -208,16 +227,74 @@ describe('descriptor-bound Windows installer launch', () => {
 
       let unlinkError: Error | undefined;
       let renameError: Error | undefined;
-      await launchVerifiedWindowsInstaller(installerPath, artifact, {
-        synchronization: {
-          afterVerification: () => {
-            unlinkError = rejectedError(() => unlinkSync(installerPath));
-            renameError = rejectedError(() =>
-              renameSync(installerPath, renamedPath),
-            );
+      let verifiedMarkerSeen = false;
+      let stdoutTail = '';
+      const spawnImplementation = (
+        command: string,
+        args: readonly string[],
+        options: SpawnOptions,
+      ): ChildProcess => {
+        const child = spawn(command, args, options);
+        child.once('spawn', () => reportPhase('spawned'));
+        child.once('error', () => reportPhase('spawn-error'));
+        child.once('exit', (code) =>
+          reportPhase('helper-exit', {
+            outcome:
+              code === 0 ? 'success' : code === null ? 'signal' : 'nonzero',
+          }),
+        );
+        child.stdin?.once('finish', () => reportPhase('continue-sent'));
+        child.stdout?.on('data', (chunk: Buffer | string) => {
+          if (verifiedMarkerSeen) return;
+          const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
+          const candidate = stdoutTail + text;
+          if (candidate.includes('VERIFIED')) {
+            verifiedMarkerSeen = true;
+            reportPhase('verified-received');
+          } else {
+            stdoutTail = candidate.slice(-'VERIFIED'.length + 1);
+          }
+        });
+        return child;
+      };
+      try {
+        reportPhase('spawn-requested');
+        await launchVerifiedWindowsInstaller(installerPath, artifact, {
+          // The helper calls the existing seam with the three-argument form.
+          spawnImplementation: spawnImplementation as typeof spawn,
+          synchronization: {
+            afterVerification: () => {
+              reportPhase('callback-entered');
+              unlinkError = rejectedError(() =>
+                observeWindowsInstallerFileOperation(
+                  reportPhase,
+                  'unlink',
+                  () => unlinkSync(installerPath),
+                ),
+              );
+              renameError = rejectedError(() =>
+                observeWindowsInstallerFileOperation(
+                  reportPhase,
+                  'rename',
+                  () => renameSync(installerPath, renamedPath),
+                ),
+              );
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          /^verified installer helper timed out after \d+ms$/.test(
+            error.message,
+          )
+        ) {
+          reportPhase('helper-timeout');
+        } else {
+          reportPhase('launch-error');
+        }
+        throw error;
+      }
       expect(
         unlinkError && 'code' in unlinkError ? unlinkError.code : undefined,
       ).toMatch(/^(?:EACCES|EBUSY|EPERM)$/);
@@ -225,6 +302,7 @@ describe('descriptor-bound Windows installer launch', () => {
         renameError && 'code' in renameError ? renameError.code : undefined,
       ).toMatch(/^(?:EACCES|EBUSY|EPERM)$/);
       await expect(readFile(installerPath)).resolves.toEqual(verifiedBytes);
+      expect(phaseTraceWriteFailed).toBe(false);
     },
     30_000,
   );
